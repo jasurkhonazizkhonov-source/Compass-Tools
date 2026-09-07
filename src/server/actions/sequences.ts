@@ -4,7 +4,6 @@ import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { logActivity } from "@/server/activity-log";
 import { sendEmail } from "@/server/email/service";
 import { buildSequenceEmail } from "@/server/email/templates";
 import { renderSequenceTemplate, type SequenceVariableContext } from "@/lib/sequence-variables";
@@ -161,14 +160,22 @@ export async function enrollLeads(sequenceId: string, leadIds: string[], recipie
         recipientEmail: recipientByLead.get(leadId),
       })),
     });
-    for (const leadId of toEnroll) {
-      await logActivity({
+    // Pass 35 — batched instead of one sequential logActivity() round-trip
+    // per enrolled lead: Activity's own writer (prisma.activity.create) only
+    // ever sets plain scalar FK fields, never a nested relation create, so
+    // createMany behaves identically to N individual creates here (same
+    // rows, same fields, cuid() ids generated client-side either way) —
+    // there was no correctness reason for the per-row loop, only an
+    // unnecessary N round-trips for a bulk-enroll of hundreds/thousands of
+    // leads.
+    await prisma.activity.createMany({
+      data: toEnroll.map((leadId) => ({
         leadId,
         actorId: actor?.id,
         type: "SEQUENCE_ENROLLED",
         description: `Enrolled in sequence "${sequence.name}"`,
-      });
-    }
+      })),
+    });
   }
 
   revalidatePath(`/sequences/${sequenceId}`);

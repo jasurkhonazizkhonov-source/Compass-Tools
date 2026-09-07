@@ -86,7 +86,27 @@ const fakePrismaClient: any = {
       return step;
     }),
   },
-  lead: { findMany: vi.fn(async () => []) },
+  lead: {
+    // Pass 35 — extended (was a dumb `() => []` stub) so enrollLeads' own
+    // visibility-filter query and its recipientEmail-validation query both
+    // resolve against real seeded data, for the batched-activity-log test
+    // below. Ignores the visibility fragment's exact shape — every test
+    // using this runs as an ADMIN/company-wide actor, so returning every
+    // seeded lead matching the requested ids is equivalent.
+    findMany: vi.fn(async ({ where }: { where: { id?: { in: string[] } } }) => {
+      const ids = where.id?.in ?? [];
+      return ids.filter((id) => leads.has(id)).map((id) => {
+        const lead = leads.get(id)!;
+        return { id, contact: { primaryEmail: lead.contactEmail, emails: [] } };
+      });
+    }),
+  },
+  activity: {
+    createMany: vi.fn(async ({ data }: { data: Array<Record<string, unknown>> }) => {
+      activities.push(...data);
+      return { count: data.length };
+    }),
+  },
   sequenceEnrollment: {
     findMany: vi.fn(async () => []),
     createMany: vi.fn(async () => ({ count: 0 })),
@@ -152,6 +172,9 @@ let enrollments: FakeEnrollment[];
 let stepLogs: Array<Record<string, unknown>>;
 let emailLogs: Array<Record<string, unknown>>;
 let sendEmailCalls: Array<{ to: string }>;
+// Pass 35 — fixtures for enrollLeads' batched-activity-log test.
+let leads: Map<string, { contactEmail: string | null }>;
+let activities: Array<Record<string, unknown>>;
 
 vi.mock("@/lib/prisma", () => ({ prisma: fakePrismaClient }));
 vi.mock("@/lib/company-config", () => ({ resolveBaseUrl: vi.fn(() => "https://example.com") }));
@@ -174,6 +197,8 @@ beforeEach(() => {
   stepLogs = [];
   emailLogs = [];
   sendEmailCalls = [];
+  leads = new Map();
+  activities = [];
   vi.clearAllMocks();
 });
 
@@ -394,5 +419,45 @@ describe("processDueSequenceSteps — concurrency (Pass 19)", () => {
     const secondRun = await processDueSequenceSteps();
     expect(secondRun.processed).toBe(0);
     expect(stepLogs).toHaveLength(1);
+  });
+});
+
+// Pass 35 — enrollLeads previously logged one Activity row per enrolled
+// lead via a sequential `for` loop (N round-trips for a bulk enroll of
+// hundreds/thousands of leads). Batched into a single activity.createMany
+// call — same rows, same fields, just one round-trip instead of N.
+describe("enrollLeads — batched activity logging (Pass 35)", () => {
+  it("logs exactly one Activity row per enrolled lead via a single createMany call, not N sequential creates", async () => {
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    accounts.set("admin-1", { id: "admin-1", role: "ADMIN", companyId: "company-1" });
+    sequences.set("seq-1", { id: "seq-1", name: "Welcome Series", isActive: true, createdById: null, companyId: "company-1" });
+    steps.set("step-1", { id: "step-1", sequenceId: "seq-1", subject: "Hi", body: "Hello", delayMinutes: 60, order: 0 });
+    for (const id of ["lead-1", "lead-2", "lead-3"]) leads.set(id, { contactEmail: `${id}@example.com` });
+
+    const { enrollLeads } = await import("../sequences");
+    const result = await enrollLeads("seq-1", ["lead-1", "lead-2", "lead-3"]);
+
+    expect(result).toEqual({ enrolled: 3, skipped: 0 });
+    // Exactly one createMany call (not one per lead)...
+    expect(fakePrismaClient.activity.createMany).toHaveBeenCalledTimes(1);
+    // ...but it still produced one Activity row per enrolled lead.
+    expect(activities).toHaveLength(3);
+    expect(activities.every((a) => a.type === "SEQUENCE_ENROLLED")).toBe(true);
+    expect(activities.map((a) => a.leadId).sort()).toEqual(["lead-1", "lead-2", "lead-3"]);
+  });
+
+  it("logs nothing when there is nothing new to enroll", async () => {
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    accounts.set("admin-1", { id: "admin-1", role: "ADMIN", companyId: "company-1" });
+    sequences.set("seq-1", { id: "seq-1", name: "Welcome Series", isActive: true, createdById: null, companyId: "company-1" });
+    steps.set("step-1", { id: "step-1", sequenceId: "seq-1", subject: "Hi", body: "Hello", delayMinutes: 60, order: 0 });
+    // No leads seeded — the visibility-filter query returns none, so
+    // toEnroll is empty and the activity/enrollment writes must be skipped
+    // entirely rather than calling createMany with an empty array.
+    const { enrollLeads } = await import("../sequences");
+    const result = await enrollLeads("seq-1", ["lead-not-visible"]);
+
+    expect(result).toEqual({ enrolled: 0, skipped: 0 });
+    expect(fakePrismaClient.activity.createMany).not.toHaveBeenCalled();
   });
 });
