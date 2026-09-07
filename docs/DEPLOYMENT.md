@@ -109,18 +109,35 @@ confirming what actually sits in front of THIS one.
 
 ```json
 {
-  "crons": [{ "path": "/api/cron/tasks", "schedule": "*/5 * * * *" }]
+  "crons": [{ "path": "/api/cron/tasks", "schedule": "0 3 * * *" }]
 }
 ```
 
-Vercel invokes `GET /api/cron/tasks` every 5 minutes to process due task
-notifications (`processDueTaskNotifications` — see that route's own file
-comment). Two other maintenance routes exist at the same URL shape,
-`/api/cron/leads` and `/api/cron/sequences`, but neither is currently
-registered in `vercel.json` — they're reachable for manual/external
-triggering (e.g. an external scheduler, or the in-app "Process Due Steps"
-button) but nothing on Vercel calls them automatically today. Do not add
-duplicate cron entries for them without a real product reason.
+Vercel invokes `GET /api/cron/tasks` once daily, at 03:00 UTC, to process
+due task notifications (`processDueTaskNotifications` — see that route's
+own file comment). This once-daily schedule is required for compatibility
+with the **Vercel Hobby/free plan**, which only permits cron jobs to run
+once per day — a more frequent expression (e.g. every 5 minutes) fails
+deployment on Hobby. **On Vercel Pro** (or higher), a more frequent
+schedule is available again if desired — e.g. `*/5 * * * *` — since Pro
+has no such restriction; only change it if you've actually upgraded the
+project's plan.
+
+The task-due query itself (`dueAt <= now + 1h`, gated by `dueNotifiedAt`
+being unset) already catches any task that became due or overdue since the
+last run, so a daily invocation still notifies every task — just less
+promptly than a 5-minute schedule would; a task can now go up to ~24h past
+its due time before its overdue notification fires. `processDueSequenceSteps`
+(`/api/cron/sequences`) has the same catch-up property (`nextSendAt <= now`)
+but is unaffected by this change since it isn't registered in `vercel.json`.
+
+Two other maintenance routes exist at the same URL shape, `/api/cron/leads`
+and `/api/cron/sequences`, but neither is currently registered in
+`vercel.json` — they're reachable for manual/external triggering (e.g. an
+external scheduler, or the in-app "Process Due Steps" button) but nothing
+on Vercel calls them automatically today. Do not add duplicate cron
+entries for them without a real product reason (and note that adding any
+additional cron job on Hobby must also stay within once-per-day-per-job).
 
 All three `/api/cron/*` routes accept an optional `CRON_SECRET`: if set,
 a request must include it as `Authorization: Bearer <CRON_SECRET>` or the
