@@ -1,0 +1,24 @@
+-- Additive only.
+--
+-- NOTE (see 20260830115639_exchange_and_cancellation_workflow's own note):
+-- this database also contains NewsletterSubscriber, SheetSyncRecord,
+-- SubmissionSequence tables (and SheetSyncStatus/SubmissionKind enums) that
+-- are NOT part of this project's Prisma schema or migration history — an
+-- external system writes to this same shared database outside this app's
+-- own tracking. A plain `prisma migrate dev`/`db push` run against this
+-- database will therefore report those as "drift" and offer to DROP them —
+-- do NOT accept that. This migration was applied by hand with exactly the
+-- statement below, deliberately excluding any DROP TABLE/DROP TYPE for
+-- those external objects, then marked applied via `prisma migrate resolve
+-- --applied 20260831024648_booking_cancellation_notification_email_type` so
+-- migration history stays consistent without touching them.
+--
+-- Part 16 — a new EmailType value for the "Notify Team of Cancellation"
+-- announcement, kept distinct from BOOKING_PROFIT_NOTIFICATION specifically
+-- so its own send-idempotency check (in sendBookingProfitNotification)
+-- never collides with an earlier "Notify Team of New Sale" notification
+-- already sent for the same booking — a booking can legitimately receive
+-- one of each over its lifetime.
+
+-- AlterEnum
+ALTER TYPE "EmailType" ADD VALUE 'BOOKING_CANCELLATION_NOTIFICATION';

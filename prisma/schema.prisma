@@ -1,0 +1,1985 @@
+// Compass Tools CRM — Prisma schema
+// Airline ticket sales CRM for Business Flights Travel
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Accounts / Roles (future-ready for authentication — auth itself deferred)
+// ─────────────────────────────────────────────────────────────────────────
+
+enum AccountRole {
+  ADMIN
+  TRAVEL_AGENT
+  TICKETING_AGENT
+  FLIGHT_EXPERT
+  MANAGER
+  MARKETING_AGENT
+}
+
+enum AccountStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model Account {
+  id        String        @id @default(cuid())
+  fullName  String
+  email     String        @unique
+  phone     String?
+  role      AccountRole   @default(TRAVEL_AGENT)
+  status    AccountStatus @default(ACTIVE)
+  avatarUrl String?
+
+  // Pass 11 Part 1 — purely a directory-visibility preference for the
+  // general read-only /accounts page, NOT a deactivation/deletion concept
+  // (that's `status` above, which has real side effects like pulling the
+  // account out of the lead queue). Defaults to true so every existing
+  // account stays visible after this migration. Admin-only to change (see
+  // setAccountsVisibility in server/actions/accounts.ts); does not affect
+  // login, sessions, lead/contact ownership, commission history, queue
+  // membership, or online status — an Admin can still see and toggle it
+  // back on from /users at any time.
+  accountsVisible Boolean @default(true)
+
+  // The tenant this Account belongs to — the sole schema surface multi-
+  // company isolation needs (see the Company model's own comment for why
+  // Contact/Lead/Quote/Booking don't each need their own companyId).
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+  // When the employee started — distinct from createdAt (when their CRM
+  // account row was created, which can lag or lead the real hire date).
+  // Nullable: not backfillable for existing accounts.
+  hiredAt   DateTime?
+
+  // Office/city the employee works out of (e.g. "San Francisco", "Dubai") —
+  // free text, admin-editable. Nullable: not backfillable for existing
+  // accounts. Shown on Accounts for everyone who can see that page; used in
+  // the booking-confirmation profit email subject line.
+  location String?
+
+  // Admin-set commission rate applied to a CONFIRMED booking's profit when
+  // that booking's quote was originally sent by this account (see
+  // Quote.sentByAgentId). Nullable: no commission configured yet == 0% at
+  // read time, not an error. Percent stored as e.g. 10.00, not a fraction.
+  // Only an Admin may set this — never self-editable.
+  commissionPercent Decimal? @db.Decimal(5, 2)
+
+  // Admin-set tip percentage — same shape/precedent as commissionPercent,
+  // kept as an independent field since tips and commission are configured
+  // and reported on separately (see Commission Summary's "Tip Earnings"
+  // line). Nullable: no tip rate configured yet == 0% at read time, not an
+  // error. Only an Admin may set this — never self-editable.
+  tipPercent Decimal? @db.Decimal(5, 2)
+
+  // Explicit, default-deny grants from the fixed PAYMENT_PERMISSIONS list
+  // (src/lib/permissions.ts) — deliberately separate from AccountRole.
+  // Role membership alone is never sufficient for a payment-sensitive
+  // action (e.g. payments.reveal): an ADMIN/MANAGER/TICKETING_AGENT must
+  // ALSO appear in this array for the corresponding action, and every
+  // other role can never gain a payment permission no matter what's
+  // granted here. Validated against the fixed permission list server-side
+  // on every write — never an arbitrary string.
+  paymentPermissions String[] @default([])
+
+  // Same default-deny, explicit-grant pattern as paymentPermissions, kept
+  // as an independent array — granting bookings.reveal_ip (viewing a
+  // booking's submission IP) is a separate decision from granting
+  // payments.reveal, even though both currently share the same role
+  // ceiling (Admin/Manager/Ticketing Agent). Validated against the fixed
+  // BOOKING_PERMISSIONS list server-side on every write.
+  bookingPermissions String[] @default([])
+
+  // Presence: heartbeat-based "online" approximation. Updated by a client
+  // heartbeat while a dev-user is active. Real presence requires authenticated
+  // sessions/websockets later — this is architected to slot in behind the
+  // same field.
+  lastSeenAt DateTime?
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Real server-side session lifecycle — layered on top of the existing
+  // dev-mode account switcher (see src/server/actions/dev-session.ts and
+  // src/lib/dev-session.ts). This is genuine, functional session
+  // enforcement: a single opaque token per account, absolute 24h expiry,
+  // and single-active-device enforcement (issuing a new token overwrites
+  // the old one, so a stale cookie elsewhere immediately stops matching).
+  // What this does NOT provide — and cannot, without more work — is real
+  // credential verification (a password or completed Google OAuth
+  // handshake); see src/server/auth/google-authorization.ts for the
+  // authorization decision layer this would plug into, and proxy.ts's
+  // comment for the explicit, honest statement of what's still missing.
+  // Nullable unique: many accounts have never logged in / are signed out.
+  activeSessionId  String?   @unique
+  sessionCreatedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  assignedLeads       Lead[]                @relation("AssignedAgent")
+  offeredLeads        Lead[]                @relation("LeadOffer")
+  ownedContacts       Contact[]             @relation("ContactOwner")
+  sentQuotes          Quote[]               @relation("QuoteAgent")
+  originalSentQuotes  Quote[]               @relation("QuoteSentBy")
+  notes               Note[]                @relation("NoteAuthor")
+  tasksAssigned       Task[]                @relation("TaskAssignee")
+  tasksCompleted      Task[]                @relation("TaskCompletedBy")
+  activities          Activity[]            @relation("ActivityActor")
+  attachmentsUploaded Attachment[]          @relation("AttachmentUploader")
+  leadStatusChanges   LeadStatusHistory[]   @relation("LeadStatusChanger")
+  quoteStatusChanges  QuoteStatusHistory[]  @relation("QuoteStatusChanger")
+  bookingStatusChange BookingStatusHistory[] @relation("BookingStatusChanger")
+  exchangeQuotesReviewed        Quote[]                     @relation("QuoteReviewedBy")
+  cancellationRequestsCreated   QuoteCancellationRequest[]  @relation("CancellationRequestCreatedBy")
+  cancellationRequestsReviewed  QuoteCancellationRequest[]  @relation("CancellationRequestReviewedBy")
+  sequencesCreated    Sequence[]            @relation("SequenceCreator")
+  sequenceEnrollments SequenceEnrollment[]  @relation("SequenceEnroller")
+  auditLogs           AuditLog[]            @relation("AuditActor")
+  cvvRecollectionRequestsSent CvvRecollectionRequest[] @relation("CvvRecollectionRequestedBy")
+  notifications       Notification[]        @relation("NotificationRecipient")
+  paymentChargesRun   PaymentCharge[]       @relation("PaymentChargeInitiator")
+  leadQueueEntry      LeadQueueEntry?       @relation("LeadQueueMember")
+  gmailConnection     GmailConnection?
+
+  assignedInquiries      ContactInquiry[]     @relation("InquiryAssignedAdmin")
+  inquiryNotes           InquiryNote[]        @relation("InquiryNoteAuthor")
+  marketingCampaigns     MarketingCampaign[]  @relation("MarketingCampaignCreatedBy")
+
+  @@index([role])
+  @@index([status])
+  @@index([companyId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Gmail OAuth connection — per-user "Connect Gmail" authorization, entirely
+// separate from Google Sign-In (src/server/auth/google-authorization.ts).
+// Signing in with Google proves identity; this table records that a
+// specific Account has ADDITIONALLY, explicitly authorized the CRM to send
+// email via the Gmail API on their behalf (scope: gmail.send only). No
+// Gmail password or app password is ever stored — only an OAuth refresh
+// token, encrypted at rest (see src/server/security/gmail-token-encryption.ts).
+// ─────────────────────────────────────────────────────────────────────────
+
+enum GmailConnectionStatus {
+  CONNECTED
+  // The refresh token no longer works (the user revoked access from their
+  // Google account, or Google invalidated it) — detected when a send
+  // attempt fails with an invalid_grant-shaped error. The row is kept
+  // (not deleted) so the UI can show "Reconnect Gmail" with connection
+  // history intact, rather than silently reverting to "never connected".
+  REVOKED
+}
+
+model GmailConnection {
+  id        String  @id @default(cuid())
+  accountId String  @unique
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  // The Gmail address Google actually granted access to — validated at
+  // connect-time to match the Account's own CRM login email (see
+  // src/server/actions/gmail-connect.ts), so "who signs into the CRM" and
+  // "which mailbox sends on their behalf" can never silently diverge.
+  googleEmail String
+
+  // Space-separated scopes Google actually granted, as returned by the
+  // token exchange — not assumed from what was requested. Currently always
+  // gmail.send (+ openid/email for identity verification at connect-time),
+  // but stored as granted so a future scope change is auditable.
+  scopes String[]
+
+  // AES-256-GCM encrypted refresh token (gmail-token-encryption.ts) — never
+  // the raw token, never a Gmail password/app password. No access token or
+  // its expiry is stored: a fresh access token is derived from this refresh
+  // token at send time on every send, which is simpler and avoids
+  // persisting a second, shorter-lived secret for negligible benefit.
+  encryptedRefreshToken String
+
+  status     GmailConnectionStatus @default(CONNECTED)
+  connectedAt DateTime             @default(now())
+  revokedAt   DateTime?
+  updatedAt   DateTime             @updatedAt
+
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Contacts (Customers) — one Contact can have many Leads
+// ─────────────────────────────────────────────────────────────────────────
+
+model Contact {
+  id         String  @id @default(cuid())
+  firstName  String
+  middleName String?
+  lastName   String
+
+  // Denormalized "current primary" for fast display; source of truth is
+  // ContactPhone/ContactEmail with isPrimary flags, kept in sync on writes.
+  primaryPhone String?
+  primaryEmail String?
+
+  // The CRM account this customer "belongs to" for row-level-visibility
+  // purposes — distinct from each individual Lead's own assignedAgentId
+  // (a Contact can have Leads owned by different agents; this is the
+  // contact-level default/primary owner shown in the UI and used to scope
+  // a restricted-role account's Contacts list). Set on contact creation and
+  // updated wholesale by reassignContact(); never inferred on the fly.
+  ownerId String?
+  owner   Account? @relation("ContactOwner", fields: [ownerId], references: [id])
+
+  // The multi-tenant anchor for this Contact and everything hanging off it
+  // (Lead/Quote/Booking all have a non-nullable contactId, so this is the
+  // one place company scoping needs to live for the whole ownership chain
+  // — see src/server/visibility.ts). Deliberately independent of `owner`
+  // above: ownerId is nullable (a brand-new unassigned lead has no owner
+  // yet), so company isolation can never depend on it. Set once at
+  // creation from the creating agent's own company (see createLead in
+  // src/server/actions/leads.ts) and never changed afterward — a Contact
+  // does not move between companies.
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  phones         ContactPhone[]
+  emails         ContactEmail[]
+  leads          Lead[]
+  // Leads created with this contact recorded as "who referred them in" —
+  // the inverse side of Lead.referredByContact. Distinct from `leads`
+  // (leads belonging to this contact) — a contact can refer other people's
+  // leads without those leads being their own.
+  referredLeads  Lead[] @relation("ContactReferrals")
+  notes          Note[]
+  tasks          Task[]
+  activities     Activity[]
+  attachments    Attachment[]
+  quotes         Quote[]
+  bookings       Booking[]
+  emailLogs      EmailLog[]
+  // Cards on file for this customer, independent of any specific booking —
+  // e.g. added directly from the Contact page via "+ Add Another Credit
+  // Card" rather than submitted through a signed booking form. A
+  // booking-submitted card is also linked here (see PaymentMethod.contactId)
+  // so "this customer's payment methods" is always one query regardless of
+  // how the card was collected.
+  paymentMethods PaymentMethod[]
+  matchedInquiries ContactInquiry[]
+
+  @@index([primaryEmail])
+  @@index([primaryPhone])
+  @@index([lastName, firstName])
+  @@index([ownerId])
+  @@index([updatedAt])
+  @@index([companyId])
+}
+
+enum PhoneType {
+  MOBILE
+  HOME
+  WORK
+  OTHER
+}
+
+model ContactPhone {
+  id        String    @id @default(cuid())
+  contactId String
+  contact   Contact   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  number    String
+  type      PhoneType @default(MOBILE)
+  isPrimary Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  @@index([contactId])
+  @@index([number])
+}
+
+enum ContactEmailType {
+  PERSONAL
+  WORK
+  OTHER
+}
+
+model ContactEmail {
+  id        String           @id @default(cuid())
+  contactId String
+  contact   Contact          @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  email     String
+  type      ContactEmailType @default(PERSONAL)
+  isPrimary Boolean   @default(false)
+  createdAt DateTime  @default(now())
+
+  @@index([contactId])
+  @@index([email])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Leads — a specific airline travel request tied to a Contact
+// ─────────────────────────────────────────────────────────────────────────
+
+enum LeadStatus {
+  // A fresh website lead that just came out of the 60-second lead-offer
+  // queue (see acceptLeadOffer in src/server/actions/lead-queue.ts) —
+  // distinct from ATTEMPTING_TO_CONTACT, which is the default for every
+  // OTHER lead-creation path (phone, email, manual, referral, etc.). Also
+  // distinct from ACCEPTED below, which means something else entirely.
+  NEW
+  ATTEMPTING_TO_CONTACT
+  REACHED
+  IN_PROCESS
+  QUOTED
+  NOT_READY
+  BOOKED
+  ECONOMY
+  NO_RESPONSE
+  NOT_INTERESTED
+  LOW_BUDGET
+  BOOKED_ELSEWHERE
+  OWN_POINTS
+  // A new lead that was auto-assigned to an existing contact's owner (a
+  // different agent than the one who created it) — see createLead's
+  // contact-matching branch. Distinct from the agent-level "accepting
+  // leads into my queue" toggle (LeadQueueEntry.isActive), which is an
+  // unrelated concept.
+  ACCEPTED
+}
+
+enum LeadSource {
+  WEBSITE
+  PHONE
+  EMAIL
+  WHATSAPP
+  FACEBOOK
+  INSTAGRAM
+  REFERRAL
+  OTHER
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum CabinClass {
+  ECONOMY
+  PREMIUM_ECONOMY
+  BUSINESS
+  FIRST
+}
+
+enum TripType {
+  ONE_WAY
+  ROUND_TRIP
+  MULTI_CITY
+}
+
+enum SegmentConnectionType {
+  LAYOVER
+  MULTI_CITY
+}
+
+model Lead {
+  id        String  @id @default(cuid())
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  // Travel request
+  departureAirportId Int?
+  departureAirport   Airport? @relation("LeadDeparture", fields: [departureAirportId], references: [id])
+  arrivalAirportId   Int?
+  arrivalAirport     Airport? @relation("LeadArrival", fields: [arrivalAirportId], references: [id])
+
+  departureDate  DateTime?
+  returnDate     DateTime?
+  tripType       TripType   @default(ROUND_TRIP)
+  cabinClass     CabinClass @default(ECONOMY)
+  adults         Int        @default(1)
+  children       Int        @default(0)
+  infants        Int        @default(0)
+  flexibleDates  Boolean    @default(false)
+  preferredAirline String?
+  budget         Decimal?   @db.Decimal(10, 2)
+  notes          String?
+
+  status         LeadStatus @default(ATTEMPTING_TO_CONTACT)
+  source         LeadSource @default(WEBSITE)
+  priority       Priority   @default(MEDIUM)
+
+  // Which existing Contact referred this lead in — only meaningful when
+  // source == REFERRAL. Points at a Contact (not another Lead) so it
+  // represents "this customer sent us a friend," the natural referral
+  // relationship in a travel-agency CRM. Nullable/SetNull so deleting the
+  // referring contact never blocks or cascades onto the leads they
+  // referred — it just clears the (now-dangling) reference.
+  referredByContactId String?
+  referredByContact    Contact? @relation("ContactReferrals", fields: [referredByContactId], references: [id], onDelete: SetNull)
+
+  assignedAgentId String?
+  assignedAgent   Account? @relation("AssignedAgent", fields: [assignedAgentId], references: [id])
+
+  // Set the first (and only the first) time the automatic queue distributor
+  // assigns this lead. Distinguishes "never went through the queue yet" from
+  // "was assigned then later manually unassigned" — both look like
+  // assignedAgentId == null, but only the former should ever be picked up
+  // again by the auto-distributor.
+  queueDistributedAt DateTime?
+
+  // The live 60-second acceptance offer, if any — a lead has at most one
+  // outstanding offer at a time. offeredToId/offeredAt/offerExpiresAt are
+  // all set together by offerLeadToNextWorker and all cleared together
+  // (whether by acceptLeadOffer succeeding or expireStaleOfferAndAdvance
+  // sweeping a miss) — never read individually to infer state. assignedAgentId
+  // stays null the entire time a lead is merely offered; it's set only once
+  // someone actually accepts.
+  offeredToId    String?
+  offeredTo      Account?  @relation("LeadOffer", fields: [offeredToId], references: [id])
+  offeredAt      DateTime?
+  offerExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  statusHistory LeadStatusHistory[]
+  quotes        Quote[]
+  bookings      Booking[]
+  notesRel      Note[]
+  tasks         Task[]
+  activities    Activity[]
+  attachments   Attachment[]
+  enrollments   SequenceEnrollment[]
+  emailLogs     EmailLog[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([assignedAgentId])
+  @@index([contactId])
+  @@index([source])
+  @@index([cabinClass])
+  @@index([tripType])
+  @@index([createdAt])
+  @@index([updatedAt])
+  @@index([referredByContactId])
+  @@index([source, assignedAgentId, queueDistributedAt])
+  @@index([offeredToId])
+}
+
+model LeadStatusHistory {
+  id            String     @id @default(cuid())
+  leadId        String
+  lead          Lead       @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  fromStatus    LeadStatus?
+  toStatus      LeadStatus
+  changedById   String?
+  changedBy     Account?   @relation("LeadStatusChanger", fields: [changedById], references: [id])
+  note          String?
+  changedAt     DateTime   @default(now())
+
+  @@index([leadId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Notes, Tasks, Activities, Attachments (shared across Contact / Lead)
+// ─────────────────────────────────────────────────────────────────────────
+
+model Note {
+  id        String   @id @default(cuid())
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  leadId    String?
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    Account? @relation("NoteAuthor", fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([contactId])
+  @@index([leadId])
+}
+
+enum TaskStatus {
+  PENDING
+  COMPLETED
+}
+
+model Task {
+  id            String     @id @default(cuid())
+  contactId     String?
+  contact       Contact?   @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  leadId        String?
+  lead          Lead?      @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  assigneeId    String?
+  assignee      Account?   @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  title         String
+  notes         String?
+  priority      Priority   @default(MEDIUM)
+  dueAt         DateTime?
+  status        TaskStatus @default(PENDING)
+  completedAt   DateTime?
+  completedById String?
+  completedBy   Account?   @relation("TaskCompletedBy", fields: [completedById], references: [id])
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  // Set when the due-task cron has already delivered a notification for the
+  // task's current dueAt, so reminders aren't re-sent every run. Cleared
+  // whenever dueAt changes.
+  dueNotifiedAt DateTime?
+
+  notifications Notification[]
+
+  @@index([contactId])
+  @@index([leadId])
+  @@index([assigneeId])
+  @@index([status])
+  @@index([dueAt])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  accountId String
+  account   Account   @relation("NotificationRecipient", fields: [accountId], references: [id], onDelete: Cascade)
+  taskId    String?
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  leadId    String?
+  lead      Lead?     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  quoteId   String?
+  quote     Quote?    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  // Get in Touch inquiry a NEW_INQUIRY notification links to — same
+  // pattern as taskId/leadId/quoteId above, click-through resolved the
+  // same way in notification-bell.tsx.
+  contactInquiryId String?
+  contactInquiry   ContactInquiry? @relation(fields: [contactInquiryId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([accountId])
+  @@index([taskId])
+  @@index([leadId])
+  @@index([quoteId])
+  @@index([contactInquiryId])
+  @@index([accountId, readAt])
+}
+
+// One row per worker who has ever opted into the lead-distribution queue.
+// `joinedAt` is set once, the first time a worker ever joins, and is never
+// touched again — it's their permanent queue position (rank = count of
+// entries with joinedAt <= theirs), unaffected by later pause/resume
+// cycles. `isActive` is just availability (paused workers keep their row
+// and their joinedAt, they're simply skipped for distribution).
+// `lastAssignedAt` (nulls sort first) is what the least-recently-served
+// round-robin distribution actually reads from among active workers — see
+// distributeNewWebsiteLead in server/actions/lead-queue.ts.
+model LeadQueueEntry {
+  id                 String    @id @default(cuid())
+  accountId          String    @unique
+  account            Account   @relation("LeadQueueMember", fields: [accountId], references: [id], onDelete: Cascade)
+  isActive           Boolean   @default(true)
+  joinedAt           DateTime  @default(now())
+  lastAssignedAt     DateTime?
+  leadsAssignedCount Int       @default(0)
+  updatedAt          DateTime  @updatedAt
+
+  @@index([isActive])
+  @@index([isActive, lastAssignedAt])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  leadId    String?
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  quoteId   String?
+  quote     Quote?   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  bookingId String?
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     Account? @relation("ActivityActor", fields: [actorId], references: [id])
+  type      String
+  description String
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([contactId])
+  @@index([leadId])
+  @@index([quoteId])
+  @@index([bookingId])
+  @@index([createdAt])
+}
+
+model Attachment {
+  id         String   @id @default(cuid())
+  contactId  String?
+  contact    Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  leadId     String?
+  lead       Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  fileName   String
+  fileUrl    String
+  fileType   String?
+  fileSize   Int?
+  uploadedById String?
+  uploadedBy Account? @relation("AttachmentUploader", fields: [uploadedById], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([contactId])
+  @@index([leadId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reference data: Airports / Airlines / Aircraft
+// ─────────────────────────────────────────────────────────────────────────
+
+model Airport {
+  id          Int      @id @default(autoincrement())
+  iata        String   @unique
+  icao        String?
+  name        String
+  city        String
+  country     String
+  countryCode String?
+  timezone    String?
+  latitude    Float?
+  longitude   Float?
+
+  leadDepartures Lead[] @relation("LeadDeparture")
+  leadArrivals   Lead[] @relation("LeadArrival")
+  segmentDepartures FlightSegment[] @relation("SegmentDeparture")
+  segmentArrivals   FlightSegment[] @relation("SegmentArrival")
+
+  @@index([city])
+  @@index([country])
+  @@index([name])
+}
+
+// Note: migration 20260901120000_airline_icao_partial_unique_index adds a
+// partial unique index — unique on icao, but only among rows where iata IS
+// NULL — that this schema file cannot express (Prisma's DSL has no partial/
+// filtered-index syntax). It exists in the real database even though it
+// isn't declared here; see that migration's own comment for why (closes a
+// concurrency gap in the self-healing reference-data seeder for the ~80%
+// of bundled airlines that have an ICAO code but no IATA code).
+model Airline {
+  id       Int     @id @default(autoincrement())
+  iata     String? @unique
+  icao     String?
+  name     String
+  country  String?
+  logoUrl  String?
+  isActive Boolean @default(true)
+
+  segments FlightSegment[]
+
+  @@index([name])
+  @@index([icao])
+}
+
+model AircraftType {
+  id           Int     @id @default(autoincrement())
+  code         String? @unique
+  manufacturer String
+  model        String
+  displayName  String
+
+  segments FlightSegment[]
+
+  @@index([displayName])
+  @@index([manufacturer])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Quotes, Itineraries, Flight Segments
+// ─────────────────────────────────────────────────────────────────────────
+
+enum QuoteStatus {
+  DRAFT
+  SENT
+  READ
+  VIEWED
+  SIGNED
+  BOOKED
+  CHARGED
+  CANCELED
+  // Exchange workflow (see Quote.originalQuoteId) — applied to the
+  // ORIGINAL charged quote once an exchange proposal is sent for approval.
+  // Never auto-transitioned; only ever set explicitly by the exchange
+  // server actions (startExchange/sendExchangeForApproval).
+  EXCHANGED
+  // Exchange workflow — the NEW exchange quote's own status, from creation
+  // until an Admin/Manager reviews it. A quote is only ever in this status
+  // while originalQuoteId is set.
+  PENDING_EXCHANGE_APPROVAL
+  // Exchange workflow — approved; about to be (or already) sent to the
+  // customer via the normal sendQuote() flow, which then carries it
+  // forward through the ordinary SENT..CHARGED progression like any other
+  // quote (see quote-status.ts's STATUS_RANK for why this is safe).
+  EXCHANGE_APPROVED
+  // Exchange workflow — rejected by an Admin/Manager. Terminal: the
+  // original quote simply returns to CHARGED (see cancelExchange/
+  // disapproveExchange), this status only ever applies to the exchange
+  // quote itself, preserved for audit/history.
+  EXCHANGE_DISAPPROVED
+  // Pass 26 — exchange proposal versioning. Set on an exchange proposal
+  // quote the moment a NEWER proposal replaces it (see
+  // Quote.isCurrentExchangeProposal/supersededByQuoteId), for any proposal
+  // still in a pre-signing state (PENDING_EXCHANGE_APPROVAL/
+  // EXCHANGE_APPROVED/SENT/READ/VIEWED — see
+  // lib/exchange-proposal.ts's REVISABLE_EXCHANGE_STATUSES, the one shared
+  // definition of "not yet acted on by the customer"). Terminal and
+  // preserved forever for audit (never deleted, exactly like
+  // EXCHANGE_DISAPPROVED) — distinct from EXCHANGE_DISAPPROVED, which means
+  // an Admin/Manager actively rejected it; SUPERSEDED means an agent
+  // proposed a revision before anyone reviewed/signed it. A quote in this
+  // status can never be approved, disapproved, signed, or itself revised
+  // again — see approveExchange/disapproveExchange/sendExchangeForApproval
+  // and submitBooking's own preconditions.
+  EXCHANGE_SUPERSEDED
+  // Cancellation workflow (see QuoteCancellationRequest) — applied to the
+  // quote itself (never a separate quote row, since cancellation proposes
+  // no new itinerary) once a cancellation request is sent for approval.
+  PENDING_CANCELLATION_APPROVAL
+  // Cancellation workflow — an Admin/Manager approved the request, but
+  // nothing has been sent to the customer yet. Approving does NOT mean the
+  // flight has already been cancelled — see CANCELLATION_FORM_SENT/
+  // CANCELLATION_SUBMITTED/CANCELLATION_CONFIRMED below for the remaining
+  // stages, mirroring how EXCHANGE_APPROVED is a distinct step before a
+  // human explicitly sends the exchange quote to the customer.
+  CANCELLATION_APPROVED
+  // Cancellation workflow — the customer-facing "this is scheduled to be
+  // cancelled, please confirm" email has been sent (sendCancellationForm).
+  // Still not actually cancelled.
+  CANCELLATION_FORM_SENT
+  // Cancellation workflow — the customer clicked "Confirm Cancellation" on
+  // the customer-facing page. Still not the final state — a Ticketing-area
+  // action (sendCancellationConfirmationEmail) must still confirm the
+  // segment(s) are actually cancelled before this becomes
+  // CANCELLATION_CONFIRMED.
+  CANCELLATION_SUBMITTED
+  // Cancellation workflow — the TRUE terminal state: the selected
+  // segment(s) have actually been cancelled and the customer has been sent
+  // the final cancellation confirmation email (see bookings.ts's
+  // sendCancellationConfirmationEmail). Deliberately distinct from the
+  // pre-existing plain CANCELED (a whole quote discarded with no financial
+  // history) — this specifically means "this charged quote had a
+  // confirmed segment-level cancellation applied to it," which still
+  // carries a real payment/booking history worth distinguishing in
+  // reporting/filters.
+  CANCELLATION_CONFIRMED
+}
+
+enum QuoteSource {
+  SABRE
+  APOLLO
+  MANUAL
+}
+
+model Quote {
+  id          String      @id @default(cuid())
+  quoteNumber String      @unique
+  secureToken String      @unique
+
+  leadId    String
+  lead      Lead    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contactId String
+  contact   Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  agentId   String?
+  agent     Account? @relation("QuoteAgent", fields: [agentId], references: [id])
+
+  // Who actually sent this quote to the customer, captured once in
+  // sendQuote() and never touched again afterward — deliberately separate
+  // from agentId, which reassignLead/reassignContact DO overwrite when
+  // ownership changes. The "Booking Form Signed" notification must reach
+  // whoever sent the flight option, not whoever currently owns the lead.
+  sentByAgentId String?
+  sentByAgent   Account? @relation("QuoteSentBy", fields: [sentByAgentId], references: [id])
+
+  status QuoteStatus @default(DRAFT)
+  source QuoteSource @default(MANUAL)
+
+  // Customer-facing currency the agent has selected for this quote (agent
+  // still enters/edits all prices below in USD internally — this only
+  // controls what the CUSTOMER sees). Editable freely while the quote is
+  // still a draft/unsent; `pricingSnapshot` below is what actually freezes.
+  currency     String   @default("USD")
+  // USD -> currency conversion rate, editable by the agent (no live FX feed
+  // — this is a manually-set/overridable rate, per spec). Null while
+  // currency is USD (rate is implicitly 1, nothing to convert).
+  exchangeRate Decimal? @db.Decimal(12, 6)
+  // Frozen customer-facing price breakdown captured at the moment the quote
+  // is sent (currency + exchangeRate + the converted adultPrice/childPrice/
+  // infantPrice/taxes/serviceFee/gratuity/total) — every customer-facing
+  // surface (quote email, View Deal, booking page, confirmation) reads from
+  // this snapshot, never recalculates on the fly, so the price a customer
+  // sees never drifts even if the agent edits the underlying USD pricing or
+  // exchange rate after sending. Null until first sent.
+  pricingSnapshot Json?
+
+  adults   Int @default(1)
+  children Int @default(0)
+  infants  Int @default(0)
+
+  adultPrice  Decimal @default(0) @db.Decimal(10, 2)
+  childPrice  Decimal @default(0) @db.Decimal(10, 2)
+  infantPrice Decimal @default(0) @db.Decimal(10, 2)
+  taxes       Decimal @default(0) @db.Decimal(10, 2)
+  serviceFee  Decimal @default(0) @db.Decimal(10, 2)
+  gratuity    Decimal @default(0) @db.Decimal(10, 2)
+  total       Decimal @default(0) @db.Decimal(10, 2)
+
+  termsAndConditions String?
+
+  // Agent/staff-only — never returned by any customer-facing query
+  // (getQuoteByToken uses an explicit field allow-list specifically so a
+  // new internal-only column here can never leak by accident).
+  internalNotes  String?
+  netTicketCost  Decimal? @db.Decimal(10, 2)
+
+  // ── Exchange workflow ────────────────────────────────────────────────
+  // The ORIGINAL quote this row was created from — set only on an
+  // exchange quote (created via startExchange()), permanently, never
+  // reassigned afterward. Null for every ordinary quote, and for the
+  // original itself (the relationship is one-directional: an original
+  // never points at its own exchanges — see exchangeQuotes below for the
+  // reverse lookup). This is what lets an exchange quote reuse the entire
+  // existing Quote/Itinerary/Booking machinery unchanged (its own real
+  // itinerary, its own eventual Booking once signed) rather than a
+  // parallel, duplicated data model.
+  originalQuoteId String?
+  originalQuote   Quote?  @relation("QuoteExchangeChain", fields: [originalQuoteId], references: [id])
+  exchangeQuotes  Quote[] @relation("QuoteExchangeChain")
+
+  // ── Exchange proposal versioning (Pass 26) ─────────────────────────────
+  // true on exactly one Quote per original-quote chain: the proposal
+  // currently awaiting review/approval/customer action. Deliberately never
+  // stored as `false` — cleared back to `null` once superseded, disapproved,
+  // or signed-and-final — so the composite unique index below, which per
+  // standard SQL NULL semantics only ever rejects two TRUE values sharing
+  // the same originalQuoteId (any number of NULLs are always allowed to
+  // coexist), gives a real database-enforced "at most one current proposal
+  // per original" guarantee — the actual concurrency-safety boundary a
+  // future concurrent "New Exchange Proposal" submission can never violate,
+  // not merely an application-level convention. Always null on an ordinary
+  // (non-exchange) quote.
+  isCurrentExchangeProposal Boolean?
+
+  // Set on the OLD proposal once a newer one replaces it (see
+  // EXCHANGE_SUPERSEDED above). @unique because a given quote can be the
+  // direct replacement for at most one predecessor — this is what makes the
+  // version chain an unbounded linked list (not hardcoded to two
+  // proposals), threaded independently of exchangeQuotes/originalQuoteId
+  // above (which every version in the chain still points at the SAME true
+  // original — never at the previous proposal — so "Original Itinerary"
+  // always means the pre-exchange itinerary, at every version).
+  supersededByQuoteId String? @unique
+  supersededByQuote   Quote?  @relation("QuoteSupersession", fields: [supersededByQuoteId], references: [id])
+  supersedesQuote     Quote?  @relation("QuoteSupersession")
+
+  // Only meaningful on an exchange quote (originalQuoteId set). Unlike
+  // internalNotes/pnr below, these ARE customer-facing — getQuoteByToken
+  // selects them so the customer sees a real "Exchange Fee + Fare
+  // Difference = Total Exchange Cost" breakdown rather than only the new
+  // itinerary's own standalone total under a generic "Total price" label.
+  exchangeFee    Decimal? @db.Decimal(10, 2)
+  fareDifference Decimal? @db.Decimal(10, 2)
+  // Pass 13 §22/§23/§24 — the STAFF-ONLY counterparts of the two fields
+  // above: the actual internal cost of the exchange, which may legitimately
+  // differ from what the customer is charged (exchangeFee/fareDifference).
+  // Deliberately separate columns, not a second interpretation of the same
+  // ones — getQuoteByToken (the customer-facing query) never selects
+  // these, by the same explicit-allow-list-select pattern that already
+  // keeps internalNotes/pnr/netTicketCost out of customer reach. The
+  // customer-facing total must always be derived from
+  // exchangeFee + fareDifference ONLY, never from these.
+  internalExchangeFee    Decimal? @db.Decimal(10, 2)
+  internalFareDifference Decimal? @db.Decimal(10, 2)
+  // "PNR Information" — internal-only, mirrors Booking.pnr's exact naming
+  // for the same concept at the quote/exchange-request stage (before any
+  // Booking exists for the exchange itinerary).
+  pnr            String?
+
+  // Who reviewed (approved/disapproved) this exchange quote, and when —
+  // only meaningful on an exchange quote. Admin/Manager only, enforced in
+  // the exchange-approval server actions, not by this column itself.
+  reviewedById String?
+  reviewedBy   Account?  @relation("QuoteReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+
+  cancellationRequests QuoteCancellationRequest[]
+
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  sentAt     DateTime?
+  readAt     DateTime?
+  viewedAt   DateTime?
+  signedAt   DateTime?
+  bookedAt   DateTime?
+  chargedAt  DateTime?
+  canceledAt DateTime?
+  // The quote's most recent MEANINGFUL activity (any status transition —
+  // sent, opened, viewed, signed, booked, canceled). Deliberately separate
+  // from `updatedAt`, which also bumps on unrelated edits like pricing or
+  // internal-notes changes and would make the CRM quote list's "most
+  // recently active" ordering noisy. Initialized at creation so it's never
+  // null and the list can sort on it directly.
+  lastActivityAt DateTime @default(now())
+
+  itinerary     Itinerary?
+  booking       Booking?
+  statusHistory QuoteStatusHistory[]
+  activities    Activity[]
+  emailLogs     EmailLog[]
+  notifications Notification[]
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([agentId])
+  @@index([sentByAgentId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([lastActivityAt])
+  @@index([originalQuoteId])
+  @@index([reviewedById])
+  // The actual DB-level enforcement of "at most one current exchange
+  // proposal per original quote" — see isCurrentExchangeProposal's own doc
+  // comment above for why a nullable-marker composite unique achieves a
+  // partial-unique-index effect without needing Prisma schema support for
+  // WHERE-clause indexes (which does not exist).
+  @@unique([originalQuoteId, isCurrentExchangeProposal])
+}
+
+enum CancellationRequestStatus {
+  PENDING
+  CONFIRMED
+  DISREGARDED
+}
+
+// Cancellation workflow — deliberately NOT modeled as a second Quote row
+// (unlike Exchange): a cancellation proposes no new itinerary, only flags
+// specific EXISTING segments of the original itinerary as being cancelled,
+// so there is nothing here that needs the full Quote/Itinerary machinery.
+// One Quote may accumulate more than one request over time (e.g. a
+// disregarded request followed by a later, different one) — every request
+// is preserved, never overwritten, for audit history (see PENDING ->
+// CONFIRMED/DISREGARDED below; a DISREGARDED request never blocks a later
+// new request against the same quote).
+model QuoteCancellationRequest {
+  id      String @id @default(cuid())
+  quoteId String
+  quote   Quote  @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  // FlightSegment ids proposed for cancellation — a subset (or all) of the
+  // original itinerary's segments, explicitly chosen by the agent. Never
+  // assumed to be "every segment" just because a cancellation was
+  // requested. References FlightSegment.id values but is deliberately a
+  // plain string array (not a join table) — this is a point-in-time
+  // record of which segments were selected, not a live relation that
+  // should change if the itinerary is edited later.
+  segmentIds String[]
+
+  cancellationFee Decimal? @db.Decimal(10, 2)
+  // Internal-only — never customer-facing, same isolation guarantee as
+  // Quote.internalNotes.
+  internalNotes   String?  @db.Text
+  // "PNR Information" — internal-only, mirrors Booking.pnr/Quote.pnr.
+  pnr             String?
+
+  status CancellationRequestStatus @default(PENDING)
+
+  createdById String?
+  createdBy   Account? @relation("CancellationRequestCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  reviewedById String?
+  reviewedBy   Account?  @relation("CancellationRequestReviewedBy", fields: [reviewedById], references: [id])
+  reviewedAt   DateTime?
+
+  @@index([quoteId])
+  @@index([status])
+  @@index([createdById])
+  @@index([reviewedById])
+}
+
+model QuoteStatusHistory {
+  id          String       @id @default(cuid())
+  quoteId     String
+  quote       Quote        @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  fromStatus  QuoteStatus?
+  toStatus    QuoteStatus
+  changedById String?
+  changedBy   Account?     @relation("QuoteStatusChanger", fields: [changedById], references: [id])
+  note        String?
+  changedAt   DateTime     @default(now())
+
+  @@index([quoteId])
+}
+
+model Itinerary {
+  id       String   @id @default(cuid())
+  quoteId  String   @unique
+  quote    Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  tripType TripType @default(ROUND_TRIP)
+  createdAt DateTime @default(now())
+
+  segments FlightSegment[]
+}
+
+model FlightSegment {
+  id          String    @id @default(cuid())
+  itineraryId String
+  itinerary   Itinerary @relation(fields: [itineraryId], references: [id], onDelete: Cascade)
+  sequence    Int
+
+  // How this segment connects to the PREVIOUS segment in the itinerary
+  // (null for the first segment, which has no predecessor). Controls
+  // whether the customer-facing itinerary renders the pair as one
+  // connected journey with a layover, or as separate multi-city legs.
+  connectionType SegmentConnectionType?
+
+  airlineId    Int?
+  airline      Airline? @relation(fields: [airlineId], references: [id])
+  airlineCodeRaw String?
+  flightNumber String
+
+  bookingClass String?
+  cabin        CabinClass @default(ECONOMY)
+
+  departureAirportId Int
+  departureAirport   Airport  @relation("SegmentDeparture", fields: [departureAirportId], references: [id])
+  arrivalAirportId   Int
+  arrivalAirport     Airport  @relation("SegmentArrival", fields: [arrivalAirportId], references: [id])
+
+  departureAt DateTime
+  arrivalAt   DateTime
+
+  aircraftTypeId Int?
+  aircraftType   AircraftType? @relation(fields: [aircraftTypeId], references: [id])
+  aircraftRaw    String?
+
+  // Free-text operating-carrier name for a codeshare segment (e.g. a GDS
+  // "OPERATED BY PAL EXPRESS" continuation line) — airlineId/airlineCodeRaw
+  // above always remain the MARKETING carrier; this is never resolved to
+  // an Airline record, just displayed as-is (no unverified logo guessing).
+  operatingCarrierName String?
+
+  durationMinutes Int?
+
+  // A "bonus" leg included at no extra charge — hidden from the initial
+  // customer quote email, shown (labeled) on the View Deal/booking pages,
+  // always visible/editable internally. Never deleted or auto-converted
+  // when the customer signs.
+  isExtraLeg Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  @@index([itineraryId])
+  @@index([departureAirportId])
+  @@index([arrivalAirportId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sequences
+// ─────────────────────────────────────────────────────────────────────────
+
+model Sequence {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  isActive    Boolean  @default(true)
+  createdById String?
+  createdBy   Account? @relation("SequenceCreator", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  steps       SequenceStep[]
+  enrollments SequenceEnrollment[]
+}
+
+model SequenceStep {
+  id           String   @id @default(cuid())
+  sequenceId   String
+  sequence     Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  order        Int
+  subject      String
+  body         String
+  delayMinutes Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  logs SequenceStepLog[]
+
+  @@index([sequenceId])
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  UNSUBSCRIBED
+  FAILED
+}
+
+model SequenceEnrollment {
+  id         String   @id @default(cuid())
+  sequenceId String
+  sequence   Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
+  leadId     String
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  status          EnrollmentStatus @default(ACTIVE)
+  currentStepIdx  Int              @default(0)
+  enrolledAt      DateTime         @default(now())
+  enrolledById    String?
+  enrolledBy      Account?         @relation("SequenceEnroller", fields: [enrolledById], references: [id])
+  nextSendAt      DateTime?
+  completedAt     DateTime?
+  // Part 4 — the email address(es) this enrollment's automated sends go
+  // to, explicitly chosen at enroll time when the lead's contact has more
+  // than one on file (comma-separated when "both" was chosen — the same
+  // shape sendEmail's own `to` already accepts elsewhere in this codebase,
+  // e.g. sendBookingProfitNotification). Null means "use whatever the
+  // contact's primary email is at send time" — the pre-existing behavior,
+  // still correct for a contact with only ever one email on file.
+  recipientEmail  String?
+
+  stepLogs SequenceStepLog[]
+
+  @@index([sequenceId])
+  @@index([leadId])
+  @@index([status])
+  @@index([nextSendAt])
+}
+
+enum StepLogStatus {
+  SENT
+  FAILED
+}
+
+model SequenceStepLog {
+  id           String              @id @default(cuid())
+  enrollmentId String
+  enrollment   SequenceEnrollment  @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  stepId       String
+  step         SequenceStep        @relation(fields: [stepId], references: [id], onDelete: Cascade)
+  status       StepLogStatus
+  sentAt       DateTime?
+  error        String?
+  createdAt    DateTime            @default(now())
+
+  @@index([enrollmentId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Bookings
+// ─────────────────────────────────────────────────────────────────────────
+
+enum BookingStatus {
+  PENDING_TICKETING
+  TICKETED
+  CONFIRMED
+  CANCELED
+}
+
+enum PassengerType {
+  ADULT
+  CHILD
+  INFANT
+}
+
+model Booking {
+  id      String @id @default(cuid())
+  quoteId String @unique
+  quote   Quote  @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  leadId  String
+  lead    Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  contactId String
+  contact Contact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  bookingReference String @unique
+
+  // Contact info confirmed at booking time
+  contactPhone String
+  contactEmail String
+
+  // Billing address
+  billingAddress String
+  billingApt     String?
+  billingCity    String
+  billingState   String
+  billingZip     String
+  billingCountry String
+
+  gratuityAmount Decimal @default(0) @db.Decimal(10, 2)
+  totalAmount    Decimal @default(0) @db.Decimal(10, 2)
+
+  termsAcceptedAt DateTime?
+  // Pass 24 — which version of the Cancellation Policy/Terms & Conditions
+  // text (src/lib/legal-content.ts's LEGAL_CONTENT_VERSION, e.g.
+  // "2026-09-05-v1") was actually shown to and accepted by this customer,
+  // set once at signing time in submitBooking() alongside
+  // termsAcceptedAt — never written or backfilled afterward. Additive and
+  // nullable: every booking created before this field existed keeps
+  // termsVersion = null, which is genuine, honest historical data (we
+  // truly don't know which wording an old booking saw) — NEVER fabricate
+  // a version for it. Bumping LEGAL_CONTENT_VERSION when the legal text
+  // changes never rewrites any already-stored value here.
+  termsVersion    String?
+
+  status BookingStatus @default(PENDING_TICKETING)
+
+  // Ticketing / agent-facing fields — all internal-only except
+  // airlineConfirmationNumber/ticketNumbers, which may be shown to the
+  // customer (see buildBookingConfirmationEmail). Displayed in the CRM as
+  // "Ticket Cost"/"Issuing Fee"/"PNR Information" — field names kept as-is
+  // to avoid an unnecessary rename migration; only the UI labels changed.
+  pnr                      String?  // "PNR Information" in the UI — internal notes, never customer-facing
+  // Pass 23 — legacy single-value fields, kept exactly as-is (never
+  // dropped, never migrated) for backward compatibility with any
+  // as-yet-unaudited reader. Real itineraries can carry multiple
+  // PNRs/airlines/e-tickets (codeshares, separate outbound/return,
+  // multiple tickets), so `airlineConfirmations` below is now the
+  // authoritative, structured source going forward; these two are
+  // mirrored from its first entry / flattened e-tickets on every save
+  // that sets airlineConfirmations, purely as a defensive fallback.
+  airlineConfirmationNumber String?
+  ticketNumbers            Json?
+  // Pass 23 — additive, nullable JSON array of
+  // { id, airlineIata, confirmationNumber, eTicketNumbers } entries, one
+  // per airline confirmation/PNR. Null on every booking created before
+  // this pass (and on any booking never re-saved since) — see
+  // resolveAirlineConfirmations() in src/lib/airline-confirmations.ts,
+  // the single shared helper that synthesizes a one-entry array from the
+  // legacy fields above when this is null, so no historical data needs a
+  // migration and no consumer needs a null-check of its own.
+  airlineConfirmations     Json?
+  // Pass 23 §21-23 — the atomic first-send claim for
+  // sendAirlineConfirmationEmail, same idiom as the claim fields already
+  // used elsewhere (Lead.queueDistributedAt, SequenceEnrollment.nextSendAt/
+  // Task.dueNotifiedAt): null until the very first successful claim, set
+  // exactly once via a conditional updateMany so two near-simultaneous
+  // first sends can't both win. Legitimate resends after that go through
+  // a distinct, explicit "resend" path that does not re-check this field —
+  // see sendAirlineConfirmationEmail in src/server/actions/bookings.ts.
+  airlineConfirmationFirstSentAt DateTime?
+  fareAmount               Decimal? @db.Decimal(10, 2) // "Ticket Cost" in the UI
+  taxAmount                Decimal? @db.Decimal(10, 2)
+  serviceFeeAmount         Decimal? @db.Decimal(10, 2) // "Issuing Fee" in the UI
+  profitAmount             Decimal? @db.Decimal(10, 2) // always server-computed — never client-editable
+  // Free-text internal notes about the booking/ticketing — never
+  // customer-facing, same isolation guarantee as pnr.
+  internalNotes            String?  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  passengers     Passenger[]
+  signature      Signature?
+  paymentMethods PaymentMethod[]
+  statusHistory  BookingStatusHistory[]
+  activities    Activity[]
+  emailLogs     EmailLog[]
+  ipCaptures     IpCapture[]
+
+  @@index([leadId])
+  @@index([contactId])
+  @@index([status])
+}
+
+model Passenger {
+  id        String        @id @default(cuid())
+  bookingId String
+  booking   Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  type      PassengerType @default(ADULT)
+
+  firstName  String
+  middleName String?
+  lastName   String
+  dateOfBirth DateTime?
+  gender      String?
+
+  tsaKnownTravelerNumber String?
+  globalEntryNumber      String?
+  frequentFlyerAirline   String?
+  frequentFlyerNumber    String?
+
+  createdAt DateTime @default(now())
+
+  @@index([bookingId])
+}
+
+model Signature {
+  id          String   @id @default(cuid())
+  bookingId   String   @unique
+  booking     Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  signedName  String
+  signedAt    DateTime @default(now())
+  ipAddress   String?
+  userAgent   String?
+}
+
+enum IpCaptureFormType {
+  NEW_BOOKING
+  EXCHANGE_BOOKING
+  CANCELLATION_CONFIRMATION
+}
+
+// Cross-booking, cross-event IP capture history ("IP vault") — distinct
+// from Signature.ipAddress above, which is a single, unencrypted,
+// per-booking convenience copy tied to the ORIGINAL booking-signing event
+// only (Signature.bookingId is @unique — it cannot represent more than one
+// signing event per booking, e.g. a later cancellation confirmation on the
+// same booking). This table is the actual permanent fraud-investigation
+// record: one row per signing event, of any form type, encrypted at rest
+// (see src/server/security/ip-encryption.ts), searchable by exact IP via
+// `ipHash` (a keyed HMAC blind index — never store or index the plaintext
+// IP itself) and by signerEmail, and never hard-deleted (softDeletedAt is
+// set instead, so a row survives even if its Booking is later deleted —
+// see bookingId's onDelete: SetNull below).
+model IpCapture {
+  id String @id @default(cuid())
+
+  // AES-256-GCM ciphertext blob (iv || authTag || ciphertext, base64) —
+  // see encryptIp()/decryptIp() in ip-encryption.ts. Never queried
+  // directly; only ever decrypted inside an already permission-checked,
+  // audited reveal/search action.
+  encryptedIp String
+  // Deterministic HMAC-SHA256(ip, IP_HASH_KEY) hex digest — a "blind
+  // index" that makes exact-match search possible (`WHERE ipHash = ?`)
+  // without ever storing or indexing the plaintext IP. Two rows with the
+  // same real IP always produce the same hash; the hash alone cannot be
+  // reversed back to the IP (unlike encryptedIp, which is the whole point
+  // of encrypting it) since HMAC is a one-way function.
+  ipHash String
+  // Deterministic HMAC-SHA256 blind index of just the network-prefix
+  // portion of the IP (first 3 octets for v4 / first 3 hextets for v6 —
+  // roughly a /24 or /48), computed by hashSubnetForSearch() in
+  // ip-encryption.ts. Same one-way-hash reasoning as ipHash, one level
+  // coarser — enables "how many distinct signers used the same subnet"
+  // fraud queries without ever decrypting a row or exposing the network
+  // prefix in queryable plaintext.
+  subnetHash String?
+  // "v4" | "v6" — cheap to query/report on without decrypting anything.
+  ipVersion String
+
+  formType IpCaptureFormType
+
+  // Simple, fully-transparent internal fraud signal — NOT a machine-
+  // learning score and NOT informed by any external IP-reputation API
+  // (none is integrated; see ip-risk.ts's own header comment for the
+  // exact, documented arithmetic). Computed once at capture time and
+  // cached here so sorting/filtering the vault by risk never has to
+  // recompute it live. 0-100, higher = more signals present.
+  riskScore Int @default(0)
+  // Manual analyst flag — distinct from riskScore (which is system-
+  // computed); a fraud investigator sets this explicitly after review.
+  // Also feeds back INTO future risk scoring (see ip-risk.ts) as one of
+  // the signals: "has this IP/subnet/email been flagged before".
+  suspicious Boolean @default(false)
+  // Free-text fraud-investigation notes — never encrypted (unlike the IP
+  // itself): this is analyst commentary, not the sensitive value the
+  // vault exists to protect.
+  notes String? @db.Text
+
+  // Nullable + SetNull (not Cascade) so this forensic record outlives the
+  // Booking it was captured against, per the explicit "retain for audit
+  // even if booking deleted" requirement — there is currently no booking-
+  // deletion feature in this app, but the FK is defined defensively rather
+  // than assuming that never changes.
+  bookingId String?
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+
+  // Captured verbatim (not encrypted) — matches the signer identity
+  // already visible elsewhere on the same booking (Passenger/Contact),
+  // not a newly-sensitive value on its own. Only the IP itself is
+  // encrypted, per the explicit "ipAddress (encrypted)" schema ask.
+  signerName  String?
+  signerEmail String?
+  userAgent   String?
+
+  capturedAt DateTime @default(now())
+
+  // Soft delete only — see the model doc comment above. Excluded from
+  // every search/history query by default; nothing in this app hard-
+  // deletes a row here.
+  softDeletedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookingId])
+  @@index([signerEmail])
+  @@index([capturedAt])
+  @@index([ipHash])
+  @@index([subnetHash])
+  @@index([suspicious])
+}
+
+enum PaymentMethodStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+// Business-workflow status for a single payment method within a (possibly
+// multi-card) booking — independent of PaymentMethodStatus above (which is
+// the card RECORD's own lifecycle, not its payment progress). Entering a
+// card never implies payment happened; only an authorized agent's manual
+// confirmation (confirmPaymentReceived) moves this to CONFIRMED/FAILED, and
+// AUTHORIZED/CANCELLED are set explicitly via updatePaymentMethodStatus for
+// the intermediate "CVV entered, supplier charge attempted" and "this
+// method was voided/removed post-submission" states — there is no payment
+// gateway in this architecture to infer these automatically.
+enum PaymentWorkflowStatus {
+  PENDING
+  AUTHORIZED
+  FAILED
+  CONFIRMED
+  CANCELLED
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⚠ DEV/DEMO-ONLY CARD STORAGE — NOT PCI DSS COMPLIANT AS-IS.
+//
+// This model stores an encrypted PAN directly in this application's own
+// database, decryptable by this application's own server code. That is a
+// materially different (and much larger) compliance posture than a
+// tokenizing processor like Stripe, which deliberately never lets the raw
+// PAN come back to the merchant at all. Storing/decrypting PAN here means:
+//   - Full PCI DSS scope (SAQ D / Level 1 territory), requiring a QSA
+//     assessment, quarterly ASV scans, annual penetration testing, and a
+//     completed compliance program — none of which exist for this project.
+//   - Real key management (HSM-backed KMS with envelope encryption, key
+//     rotation, dual control) — see src/server/security/card-encryption.ts,
+//     which uses a single AES-256-GCM key from an env var as a documented
+//     placeholder, NOT genuine KMS-grade key management.
+//   - A real authenticated-session system with MFA support for the
+//     "require recent authentication" step in the reveal workflow — this
+//     app's current auth is a dev-mode cookie switcher with no real
+//     login/session/MFA, so that check is currently a documented no-op
+//     (see assertRecentAuthentication in src/server/actions/payment-methods.ts).
+//
+// Do not connect this to real customer card data before replacing the
+// encryption layer with genuine KMS/HSM-backed key management (or, more
+// simply, swapping this entire model out for a dedicated PCI-compliant
+// tokenization/vault provider such as Basis Theory, VGS, or Skyflow, which
+// is the safer default for most businesses with this exact "collect once,
+// reveal for authorized manual use" requirement).
+//
+// This model deliberately has no card-verification-value field of any
+// name, and never will — PCI SSC prohibits retaining that value after
+// transaction authorization, encrypted or otherwise. See
+// src/server/security/cvv-authorization.ts and payment-method-card.tsx for
+// the ephemeral, never-persisted entry workflow used when a supplier
+// charge specifically requires that value.
+// ═══════════════════════════════════════════════════════════════════════
+model PaymentMethod {
+  id             String              @id @default(cuid())
+  // No longer @unique — a booking may split payment across multiple cards
+  // ("Payment Method 1", "Payment Method 2", …), each with its own
+  // amountAllocated. Display order follows createdAt.
+  //
+  // bookingId is nullable because a card can now also exist purely as
+  // "on file" for a Contact — added directly from the Contact page, never
+  // submitted through any specific booking form. A booking-submitted card
+  // still always has bookingId set (submitBooking() always populates it).
+  bookingId      String?
+  booking        Booking?            @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  // Always set for a booking-submitted card (derived server-side from the
+  // booking's own contact — see submitBooking()), and required for a
+  // Contact-page-added card (there is no other owner to attach it to).
+  contactId      String?
+  contact        Contact?            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  cardholderName String
+  // AES-256-GCM ciphertext (iv + authTag + ciphertext, base64-encoded) —
+  // see card-encryption.ts. The encryption key itself is never stored here
+  // or anywhere else in the database. Only ever selected/decrypted inside
+  // the dedicated revealPaymentMethod() server action — every other query
+  // touching PaymentMethod must omit this column. See this model's header
+  // comment above for what is intentionally absent from here.
+  encryptedPan   String
+  last4          String
+  cardBrand      String?
+  expiryMonth    Int
+  expiryYear     Int
+  // The portion of the booking total charged to this specific card — see
+  // §10 allocation rules enforced in submitBooking(): the sum across a
+  // booking's payment methods must equal the booking total (no partial-
+  // payment business rule exists in this app today). Null for a
+  // Contact-level card that isn't attached to any specific booking — there
+  // is no "total" for it to be a portion of.
+  amountAllocated Decimal?           @db.Decimal(10, 2)
+  status          PaymentMethodStatus @default(ACTIVE)
+  workflowStatus  PaymentWorkflowStatus @default(PENDING)
+  // Explicit customer consent to have their card securely stored for this
+  // booking's ticketing/supplier workflow.
+  consentGivenAt DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  charges PaymentCharge[]
+  cvvRecollectionRequests CvvRecollectionRequest[]
+
+  @@index([bookingId])
+  @@index([contactId])
+}
+
+// CVV recollection follow-up (delayed-charge compliant path) — asking the
+// CUSTOMER for their CVV again at actual charge time, instead of retaining
+// the one submitted at booking beyond its existing short authorization
+// window (see src/server/security/cvv-cache.ts's own header for why that
+// window is deliberately NOT extended). This model holds ONLY a public,
+// single-use, short-lived REQUEST — never the CVV value itself, which
+// still only ever exists transiently in cvv-cache.ts once submitted, same
+// as every other CVV in this codebase. No CVV column exists here or
+// anywhere else in this schema.
+model CvvRecollectionRequest {
+  id              String       @id @default(cuid())
+  paymentMethodId String
+  paymentMethod   PaymentMethod @relation(fields: [paymentMethodId], references: [id], onDelete: Cascade)
+  requestedById   String?
+  requestedBy     Account?     @relation("CvvRecollectionRequestedBy", fields: [requestedById], references: [id])
+  // Opaque, unguessable public link identifier — a DIFFERENT value from
+  // paymentMethodId (which is never treated as a secret elsewhere in this
+  // app), so a leaked/forwarded link can't be replayed once used or after
+  // expiry, and doesn't grant standing access to the underlying card.
+  token           String       @unique @default(cuid())
+  expiresAt       DateTime
+  usedAt          DateTime?
+  // Failed-attempt counter — the public submission endpoint locks the
+  // request (treats it as invalid) after a small fixed number of wrong
+  // CVV guesses, so a leaked link can't be used to brute-force a 3-4 digit
+  // CVV against the real card. See submitRecollectedCvv's own comment.
+  failedAttempts  Int          @default(0)
+  createdAt       DateTime     @default(now())
+
+  @@index([paymentMethodId])
+}
+
+enum PaymentChargeStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  CANCELED
+}
+
+// A record of a MANUAL payment confirmation — an authorized CRM user
+// (payments.charge permission) attesting that they personally processed
+// this booking's payment with the airline/supplier and recording the
+// outcome, not an automated gateway charge (there is no payment gateway in
+// this architecture; card data is only ever revealed for a human to key
+// into an external supplier system by hand — see the Reveal workflow).
+model PaymentCharge {
+  id              String              @id @default(cuid())
+  paymentMethodId String
+  paymentMethod   PaymentMethod       @relation(fields: [paymentMethodId], references: [id], onDelete: Cascade)
+  amount          Decimal             @db.Decimal(10, 2)
+  currency        String              @default("usd")
+  status          PaymentChargeStatus @default(PENDING)
+  // Agent's free-text note, e.g. a supplier/GDS confirmation reference —
+  // never card data; the same "no PAN/CVV in notes" rule applies here.
+  referenceNote   String?
+  errorMessage    String?
+  initiatedById   String?
+  initiatedBy     Account?            @relation("PaymentChargeInitiator", fields: [initiatedById], references: [id])
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([paymentMethodId])
+  @@index([status])
+}
+
+model BookingStatusHistory {
+  id          String        @id @default(cuid())
+  bookingId   String
+  booking     Booking       @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  fromStatus  BookingStatus?
+  toStatus    BookingStatus
+  changedById String?
+  changedBy   Account?      @relation("BookingStatusChanger", fields: [changedById], references: [id])
+  note        String?
+  changedAt   DateTime      @default(now())
+
+  @@index([bookingId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Email log + Audit log
+// ─────────────────────────────────────────────────────────────────────────
+
+enum EmailType {
+  QUOTE
+  SEQUENCE
+  BOOKING_NOTIFICATION
+  BOOKING_CONFIRMATION
+  LEAD_REASSIGNMENT
+  BOOKING_PROFIT_NOTIFICATION
+  MARKETING_CAMPAIGN
+  // Part 2 — a one-off, agent-authored email sent to a lead's contact from
+  // the Leads page's Email button, distinct from every other EmailType
+  // (all of which are system-generated from a fixed template).
+  LEAD_EMAIL
+  // Part 16 — the internal "Notify Team of Cancellation" announcement, kept
+  // as its own EmailType (rather than reusing BOOKING_PROFIT_NOTIFICATION)
+  // specifically so its own send-idempotency check never collides with an
+  // earlier "Notify Team of New Sale" notification already sent for the
+  // same booking — a booking can legitimately receive one of each over its
+  // lifetime (confirmed, then later cancelled), and they must be trackable
+  // as two independent events, not one.
+  BOOKING_CANCELLATION_NOTIFICATION
+  // Item 9 — a one-off, admin-authored email sent to a Get in Touch
+  // inquiry's own email address from the inquiry detail page's internal
+  // composer, mirroring LEAD_EMAIL's exact same "distinct from every
+  // system-generated template" reasoning.
+  INQUIRY_EMAIL
+  // Pass 6 — the Contact detail page's own Email button/composer, sent via
+  // the same sendCrmEmail core LEAD_EMAIL already uses (see
+  // src/server/email/crm-email.ts) but logged under its own type so a
+  // Contact-originated email is distinguishable from one sent through a
+  // specific Lead, the same way LEAD_EMAIL and INQUIRY_EMAIL already are.
+  CONTACT_EMAIL
+}
+
+enum EmailStatus {
+  SENT
+  FAILED
+}
+
+// Pass 23 §32/§33 — migration 20260904000200 adds a PARTIAL unique index
+// (not expressible declaratively via @@unique) on EmailLog(bookingId,
+// type) WHERE status = 'SENT' AND type IN ('BOOKING_PROFIT_NOTIFICATION',
+// 'BOOKING_CANCELLATION_NOTIFICATION') — the atomic claim
+// sendBookingProfitNotification (src/server/booking-notification.ts) uses
+// to guarantee at most one SENT row per booking for those two one-time
+// internal notifications. Deliberately excludes BOOKING_CONFIRMATION,
+// which intentionally allows multiple SENT rows per booking (legitimate
+// customer-facing resends via sendAirlineConfirmationEmail).
+model EmailLog {
+  id        String      @id @default(cuid())
+  type      EmailType
+  subject   String
+  fromEmail String
+  toEmail   String
+  status    EmailStatus
+  errorMessage String?
+  // The explicit Message-ID this app generated for the send (see
+  // sendEmail() in server/email/service.ts) — kept for delivery audit and
+  // to confirm each outbound email is its own distinct message, never a
+  // reply to a prior one.
+  messageId String?
+
+  leadId    String?
+  lead      Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  quoteId   String?
+  quote     Quote?   @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  bookingId String?
+  booking   Booking? @relation(fields: [bookingId], references: [id], onDelete: SetNull)
+  contactId String?
+  contact   Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  contactInquiryId String?
+  contactInquiry   ContactInquiry? @relation(fields: [contactInquiryId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([leadId])
+  @@index([quoteId])
+  @@index([bookingId])
+  @@index([contactId])
+  @@index([contactInquiryId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      Account? @relation("AuditActor", fields: [actorId], references: [id])
+  action     String
+  entityType String
+  entityId   String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+// Pass 28 — a genuinely atomic fixed-window counter for public-endpoint
+// rate limiting (src/server/security/rate-limit.ts), replacing the
+// previous AuditLog-backed "count rows, then create one" approach, which
+// was a real (if narrow) check-then-act race: under a truly simultaneous
+// burst from the same IP, multiple concurrent requests could each pass the
+// count check before any of their own claim rows committed, letting
+// slightly more than `maxAttempts` through right at the threshold. `key`
+// (ip|endpoint|windowBucket) is globally unique, so the increment below is
+// a single atomic `INSERT ... ON CONFLICT (key) DO UPDATE SET count =
+// count + 1` — Postgres takes a real row lock on the conflicting key, so
+// N concurrent increments to the SAME key serialize correctly and each
+// caller gets back a strictly-accurate post-increment count, with no
+// window where two callers can both believe they're the Nth attempt.
+// Fixed-window (not sliding) is the deliberate trade-off that makes a
+// single-statement atomic upsert possible at all — its one well-known,
+// openly-documented characteristic is that a full new quota becomes
+// available right at each window boundary, unlike a continuously-sliding
+// window. Rows are cheap to prune (querying only ever needs the CURRENT
+// window's key) — see rate-limit.ts's own cleanup comment.
+model RateLimitCounter {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  count     Int      @default(1)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Company — the tenant boundary. Compass Tools (the product) hosts many
+// travel agencies (companies); every Account belongs to exactly one. This
+// replaces the old single-row CompanySettings — instead of one hardcoded
+// global branding config, each Company has its own name/logo/website/
+// signature, and Account.companyId is the sole new schema surface needed
+// for isolation: Contact/Lead/Quote/Booking are NOT given their own
+// companyId column — they're scoped transitively through their owning
+// Account (Contact.ownerId, falling back through Lead/Quote/Booking's own
+// Contact relation for the nullable-agent cases) inside
+// src/server/visibility.ts, which was already the single choke point for
+// role-based row visibility. See that file for the enforcement.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum LogoProcessingStatus {
+  NONE
+  PROCESSING
+  PROCESSED
+  FAILED
+}
+
+model Company {
+  id   String @id @default(cuid())
+  name String
+
+  website String?
+  phone   String?
+
+  // Brand accent color used for email/CTA styling — defaults applied in
+  // application code when null, not baked into the schema as a default
+  // string (keeps this table free of presentation-layer opinions).
+  brandColor String?
+
+  // Original upload, kept verbatim so a failed/undesired processing pass
+  // never destroys the source. The three processed variants are each
+  // optimized for their destination (see src/lib/logo-processing.ts) —
+  // null until a successful processing pass has produced them, in which
+  // case application code falls back to the static default logo.
+  logoOriginalUrl String?
+  logoEmailUrl    String?
+  logoWebUrl      String?
+  logoIconUrl     String?
+  // The same processed "email" variant as logoEmailUrl, stored as raw bytes
+  // rather than a file path — emails are opened by external mail clients
+  // with no access to this app's own filesystem/origin (unlike logoWebUrl/
+  // logoIconUrl, which only ever render inside an authenticated same-origin
+  // CRM tab), so email templates embed this directly as a data: URI instead
+  // of linking to a URL. See src/server/queries/company.ts's resolveBranding.
+  logoEmailData   Bytes?
+  logoProcessingStatus LogoProcessingStatus @default(NONE)
+  logoProcessingError  String?
+
+  // Raw text with {{first_name}}/{{last_name}}/{{phone_number}} tokens,
+  // resolved at send time against the actual sending Account — never
+  // baked into a per-user copy. See src/lib/email-signature.ts.
+  signatureTemplate String @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts Account[]
+  contacts Contact[]
+
+  contactInquiries  ContactInquiry[]
+  subscribers       Subscriber[]
+  marketingCampaigns MarketingCampaign[]
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Get in Touch — public-website inquiry inbox (admin-only in the CRM)
+// ─────────────────────────────────────────────────────────────────────────
+
+enum InquirySubject {
+  GENERAL_INQUIRY
+  FLIGHT_REQUEST_HELP
+  EXISTING_BOOKING
+  CORPORATE_TRAVEL
+  OTHER
+}
+
+enum InquiryStatus {
+  NEW
+  IN_PROGRESS
+  REPLIED
+  RESOLVED
+  CLOSED
+}
+
+model ContactInquiry {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  firstName String
+  lastName  String
+  email     String
+  phone     String?
+  subject   InquirySubject
+  message   String         @db.Text
+
+  status         InquiryStatus @default(NEW)
+  assignedAdminId String?
+  assignedAdmin   Account?     @relation("InquiryAssignedAdmin", fields: [assignedAdminId], references: [id])
+  readAt         DateTime?
+
+  // Set when the submitted email/phone matches an existing Contact — never
+  // auto-overwrites the matched contact's own data, purely informational so
+  // the admin sees "this inquiry is from a known contact" (see
+  // src/server/actions/contact-inquiries.ts).
+  matchedContactId String?
+  matchedContact   Contact? @relation(fields: [matchedContactId], references: [id])
+
+  notes InquiryNote[]
+  notifications Notification[]
+  // Item 9 — every email sent from the internal composer on this inquiry's
+  // detail page, so a send is actually traceable back to the inquiry it
+  // came from (mirrors EmailLog's existing leadId/quoteId/bookingId/
+  // contactId traceability convention).
+  emailLogs EmailLog[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+  @@index([status])
+  @@index([matchedContactId])
+}
+
+model InquiryNote {
+  id        String         @id @default(cuid())
+  inquiryId String
+  inquiry   ContactInquiry @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  authorId  String?
+  author    Account?       @relation("InquiryNoteAuthor", fields: [authorId], references: [id])
+  body      String
+  createdAt DateTime       @default(now())
+
+  @@index([inquiryId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Subscriptions / Marketing Campaigns — separate from CRM Sequences,
+// admin-/marketing-agent-only. Uses the existing per-account Gmail sending
+// path (src/server/email/service.ts) — no bulk-ESP integration exists in
+// this app; documented as a known sending-volume limitation.
+// ─────────────────────────────────────────────────────────────────────────
+
+enum SubscriberStatus {
+  SUBSCRIBED
+  UNSUBSCRIBED
+}
+
+model Subscriber {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  email           String
+  status          SubscriberStatus @default(SUBSCRIBED)
+  source          String?
+  subscribedAt    DateTime         @default(now())
+  unsubscribedAt  DateTime?
+  // Opaque token embedded in the one-click unsubscribe link — never the
+  // subscriber's own id/email, so the link can't be used to probe/enumerate.
+  unsubscribeToken String          @unique @default(cuid())
+
+  sends MarketingCampaignSend[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([companyId, email])
+  @@index([companyId])
+  @@index([status])
+}
+
+enum CampaignStatus {
+  DRAFT
+  SENDING
+  SENT
+}
+
+model MarketingCampaign {
+  id        String  @id @default(cuid())
+  companyId String
+  company   Company @relation(fields: [companyId], references: [id])
+
+  name        String
+  subject     String
+  htmlContent String  @db.Text
+  status      CampaignStatus @default(DRAFT)
+
+  createdById String?
+  createdBy   Account? @relation("MarketingCampaignCreatedBy", fields: [createdById], references: [id])
+
+  sentAt         DateTime?
+  recipientCount Int       @default(0)
+
+  sends MarketingCampaignSend[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([companyId])
+}
+
+enum MarketingSendStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED_UNSUBSCRIBED
+}
+
+model MarketingCampaignSend {
+  id           String            @id @default(cuid())
+  campaignId   String
+  campaign     MarketingCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  subscriberId String
+  subscriber   Subscriber        @relation(fields: [subscriberId], references: [id], onDelete: Cascade)
+
+  status       MarketingSendStatus @default(PENDING)
+  sentAt       DateTime?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+
+  // Pass 16 §7 — required for the batched/resumable send architecture:
+  // sendMarketingCampaign is now safely re-invokable (a "Continue Sending"
+  // click, or the same click retried) to process the next batch of a large
+  // campaign rather than the old single-request, hard-capped-at-400 send.
+  //
+  // Pass 22 correction: this constraint alone does NOT make concurrent
+  // sends safe — an earlier version of this comment claimed it did, but
+  // sendMarketingCampaign originally recorded each send via `upsert`
+  // (create-or-update, never fails on a conflict) AFTER calling sendEmail,
+  // so two overlapping invocations could both pass the "still needs
+  // sending" read and both actually email the same subscriber before
+  // either upsert landed — the row ending up correct afterward doesn't
+  // undo an email already sent twice. The constraint is what makes the fix
+  // possible (sendMarketingCampaign now claims each subscriber via a
+  // `create` BEFORE sending, using the P2002 conflict this constraint
+  // produces as the actual concurrency gate), not something that provided
+  // safety on its own.
+  @@unique([campaignId, subscriberId])
+  @@index([campaignId])
+  @@index([subscriberId])
+}

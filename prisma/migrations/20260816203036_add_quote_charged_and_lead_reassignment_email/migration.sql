@@ -1,0 +1,5 @@
+-- AlterEnum
+ALTER TYPE "EmailType" ADD VALUE 'LEAD_REASSIGNMENT';
+
+-- AlterEnum
+ALTER TYPE "QuoteStatus" ADD VALUE 'CHARGED';

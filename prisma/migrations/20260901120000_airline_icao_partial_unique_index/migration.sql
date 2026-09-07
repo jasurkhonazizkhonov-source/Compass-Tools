@@ -1,0 +1,26 @@
+-- Additive only.
+--
+-- Closes a genuine, if narrow, concurrency gap in the self-healing
+-- reference-data mechanism (src/server/queries/reference-data.ts's
+-- ensureReferenceDataSeeded / seedAirlinesFromBundle, and prisma/seed.ts's
+-- identical seedAirlines()): Airline.iata is @unique, but Airline.icao has
+-- no uniqueness constraint at all, so createMany({ skipDuplicates: true })
+-- never caught a re-insert of an IATA-less, ICAO-only airline (roughly
+-- 4,600 of the ~5,700 bundled airlines have this shape) — Postgres treats
+-- every NULL iata as distinct from every other NULL, so the unique index
+-- on iata alone does nothing for these rows. The application worked
+-- around this with a findMany-then-filter pre-check before inserting,
+-- which is safe within a single Node process (the module-level
+-- seedPromise memoization already prevents a second concurrent call in
+-- the same process) but is NOT atomic across multiple server processes
+-- that could both see "not yet inserted" for the same icao at the same
+-- moment against a brand-new, unseeded database.
+--
+-- A partial unique index — unique on icao, but only among rows where iata
+-- IS NULL — lets Postgres's own ON CONFLICT DO NOTHING (what
+-- skipDuplicates compiles to) handle this case atomically, the same way
+-- the plain unique index on iata already does for every other airline
+-- row, closing the race at the database level instead of working around
+-- it in application code. The app-level pre-check is removed in the same
+-- change that introduces this migration.
+CREATE UNIQUE INDEX "Airline_icao_key_when_iata_null" ON "Airline" ("icao") WHERE "iata" IS NULL;
