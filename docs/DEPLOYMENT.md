@@ -29,7 +29,7 @@ Project → Settings → Environment Variables) for a real deployment:
 | Variable | Required | Notes |
 |---|---|---|
 | `DATABASE_URL` | Yes | This deployment's own database. Never shared with another company's deployment. |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Yes | Can be the **same** Google Cloud OAuth app shared across every company's deployment — just add this deployment's own `https://<this-deployment's-domain>/api/auth/gmail/callback` to that OAuth app's Authorized Redirect URIs in Google Cloud Console (Google Sign-In itself needs no redirect URI registered — only the separate "Connect Gmail" authorization-code flow does; see `src/server/auth/gmail-oauth-config.ts`). A separate Google Cloud project per company is not required. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Yes | Can be the **same** Google Cloud OAuth app shared across every company's deployment. **Both** of the following must be configured on that OAuth client for THIS deployment's domain — see §2a below for the exact steps; missing either one produces a real, previously-seen production failure. A separate Google Cloud project per company is not required. |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. Never reuse across companies. |
 | `APP_BASE_URL` | Recommended | This deployment's public URL. On Vercel this can usually be left unset and falls back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL` automatically. |
 | `CARD_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. See `src/server/security/card-encryption.ts`'s file comment before handling real cardholder data. |
@@ -38,6 +38,69 @@ Project → Settings → Environment Variables) for a real deployment:
 | `CRON_SECRET` | Recommended in production | See §5a below. |
 | `APP_ENV` | Optional | Escape hatch for a deployment that runs a production-mode build (`NODE_ENV=production`, set automatically by `next build`/`next start`) but should still be treated as non-production by security-sensitive guards (card-vault selection, privileged step-up auth) — e.g. a staging environment. Falls back to `NODE_ENV` when unset, so a real production deploy is caught automatically either way. See `src/lib/env.ts`. |
 | `BOOKING_IP_RETENTION_DAYS` | Deprecated — do not set | Pass 33: booking submission IP data is retained indefinitely by design; this variable is no longer read anywhere. Setting it does nothing. See `docs/ip-vault-compliance.md`. |
+
+## 2a. Configure the Google OAuth client for THIS deployment's domain
+
+This app uses **one Google OAuth client** (the `GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET` pair above) for **two separate flows** that each
+need a **different** piece of configuration on that same client. Missing
+either one produces a real production failure — Pass 36 traced a live
+"Access blocked: Authorization Error … no registered origin … Error 401:
+invalid_client" report to exactly this gap.
+
+1. **Google Sign-In** (`src/components/layout/google-sign-in-button.tsx`,
+   Google Identity Services — `accounts.google.com/gsi/client`, entirely
+   client-side, no redirect at all). Google's script checks the **exact
+   origin the browser's address bar is showing** (scheme + host + port,
+   nothing else) against the client's **Authorized JavaScript origins**.
+   If this deployment's real production origin isn't in that list, Google
+   shows the user its own "no registered origin" / "Error 401:
+   invalid_client" error — this app never even sees the failure, since it
+   happens entirely inside Google's script before any request reaches this
+   server.
+2. **"Connect Gmail"** (`src/server/auth/gmail-oauth-config.ts`, a real
+   server-side authorization-code redirect flow). Google checks the exact
+   `redirect_uri` this app sends against the client's **Authorized redirect
+   URIs**.
+
+In Google Cloud Console, for the correct **Web application** OAuth client
+(**Google Cloud Console → APIs & Services → Credentials**, or the newer
+**Google Auth Platform → Clients**):
+
+| Setting | Exact value for this deployment |
+|---|---|
+| Authorized JavaScript origins | `https://<this-deployment's-domain>` — **origin only**, no path, no trailing slash (e.g. `https://crm.example.com`, never `https://crm.example.com/login`) |
+| Authorized redirect URIs | `https://<this-deployment's-domain>/api/auth/gmail/callback` — the exact path `getGmailRedirectUri()` builds (`src/server/auth/gmail-oauth-config.ts`) |
+| Authorized domains (OAuth consent screen) | `<this-deployment's-domain>`, without a scheme |
+
+For **local development**, add a second pair of entries on the same
+client rather than replacing the production ones: JavaScript origin
+`http://localhost:3000` (or whatever port `npm run dev` actually uses) and
+redirect URI `http://localhost:3000/api/auth/gmail/callback`. Never let
+`APP_BASE_URL` (or the absence of it) point production traffic at
+`localhost` — `resolveBaseUrl()` warns loudly in production logs if that
+happens (see `src/lib/company-config.ts`).
+
+**Two common, easy-to-make mistakes that produce exactly this class of
+error**, both now defended against in code (Pass 36) but worth knowing
+about when configuring Google Cloud Console by hand:
+- A trailing slash on `APP_BASE_URL` (e.g. `https://crm.example.com/`)
+  used to produce a double-slash redirect_uri that would never match what's
+  registered — `resolveBaseUrl()` now strips it automatically.
+- A stray leading/trailing space or newline on `GOOGLE_CLIENT_ID`/
+  `GOOGLE_CLIENT_SECRET` (easy to introduce pasting into Vercel's
+  environment-variable UI) — `getGoogleClientId()`/`getGoogleClientSecret()`
+  now trim the value automatically, but the value registered in Google
+  Cloud Console itself must still be entered correctly.
+
+If Google still rejects sign-in after the above is configured correctly,
+also double-check: the OAuth client hasn't been deleted or disabled, it's
+the **Web application** type (not "Desktop app" or "Other" — those have no
+JavaScript-origins field at all), and `GOOGLE_CLIENT_ID`/
+`GOOGLE_CLIENT_SECRET` in this deployment's actual environment (Vercel
+Project → Settings → Environment Variables) belong to that same client —
+not a leftover value from a different Google Cloud project or an old
+deployment.
 
 ## 3. Run database migrations
 

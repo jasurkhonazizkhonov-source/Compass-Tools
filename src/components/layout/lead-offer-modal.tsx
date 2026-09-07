@@ -25,7 +25,19 @@ type Offer = {
 // the old LeadQueueToggle position) — no new realtime architecture. Every
 // poll doubles as the opportunistic expiry sweep (see getMyLeadOffer's doc
 // comment — there's no reliable cron for this in the current deployment).
+// Only mounted for queue-eligible roles at all (see topbar.tsx's
+// LEAD_QUEUE_HIDDEN_ROLES) — Ticketing Agent/Flight Expert/Marketing Agent
+// never render this component, so they never poll in the first place.
 const POLL_INTERVAL_MS = 3_000;
+// Pass 36 — a background/hidden browser tab has no user watching for a
+// live offer to respond to, so there's no reason to keep polling at the
+// same rate a foreground tab needs for a snappy 60-second countdown.
+// Slowed rather than stopped entirely (still self-heals/sweeps eventually
+// even if a hidden tab is the only thing running), and a `visibilitychange`
+// listener below polls immediately the moment the tab becomes visible
+// again — so an offer that arrived while backgrounded is never stale for
+// longer than the time it takes the user to actually look at the tab.
+const HIDDEN_TAB_POLL_INTERVAL_MS = 15_000;
 
 function secondsLeft(expiresAt: string): number {
   return Math.max(0, Math.round((new Date(expiresAt).getTime() - Date.now()) / 1000));
@@ -86,11 +98,31 @@ export function LeadOfferModal({ accountId }: { accountId: string | undefined })
         // Transient — next interval tick retries.
       }
     }
+
+    // Re-armed on every visibility change rather than left running at a
+    // fixed rate: foreground gets the responsive 3s cadence a live 60s
+    // countdown needs, a hidden tab drops to a slow background heartbeat.
+    let interval: ReturnType<typeof setInterval>;
+    function armInterval() {
+      clearInterval(interval);
+      const ms = document.visibilityState === "hidden" ? HIDDEN_TAB_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
+      interval = setInterval(poll, ms);
+    }
+    function handleVisibilityChange() {
+      // Poll immediately on becoming visible again — the countdown/offer
+      // shown must never wait out a stale up-to-15s-old hidden-tab poll
+      // before re-syncing with the server's authoritative state.
+      if (document.visibilityState === "visible") poll();
+      armInterval();
+    }
+
     poll();
-    const interval = setInterval(poll, POLL_INTERVAL_MS);
+    armInterval();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       cancelled = true;
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [accountId]);
 

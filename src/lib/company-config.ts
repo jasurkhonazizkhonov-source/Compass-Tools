@@ -53,7 +53,17 @@ export type ResolvedCompanyBranding = {
 // with http:// in a misconfigured environment: a duplicated, less-complete
 // fallback that skipped the Vercel-aware branches below.
 export function resolveBaseUrl(): string {
-  if (process.env.APP_BASE_URL) return process.env.APP_BASE_URL;
+  // Pass 36 — strips a trailing slash: every caller (getGmailRedirectUri(),
+  // absoluteUrl(), and any future one) appends its own leading-slash path
+  // directly onto this return value, so an operator setting
+  // APP_BASE_URL="https://example.com/" (a common, easy copy-paste mistake)
+  // previously produced a double-slash URL like
+  // "https://example.com//api/auth/gmail/callback" — which does not match
+  // the single-slash redirect URI actually registered in Google Cloud
+  // Console, failing the "Connect Gmail" flow with a confusing
+  // redirect_uri_mismatch for a purely cosmetic env-var typo. A bare
+  // APP_BASE_URL="https://example.com" is unaffected either way.
+  if (process.env.APP_BASE_URL) return process.env.APP_BASE_URL.trim().replace(/\/+$/, "");
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   if (process.env.NODE_ENV === "production") {

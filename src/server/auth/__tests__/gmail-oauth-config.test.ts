@@ -45,4 +45,23 @@ describe("getGmailRedirectUri", () => {
     const { getGmailRedirectUri } = await import("../gmail-oauth-config");
     expect(getGmailRedirectUri()).toBe("http://localhost:3000/api/auth/gmail/callback");
   });
+
+  // Pass 36 — real bug found and fixed: APP_BASE_URL="https://example.com/"
+  // (trailing slash — an easy copy-paste mistake into Vercel's env-var UI)
+  // previously produced a double-slash redirect_uri
+  // ("https://example.com//api/auth/gmail/callback") that would never match
+  // the single-slash URI actually registered in Google Cloud Console,
+  // failing "Connect Gmail" with redirect_uri_mismatch for a purely
+  // cosmetic env-var typo.
+  it("strips a trailing slash from APP_BASE_URL before building the redirect_uri", async () => {
+    process.env.APP_BASE_URL = "https://crm.example.com/";
+    const { getGmailRedirectUri } = await import("../gmail-oauth-config");
+    expect(getGmailRedirectUri()).toBe("https://crm.example.com/api/auth/gmail/callback");
+  });
+
+  it("strips multiple trailing slashes from APP_BASE_URL", async () => {
+    process.env.APP_BASE_URL = "https://crm.example.com///";
+    const { getGmailRedirectUri } = await import("../gmail-oauth-config");
+    expect(getGmailRedirectUri()).toBe("https://crm.example.com/api/auth/gmail/callback");
+  });
 });

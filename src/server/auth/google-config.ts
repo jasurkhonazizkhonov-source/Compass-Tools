@@ -6,7 +6,16 @@
 // so replacing these credentials later means editing .env only.
 
 function requireEnv(name: string): string {
-  const value = process.env[name];
+  // Pass 36 — trims the value: a value pasted into Vercel's environment-
+  // variable UI (or a shell-exported .env) can silently pick up a leading/
+  // trailing newline or space, which google-auth-library and Google's own
+  // Identity Services script treat as part of the client id/secret rather
+  // than stripping themselves — producing exactly the class of confusing
+  // "Error 401: invalid_client" this app has no way to see server-side
+  // (Google's own error page renders in the browser, not this app's logs).
+  // Trimming here removes one whole class of that failure without weakening
+  // anything: a genuinely correct value is unaffected either way.
+  const value = process.env[name]?.trim();
   if (!value) {
     throw new Error(`${name} is not configured — set it in .env`);
   }
