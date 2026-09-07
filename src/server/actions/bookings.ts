@@ -79,11 +79,16 @@ const ticketingSchema = z.object({
   airlineConfirmationNumber: z.string().optional(),
   ticketNumbers: z.array(z.string()).optional(),
   status: z.enum(["PENDING_TICKETING", "TICKETED", "CONFIRMED", "CANCELED"]).optional(),
-  // "Ticket Cost" in the UI.
-  fareAmount: z.number().optional(),
-  taxAmount: z.number().optional(),
+  // "Ticket Cost" in the UI. Pass 34 — real gap found and fixed: unlike
+  // exchangeSchema's/requestCancellationSchema's equivalent money fields,
+  // these had no `.min(0)`, so a negative Ticket Cost/Tax/Issuing Fee could
+  // be submitted and would silently inflate the computed profitAmount (a
+  // negative cost reads as extra profit). Matches the same non-negative
+  // convention already enforced everywhere else money is entered.
+  fareAmount: z.number().min(0).optional(),
+  taxAmount: z.number().min(0).optional(),
   // "Issuing Fee" in the UI.
-  serviceFeeAmount: z.number().optional(),
+  serviceFeeAmount: z.number().min(0).optional(),
   // Internal-only free text — never customer-facing.
   bookingNotes: z.string().optional(),
   // profitAmount is never trusted from the client — it's always computed

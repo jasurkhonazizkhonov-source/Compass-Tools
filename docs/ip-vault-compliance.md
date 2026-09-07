@@ -7,10 +7,10 @@ reviewer for each deployed company can make the actual policy decisions.
 the system, written so someone qualified to answer "is this lawful for us,
 here, given our jurisdiction and customers" has what they need to answer
 that, not an attempt to answer it here. Same stance the code itself
-already takes (see `ipRetentionDays()`'s own comment in
-`src/server/actions/booking-security.ts`): retention/lawful-basis is a
-business/legal decision this codebase deliberately does not make on its
-own.
+already takes (see `revealBookingIp()`'s own doc comment in
+`src/server/actions/booking-security.ts`, which explains the indefinite-
+retention design): retention/lawful-basis is a business/legal decision
+this codebase deliberately does not make on its own.
 
 ## What is captured, and when
 

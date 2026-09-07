@@ -1,6 +1,8 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getCurrentAccount } from "@/lib/dev-session";
+import { contactVisibilityWhere, leadVisibilityWhere, quoteVisibilityWhere, bookingVisibilityWhere } from "@/server/visibility";
 
 export type GlobalSearchResult = {
   contacts: Array<{ id: string; label: string; sublabel: string }>;
@@ -15,25 +17,49 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
     return { contacts: [], leads: [], quotes: [], bookings: [] };
   }
 
+  // Pass 34 — real bug found and fixed: this action (a "use server" file
+  // callable directly by any authenticated client, same threat model
+  // activity.ts's own doc comment describes) previously ran all four
+  // searches with NO visibility scoping whatsoever — no company filter, no
+  // ownerId/assignedAgentId restriction for roles that are normally
+  // limited to their own records elsewhere in this app. A restricted
+  // Travel Agent could search for, and see the name/email/phone/route/
+  // reference of, any Contact/Lead/Quote/Booking company-wide (or, in a
+  // database holding more than one Company, cross-company). Every other
+  // list/detail query in this codebase merges one of visibility.ts's
+  // `*VisibilityWhere` helpers into its own query — this now does the
+  // same, `AND`-ed alongside the existing text-search OR clause.
+  const actor = await getCurrentAccount();
+
   const [contacts, leads, quotes, bookings] = await Promise.all([
     prisma.contact.findMany({
       where: {
-        OR: [
-          { firstName: { contains: query, mode: "insensitive" } },
-          { lastName: { contains: query, mode: "insensitive" } },
-          { primaryEmail: { contains: query, mode: "insensitive" } },
-          { primaryPhone: { contains: query, mode: "insensitive" } },
+        AND: [
+          contactVisibilityWhere(actor),
+          {
+            OR: [
+              { firstName: { contains: query, mode: "insensitive" } },
+              { lastName: { contains: query, mode: "insensitive" } },
+              { primaryEmail: { contains: query, mode: "insensitive" } },
+              { primaryPhone: { contains: query, mode: "insensitive" } },
+            ],
+          },
         ],
       },
       take: 5,
     }),
     prisma.lead.findMany({
       where: {
-        OR: [
-          { contact: { firstName: { contains: query, mode: "insensitive" } } },
-          { contact: { lastName: { contains: query, mode: "insensitive" } } },
-          { departureAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
-          { arrivalAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
+        AND: [
+          leadVisibilityWhere(actor),
+          {
+            OR: [
+              { contact: { firstName: { contains: query, mode: "insensitive" } } },
+              { contact: { lastName: { contains: query, mode: "insensitive" } } },
+              { departureAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
+              { arrivalAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
+            ],
+          },
         ],
       },
       include: { contact: true, departureAirport: true, arrivalAirport: true },
@@ -41,10 +67,15 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
     }),
     prisma.quote.findMany({
       where: {
-        OR: [
-          { quoteNumber: { contains: query, mode: "insensitive" } },
-          { contact: { firstName: { contains: query, mode: "insensitive" } } },
-          { contact: { lastName: { contains: query, mode: "insensitive" } } },
+        AND: [
+          quoteVisibilityWhere(actor),
+          {
+            OR: [
+              { quoteNumber: { contains: query, mode: "insensitive" } },
+              { contact: { firstName: { contains: query, mode: "insensitive" } } },
+              { contact: { lastName: { contains: query, mode: "insensitive" } } },
+            ],
+          },
         ],
       },
       include: { contact: true },
@@ -52,11 +83,16 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
     }),
     prisma.booking.findMany({
       where: {
-        OR: [
-          { bookingReference: { contains: query, mode: "insensitive" } },
-          { pnr: { contains: query, mode: "insensitive" } },
-          { contact: { firstName: { contains: query, mode: "insensitive" } } },
-          { contact: { lastName: { contains: query, mode: "insensitive" } } },
+        AND: [
+          bookingVisibilityWhere(actor),
+          {
+            OR: [
+              { bookingReference: { contains: query, mode: "insensitive" } },
+              { pnr: { contains: query, mode: "insensitive" } },
+              { contact: { firstName: { contains: query, mode: "insensitive" } } },
+              { contact: { lastName: { contains: query, mode: "insensitive" } } },
+            ],
+          },
         ],
       },
       include: { contact: true },

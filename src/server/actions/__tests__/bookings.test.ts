@@ -349,3 +349,39 @@ describe("updateBookingTicketing — profitAmount uses a fresh, row-locked read 
     expect(fakePrisma.$queryRaw).toHaveBeenCalled();
   });
 });
+
+// Pass 34 — real gap found and fixed: fareAmount/taxAmount/serviceFeeAmount
+// had no `.min(0)`, unlike exchangeSchema's/requestCancellationSchema's
+// equivalent money fields — a negative Ticket Cost/Tax/Issuing Fee could be
+// submitted and would silently inflate the computed profitAmount (a
+// negative cost reads as extra profit).
+describe("updateBookingTicketing — rejects negative money fields (Pass 34)", () => {
+  it("rejects a negative fareAmount (Ticket Cost)", async () => {
+    seedBooking({ fareAmount: 500, taxAmount: 0 });
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1" };
+    const { updateBookingTicketing } = await import("../bookings");
+    await expect(updateBookingTicketing({ bookingId: "booking-1", fareAmount: -100 })).rejects.toThrow();
+    expect(Number(bookings.get("booking-1")!.fareAmount)).toBe(500); // unchanged
+  });
+
+  it("rejects a negative taxAmount", async () => {
+    seedBooking({ fareAmount: 500, taxAmount: 0 });
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1" };
+    const { updateBookingTicketing } = await import("../bookings");
+    await expect(updateBookingTicketing({ bookingId: "booking-1", taxAmount: -1 })).rejects.toThrow();
+  });
+
+  it("rejects a negative serviceFeeAmount (Issuing Fee)", async () => {
+    seedBooking({ fareAmount: 500, taxAmount: 0 });
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1" };
+    const { updateBookingTicketing } = await import("../bookings");
+    await expect(updateBookingTicketing({ bookingId: "booking-1", serviceFeeAmount: -1 })).rejects.toThrow();
+  });
+
+  it("still accepts zero for all three (zero is a valid, non-negative cost)", async () => {
+    seedBooking({ fareAmount: 500, taxAmount: 0 });
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1" };
+    const { updateBookingTicketing } = await import("../bookings");
+    await expect(updateBookingTicketing({ bookingId: "booking-1", fareAmount: 0, taxAmount: 0, serviceFeeAmount: 0 })).resolves.toBeDefined();
+  });
+});

@@ -525,8 +525,39 @@ const updatableLeadFields = z.object({
 export async function updateLeadField(leadId: string, patch: z.infer<typeof updatableLeadFields>) {
   const data = updatableLeadFields.parse(patch);
   const actor = await getCurrentAccount();
-  const existing = await prisma.lead.findFirst({ where: { id: leadId, ...leadVisibilityWhere(actor) }, select: { id: true } });
+  const existing = await prisma.lead.findFirst({
+    where: { id: leadId, ...leadVisibilityWhere(actor) },
+    select: { id: true, assignedAgentId: true },
+  });
   if (!existing) throw new Error("Lead not found");
+
+  // Pass 34 — real bug found and fixed: assignedAgentId was accepted here
+  // with none of reassignLead()'s guards (no canReassignLeads check, no
+  // same-company validation, no offer-field cleanup, no Quote.agentId
+  // sync). Because leadVisibilityWhere's restricted branch is deliberately
+  // company-agnostic (any account whose id equals the lead's own
+  // assignedAgentId passes it — safe only because assignedAgentId can
+  // structurally only ever already equal one company's account), any
+  // Travel Agent who merely owns a lead could call this action directly
+  // (server actions are callable independent of which UI component renders
+  // a button) with an arbitrary assignedAgentId — including an account in
+  // a different company — and that lead (and its customer's PII) would
+  // then appear in that other account's own Leads list. The live UI only
+  // ever sends `assignedAgentId: null` through this path (unassigning) and
+  // routes every actual reassignment through reassignLead() instead — so a
+  // non-null value here is never legitimate and is rejected outright, and
+  // clearing an existing owner still requires the identical
+  // canReassignLeads gate reassignLead() enforces for "move away from an
+  // existing owner" (claiming an already-unassigned lead stays
+  // unrestricted, matching reassignLead's own documented rule).
+  if ("assignedAgentId" in data) {
+    if (data.assignedAgentId !== null) {
+      throw new Error("Use reassignLead to change the assigned agent");
+    }
+    if (existing.assignedAgentId && !canReassignLeads(actor?.role)) {
+      throw new Error("You are not authorized to reassign this lead");
+    }
+  }
 
   const normalized: Record<string, unknown> = { ...data };
   if ("departureDate" in data) normalized.departureDate = data.departureDate ? new Date(data.departureDate) : null;

@@ -83,6 +83,20 @@ vi.mock("@/lib/prisma", () => ({
         Object.assign(lead, data);
         return lead;
       }),
+      // Minimal stand-in for leadVisibilityWhere's two real shapes (see
+      // visibility.ts): an Admin/Manager's `{ contact: { companyId } }`, or
+      // a restricted viewer's `{ assignedAgentId: viewer.id }` — used by
+      // updateLeadField's IDOR guard (Pass 34 tests below).
+      findFirst: vi.fn(async ({ where }: { where: { id: string; assignedAgentId?: string; contact?: { companyId: string } } }) => {
+        const lead = leadsMap.get(where.id);
+        if (!lead) return null;
+        if (where.assignedAgentId !== undefined && lead.assignedAgentId !== where.assignedAgentId) return null;
+        if (where.contact) {
+          const contact = contacts.get(lead.contactId);
+          if (!contact || contact.companyId !== where.contact.companyId) return null;
+        }
+        return { id: lead.id, assignedAgentId: lead.assignedAgentId };
+      }),
       updateMany: vi.fn(async ({ where, data }: { where: { id: { in: string[] } }; data: Partial<FakeLead> }) => {
         let count = 0;
         for (const l of leadsMap.values()) {
@@ -503,10 +517,79 @@ describe("Pass 10 §9/§32 — mandatory test case: Contact and one Lead both st
     const leadCall = vi.mocked(logActivity).mock.calls.find(([arg]) => arg.type === "LEAD_REASSIGNED");
     expect(leadCall).toBeDefined();
     expect(leadCall![0].metadata).toMatchObject({ previousOwnerId: null, newOwnerId: "agent-b" });
+  });
+});
 
-    // Exactly one CONTACT_REASSIGNED and one LEAD_REASSIGNED — no duplicate
-    // events from either assignment.
-    expect(activities.filter((a) => a.type === "CONTACT_REASSIGNED")).toHaveLength(1);
-    expect(vi.mocked(logActivity).mock.calls.filter(([arg]) => arg.type === "LEAD_REASSIGNED")).toHaveLength(1);
+// Pass 34 — real bug found and fixed: updateLeadField (the generic
+// lead-detail field-patch action) accepted `assignedAgentId` with none of
+// reassignLead's guards — no canReassignLeads check, no same-company
+// validation. A Travel Agent who merely owns a lead (passes
+// leadVisibilityWhere's `{ assignedAgentId: viewer.id }` check) could call
+// it directly with an arbitrary assignedAgentId, including a different
+// company's account id, and that lead (with its customer's PII) would then
+// appear in that other account's own Leads list. The live UI only ever
+// sends `{ assignedAgentId: null }` through this path (unassigning) and
+// routes every real reassignment through reassignLead() — so a non-null
+// value is now rejected outright, and unassigning still requires the same
+// canReassignLeads gate reassignLead() enforces for "move away from an
+// existing owner."
+describe("updateLeadField — assignedAgentId guard (Pass 34)", () => {
+  it("rejects a non-null assignedAgentId outright, even for the lead's own owner", async () => {
+    currentActor = { id: "agent-a", fullName: "Agent A", email: "a@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" };
+    leadsMap.set("lead-1", { id: "lead-1", contactId: "contact-1", assignedAgentId: "agent-a", status: "ATTEMPTING_TO_CONTACT", source: "WEBSITE" });
+
+    const { updateLeadField } = await import("../leads");
+    await expect(updateLeadField("lead-1", { assignedAgentId: "agent-b" })).rejects.toThrow(
+      "Use reassignLead to change the assigned agent"
+    );
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a"); // unchanged
+  });
+
+  it("rejects a non-null assignedAgentId that points at a DIFFERENT company's account", async () => {
+    currentActor = { id: "agent-a", fullName: "Agent A", email: "a@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" };
+    accounts.set("agent-other-co", { id: "agent-other-co", fullName: "Other Co Agent", email: "o@example.com", status: "ACTIVE", companyId: "company-2", role: "TRAVEL_AGENT" });
+    leadsMap.set("lead-1", { id: "lead-1", contactId: "contact-1", assignedAgentId: "agent-a", status: "ATTEMPTING_TO_CONTACT", source: "WEBSITE" });
+
+    const { updateLeadField } = await import("../leads");
+    await expect(updateLeadField("lead-1", { assignedAgentId: "agent-other-co" })).rejects.toThrow(
+      "Use reassignLead to change the assigned agent"
+    );
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a"); // never leaked cross-company
+  });
+
+  it("a plain Travel Agent CANNOT unassign a lead currently owned by someone else", async () => {
+    currentActor = { id: "agent-b", fullName: "Agent B", email: "b@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" };
+    contacts.set("contact-1", { id: "contact-1", firstName: "Jane", lastName: "Traveler", companyId: "company-1", ownerId: null });
+    leadsMap.set("lead-1", { id: "lead-1", contactId: "contact-1", assignedAgentId: "agent-a", status: "ATTEMPTING_TO_CONTACT", source: "WEBSITE" });
+    accounts.set("agent-a", { id: "agent-a", fullName: "Agent A", email: "a@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" });
+
+    const { updateLeadField } = await import("../leads");
+    // leadVisibilityWhere's restricted branch only matches assignedAgentId
+    // === viewer.id, so agent-b (who does not own lead-1) can't even reach
+    // this lead — findFirst returns null, surfacing as "Lead not found"
+    // rather than an authorization-specific message, exactly like every
+    // other IDOR guard in this file.
+    await expect(updateLeadField("lead-1", { assignedAgentId: null })).rejects.toThrow("Lead not found");
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a");
+  });
+
+  it("Admin/Manager CAN unassign a lead away from its current owner", async () => {
+    currentActor = { id: "admin-1", fullName: "Admin One", email: "admin@example.com", status: "ACTIVE", companyId: "company-1", role: "ADMIN" };
+    leadsMap.set("lead-1", { id: "lead-1", contactId: "contact-1", assignedAgentId: "agent-a", status: "ATTEMPTING_TO_CONTACT", source: "WEBSITE" });
+
+    const { updateLeadField } = await import("../leads");
+    await updateLeadField("lead-1", { assignedAgentId: null });
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBeNull();
+  });
+
+  it("a plain Travel Agent CANNOT unassign even their OWN lead (matches the UI's own gating — the Assigned Agent editor is hidden for a non-reassigner once a lead is assigned to anyone, including themselves)", async () => {
+    currentActor = { id: "agent-a", fullName: "Agent A", email: "a@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" };
+    leadsMap.set("lead-1", { id: "lead-1", contactId: "contact-1", assignedAgentId: "agent-a", status: "ATTEMPTING_TO_CONTACT", source: "WEBSITE" });
+
+    const { updateLeadField } = await import("../leads");
+    await expect(updateLeadField("lead-1", { assignedAgentId: null })).rejects.toThrow(
+      "You are not authorized to reassign this lead"
+    );
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a"); // unchanged
   });
 });

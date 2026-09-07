@@ -36,6 +36,7 @@ Project → Settings → Environment Variables) for a real deployment:
 | `IP_ENCRYPTION_KEY` / `IP_HASH_KEY` | Yes | Two SEPARATE fresh values per deployment: `openssl rand -base64 32` (run it twice). See `src/server/security/ip-encryption.ts`'s file comment — one key reversibly encrypts a captured IP, the other produces a one-way search index; never reuse either across deployments or with each other. |
 | `TRUSTED_PROXY` | Yes, in production | See §5 below. |
 | `CRON_SECRET` | Recommended in production | See §5a below. |
+| `APP_ENV` | Optional | Escape hatch for a deployment that runs a production-mode build (`NODE_ENV=production`, set automatically by `next build`/`next start`) but should still be treated as non-production by security-sensitive guards (card-vault selection, privileged step-up auth) — e.g. a staging environment. Falls back to `NODE_ENV` when unset, so a real production deploy is caught automatically either way. See `src/lib/env.ts`. |
 | `BOOKING_IP_RETENTION_DAYS` | Deprecated — do not set | Pass 33: booking submission IP data is retained indefinitely by design; this variable is no longer read anywhere. Setting it does nothing. See `docs/ip-vault-compliance.md`. |
 
 ## 3. Run database migrations
