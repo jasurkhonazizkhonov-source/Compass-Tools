@@ -7,15 +7,12 @@ import { ImageResponse } from "next/og";
 // uploaded logo (see src/server/queries/company.ts), which is untouched
 // by this change.
 //
-// Pass 13 §2 — same open-ring + gold-dot mark as compass-mark.tsx (kept in
-// sync deliberately — see that file's own comment for the full design
-// rationale and the exact geometry derivation), on a navy badge rather
-// than the white one every in-app call site uses, since a browser tab has
-// no control over its own surrounding chrome. The ring here is white
-// rather than navy (navy would vanish against the navy badge) — the
-// "compact mark for a small canvas" variant the badge context specifically
-// calls for, sized to nearly fill the 32×32 canvas for maximum legibility
-// at real favicon size.
+// Pass 37 — same "bearing needle" mark as compass-mark.tsx (kept in sync
+// deliberately — see that file's own comment for the full design
+// rationale and the exact geometry constants), on a navy badge rather than
+// the white one every in-app call site uses, since a browser tab has no
+// control over its own surrounding chrome. Sized to nearly fill the 32×32
+// canvas for maximum legibility at real favicon size.
 export const size = { width: 32, height: 32 };
 export const contentType = "image/png";
 
@@ -36,8 +33,9 @@ export default function Icon() {
         }}
       >
         <svg width="29" height="29" viewBox="0 0 24 24" fill="none">
-          <circle cx="12" cy="12" r="10" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeDasharray="50.6 12.2" strokeDashoffset="56.7" />
-          <circle cx="21.7" cy="12" r="1.8" fill={GOLD} />
+          <polygon points="8.75,3.07 7.77,13.54 15.25,20.93" fill="white" />
+          <polygon points="8.75,3.07 16.23,10.46 15.25,20.93" fill={GOLD} />
+          <circle cx="12" cy="12" r="1.4" fill="#1c3a5e" />
         </svg>
       </div>
     ),

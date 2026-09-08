@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import Script from "next/script";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
@@ -24,7 +25,28 @@ declare global {
   }
 }
 
+// Pass 37 — real bug found and fixed: signInWithGoogle() used to call
+// next/navigation's redirect() internally and this callback simply awaited
+// it via `.then(onFulfilled)` with no rejection handler — but redirect()
+// throws to unwind, and this callback runs from Google's own external SDK
+// (a plain function reference, not a React event handler or transition),
+// where that throw surfaces as a rejected promise `.then()` never sees.
+// The result was the exact reported bug: "Signing in…" that never
+// resolves, on success or denial alike, with no way to retry without a
+// full page reload. Fixed at the source (signInWithGoogle no longer
+// redirects internally, see google-auth.ts) — this callback now always
+// receives a real, resolved result and is the one place that performs the
+// actual navigation, guaranteeing a stuck state can never happen: every
+// branch below both resets isSigningIn AND either navigates or shows a
+// clear, retryable error.
+const ACCESS_DENIED_MESSAGES: Record<string, string> = {
+  NOT_INITIALIZED: "This Compass Tools deployment has not been initialized yet. Ask your administrator to complete setup.",
+  BOOTSTRAP_EMAIL_MISMATCH: "This Google account is not authorized for the initial CRM administrator.",
+  ACCESS_DENIED: "Your Google account is not authorized to access Compass Tools CRM. Please contact your CRM administrator.",
+};
+
 export function GoogleSignInButton({ clientId }: { clientId: string }) {
+  const router = useRouter();
   const buttonRef = useRef<HTMLDivElement>(null);
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -36,17 +58,32 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       client_id: clientId,
       callback: (response) => {
         setIsSigningIn(true);
-        // signInWithGoogle() redirects itself (to /dashboard on success or
-        // /access-denied when the CRM denies access) — Next.js performs
-        // that navigation as part of resolving this call, so the only
-        // outcome this callback ever actually observes is the
-        // no-redirect case: verification failed and the user stays here.
-        signInWithGoogle(response.credential).then((result) => {
-          if (!result.ok) {
-            toast.error("Google sign-in could not be completed. Please try again.");
+        signInWithGoogle(response.credential)
+          .then((result) => {
+            if (result.ok) {
+              router.push("/dashboard");
+              // Deliberately NOT resetting isSigningIn here — the button
+              // stays in its loading state through the navigation itself
+              // rather than flashing back to "idle" for one frame before
+              // the route change lands.
+              return;
+            }
+            if (result.reason === "GOOGLE_VERIFICATION_FAILED") {
+              toast.error("Google sign-in could not be completed. Please try again.");
+            } else {
+              router.push(`/access-denied?reason=${result.reason}`);
+              return;
+            }
             setIsSigningIn(false);
-          }
-        });
+          })
+          .catch(() => {
+            // A genuine network/server error reaching the action itself
+            // (not a normal denial outcome, which is always a resolved
+            // value above) — must still return the button to a usable
+            // state rather than leaving it stuck.
+            toast.error("Sign-in failed. Please try again.");
+            setIsSigningIn(false);
+          });
       },
     });
 
@@ -58,7 +95,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       shape: "pill",
       width: 280,
     });
-  }, [scriptLoaded, clientId]);
+  }, [scriptLoaded, clientId, router]);
 
   return (
     <div className="flex flex-col items-center gap-3">
@@ -73,3 +110,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
     </div>
   );
 }
+
+// Exported for /access-denied to render a message consistent with this
+// button's own reason taxonomy without duplicating the copy.
+export { ACCESS_DENIED_MESSAGES };

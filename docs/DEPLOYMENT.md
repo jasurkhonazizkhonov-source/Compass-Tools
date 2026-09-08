@@ -31,6 +31,7 @@ Project → Settings → Environment Variables) for a real deployment:
 | `DATABASE_URL` | Yes | This deployment's own database. Never shared with another company's deployment. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Yes | Can be the **same** Google Cloud OAuth app shared across every company's deployment. **Both** of the following must be configured on that OAuth client for THIS deployment's domain — see §2a below for the exact steps; missing either one produces a real, previously-seen production failure. A separate Google Cloud project per company is not required. |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. Never reuse across companies. |
+| `INITIAL_ADMIN_EMAIL` | Recommended for first setup | The Google account that becomes this deployment's first Admin. See §2b below. Only matters until the first Account is created; safe (and recommended) to remove afterward. |
 | `APP_BASE_URL` | Recommended | This deployment's public URL. On Vercel this can usually be left unset and falls back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL` automatically. |
 | `CARD_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. See `src/server/security/card-encryption.ts`'s file comment before handling real cardholder data. |
 | `IP_ENCRYPTION_KEY` / `IP_HASH_KEY` | Yes | Two SEPARATE fresh values per deployment: `openssl rand -base64 32` (run it twice). See `src/server/security/ip-encryption.ts`'s file comment — one key reversibly encrypts a captured IP, the other produces a one-way search index; never reuse either across deployments or with each other. |
@@ -102,6 +103,42 @@ Project → Settings → Environment Variables) belong to that same client —
 not a leftover value from a different Google Cloud project or an old
 deployment.
 
+## 2b. `INITIAL_ADMIN_EMAIL` — how the first Admin gets created
+
+`INITIAL_ADMIN_EMAIL` names the exact Google account that becomes this
+deployment's first Admin. It is checked entirely server-side, on every
+Google sign-in attempt, but only ever has an effect while the database
+has **zero** `Account` rows:
+
+- **Database empty, the signed-in Google email matches
+  `INITIAL_ADMIN_EMAIL` (case-insensitive, trimmed):** an `ACTIVE` `Admin`
+  `Account` is created automatically (reusing the existing `Company` row
+  every freshly-migrated database already has — see §3 below — rather than
+  creating a second one), and that person is signed into the CRM.
+- **Database empty, the signed-in Google email does NOT match:** access is
+  denied with "This Google account is not authorized for the initial CRM
+  administrator." Nothing is created, nothing is revealed about what the
+  configured email actually is.
+- **Database empty, `INITIAL_ADMIN_EMAIL` is unset or blank:** access is
+  denied with a message explaining the deployment hasn't been initialized
+  yet — never silently lets the first Google user in, never picks a random
+  Admin.
+- **Once ANY `Account` exists** (created this way, via the CLI script, or
+  by hand) — `INITIAL_ADMIN_EMAIL` **permanently stops having any effect**,
+  including for its own configured email if it signs in again later. It is
+  never a standing privilege-escalation mechanism. From that point on,
+  every sign-in — including the first Admin's own subsequent logins — goes
+  through the normal, existing Account-lookup authorization path (§7).
+- **Concurrency:** if two requests race to bootstrap at the exact same
+  moment (e.g. a double-click, or two browser tabs), the database
+  guarantees exactly one Admin `Account` is ever created — the other
+  request's sign-in simply resolves through the normal authorization path
+  against the Account the first one just created.
+
+Safe to leave configured indefinitely after the first Admin exists (it has
+no effect once any Account exists), but removing it once setup is done is
+a reasonable extra precaution with no downside.
+
 ## 3. Run database migrations
 
 ```bash
@@ -117,7 +154,22 @@ the schema fresh.
 ## 4. Bootstrap the company and its first Admin
 
 `prisma/seed.ts` seeds fake demo data (for local development only) — do
-**not** run it against a real company's database. Instead:
+**not** run it against a real company's database.
+
+Two ways to create the first Admin — pick whichever fits how you're
+deploying:
+
+**Option A — `INITIAL_ADMIN_EMAIL` (recommended for Vercel):** the
+preferred path for a serverless deployment with no direct shell access to
+production. Set `INITIAL_ADMIN_EMAIL` (see §2b above) to the exact Google
+account that should become the first Admin, deploy, and have that person
+sign in with Google — the CRM creates their Admin account automatically on
+that first successful sign-in. No CLI access to the production database is
+needed.
+
+**Option B — the `bootstrap-company.ts` CLI script:** for a local/
+self-hosted deployment where you already have a shell with the production
+`DATABASE_URL` available:
 
 ```bash
 npx tsx prisma/bootstrap-company.ts \
@@ -133,6 +185,10 @@ row — nothing else. It refuses to run if the database already has any
 accounts (so it can't be accidentally re-run against a live company's
 database). See the script's own header comment for why this bootstrap step
 is necessary (the two-layer auth model's chicken-and-egg problem).
+
+Both options refuse to do anything once the database has any existing
+Account — neither is a standing way to create additional Admins later; see
+§7 below for that.
 
 ## 5. Set `TRUSTED_PROXY` correctly for this deployment's real infrastructure
 

@@ -27,7 +27,7 @@ function getClient(): OAuth2Client {
  * Never logs the token itself or the raw verification error (which can
  * embed token fragments) — only a generic, secret-free failure signal.
  */
-export async function verifyGoogleIdToken(idToken: string): Promise<{ email: string } | null> {
+export async function verifyGoogleIdToken(idToken: string): Promise<{ email: string; name?: string } | null> {
   try {
     const ticket = await getClient().verifyIdToken({
       idToken,
@@ -37,7 +37,11 @@ export async function verifyGoogleIdToken(idToken: string): Promise<{ email: str
     if (!payload?.email || payload.email_verified !== true) {
       return null;
     }
-    return { email: payload.email };
+    // `name` is Google's own display name from the same verified token —
+    // never security-relevant (only ever used as a display value, e.g. the
+    // initial-admin bootstrap's Account.fullName), so an absent/empty value
+    // is simply omitted rather than treated as a verification failure.
+    return { email: payload.email, name: payload.name || undefined };
   } catch {
     console.warn("[google-auth] ID token verification failed");
     return null;
