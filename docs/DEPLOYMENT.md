@@ -82,17 +82,37 @@ redirect URI `http://localhost:3000/api/auth/gmail/callback`. Never let
 `localhost` — `resolveBaseUrl()` warns loudly in production logs if that
 happens (see `src/lib/company-config.ts`).
 
-**Two common, easy-to-make mistakes that produce exactly this class of
-error**, both now defended against in code (Pass 36) but worth knowing
-about when configuring Google Cloud Console by hand:
+**Three common, easy-to-make mistakes that produce exactly this class of
+error**, worth knowing about when configuring Google Cloud Console by hand:
 - A trailing slash on `APP_BASE_URL` (e.g. `https://crm.example.com/`)
   used to produce a double-slash redirect_uri that would never match what's
-  registered — `resolveBaseUrl()` now strips it automatically.
+  registered — `resolveBaseUrl()` now strips it automatically (Pass 36).
 - A stray leading/trailing space or newline on `GOOGLE_CLIENT_ID`/
   `GOOGLE_CLIENT_SECRET` (easy to introduce pasting into Vercel's
   environment-variable UI) — `getGoogleClientId()`/`getGoogleClientSecret()`
   now trim the value automatically, but the value registered in Google
   Cloud Console itself must still be entered correctly.
+- **Registering a per-deployment Vercel URL instead of the stable
+  production alias** (Pass 39 — a real, reproduced "Error 400:
+  origin_mismatch" report). Every single Vercel deployment — Production
+  environment included — gets its OWN unique URL containing a random hash,
+  e.g. `https://compass-tools-rhj9xf4i1-travel-agency1.vercel.app`
+  (this is what `VERCEL_URL` holds). That hash-suffixed URL changes on
+  **every new deployment** — registering it as an Authorized JavaScript
+  origin only works until the next deploy. Vercel separately maintains a
+  **stable** alias that always points at whichever deployment is currently
+  live in Production — that's what `VERCEL_PROJECT_PRODUCTION_URL` holds,
+  and what `resolveBaseUrl()` already prefers over the unstable
+  `VERCEL_URL` (see the fallback order above) — or your own custom domain
+  if one is configured. **Always register the stable alias/custom domain
+  in Google Cloud Console, and always sign in through that same stable
+  URL** — not a specific deployment's own link (e.g. one copied from the
+  Vercel dashboard's deployment list or a deploy-comment link, which is a
+  per-deployment URL by definition). If real users need to reach this
+  deployment at a hash-suffixed URL specifically, that's a sign
+  `APP_BASE_URL` (or the project's Production domain settings in Vercel)
+  isn't configured the way this deployment actually needs — not something
+  to work around by registering the ephemeral URL instead.
 
 If Google still rejects sign-in after the above is configured correctly,
 also double-check: the OAuth client hasn't been deleted or disabled, it's
