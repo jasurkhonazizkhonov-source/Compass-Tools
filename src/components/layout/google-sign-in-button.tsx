@@ -45,11 +45,36 @@ const ACCESS_DENIED_MESSAGES: Record<string, string> = {
   ACCESS_DENIED: "Your Google account is not authorized to access Compass Tools CRM. Please contact your CRM administrator.",
 };
 
+// Pass 38 — secondary UX safeguard only, per this pass's own explicit
+// carve-out: the primary fix (Pass 37) is that signInWithGoogle() always
+// settles with a real value and every branch below already resets
+// isSigningIn or navigates. This timeout does not hide or replace that —
+// it exists purely for the one residual, extremely unlikely case a
+// resolved `{ ok: true }` is followed by router.push("/dashboard") somehow
+// not completing a navigation (e.g. an intervening client-side error).
+// Long enough it can never fire during any normal sign-in (including a
+// slow network), and it only ever acts if the component is STILL mounted
+// and STILL showing "Signing in…" — a real navigation unmounts this
+// component well before it could fire.
+const STUCK_SIGN_IN_SAFETY_NET_MS = 15_000;
+
 export function GoogleSignInButton({ clientId }: { clientId: string }) {
   const router = useRouter();
   const buttonRef = useRef<HTMLDivElement>(null);
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const safetyNetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  function clearSafetyNet() {
+    if (safetyNetRef.current) {
+      clearTimeout(safetyNetRef.current);
+      safetyNetRef.current = undefined;
+    }
+  }
+
+  // Cleared on unmount so a real, successful navigation (which unmounts
+  // this component) can never leave a stray timer behind.
+  useEffect(() => clearSafetyNet, []);
 
   useEffect(() => {
     if (!scriptLoaded || !window.google || !buttonRef.current) return;
@@ -58,6 +83,11 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       client_id: clientId,
       callback: (response) => {
         setIsSigningIn(true);
+        clearSafetyNet();
+        safetyNetRef.current = setTimeout(() => {
+          toast.error("Sign-in is taking longer than expected. Please try again.");
+          setIsSigningIn(false);
+        }, STUCK_SIGN_IN_SAFETY_NET_MS);
         signInWithGoogle(response.credential)
           .then((result) => {
             if (result.ok) {
@@ -65,9 +95,12 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
               // Deliberately NOT resetting isSigningIn here — the button
               // stays in its loading state through the navigation itself
               // rather than flashing back to "idle" for one frame before
-              // the route change lands.
+              // the route change lands. The safety-net timer above (not
+              // cleared here) is the backstop if that navigation somehow
+              // never actually lands.
               return;
             }
+            clearSafetyNet();
             if (result.reason === "GOOGLE_VERIFICATION_FAILED") {
               toast.error("Google sign-in could not be completed. Please try again.");
             } else {
@@ -81,6 +114,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
             // (not a normal denial outcome, which is always a resolved
             // value above) — must still return the button to a usable
             // state rather than leaving it stuck.
+            clearSafetyNet();
             toast.error("Sign-in failed. Please try again.");
             setIsSigningIn(false);
           });
