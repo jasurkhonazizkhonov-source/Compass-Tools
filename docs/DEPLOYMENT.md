@@ -76,11 +76,29 @@ In Google Cloud Console, for the correct **Web application** OAuth client
 
 For **local development**, add a second pair of entries on the same
 client rather than replacing the production ones: JavaScript origin
-`http://localhost:3000` (or whatever port `npm run dev` actually uses) and
-redirect URI `http://localhost:3000/api/auth/gmail/callback`. Never let
-`APP_BASE_URL` (or the absence of it) point production traffic at
-`localhost` — `resolveBaseUrl()` warns loudly in production logs if that
-happens (see `src/lib/company-config.ts`).
+`http://localhost:3000` and redirect URI
+`http://localhost:3000/api/auth/gmail/callback`. `npm run dev` pins the
+dev server to port 3000 explicitly (`next dev -p 3000` — see
+`package.json`) specifically so this stays true: **Pass 40 traced a real
+"Google Sign-In works, then stops working, on localhost" report to Next.js
+dev server's own port-auto-retry behavior** — `next dev` (with no `-p`/
+`PORT` given) silently starts on the next free port (3001, 3002, …)
+whenever 3000 is already occupied by something else (confirmed directly in
+`next/dist/server/lib/start-server.js`: this auto-retry is enabled
+specifically — and only — when no port was explicitly requested). A
+browser sitting on `http://localhost:3001` sends that origin to Google,
+which was never registered — origin_mismatch, with no code-level symptom
+to debug, and no obvious reason from the developer's point of view (they
+just typed `npm run dev` the same way as always). Pinning the port makes
+Next.js fail loudly with a clear "port 3000 is already in use" error
+instead of silently drifting — if you ever see that error, something else
+on your machine is holding port 3000; free it (or, if you deliberately
+need a different port, update BOTH `package.json`'s `dev` script and the
+Authorized JavaScript origin/redirect URI registered in Google Cloud
+Console to match, consistently). Never let `APP_BASE_URL` (or the absence
+of it) point production traffic at `localhost` — `resolveBaseUrl()` warns
+loudly in production logs if that happens (see
+`src/lib/company-config.ts`).
 
 **Three common, easy-to-make mistakes that produce exactly this class of
 error**, worth knowing about when configuring Google Cloud Console by hand:

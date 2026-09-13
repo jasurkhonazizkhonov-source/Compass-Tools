@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { StrictMode } from "react";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import "@/test/rtl-setup";
 
@@ -144,5 +145,42 @@ describe("GoogleSignInButton — client state machine (Pass 38)", () => {
     });
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
     expect(signInWithGoogle).toHaveBeenCalledTimes(2);
+  });
+});
+
+// Pass 40 — investigated a hypothesis that React Strict Mode's dev-only
+// double-invocation of effects (the effect calling
+// google.accounts.id.initialize()/renderButton() has no cleanup function)
+// could cause a duplicate GIS initialization on localhost. Direct testing
+// (see the pass report) proved this specific component is NOT actually
+// affected in practice — the real initialize()/renderButton() call is
+// gated behind an async `scriptLoaded` state flip that lands after Strict
+// Mode's double-invoke window has already closed, so it only ever runs
+// once even under Strict Mode. This test documents and locks in that
+// property (a defensive `initializedRef` guard was added anyway, cheap
+// insurance against a future change that could make this effect genuinely
+// re-run) — it is not evidence that a duplicate-init bug existed or was
+// "fixed."
+describe("GoogleSignInButton — initializes exactly once (Pass 40)", () => {
+  it("calls google.accounts.id.initialize() and renderButton() exactly once, including under React Strict Mode", async () => {
+    const initializeSpy = vi.fn(({ callback }: { callback: (r: { credential: string }) => void }) => {
+      capturedCallback = callback;
+    });
+    const renderButtonSpy = vi.fn();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (window as any).google = {
+      accounts: { id: { initialize: initializeSpy, renderButton: renderButtonSpy } },
+    };
+
+    const { GoogleSignInButton } = await import("../google-sign-in-button");
+    render(
+      <StrictMode>
+        <GoogleSignInButton clientId="test-client-id.apps.googleusercontent.com" />
+      </StrictMode>
+    );
+    await waitFor(() => expect(capturedCallback).toBeDefined());
+
+    expect(initializeSpy).toHaveBeenCalledTimes(1);
+    expect(renderButtonSpy).toHaveBeenCalledTimes(1);
   });
 });

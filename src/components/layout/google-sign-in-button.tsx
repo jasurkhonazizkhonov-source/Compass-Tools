@@ -64,6 +64,28 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
   const [scriptLoaded, setScriptLoaded] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const safetyNetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Pass 40 — investigated and ruled out, kept as defense-in-depth: the
+  // effect below has no cleanup function, and React Strict Mode (the
+  // Next.js default since 13.4, not overridden in this project's
+  // next.config.ts, active in every `next dev` session) DOES double-invoke
+  // a component's effects once on its initial mount. This looked like a
+  // promising explanation for the reported "worked before, now unreliable,
+  // including on localhost" symptom — but direct testing (a diagnostic
+  // effect reproducing this exact deferred-init shape) proved Strict
+  // Mode's double-invoke window closes at the initial synchronous mount,
+  // and this effect's real work only ever runs LATER, once `scriptLoaded`
+  // flips true after the external GIS script finishes loading (an
+  // inherently async event, both in the real browser and via next/script's
+  // onReady) — a genuine dependency-triggered re-render, not part of the
+  // double-invoked mount window. In practice initialize()/renderButton()
+  // were therefore only ever called once, even under Strict Mode; this was
+  // NOT the cause of the reported bug. The guard below is kept anyway as
+  // cheap, harmless insurance against any future change that could cause
+  // this effect to genuinely re-run (e.g. if `router`'s reference identity
+  // were ever not stable, or `clientId` changed at runtime) — it does not
+  // change today's behavior, since a real re-run of this effect does not
+  // currently happen at all.
+  const initializedRef = useRef(false);
 
   function clearSafetyNet() {
     if (safetyNetRef.current) {
@@ -78,6 +100,10 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
 
   useEffect(() => {
     if (!scriptLoaded || !window.google || !buttonRef.current) return;
+    // See initializedRef's own comment above — defensive only, not
+    // currently reachable in practice.
+    if (initializedRef.current) return;
+    initializedRef.current = true;
 
     window.google.accounts.id.initialize({
       client_id: clientId,
