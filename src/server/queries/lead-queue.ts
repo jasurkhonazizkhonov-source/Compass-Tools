@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { compareQueueEntries } from "@/lib/lead-distribution";
 
@@ -17,7 +18,23 @@ export async function getQueuePosition(entry: { joinedAt: Date }, companyId: str
   });
 }
 
-export async function getMyQueueStatus(accountId: string | undefined, companyId: string | undefined) {
+// Real, measured inefficiency found and fixed: (crm)/layout.tsx (rendered
+// for every single CRM page) already fetches this exact same data, but a
+// Next.js layout has no mechanism to pass its own fetched data down as
+// props to the page component beneath it — so the Dashboard page (the
+// most-visited page in the app) was independently re-fetching the IDENTICAL
+// query for the IDENTICAL account moments later, a real, avoidable extra
+// database round trip and extra pool contention on the single heaviest
+// navigation in the app. React's own `cache()` is the standard, documented
+// Next.js App Router pattern for exactly this "the same data is needed by
+// both a layout and a page" situation: it memoizes a function's result for
+// the lifetime of ONE request's render only (reset on every new request —
+// nothing here is shared across requests or between different users/
+// accounts, so this carries none of the cross-user caching risk a
+// route-level or fetch-level cache would; calling this twice with the SAME
+// accountId/companyId within the SAME request now only queries the
+// database once).
+export const getMyQueueStatus = cache(async (accountId: string | undefined, companyId: string | undefined) => {
   if (!accountId || !companyId) return { isActive: false, position: null as number | null };
 
   const entry = await prisma.leadQueueEntry.findUnique({ where: { accountId } });
@@ -25,7 +42,7 @@ export async function getMyQueueStatus(accountId: string | undefined, companyId:
 
   const position = await getQueuePosition(entry, companyId);
   return { isActive: entry.isActive, position };
-}
+});
 
 // Ordered to match distributeNewWebsiteLead's actual pick order (least
 // recently served first) rather than plain join order, so this reflects who

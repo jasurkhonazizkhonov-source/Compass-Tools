@@ -12,7 +12,7 @@ let subscribers: Map<string, { id: string; status: string }>;
 let findUniqueShouldThrow: boolean;
 let upsertShouldThrow: boolean;
 
-const notifyNewSubscriber = vi.fn(async (...args: unknown[]) => {});
+const notifyNewSubscriber = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
 vi.mock("@/server/admin-notifications", () => ({
   notifyNewSubscriber: (...args: unknown[]) => notifyNewSubscriber(...args),
 }));

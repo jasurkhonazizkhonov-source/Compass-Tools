@@ -4,7 +4,7 @@ import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
 import { authorizeGoogleUser } from "@/server/auth/google-authorization";
 import { bootstrapInitialAdminIfEligible } from "@/server/auth/initial-admin-bootstrap";
 import { establishSession } from "@/server/actions/dev-session";
-import { safeErrorTag } from "@/lib/safe-error-log";
+import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 
 // Pass 37 — real bug found and fixed: this action used to call next/
 // navigation's redirect() directly on both the success and denial paths.
@@ -92,7 +92,7 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
   try {
     bootstrap = await bootstrapInitialAdminIfEligible(verified.email, verified.name);
   } catch (err) {
-    console.error(`[google-auth] INITIAL_ADMIN_BOOTSTRAP_FAILED (${safeErrorTag(err)})`);
+    console.error(`[google-auth] INITIAL_ADMIN_BOOTSTRAP_FAILED (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
     return { ok: false, reason: "SERVER_ERROR" };
   }
 
@@ -100,7 +100,7 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
     try {
       await establishSession(bootstrap.account.id);
     } catch (err) {
-      console.error(`[google-auth] SESSION_CREATION_FAILED after bootstrap (${safeErrorTag(err)})`);
+      console.error(`[google-auth] SESSION_CREATION_FAILED after bootstrap (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
       return { ok: false, reason: "SERVER_ERROR" };
     }
     return { ok: true };
@@ -120,7 +120,7 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
   try {
     authResult = await authorizeGoogleUser(verified.email);
   } catch (err) {
-    console.error(`[google-auth] DATABASE_LOOKUP_FAILED (${safeErrorTag(err)})`);
+    console.error(`[google-auth] DATABASE_LOOKUP_FAILED (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
     return { ok: false, reason: "SERVER_ERROR" };
   }
   if (!authResult.ok) {
@@ -134,7 +134,7 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
   try {
     await establishSession(authResult.account.id);
   } catch (err) {
-    console.error(`[google-auth] SESSION_CREATION_FAILED (${safeErrorTag(err)})`);
+    console.error(`[google-auth] SESSION_CREATION_FAILED (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
     return { ok: false, reason: "SERVER_ERROR" };
   }
   return { ok: true };

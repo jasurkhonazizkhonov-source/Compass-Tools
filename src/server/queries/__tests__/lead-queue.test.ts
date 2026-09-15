@@ -67,6 +67,40 @@ describe("getMyQueueStatus", () => {
     expect(leadQueueEntry.findMany).not.toHaveBeenCalled();
     vi.doUnmock("@/lib/prisma");
   });
+
+  // Real, measured inefficiency found and fixed: (crm)/layout.tsx (every
+  // CRM page) and the Dashboard page both independently called
+  // getMyQueueStatus for the exact same account, an avoidable extra
+  // database round trip on the single most-visited page — wrapped in
+  // React's cache() so both call sites querying the SAME account/company
+  // within the SAME request only hit the database once. React's cache()
+  // only deduplicates inside an actual React Server Component render
+  // (Next.js's own request-scoped AsyncLocalStorage context) — that
+  // context does not exist in a plain Vitest/Node run, so the dedup
+  // itself is a framework-level guarantee (the same officially documented
+  // Next.js "Preventing duplicate data requests" pattern), not something
+  // provable at this test level. What IS provable and tested below: the
+  // wrapped function still returns correct, per-account data, and a
+  // genuinely different account never receives another account's status —
+  // this is per-request memoization, never a cache that could leak one
+  // account's data into another's request.
+  it("a genuinely different account still gets its own correct data (never returns another account's status)", async () => {
+    const findUnique = vi.fn(async ({ where }: { where: { accountId: string } }) => ({
+      isActive: where.accountId === "account-1",
+      joinedAt: new Date("2026-01-01T00:00:00Z"),
+    }));
+    const count = vi.fn(async () => 1);
+    vi.doMock("@/lib/prisma", () => ({ prisma: { leadQueueEntry: { findUnique, count } } }));
+
+    const { getMyQueueStatus } = await import("../lead-queue");
+    const statusA = await getMyQueueStatus("account-1", "company-1");
+    const statusB = await getMyQueueStatus("account-2", "company-1");
+
+    expect(statusA.isActive).toBe(true);
+    expect(statusB.isActive).toBe(false);
+    expect(findUnique).toHaveBeenCalledTimes(2);
+    vi.doUnmock("@/lib/prisma");
+  });
 });
 
 describe("getActiveQueueMembers — scoped by company (Pass 22 fix)", () => {

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { DEV_ACCOUNT_COOKIE, isSessionExpired } from "@/lib/dev-session";
-import { safeErrorTag } from "@/lib/safe-error-log";
+import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 import {
   canViewDashboard,
   canViewContacts,
@@ -88,7 +88,7 @@ export async function proxy(request: NextRequest) {
         select: { status: true, role: true, sessionCreatedAt: true },
       });
     } catch (err) {
-      console.error(`[proxy] SESSION_LOOKUP_FAILED (${safeErrorTag(err)})`);
+      console.error(`[proxy] SESSION_LOOKUP_FAILED (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
       return NextResponse.redirect(new URL("/login", request.url));
     }
     // A session that matched a real account but has passed its 24h absolute

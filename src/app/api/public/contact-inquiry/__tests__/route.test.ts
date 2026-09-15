@@ -16,7 +16,7 @@ let inquiries: Array<Record<string, unknown>>;
 let contactFindUniqueShouldThrow: boolean;
 let inquiryCreateShouldThrow: boolean;
 
-const notifyNewInquiry = vi.fn(async (...args: unknown[]) => {});
+const notifyNewInquiry = vi.fn<(...args: unknown[]) => Promise<void>>(async () => {});
 vi.mock("@/server/admin-notifications", () => ({
   notifyNewInquiry: (...args: unknown[]) => notifyNewInquiry(...args),
 }));

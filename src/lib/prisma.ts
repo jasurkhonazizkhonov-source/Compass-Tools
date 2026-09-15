@@ -47,6 +47,31 @@ function connectionStringWithoutSslMode(url: string): string {
 // shares this database.
 const MAX_POOL_CONNECTIONS_PER_INSTANCE = 3;
 
+// Real gap found and fixed alongside the pool cap above: node-postgres
+// leaves `connectionTimeoutMillis` unset by default, meaning a caller that
+// can't immediately get a pool connection (the pool is at its max and
+// every existing connection is busy) waits INDEFINITELY rather than
+// failing with a catchable error. Confirmed via git history
+// (vercel.json + the "make Vercel cron Hobby-compatible" commit) that
+// this deployment runs on Vercel's Hobby plan, whose serverless functions
+// have a short execution timeout (10s by default; no `maxDuration`
+// override exists anywhere in this repo) — an indefinite wait for a
+// connection doesn't resolve into a normal JS exception at all in that
+// case, it gets silently killed by the platform once the function's whole
+// execution budget runs out, bypassing every try/catch and safe-logging
+// convention this codebase has (proxy.ts's SESSION_LOOKUP_FAILED,
+// google-auth.ts's SERVER_ERROR, etc. — none of that runs if the process
+// itself is killed externally). A bounded timeout here means a genuinely
+// saturated pool instead fails FAST with a real, catchable
+// `PrismaClientInitializationError`-family exception well before the
+// platform's own kill, so it flows through this app's existing error
+// handling and produces an actual diagnosable log line rather than an
+// untraceable platform-level timeout. Chosen short enough to leave the
+// rest of a request's own budget intact on Hobby's 10s ceiling, long
+// enough to comfortably cover a real (non-saturated) connection
+// establishment.
+const POOL_CONNECTION_TIMEOUT_MS = 5_000;
+
 function createPrismaClient() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -58,6 +83,7 @@ function createPrismaClient() {
     // Encrypted-but-unverified is an accepted tradeoff for this dev/test DB.
     ssl: { rejectUnauthorized: false },
     max: MAX_POOL_CONNECTIONS_PER_INSTANCE,
+    connectionTimeoutMillis: POOL_CONNECTION_TIMEOUT_MS,
   });
   return new PrismaClient({ adapter });
 }
