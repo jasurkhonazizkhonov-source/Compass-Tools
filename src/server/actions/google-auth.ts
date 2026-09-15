@@ -4,6 +4,7 @@ import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
 import { authorizeGoogleUser } from "@/server/auth/google-authorization";
 import { bootstrapInitialAdminIfEligible } from "@/server/auth/initial-admin-bootstrap";
 import { establishSession } from "@/server/actions/dev-session";
+import { safeErrorTag } from "@/lib/safe-error-log";
 
 // Pass 37 — real bug found and fixed: this action used to call next/
 // navigation's redirect() directly on both the success and denial paths.
@@ -58,14 +59,13 @@ export type GoogleSignInResult =
 // (matching this project's existing console.warn/[google-auth] logging
 // convention, not a new logging framework) so a real occurrence of this
 // is actually diagnosable from Vercel's own log viewer instead of being a
-// silent dead end. safeErrorTag() below deliberately logs only the
-// error's constructor name (e.g. "PrismaClientInitializationError"),
-// never `err.message` — some Prisma error messages can embed connection
-// details, which must never reach logs any more than the browser.
-function safeErrorTag(err: unknown): string {
-  if (err instanceof Error) return err.constructor.name || "Error";
-  return typeof err;
-}
+// silent dead end. safeErrorTag() (src/lib/safe-error-log.ts) deliberately
+// logs only the error's constructor name (e.g.
+// "PrismaClientInitializationError"), never `err.message` — some Prisma
+// error messages can embed connection details, which must never reach logs
+// any more than the browser. Extracted to that shared file so src/proxy.ts
+// can use the exact same safe-logging convention for its own unguarded
+// database call rather than duplicating this helper.
 
 /**
  * The Google Sign-In callback entry point — called from the client with

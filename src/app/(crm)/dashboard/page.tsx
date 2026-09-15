@@ -43,7 +43,7 @@ async function getDashboardData() {
     newLeads,
     statusGroups,
     cabinGroups,
-    destinationLeads,
+    topDestinations,
     recentActivities,
     upcomingTasks,
     monthlyLeads,
@@ -52,9 +52,23 @@ async function getDashboardData() {
     prisma.lead.count({ where: { createdAt: { gte: sevenDaysAgo } } }),
     prisma.lead.groupBy({ by: ["status"], _count: { _all: true } }),
     prisma.lead.groupBy({ by: ["cabinClass"], _count: { _all: true } }),
-    prisma.lead.findMany({
+    // Real performance issue found and fixed: this used to be
+    // `lead.findMany({ where: { arrivalAirportId: { not: null } }, select:
+    // { arrivalAirport: ... } })` — loading a full row (joined to its
+    // airport) for EVERY lead that has a destination, just to count them
+    // down to a top-6 chart in JS. That's an unbounded query that grows
+    // linearly with the total number of leads ever created, on a page
+    // every CRM user loads by default. A groupBy does the exact same
+    // counting/top-6 ranking in the database, returning at most 6 rows
+    // regardless of how many leads exist — the actual airport city/iata
+    // for those (at most) 6 ids is resolved separately below, a query
+    // whose cost is bounded by the destination count, not the lead count.
+    prisma.lead.groupBy({
+      by: ["arrivalAirportId"],
       where: { arrivalAirportId: { not: null } },
-      select: { arrivalAirport: { select: { city: true, iata: true } } },
+      _count: { _all: true },
+      orderBy: { _count: { arrivalAirportId: "desc" } },
+      take: 6,
     }),
     prisma.activity.findMany({
       orderBy: { createdAt: "desc" },
@@ -89,16 +103,20 @@ async function getDashboardData() {
     value: g._count._all,
   }));
 
-  const destinationCounts = new Map<string, number>();
-  for (const l of destinationLeads) {
-    if (!l.arrivalAirport) continue;
-    const key = `${l.arrivalAirport.city || l.arrivalAirport.iata} (${l.arrivalAirport.iata})`;
-    destinationCounts.set(key, (destinationCounts.get(key) ?? 0) + 1);
-  }
-  const destinationChartData = [...destinationCounts.entries()]
-    .map(([destination, count]) => ({ destination, count }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 6);
+  // At most 6 rows, resolving the (already top-6-ranked) airport ids from
+  // the groupBy above — bounded by destination count, never by lead count.
+  const topAirportIds = topDestinations.map((d) => d.arrivalAirportId).filter((id): id is number => id !== null);
+  const topAirports = topAirportIds.length
+    ? await prisma.airport.findMany({ where: { id: { in: topAirportIds } }, select: { id: true, city: true, iata: true } })
+    : [];
+  const airportById = new Map(topAirports.map((a) => [a.id, a]));
+  const destinationChartData = topDestinations
+    .map((d) => {
+      const airport = d.arrivalAirportId ? airportById.get(d.arrivalAirportId) : undefined;
+      if (!airport) return null;
+      return { destination: `${airport.city || airport.iata} (${airport.iata})`, count: d._count._all };
+    })
+    .filter((d): d is { destination: string; count: number } => d !== null);
 
   const monthBuckets: { month: string; count: number }[] = [];
   for (let i = 5; i >= 0; i--) {

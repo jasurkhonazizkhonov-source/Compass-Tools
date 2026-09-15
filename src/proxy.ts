@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { DEV_ACCOUNT_COOKIE, isSessionExpired } from "@/lib/dev-session";
+import { safeErrorTag } from "@/lib/safe-error-log";
 import {
   canViewDashboard,
   canViewContacts,
@@ -61,10 +62,35 @@ export async function proxy(request: NextRequest) {
   const token = request.cookies.get(DEV_ACCOUNT_COOKIE)?.value;
 
   if (token) {
-    const account = await prisma.account.findUnique({
-      where: { activeSessionId: token },
-      select: { status: true, role: true, sessionCreatedAt: true },
-    });
+    // Real bug found and fixed: this lookup — gating every single protected
+    // CRM route — used to have no error handling at all. It runs on every
+    // navigation, before any page/layout renders and before any React error
+    // boundary exists to catch anything, so a transient database hiccup
+    // (a dropped connection, a brief network blip to the external Postgres
+    // host — an entirely normal occurrence for a serverless function
+    // talking to a database over the public internet) threw uncaught
+    // straight out of the proxy for an otherwise completely healthy,
+    // signed-in user, on a request to a totally unrelated page. That is a
+    // strong candidate for the intermittent "This page couldn't load — A
+    // server error occurred" reports: it can happen on ANY protected route,
+    // for ANY signed-in user, unrelated to that page's own code.
+    // Fails CLOSED on a genuine failure (same redirect-to-/login path
+    // already used for "no matching account"/deactivated/never-signed-in)
+    // rather than failing open — a database error must never be treated as
+    // "session verified." This does not hide the failure: it's logged with
+    // a safe, greppable category (never the error message/any DB detail)
+    // so a real recurrence is diagnosable, exactly like google-auth.ts's
+    // own SERVER_ERROR handling.
+    let account;
+    try {
+      account = await prisma.account.findUnique({
+        where: { activeSessionId: token },
+        select: { status: true, role: true, sessionCreatedAt: true },
+      });
+    } catch (err) {
+      console.error(`[proxy] SESSION_LOOKUP_FAILED (${safeErrorTag(err)})`);
+      return NextResponse.redirect(new URL("/login", request.url));
+    }
     // A session that matched a real account but has passed its 24h absolute
     // lifetime gets its own redirect reason (?reason=expired) so /login can
     // show "your session has expired" instead of a bare sign-in page — see

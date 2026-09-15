@@ -38,11 +38,41 @@ export async function trackQuoteView(token: string) {
 
 /** Called when the customer clicks "View Deal". Stronger engagement signal
  * than an email open — same repeat-visit dedup guard as trackQuoteView. */
+// Real bug found and fixed: both this function and trackBookingFormStarted
+// below already treat "no quote for this token" as an expected, silent
+// no-op (the `if (!quote) return` line) — but until now that check only
+// covered the moment of the FIRST lookup. A Quote is genuinely deletable
+// (an Admin deleting its parent Lead/Contact cascades to it too, per
+// schema.prisma's onDelete: Cascade), so if that delete lands in the
+// narrow window between this function's own lookup and the WRITE further
+// down the call chain (transitionQuoteStatus -> writeQuoteStatus's
+// findUniqueOrThrow, or logActivity's quoteId foreign key below), the
+// write throws a real, uncaught Prisma error straight through this
+// customer-facing page's render — even though "the quote is gone" is
+// exactly the same, already-handled condition as the first check, just
+// observed a moment later. A customer opening a bookmarked/emailed quote
+// link at the same moment an agent deletes that duplicate/test lead is a
+// genuine, real-world way to hit this, not a contrived edge case.
+// P2025 ("required record not found", from writeQuoteStatus's
+// findUniqueOrThrow) and P2003 (a foreign key violation, from
+// logActivity's activity.create referencing a quoteId/leadId/contactId
+// that no longer exists) are the two Prisma error codes that mean
+// specifically that — this narrowly catches only those and treats them as
+// the same no-op the leading check already models, rather than a broad
+// catch-all that would also swallow a genuine, unrelated bug.
+function isVanishedRecordError(err: unknown): boolean {
+  return err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2025" || err.code === "P2003");
+}
+
 export async function trackViewDealClicked(token: string) {
   const quote = await prisma.quote.findUnique({ where: { secureToken: token } });
   if (!quote) return;
   if (quote.status === "SENT" || quote.status === "READ") {
-    await transitionQuoteStatus(quote.id, "VIEWED", { activityDescription: "Customer clicked View Deal" });
+    try {
+      await transitionQuoteStatus(quote.id, "VIEWED", { activityDescription: "Customer clicked View Deal" });
+    } catch (err) {
+      if (!isVanishedRecordError(err)) throw err;
+    }
   }
 }
 
@@ -54,15 +84,19 @@ export async function trackViewDealClicked(token: string) {
 export async function trackBookingFormStarted(token: string) {
   const quote = await prisma.quote.findUnique({ where: { secureToken: token }, select: { id: true, leadId: true, contactId: true } });
   if (!quote) return;
-  const already = await prisma.activity.findFirst({ where: { quoteId: quote.id, type: "BOOKING_FORM_STARTED" }, select: { id: true } });
-  if (already) return;
-  await logActivity({
-    quoteId: quote.id,
-    leadId: quote.leadId,
-    contactId: quote.contactId,
-    type: "BOOKING_FORM_STARTED",
-    description: "Customer opened the booking form",
-  });
+  try {
+    const already = await prisma.activity.findFirst({ where: { quoteId: quote.id, type: "BOOKING_FORM_STARTED" }, select: { id: true } });
+    if (already) return;
+    await logActivity({
+      quoteId: quote.id,
+      leadId: quote.leadId,
+      contactId: quote.contactId,
+      type: "BOOKING_FORM_STARTED",
+      description: "Customer opened the booking form",
+    });
+  } catch (err) {
+    if (!isVanishedRecordError(err)) throw err;
+  }
 }
 
 // One customer-entered card, as part of a (possibly multi-card) payment
