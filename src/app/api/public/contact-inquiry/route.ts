@@ -55,30 +55,46 @@ export async function POST(req: Request) {
 
   const normalizedPhone = data.phone ? normalizePhoneNumber(data.phone) ?? data.phone : undefined;
 
-  // Matches an existing Contact by normalized phone/email (same helper
-  // createLead's dedup flow uses) — purely informational, never auto-
-  // overwrites the matched contact's own data (Part 9's explicit
-  // requirement). Scoped to this company only, same isolation as every
-  // other cross-entity lookup in this app.
-  const orConditions = duplicateContactWhere(normalizedPhone, data.email);
-  const matchedContact = orConditions.length > 0
-    ? await prisma.contact.findFirst({ where: { companyId: data.companyId, OR: orConditions }, select: { id: true } })
-    : null;
+  // Real bug found and fixed: unlike lead-capture's own route (which
+  // already wraps its write path and returns a clean, structured error),
+  // this route's database calls were unguarded — an unexpected exception
+  // (a transient database hiccup, the same class of failure the CRM's own
+  // connection-pool sizing fix addresses) would propagate straight out of
+  // this Route Handler as Next's own generic, unstructured error response
+  // rather than the same clean `{ok:false,error}` JSON shape this
+  // endpoint returns on every other failure path — harder for the
+  // website's own integration to handle gracefully, and a worse signal
+  // for "was this inquiry actually lost" than a clear failure response.
+  let inquiryId: string;
+  try {
+    // Matches an existing Contact by normalized phone/email (same helper
+    // createLead's dedup flow uses) — purely informational, never auto-
+    // overwrites the matched contact's own data (Part 9's explicit
+    // requirement). Scoped to this company only, same isolation as every
+    // other cross-entity lookup in this app.
+    const orConditions = duplicateContactWhere(normalizedPhone, data.email);
+    const matchedContact = orConditions.length > 0
+      ? await prisma.contact.findFirst({ where: { companyId: data.companyId, OR: orConditions }, select: { id: true } })
+      : null;
 
-  const inquiry = await prisma.contactInquiry.create({
-    data: {
-      companyId: data.companyId,
-      firstName: data.firstName,
-      lastName: data.lastName,
-      email: data.email,
-      phone: normalizedPhone,
-      subject: data.subject,
-      message: data.message,
-      matchedContactId: matchedContact?.id,
-    },
-  });
+    const inquiry = await prisma.contactInquiry.create({
+      data: {
+        companyId: data.companyId,
+        firstName: data.firstName,
+        lastName: data.lastName,
+        email: data.email,
+        phone: normalizedPhone,
+        subject: data.subject,
+        message: data.message,
+        matchedContactId: matchedContact?.id,
+      },
+    });
+    inquiryId = inquiry.id;
+  } catch {
+    return NextResponse.json({ ok: false, error: "Could not submit your request. Please try again or contact us directly." }, { status: 500 });
+  }
 
-  await notifyNewInquiry(data.companyId, inquiry.id, `${data.firstName} ${data.lastName}`).catch(() => undefined);
+  await notifyNewInquiry(data.companyId, inquiryId, `${data.firstName} ${data.lastName}`).catch(() => undefined);
 
-  return NextResponse.json({ ok: true, id: inquiry.id });
+  return NextResponse.json({ ok: true, id: inquiryId });
 }

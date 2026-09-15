@@ -18,6 +18,35 @@ function connectionStringWithoutSslMode(url: string): string {
   return u.toString();
 }
 
+// Real bug found and fixed: measured directly against the actual database
+// (SELECT setting FROM pg_settings WHERE name = 'max_connections') — this
+// Aiven Postgres instance allows only 20 total connections, and ~9-10 of
+// those are permanently held by Aiven's own background/management
+// processes (pg_failover_slots worker, management-agent, TimescaleDB
+// Background Worker Launcher, pg_cron scheduler — confirmed via
+// pg_stat_activity), leaving roughly 10-11 for ALL actual application
+// traffic combined (this CRM, and anything else that connects to the same
+// database — e.g. the public website's own lead/subscriber/inquiry
+// submission path). node-postgres's own Pool defaults `max` to 10 when
+// unset (confirmed in node_modules/pg-pool/index.js:
+// `this.options.max = this.options.max || this.options.poolSize || 10`) —
+// which this adapter never overrode. Each warm Vercel serverless
+// function instance constructs its OWN separate pool (the lazy-singleton
+// below caches one client per container, not across containers), so under
+// even modest concurrent traffic, multiple simultaneously-warm instances
+// each opening up to 10 connections can collectively exceed the
+// database's entire remaining budget — at which point Postgres refuses
+// new connections outright ("sorry, too many clients already") for
+// whichever query happens to need one at that moment. That failure isn't
+// tied to any specific page or route — it depends only on connection
+// pressure at that instant — which matches an intermittent "sometimes,
+// different pages" production symptom far better than any single page's
+// own code. Capped conservatively here so a single instance can never
+// alone consume more than a small fraction of the available budget,
+// leaving headroom for other concurrent instances and for whatever else
+// shares this database.
+const MAX_POOL_CONNECTIONS_PER_INSTANCE = 3;
+
 function createPrismaClient() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
@@ -28,6 +57,7 @@ function createPrismaClient() {
     // Aiven's managed Postgres uses a CA not in Node's default trust store.
     // Encrypted-but-unverified is an accepted tradeoff for this dev/test DB.
     ssl: { rejectUnauthorized: false },
+    max: MAX_POOL_CONNECTIONS_PER_INSTANCE,
   });
   return new PrismaClient({ adapter });
 }

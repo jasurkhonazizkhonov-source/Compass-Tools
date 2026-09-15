@@ -49,19 +49,31 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Unknown company" }, { status: 400 });
   }
 
-  // Idempotent — a returning subscriber who previously unsubscribed and
-  // signs up again is re-subscribed (status flips back, unsubscribedAt
-  // cleared) rather than rejected as a duplicate or silently ignored.
-  // Existence checked first so the admin notification below only fires for
-  // a genuinely new subscriber, not every re-subscribe of an existing one.
-  const existing = await prisma.subscriber.findUnique({ where: { companyId_email: { companyId, email } }, select: { id: true } });
-  await prisma.subscriber.upsert({
-    where: { companyId_email: { companyId, email } },
-    create: { companyId, email, source },
-    update: { status: "SUBSCRIBED", unsubscribedAt: null, ...(source ? { source } : {}) },
-  });
+  // Real bug found and fixed: same class as contact-inquiry's own route
+  // (see its comment) — this write path was unguarded, unlike
+  // lead-capture's, so an unexpected database exception would propagate
+  // as Next's own generic, unstructured error rather than this endpoint's
+  // own clean `{ok:false,error}` shape.
+  let isNewSubscriber: boolean;
+  try {
+    // Idempotent — a returning subscriber who previously unsubscribed and
+    // signs up again is re-subscribed (status flips back, unsubscribedAt
+    // cleared) rather than rejected as a duplicate or silently ignored.
+    // Existence checked first so the admin notification below only fires
+    // for a genuinely new subscriber, not every re-subscribe of an
+    // existing one.
+    const existing = await prisma.subscriber.findUnique({ where: { companyId_email: { companyId, email } }, select: { id: true } });
+    await prisma.subscriber.upsert({
+      where: { companyId_email: { companyId, email } },
+      create: { companyId, email, source },
+      update: { status: "SUBSCRIBED", unsubscribedAt: null, ...(source ? { source } : {}) },
+    });
+    isNewSubscriber = !existing;
+  } catch {
+    return NextResponse.json({ ok: false, error: "Could not complete your subscription. Please try again." }, { status: 500 });
+  }
 
-  if (!existing) {
+  if (isNewSubscriber) {
     await notifyNewSubscriber(companyId, email).catch(() => undefined);
   }
 
