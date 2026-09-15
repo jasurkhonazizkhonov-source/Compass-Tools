@@ -113,6 +113,21 @@ describe("GoogleSignInButton — client state machine (Pass 38)", () => {
     expect(routerPush).not.toHaveBeenCalled();
   });
 
+  // Pass 41 — a resolved (not rejected) SERVER_ERROR result — e.g. a
+  // database hiccup AFTER Google identity was already verified — must be
+  // treated as a retryable, stay-on-this-page failure, same as
+  // GOOGLE_VERIFICATION_FAILED, and specifically NOT as an authorization
+  // denial (it must never navigate to /access-denied, which would
+  // incorrectly imply the user's identity was confirmed but rejected).
+  it("resolved SERVER_ERROR (a database/session failure after Google identity was verified): stays on the login page with its own distinct retryable toast, never navigates to /access-denied", async () => {
+    signInWithGoogle.mockResolvedValue({ ok: false, reason: "SERVER_ERROR" });
+    await renderAndTriggerSignIn();
+
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("We could not complete sign-in right now. Please try again."));
+    await waitFor(() => expect(screen.queryByText(/Signing in/i)).not.toBeInTheDocument());
+    expect(routerPush).not.toHaveBeenCalled();
+  });
+
   it("server/network error (the action's promise rejects): shows a retryable toast and resets loading — the exact class of bug Pass 37 fixed", async () => {
     signInWithGoogle.mockRejectedValue(new Error("network error"));
     await renderAndTriggerSignIn();

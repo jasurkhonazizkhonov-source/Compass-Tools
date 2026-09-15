@@ -37,8 +37,35 @@ export type GoogleSignInResult =
         | "GOOGLE_VERIFICATION_FAILED" // transient/retryable — shown inline, never navigates away
         | "NOT_INITIALIZED" // zero Accounts exist and INITIAL_ADMIN_EMAIL is missing/blank
         | "BOOTSTRAP_EMAIL_MISMATCH" // zero Accounts exist, INITIAL_ADMIN_EMAIL is configured, this identity isn't it
-        | "ACCESS_DENIED"; // one or more Accounts already exist; this identity has none (or it's disabled)
+        | "ACCESS_DENIED" // one or more Accounts already exist; this identity has none (or it's disabled)
+        | "SERVER_ERROR"; // an unexpected exception AFTER Google identity was verified — see below
     };
+
+// Pass 41 — real observability gap found and fixed: nothing in the call
+// chain below verifyGoogleIdToken() (bootstrapInitialAdminIfEligible's own
+// leading prisma.account.count(), authorizeGoogleUser's
+// prisma.account.findFirst(), establishSession's prisma.account.update()/
+// cookies() calls) was ever wrapped in a try/catch, anywhere — a
+// transient database hiccup (connection drop, a genuinely unexpected
+// Prisma error, etc.) at ANY of those points threw uncaught straight
+// through this action, which the client's .catch() turns into the exact
+// generic "Sign-in failed. Please try again." a real production report
+// described, with ZERO server-side diagnostic trail distinguishing that
+// case from a dozen other unrelated causes. Each stage below is now
+// individually guarded: the browser still only ever sees the same safe,
+// generic SERVER_ERROR outcome (never a stack trace, never any DB detail,
+// never the ID token), but the server log now carries a specific category
+// (matching this project's existing console.warn/[google-auth] logging
+// convention, not a new logging framework) so a real occurrence of this
+// is actually diagnosable from Vercel's own log viewer instead of being a
+// silent dead end. safeErrorTag() below deliberately logs only the
+// error's constructor name (e.g. "PrismaClientInitializationError"),
+// never `err.message` — some Prisma error messages can embed connection
+// details, which must never reach logs any more than the browser.
+function safeErrorTag(err: unknown): string {
+  if (err instanceof Error) return err.constructor.name || "Error";
+  return typeof err;
+}
 
 /**
  * The Google Sign-In callback entry point — called from the client with
@@ -61,9 +88,21 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
     return { ok: false, reason: "GOOGLE_VERIFICATION_FAILED" };
   }
 
-  const bootstrap = await bootstrapInitialAdminIfEligible(verified.email, verified.name);
+  let bootstrap;
+  try {
+    bootstrap = await bootstrapInitialAdminIfEligible(verified.email, verified.name);
+  } catch (err) {
+    console.error(`[google-auth] INITIAL_ADMIN_BOOTSTRAP_FAILED (${safeErrorTag(err)})`);
+    return { ok: false, reason: "SERVER_ERROR" };
+  }
+
   if (bootstrap.outcome === "created") {
-    await establishSession(bootstrap.account.id);
+    try {
+      await establishSession(bootstrap.account.id);
+    } catch (err) {
+      console.error(`[google-auth] SESSION_CREATION_FAILED after bootstrap (${safeErrorTag(err)})`);
+      return { ok: false, reason: "SERVER_ERROR" };
+    }
     return { ok: true };
   }
   if (bootstrap.outcome === "not_initialized") {
@@ -77,7 +116,13 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
 
   // bootstrap.outcome === "not_applicable" — at least one Account already
   // exists; normal, permanent authorization takes over from here on.
-  const authResult = await authorizeGoogleUser(verified.email);
+  let authResult;
+  try {
+    authResult = await authorizeGoogleUser(verified.email);
+  } catch (err) {
+    console.error(`[google-auth] DATABASE_LOOKUP_FAILED (${safeErrorTag(err)})`);
+    return { ok: false, reason: "SERVER_ERROR" };
+  }
   if (!authResult.ok) {
     // Server-log-only audit signal — the reason (unknown email vs.
     // disabled account) is never surfaced to the client; ACCESS_DENIED
@@ -86,6 +131,11 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
     return { ok: false, reason: "ACCESS_DENIED" };
   }
 
-  await establishSession(authResult.account.id);
+  try {
+    await establishSession(authResult.account.id);
+  } catch (err) {
+    console.error(`[google-auth] SESSION_CREATION_FAILED (${safeErrorTag(err)})`);
+    return { ok: false, reason: "SERVER_ERROR" };
+  }
   return { ok: true };
 }

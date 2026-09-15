@@ -147,3 +147,80 @@ describe("signInWithGoogle — ordering and session-issuance guard", () => {
     expect(establishSession).toHaveBeenCalledWith("acct-1");
   });
 });
+
+// Pass 41 — real observability gap found and fixed: a real production
+// report of the generic "Sign-in failed. Please try again." message could
+// not previously be traced to a specific stage, because nothing between
+// verifyGoogleIdToken() and the final establishSession() call was ever
+// wrapped in a try/catch anywhere in the whole call chain (confirmed by
+// direct inspection: zero try/catch in google-authorization.ts or
+// dev-session.ts). ANY unexpected exception at ANY of those points threw
+// uncaught straight through this action. These tests prove each stage is
+// now individually guarded: the browser-visible result is always the same
+// safe, generic SERVER_ERROR (never a thrown/rejected promise reaching the
+// client, never a stack trace or DB detail) regardless of which internal
+// stage actually failed.
+describe("signInWithGoogle — per-stage failures resolve to a safe SERVER_ERROR, never an uncaught throw (Pass 41)", () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  it("bootstrapInitialAdminIfEligible throws (e.g. a database error on its own leading count() call): resolves SERVER_ERROR, never rejects", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "founder@example.com" });
+    bootstrapInitialAdminIfEligible.mockRejectedValue(new Error("connection terminated"));
+    const { signInWithGoogle } = await import("../google-auth");
+
+    await expect(signInWithGoogle("good-token")).resolves.toEqual({ ok: false, reason: "SERVER_ERROR" });
+    expect(establishSession).not.toHaveBeenCalled();
+    // Never logs the raw error message (which could embed connection
+    // details) — only a safe category tag.
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("INITIAL_ADMIN_BOOTSTRAP_FAILED");
+    expect(loggedArgs).not.toContain("connection terminated");
+  });
+
+  it("establishSession throws after a successful bootstrap: resolves SERVER_ERROR rather than rejecting or silently claiming success", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "founder@example.com" });
+    bootstrapInitialAdminIfEligible.mockResolvedValue({ outcome: "created", account: { id: "admin-1", role: "ADMIN" } });
+    establishSession.mockRejectedValue(new Error("cookie write failed"));
+    const { signInWithGoogle } = await import("../google-auth");
+
+    await expect(signInWithGoogle("good-token")).resolves.toEqual({ ok: false, reason: "SERVER_ERROR" });
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("SESSION_CREATION_FAILED");
+  });
+
+  it("authorizeGoogleUser throws (e.g. a database error on its own lookup): resolves SERVER_ERROR, never rejects", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "agent@compasstools.dev" });
+    authorizeGoogleUser.mockRejectedValue(new Error("connection terminated"));
+    const { signInWithGoogle } = await import("../google-auth");
+
+    await expect(signInWithGoogle("good-token")).resolves.toEqual({ ok: false, reason: "SERVER_ERROR" });
+    expect(establishSession).not.toHaveBeenCalled();
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("DATABASE_LOOKUP_FAILED");
+  });
+
+  it("establishSession throws after normal authorization succeeds: resolves SERVER_ERROR rather than rejecting or silently claiming success", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "agent@compasstools.dev" });
+    authorizeGoogleUser.mockResolvedValue({ ok: true, account: { id: "acct-1", role: "TRAVEL_AGENT" } });
+    establishSession.mockRejectedValue(new Error("cookie write failed"));
+    const { signInWithGoogle } = await import("../google-auth");
+
+    await expect(signInWithGoogle("good-token")).resolves.toEqual({ ok: false, reason: "SERVER_ERROR" });
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).toContain("SESSION_CREATION_FAILED");
+  });
+
+  it("never logs the ID token, even when every stage is failing", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "agent@compasstools.dev" });
+    authorizeGoogleUser.mockRejectedValue(new Error("connection terminated"));
+    const { signInWithGoogle } = await import("../google-auth");
+
+    await signInWithGoogle("super-secret-id-token-value");
+
+    const loggedArgs = consoleErrorSpy.mock.calls.flat().join(" ");
+    expect(loggedArgs).not.toContain("super-secret-id-token-value");
+  });
+});

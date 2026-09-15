@@ -127,8 +127,17 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
               return;
             }
             clearSafetyNet();
+            // Pass 41 — GOOGLE_VERIFICATION_FAILED and SERVER_ERROR both
+            // stay on THIS page with an inline, retryable toast (Google
+            // identity could not be confirmed, or something unexpected
+            // happened after it WAS confirmed — neither is "you're
+            // authenticated but not authorized," which is what
+            // /access-denied communicates). Every other reason genuinely
+            // is an authorization denial and navigates there.
             if (result.reason === "GOOGLE_VERIFICATION_FAILED") {
               toast.error("Google sign-in could not be completed. Please try again.");
+            } else if (result.reason === "SERVER_ERROR") {
+              toast.error("We could not complete sign-in right now. Please try again.");
             } else {
               router.push(`/access-denied?reason=${result.reason}`);
               return;
