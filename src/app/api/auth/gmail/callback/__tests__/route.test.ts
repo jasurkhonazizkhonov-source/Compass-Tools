@@ -70,6 +70,40 @@ function makeRequest(query: string) {
 }
 
 describe("Gmail OAuth callback", () => {
+  // Diagnostic marker paired with [gmail-connect] START in
+  // startGmailConnect() — together they answer "did Google ever redirect
+  // the browser back here at all?" without needing to log anything
+  // sensitive. Logged unconditionally, before state/error handling, so it
+  // fires even on a declined-consent or CSRF-mismatch request — those ARE
+  // the callback being reached, just not succeeding.
+  it("logs CALLBACK_RECEIVED with only presence flags for code/state, never their values", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { GET } = await import("../route");
+
+    await GET(makeRequest("?code=secret-auth-code-value&state=expected-state-value"));
+
+    const logged = infoSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("[gmail-connect] CALLBACK_RECEIVED");
+    expect(logged).toContain("hasCode=true");
+    expect(logged).toContain("hasState=true");
+    expect(logged).not.toContain("secret-auth-code-value");
+    expect(logged).not.toContain("expected-state-value");
+    infoSpy.mockRestore();
+  });
+
+  it("logs CALLBACK_RECEIVED even when Google reports an error, with hasCode/hasState false", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { GET } = await import("../route");
+
+    await GET(makeRequest("?error=access_denied"));
+
+    const logged = infoSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("[gmail-connect] CALLBACK_RECEIVED");
+    expect(logged).toContain("hasCode=false");
+    expect(logged).toContain("googleError=present");
+    infoSpy.mockRestore();
+  });
+
   it("user declined consent on Google's screen: redirects to /dashboard?gmail=cancelled, no token exchange attempted", async () => {
     const { GET } = await import("../route");
     const response = await GET(makeRequest("?error=access_denied"));

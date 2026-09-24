@@ -74,6 +74,33 @@ In Google Cloud Console, for the correct **Web application** OAuth client
 | Authorized redirect URIs | `https://<this-deployment's-domain>/api/auth/gmail/callback` — the exact path `getGmailRedirectUri()` builds (`src/server/auth/gmail-oauth-config.ts`) |
 | Authorized domains (OAuth consent screen) | `<this-deployment's-domain>`, without a scheme |
 
+> **The single most common way Gmail Connect breaks — confirmed in
+> production on 2026-09-24.** Google Sign-In working proves *nothing* about
+> Gmail Connect. Sign-In uses Identity Services (an ID-token flow) which
+> validates only the **Authorized JavaScript origin**; Gmail Connect uses
+> the authorization-code flow, which validates the **Authorized redirect
+> URI** — a completely separate field. A client can therefore have working
+> Sign-In and a totally unregistered Gmail callback. Probing Google's
+> authorize endpoint with this app's exact parameters returned
+> `redirect_uri_mismatch` for the production host, the apex host *and*
+> localhost — i.e. the redirect-URI list was empty — while Sign-In kept
+> working perfectly. Google renders that as a page saying the app "doesn't
+> comply with Google's OAuth 2.0 policies", which reads to users as
+> "**\<domain\> is blocked**". If a user reports that phrase, check the
+> redirect-URI list first; it is not an encryption-key, `APP_BASE_URL`, or
+> application problem.
+>
+> **Match the canonical host exactly, including `www`.** Register the host
+> users are actually served on. This deployment canonicalises to
+> `https://www.compass-tools.com` (the apex 308-redirects to it), so the
+> redirect URI must be
+> `https://www.compass-tools.com/api/auth/gmail/callback` and `APP_BASE_URL`
+> must be `https://www.compass-tools.com`. Registering the apex instead is
+> not merely cosmetic: Google would send the browser to the apex, the apex
+> would redirect to `www`, and the `gmail_oauth_state` cookie — set on
+> `www`, host-scoped — would not be sent to the apex, so CSRF state
+> validation would fail even though the URI "looks" registered.
+
 For **local development**, add a second pair of entries on the same
 client rather than replacing the production ones: JavaScript origin
 `http://localhost:3000` and redirect URI

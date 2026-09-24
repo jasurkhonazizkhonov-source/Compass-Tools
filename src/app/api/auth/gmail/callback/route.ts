@@ -32,6 +32,15 @@ export async function GET(request: NextRequest) {
   const state = url.searchParams.get("state");
   const oauthError = url.searchParams.get("error");
 
+  // Paired with [gmail-connect] START in startGmailConnect(). If START
+  // appears in the logs and this line never does, Google rejected the
+  // authorization request before ever redirecting the browser back here —
+  // a Google Cloud Console problem (unregistered redirect URI, consent or
+  // verification block), not an application one. Logs only whether the
+  // two OAuth query params are present, never their values: `code` is a
+  // single-use credential and `state` is a CSRF token.
+  console.info(`[gmail-connect] CALLBACK_RECEIVED hasCode=${!!code} hasState=${!!state}${oauthError ? " googleError=present" : ""}`);
+
   const cookieStore = await cookies();
   const expectedState = cookieStore.get(GMAIL_OAUTH_STATE_COOKIE)?.value;
   cookieStore.delete(GMAIL_OAUTH_STATE_COOKIE);

@@ -8,7 +8,7 @@ import { OAuth2Client } from "google-auth-library";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { getGoogleClientId, getGoogleClientSecret } from "@/server/auth/google-config";
-import { getGmailOAuth2Client, GMAIL_CONNECT_SCOPES } from "@/server/auth/gmail-oauth-config";
+import { getGmailOAuth2Client, getGmailRedirectUri, GMAIL_CONNECT_SCOPES } from "@/server/auth/gmail-oauth-config";
 import { GMAIL_OAUTH_STATE_COOKIE } from "@/server/auth/gmail-oauth-state";
 import { decryptRefreshToken } from "@/server/security/gmail-token-encryption";
 
@@ -44,6 +44,30 @@ export async function startGmailConnect() {
     scope: GMAIL_CONNECT_SCOPES,
     state,
   });
+
+  // Diagnostic marker, paired with [gmail-connect] CALLBACK_RECEIVED in the
+  // callback route. Together they answer the single most important question
+  // when "Connect Gmail" fails: did Google ever hand the browser back to
+  // this deployment at all?
+  //   START logged, CALLBACK_RECEIVED absent  -> Google rejected the request
+  //     before redirecting (redirect_uri not registered for this OAuth
+  //     client, consent/verification block, disabled client). Nothing in
+  //     this application can recover from that; it is Google Cloud Console
+  //     configuration. This was the CONFIRMED cause of the reported
+  //     "compass-tools.com is blocked": probing Google's authorize endpoint
+  //     with this app's exact parameters returned error
+  //     `redirect_uri_mismatch` for the production host, the apex host, AND
+  //     localhost — i.e. no Gmail callback URI is registered at all. Google
+  //     Sign-In is unaffected because Identity Services uses the ID-token
+  //     flow, which validates an Authorized JavaScript ORIGIN and never a
+  //     redirect URI — which is exactly why one works and the other does not.
+  //   Both logged -> the failure is on this side; see the callback's own
+  //     categorised log lines.
+  // The redirect URI is not a secret (it is sent to Google in a URL the
+  // browser can read) and is logged verbatim on purpose: it is the exact
+  // string that must appear under "Authorized redirect URIs" for this
+  // OAuth client, so an operator can copy it straight out of the logs.
+  console.info(`[gmail-connect] START redirect_uri=${getGmailRedirectUri()}`);
 
   redirect(url);
 }

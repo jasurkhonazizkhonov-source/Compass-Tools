@@ -57,6 +57,7 @@ const generateAuthUrl = vi.fn((opts: { state: string }) => {
 });
 vi.mock("@/server/auth/gmail-oauth-config", () => ({
   getGmailOAuth2Client: () => ({ generateAuthUrl }),
+  getGmailRedirectUri: () => "https://compass-tools.example.com/api/auth/gmail/callback",
   GMAIL_CONNECT_SCOPES: ["https://www.googleapis.com/auth/gmail.send", "openid", "email"],
 }));
 
@@ -127,6 +128,28 @@ describe("startGmailConnect", () => {
     const { startGmailConnect } = await import("../gmail-connect");
     await expect(startGmailConnect()).rejects.toThrow();
     expect(redirectedTo).toBe("https://accounts.google.com/o/oauth2/v2/auth?mock=1");
+  });
+
+  // Diagnostic marker added to answer "did Google ever redirect the
+  // browser back to this deployment at all?" — paired with
+  // CALLBACK_RECEIVED in the callback route. This proved decisive in a
+  // real production incident: probing Google's authorize endpoint with
+  // this app's exact parameters returned redirect_uri_mismatch for every
+  // host tried (production, apex, and localhost), meaning no redirect URI
+  // was registered for the Gmail OAuth client at all — a Google Cloud
+  // Console problem invisible from application code alone without this
+  // log line to rule out an application-side cause first. Logged BEFORE
+  // redirect() so it survives even if generateAuthUrl/redirect throw.
+  it("logs the exact redirect_uri sent to Google, so it can be copied straight into Google Cloud Console's Authorized redirect URIs", async () => {
+    const infoSpy = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const { startGmailConnect } = await import("../gmail-connect");
+
+    await expect(startGmailConnect()).rejects.toThrow();
+
+    const logged = infoSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("[gmail-connect] START");
+    expect(logged).toContain("https://compass-tools.example.com/api/auth/gmail/callback");
+    infoSpy.mockRestore();
   });
 });
 
