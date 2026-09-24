@@ -35,8 +35,16 @@ export async function getQuotes(params: {
     prisma.quote.findMany({
       where,
       include: {
-        contact: true,
-        agent: true,
+        // Real performance issue found and fixed: `contact: true`/`agent:
+        // true` pulled every column of both full rows (including agent's
+        // Decimal commissionPercent/tipPercent) into every one of up to
+        // 100 rows/page, when the list only ever renders
+        // firstName/lastName/fullName — the same narrow-select pattern
+        // this codebase already established elsewhere (see
+        // ACCOUNT_NAME_SELECT in queries/contacts.ts and queries/leads.ts)
+        // to keep sensitive/unneeded Account columns from riding along.
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        agent: { select: { id: true, fullName: true } },
         itinerary: { include: { segments: { include: { departureAirport: true, arrivalAirport: true }, orderBy: { sequence: "asc" }, take: 1 } } },
       },
       // Most-recently-active first (any status change — sent, opened,

@@ -117,7 +117,7 @@ export default async function SequencesPage({ searchParams }: { searchParams: Se
                       <Badge variant={s.isActive ? "default" : "outline"}>{s.isActive ? "Active" : "Inactive"}</Badge>
                     </TableCell>
                     <TableCell className="text-sm">{s.steps.length}</TableCell>
-                    <TableCell className="text-sm">{s.enrollments.length}</TableCell>
+                    <TableCell className="text-sm">{s.activeEnrollmentCount}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{s._count.enrollments}</TableCell>
                     {showOwnerColumn && (
                       <TableCell className="text-sm text-muted-foreground">{s.createdBy?.fullName ?? "—"}</TableCell>

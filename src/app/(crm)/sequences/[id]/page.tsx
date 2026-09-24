@@ -32,9 +32,21 @@ export default async function SequenceDetailPage({ params, searchParams }: { par
   const currentAccount = await getCurrentAccount();
   if (!canViewSequencesPage(currentAccount?.role)) notFound();
   const viewer = currentAccount ? { id: currentAccount.id, role: currentAccount.role, companyId: currentAccount.companyId } : null;
-  const [sequence, leads] = await Promise.all([getSequenceDetail(id, viewer), listLeadsForEnrollment(viewer)]);
+  // Real performance issue found and fixed: getSequenceEnrollments only
+  // ever depends on id/viewer/page/pageSize — none of which depend on
+  // `sequence` or `leads` — but it used to be awaited only AFTER this
+  // Promise.all resolved, adding one full extra sequential database
+  // round-trip of latency to every sequence detail page load for no
+  // reason. Merged into the same Promise.all so all three genuinely
+  // independent queries run concurrently; the not-found check simply
+  // moves after, keyed off the resolved `sequence`.
+  const [sequence, leads, enrollmentPage] = await Promise.all([
+    getSequenceDetail(id, viewer),
+    listLeadsForEnrollment(viewer),
+    getSequenceEnrollments({ sequenceId: id, viewer, page, pageSize }),
+  ]);
   if (!sequence) notFound();
-  const { enrollments, total: enrollmentTotal, pageCount: enrollmentPageCount, pageSize: enrollmentPageSize } = await getSequenceEnrollments({ sequenceId: id, viewer, page, pageSize });
+  const { enrollments, total: enrollmentTotal, pageCount: enrollmentPageCount, pageSize: enrollmentPageSize } = enrollmentPage;
   redirectToValidPageIfNeeded(sp, `/sequences/${id}`, page, enrollmentPageCount);
   const canDelete = canManageAllSequences(currentAccount?.role) || sequence.createdById === currentAccount?.id;
 

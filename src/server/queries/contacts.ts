@@ -136,10 +136,17 @@ export async function getContactDetail(contactId: string, viewer: Viewer) {
         orderBy: { createdAt: "desc" },
         include: { departureAirport: true, arrivalAirport: true, assignedAgent: { select: ACCOUNT_NAME_SELECT } },
       },
+      // quotes/bookings intentionally stay unbounded here — the page shows
+      // their true .length as a tab-count badge (Quotes (N) / Bookings
+      // (N)), so bounding them would require a separate, accurate total
+      // count alongside a limited row set; not changed this pass without
+      // the ability to verify against real data (see notes/tasks below,
+      // which have no such count badge and can be safely bounded the same
+      // way activities/emailLogs already are further down).
       quotes: { orderBy: { createdAt: "desc" } },
       bookings: { orderBy: { createdAt: "desc" } },
-      notes: { orderBy: { createdAt: "desc" }, include: { author: { select: ACCOUNT_NAME_SELECT } } },
-      tasks: { orderBy: { dueAt: "asc" }, include: { assignee: { select: ACCOUNT_NAME_SELECT } } },
+      notes: { orderBy: { createdAt: "desc" }, take: 50, include: { author: { select: ACCOUNT_NAME_SELECT } } },
+      tasks: { orderBy: { dueAt: "asc" }, take: 50, include: { assignee: { select: ACCOUNT_NAME_SELECT } } },
       activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actor: { select: ACCOUNT_NAME_SELECT } } },
       attachments: { orderBy: { createdAt: "desc" } },
       emailLogs: { orderBy: { createdAt: "desc" }, take: 20 },

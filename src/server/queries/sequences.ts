@@ -13,7 +13,7 @@ export async function getSequences(params: { viewer: Viewer; scopeUserId?: strin
   const pageSize = resolvePageSize(params.pageSize); // Pass 12 §28/§30 — 25/50/75/100 allow-list
   const where = sequenceVisibilityWhere(params.viewer, params.scopeUserId);
 
-  const [sequences, total] = await Promise.all([
+  const [rawSequences, total] = await Promise.all([
     prisma.sequence.findMany({
       where,
       // createdAt ties are broken by id (Prisma orders findMany results
@@ -24,7 +24,6 @@ export async function getSequences(params: { viewer: Viewer; scopeUserId?: strin
       include: {
         steps: { select: { id: true } },
         _count: { select: { enrollments: true } },
-        enrollments: { where: { status: "ACTIVE" }, select: { id: true } },
         createdBy: { select: { id: true, fullName: true } },
       },
       skip: (page - 1) * pageSize,
@@ -32,6 +31,28 @@ export async function getSequences(params: { viewer: Viewer; scopeUserId?: strin
     }),
     prisma.sequence.count({ where }),
   ]);
+
+  // Real performance issue found and fixed: this used to fetch the actual
+  // row ids of every ACTIVE enrollment for every sequence on the page just
+  // to compute an "Active Enrollments" count via `.length` — for an
+  // always-on nurture sequence enrolled against thousands of leads, that's
+  // thousands of rows fetched and serialized purely to count them, right
+  // next to a `_count` on the same page proving the codebase already knows
+  // how to get a count without fetching rows. Prisma's filtered relation
+  // count (`_count.select.enrollments: { where }`) can't coexist with the
+  // existing unfiltered total count above in the same `_count` block (both
+  // would need the same "enrollments" key) — so the active count is
+  // computed via one small, batched `groupBy` instead: one extra query
+  // total for the whole page, not one per row and not one per sequence.
+  const activeCounts = rawSequences.length
+    ? await prisma.sequenceEnrollment.groupBy({
+        by: ["sequenceId"],
+        where: { sequenceId: { in: rawSequences.map((s) => s.id) }, status: "ACTIVE" },
+        _count: { _all: true },
+      })
+    : [];
+  const activeCountBySequenceId = new Map(activeCounts.map((c) => [c.sequenceId, c._count._all]));
+  const sequences = rawSequences.map((s) => ({ ...s, activeEnrollmentCount: activeCountBySequenceId.get(s.id) ?? 0 }));
 
   return { sequences, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }

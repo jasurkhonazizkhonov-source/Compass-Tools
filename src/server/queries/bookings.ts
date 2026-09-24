@@ -33,8 +33,15 @@ export async function getBookings(params: {
     prisma.booking.findMany({
       where,
       include: {
-        contact: true,
-        lead: { include: { assignedAgent: true } },
+        // Real performance issue found and fixed: `contact: true`/
+        // `assignedAgent: true` pulled every column of both full rows
+        // (including agent's Decimal commissionPercent/tipPercent) into
+        // every one of up to 100 rows/page, when the list only ever
+        // renders firstName/lastName/fullName — same narrow-select
+        // pattern already established elsewhere in this codebase (see
+        // ACCOUNT_NAME_SELECT in queries/contacts.ts and queries/leads.ts).
+        contact: { select: { id: true, firstName: true, lastName: true } },
+        lead: { select: { id: true, assignedAgent: { select: { id: true, fullName: true } } } },
         quote: { include: { itinerary: { include: { segments: { include: { departureAirport: true, arrivalAirport: true, airline: true }, orderBy: { sequence: "asc" }, take: 1 } } } } },
       },
       // `id` tiebreaker for deterministic pagination (Pass 7 §25).
