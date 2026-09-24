@@ -26,10 +26,13 @@ export const metadata: Metadata = {
   // logic depends on (via APP_BASE_URL) — reusing it here rather than
   // hardcoding a second copy of that origin.
   metadataBase: new URL(resolveBaseUrl()),
-  title: {
-    default: PRODUCT_NAME,
-    template: `%s — ${PRODUCT_NAME}`,
-  },
+  // No `template` here: every page below already bakes "— Compass Tools"
+  // into its own title string (e.g. "About — Compass Tools"), so a
+  // template would double it (confirmed in production: the homepage
+  // rendered "Compass Tools — CRM for Business Flights Travel — Compass
+  // Tools" before this fix). `default` alone still covers any future page
+  // that omits its own title.
+  title: PRODUCT_NAME,
   description: "CRM for airline ticket sales and travel agents",
   // Site-wide defaults; individual public marketing pages (see
   // src/app/(marketing)/**) override title/description/url per page and
