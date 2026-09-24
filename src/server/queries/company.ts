@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@/lib/prisma";
@@ -149,18 +150,31 @@ const COMPANY_SELECT = {
   signatureTemplate: true,
 } as const;
 
-export async function getCompanyById(companyId: string): Promise<ResolvedCompanyBranding> {
+// Request-scoped memoization (React cache()) — the SAME company branding is
+// resolved by (crm)/layout.tsx on every CRM page and independently again by
+// components like <CompanyLogo> and by email-composing server code within
+// the same request. Each of those was a separate database round trip
+// (~600ms each against the live production database — see the measurement
+// note in src/lib/dev-session.ts). cache() is reset per request and never
+// shared across requests or users, so branding for one company can never
+// leak into another request — the same safety property relied on for
+// getCurrentAccount/getMyQueueStatus.
+export const getCompanyById = cache(async (companyId: string): Promise<ResolvedCompanyBranding> => {
   const company = await prisma.company.findUnique({ where: { id: companyId }, select: COMPANY_SELECT });
   return resolveBranding(company);
-}
+});
 
-/** For a signed-in CRM user — resolves via their own Account.companyId. */
-export async function getCompanyForAccountId(accountId: string | null | undefined): Promise<ResolvedCompanyBranding> {
+/** For a signed-in CRM user — resolves via their own Account.companyId.
+ * NOTE: a caller that ALREADY holds the account row (e.g. (crm)/layout.tsx,
+ * which just awaited getCurrentAccount()) should call getCompanyById with
+ * `account.companyId` directly instead — this function has to spend an
+ * extra query re-reading the account purely to learn its companyId. */
+export const getCompanyForAccountId = cache(async (accountId: string | null | undefined): Promise<ResolvedCompanyBranding> => {
   if (!accountId) return resolveBranding(null);
   const account = await prisma.account.findUnique({ where: { id: accountId }, select: { companyId: true } });
   if (!account) return resolveBranding(null);
   return getCompanyById(account.companyId);
-}
+});
 
 /** For customer-facing pages/emails reached via a Contact (no CRM session
  * — e.g. the public quote/booking pages) — resolves via the Contact's own

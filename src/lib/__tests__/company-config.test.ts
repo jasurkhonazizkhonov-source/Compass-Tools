@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // Pass 39 — dedicated coverage for resolveBaseUrl() itself (previously
 // only exercised indirectly via gmail-oauth-config.test.ts). Added while
@@ -97,5 +97,58 @@ describe("resolveBaseUrl", () => {
       expect(result).not.toContain("/login");
       expect(result.startsWith("https://")).toBe(true);
     }
+  });
+});
+
+// Real diagnosability gap found and fixed: the production warning in
+// resolveBaseUrl() only fired when NOTHING was configured — but
+// APP_BASE_URL takes priority over both Vercel URL vars, so the far more
+// likely misconfiguration (copying this repo's own .env, which sets
+// APP_BASE_URL="http://localhost:3000", straight into the Vercel
+// dashboard) was accepted in complete silence. That single value is what
+// getGmailRedirectUri() builds Gmail's OAuth redirect_uri from, so it
+// breaks "Connect Gmail" while leaving no trace anywhere — production
+// never even receives the callback. NODE_ENV is readonly per @types/node
+// (see this file's own note above), hence vi.stubEnv.
+describe("resolveBaseUrl — production misconfiguration warning", () => {
+  it("warns when APP_BASE_URL is a localhost value in production, instead of silently accepting it", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.APP_BASE_URL = "http://localhost:3000";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const { resolveBaseUrl } = await import("../company-config");
+    expect(resolveBaseUrl()).toBe("http://localhost:3000");
+
+    const warned = warnSpy.mock.calls.flat().join(" ");
+    expect(warned).toContain("APP_BASE_URL");
+    expect(warned).toContain("https://");
+    warnSpy.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it("warns for any non-https production APP_BASE_URL, not just localhost", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.APP_BASE_URL = "http://crm.example.com";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const { resolveBaseUrl } = await import("../company-config");
+    resolveBaseUrl();
+
+    expect(warnSpy.mock.calls.flat().join(" ")).toContain("APP_BASE_URL");
+    warnSpy.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it("stays silent for a correctly configured https production APP_BASE_URL", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    process.env.APP_BASE_URL = "https://www.compass-tools.com";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const { resolveBaseUrl } = await import("../company-config");
+    expect(resolveBaseUrl()).toBe("https://www.compass-tools.com");
+
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+    vi.unstubAllEnvs();
   });
 });

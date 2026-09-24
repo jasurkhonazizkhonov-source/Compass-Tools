@@ -10,7 +10,7 @@ import { NextRequest } from "next/server";
 // token before persisting it (never stores the raw value).
 
 let cookieJar: Map<string, string>;
-let currentAccount: { id: string; email: string } | null;
+let currentAccount: { id: string; email: string; role?: string } | null;
 let connections: Map<string, { accountId: string; googleEmail: string; scopes: string[]; encryptedRefreshToken: string; status: string }>;
 
 vi.mock("next/headers", () => ({
@@ -49,14 +49,19 @@ vi.mock("@/server/auth/verify-google-token", () => ({
   verifyGoogleIdToken: (...args: [string]) => verifyGoogleIdToken(...args),
 }));
 
+// Indirected through a mutable impl so individual tests can make
+// encryption FAIL (the misconfigured/rotated-key case) without needing a
+// separate file — vi.mock factories are hoisted and shared per file.
+let encryptImpl: (token: string) => string;
 vi.mock("@/server/security/gmail-token-encryption", () => ({
-  encryptRefreshToken: (token: string) => `ENC:${token}`,
+  encryptRefreshToken: (token: string) => encryptImpl(token),
 }));
 
 beforeEach(() => {
   cookieJar = new Map([["gmail_oauth_state", "expected-state-value"]]);
   currentAccount = { id: "acct-1", email: "david.chen@compasstools.dev" };
   connections = new Map();
+  encryptImpl = (token: string) => `ENC:${token}`;
   vi.clearAllMocks();
 });
 
@@ -180,5 +185,65 @@ describe("Gmail OAuth callback", () => {
     const stored = connections.get("acct-1")!;
     expect(stored.status).toBe("CONNECTED");
     expect(stored.encryptedRefreshToken).toBe("ENC:new-refresh-token");
+  });
+
+  // Real defect found and fixed: encryptRefreshToken() was the one step in
+  // this route left outside any error handling, while every other failure
+  // path already redirects cleanly to ?gmail=error. It throws when
+  // GMAIL_TOKEN_ENCRYPTION_KEY is unset or isn't a 32-byte key — and
+  // .env.example ships that variable EMPTY, so an operator who filled in
+  // only the obvious values hits exactly this. It threw at the worst
+  // moment: after the user had already completed Google's consent screen,
+  // producing a raw 500 with no explanation while a live grant now existed
+  // at Google with nothing persisted on our side.
+  it("a missing/invalid token-encryption key redirects to ?gmail=error instead of throwing a raw 500 after consent", async () => {
+    getToken.mockResolvedValue({ tokens: { refresh_token: "raw-refresh-token-value", id_token: "idt", scope: "gmail.send" } });
+    verifyGoogleIdToken.mockResolvedValue({ email: "david.chen@compasstools.dev" });
+    encryptImpl = () => {
+      throw new Error("Gmail token encryption is not configured");
+    };
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { GET } = await import("../route");
+
+    const response = await GET(makeRequest("?code=abc&state=expected-state-value"));
+
+    expect(response.headers.get("location")).toBe("http://localhost:3000/dashboard?gmail=error");
+    // Nothing half-written: no connection row is stored when the token
+    // could not be encrypted.
+    expect(connections.size).toBe(0);
+    const logged = errorSpy.mock.calls.flat().join(" ");
+    expect(logged).toContain("TOKEN_ENCRYPTION_UNAVAILABLE");
+    expect(logged).not.toContain("raw-refresh-token-value");
+    errorSpy.mockRestore();
+  });
+
+  // Real defect found and fixed: this route always redirected to
+  // /dashboard. proxy.ts then bounces any role that can't view the
+  // Dashboard to its own default route and DROPS the ?gmail= query string
+  // in doing so — so a Ticketing Agent / Flight Expert / Marketing Agent
+  // completed the whole consent flow and saw no confirmation, and on
+  // failure no explanation at all. GmailConnectToast reads that param and
+  // renders from the shared (crm) layout, so landing on the role's own
+  // route shows the toast correctly.
+  it("a role that cannot view the Dashboard is returned to its own landing route, preserving the ?gmail= param", async () => {
+    currentAccount = { id: "acct-1", email: "david.chen@compasstools.dev", role: "TICKETING_AGENT" };
+    getToken.mockResolvedValue({ tokens: { refresh_token: "raw-refresh-token-value", id_token: "idt", scope: "gmail.send" } });
+    verifyGoogleIdToken.mockResolvedValue({ email: "david.chen@compasstools.dev" });
+    const { GET } = await import("../route");
+
+    const response = await GET(makeRequest("?code=abc&state=expected-state-value"));
+
+    expect(response.headers.get("location")).toBe("http://localhost:3000/quotes?gmail=connected");
+  });
+
+  it("a Marketing Agent likewise lands on its own route with the param intact", async () => {
+    currentAccount = { id: "acct-1", email: "david.chen@compasstools.dev", role: "MARKETING_AGENT" };
+    getToken.mockResolvedValue({ tokens: { refresh_token: "raw-refresh-token-value", id_token: "idt", scope: "gmail.send" } });
+    verifyGoogleIdToken.mockResolvedValue({ email: "david.chen@compasstools.dev" });
+    const { GET } = await import("../route");
+
+    const response = await GET(makeRequest("?code=abc&state=expected-state-value"));
+
+    expect(response.headers.get("location")).toBe("http://localhost:3000/subscriptions?gmail=connected");
   });
 });

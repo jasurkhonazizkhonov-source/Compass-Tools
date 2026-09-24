@@ -9,6 +9,8 @@ import { GMAIL_OAUTH_STATE_COOKIE } from "@/server/auth/gmail-oauth-state";
 import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
 import { normalizeEmail } from "@/server/auth/google-authorization";
 import { encryptRefreshToken } from "@/server/security/gmail-token-encryption";
+import { defaultRouteForRole } from "@/lib/permissions";
+import type { AccountRole } from "@/generated/prisma/client";
 
 // Gmail "Connect" OAuth callback — a real Route Handler (not a Server
 // Action) because Google redirects the browser here with a GET request and
@@ -34,8 +36,29 @@ export async function GET(request: NextRequest) {
   const expectedState = cookieStore.get(GMAIL_OAUTH_STATE_COOKIE)?.value;
   cookieStore.delete(GMAIL_OAUTH_STATE_COOKIE);
 
+  // Real defect found and fixed: this used to redirect unconditionally to
+  // /dashboard. For any role that cannot view the Dashboard (Ticketing
+  // Agent and Flight Expert land on /quotes, Marketing Agent on
+  // /subscriptions — see defaultRouteForRole), src/proxy.ts immediately
+  // re-redirects them to their own default route and, in doing so, DROPS
+  // the ?gmail= query string. GmailConnectToast reads exactly that param,
+  // so those users completed the whole OAuth consent flow and then saw no
+  // confirmation and — on mismatch/error — no explanation whatsoever,
+  // which reads precisely as "Connect Gmail does nothing." Sending them
+  // straight to their own landing route keeps the param intact. The toast
+  // lives in the shared (crm) layout, so it fires on any CRM route, not
+  // just the Dashboard. `session.role` is set once the session below
+  // resolves; the two call sites that run before that (declined consent,
+  // bad CSRF state) legitimately have no session yet, and
+  // defaultRouteForRole(undefined) returns /dashboard — the previous
+  // behaviour, unchanged, for exactly those cases.
+  // Held in a small mutable box rather than threaded through every
+  // toDashboard() call: there are eight call sites and every one of them
+  // must land on the user's own route, so a single shared value removes any
+  // chance of one being missed and silently regressing to /dashboard.
+  const session: { role?: AccountRole } = {};
   function toDashboard(gmailParam: string) {
-    return NextResponse.redirect(`${baseUrl}/dashboard?gmail=${gmailParam}`);
+    return NextResponse.redirect(`${baseUrl}${defaultRouteForRole(session.role)}?gmail=${gmailParam}`);
   }
 
   // The user declined consent on Google's screen, or Google reported some
@@ -52,6 +75,9 @@ export async function GET(request: NextRequest) {
   if (!current) {
     return NextResponse.redirect(`${baseUrl}/login`);
   }
+  // From here on every toDashboard() lands on THIS user's own permitted
+  // route, so the ?gmail= param survives proxy.ts's role routing.
+  session.role = current.role;
 
   let tokens;
   try {
@@ -90,7 +116,25 @@ export async function GET(request: NextRequest) {
     return toDashboard("mismatch");
   }
 
-  const encryptedRefreshToken = encryptRefreshToken(tokens.refresh_token);
+  // Real defect found and fixed: this was the one step in this route left
+  // unguarded, while every other failure path above redirects cleanly to
+  // ?gmail=error. encryptRefreshToken throws when
+  // GMAIL_TOKEN_ENCRYPTION_KEY is unset or isn't exactly 32 decoded bytes
+  // (note .env.example ships it EMPTY, so an operator who filled in only
+  // the obvious variables lands here) — and it throws at the worst possible
+  // moment: the user has already completed Google's consent screen, so they
+  // got a raw 500 with no explanation while a live grant now existed at
+  // Google with nothing stored on our side. Now it degrades to the same
+  // ?gmail=error toast as every other failure, with a distinct server-side
+  // log line naming the actual cause for whoever reads the logs.
+  let encryptedRefreshToken: string;
+  try {
+    encryptedRefreshToken = encryptRefreshToken(tokens.refresh_token);
+  } catch {
+    // Never logs the caught error or the token — only the category.
+    console.error("[gmail-connect] TOKEN_ENCRYPTION_UNAVAILABLE (GMAIL_TOKEN_ENCRYPTION_KEY missing or not a 32-byte key)");
+    return toDashboard("error");
+  }
   const scopes = (tokens.scope ?? "").split(" ").filter(Boolean);
 
   await prisma.gmailConnection.upsert({

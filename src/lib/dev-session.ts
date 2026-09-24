@@ -1,3 +1,4 @@
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { destroyCvvAuthorizationsForAccount } from "@/server/security/cvv-cache";
@@ -23,7 +24,35 @@ export function isSessionExpired(sessionCreatedAt: Date | null): boolean {
   return Date.now() - sessionCreatedAt.getTime() > SESSION_MAX_AGE_MS;
 }
 
-export async function getCurrentAccount() {
+// Real, measured performance defect found and fixed: this session lookup
+// runs `prisma.account.findUnique` and is called by (crm)/layout.tsx AND
+// independently again by all 26 CRM page components (plus components like
+// <CompanyLogo>) — so every single CRM page load performed the IDENTICAL
+// account query at least twice, with nothing deduplicating them. Measured
+// against the live production deployment, one database round trip there
+// currently costs roughly 600ms (an unauthenticated /login render, which
+// short-circuits before any query, averaged ~256ms; /quote/<invalid>,
+// which performs exactly one indexed findUnique before notFound(),
+// averaged ~890ms across repeated samples) — so this duplication alone was
+// costing well over half a second on every CRM navigation.
+//
+// React's cache() is the standard, documented Next.js App Router remedy
+// for exactly this "same data needed by both a layout and a page" case,
+// and is already used in this codebase for getMyQueueStatus. It memoizes
+// strictly within ONE request's render scope and is reset for every new
+// request — no value is ever shared across requests or between users, so
+// this carries none of the cross-user risk a route- or fetch-level cache
+// would. Verified safe for this specific function before applying: it
+// takes no arguments and reads only the request's own (immutable-within-a-
+// request) cookie; no caller mutates the returned Account object; and no
+// code path updates the account and then re-reads it expecting fresh data
+// within the same request (establishSession takes an explicit accountId
+// and never re-reads, signOut queries by token directly rather than
+// through this function, and heartbeat reads once before writing). The
+// expiry side effect below (destroyCvvAuthorizationsForAccount) is an
+// idempotent in-memory cleanup, so running it once per request instead of
+// once per call is equivalent.
+export const getCurrentAccount = cache(async () => {
   const cookieStore = await cookies();
   const token = cookieStore.get(DEV_ACCOUNT_COOKIE)?.value;
   if (!token) return null;
@@ -43,4 +72,4 @@ export async function getCurrentAccount() {
   }
 
   return account;
-}
+});

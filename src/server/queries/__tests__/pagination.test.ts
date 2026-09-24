@@ -40,7 +40,10 @@ beforeEach(() => {
 describe("getSequences — server-side pagination", () => {
   it("computes skip/take for page 3 and returns total from count(), not rows.length", async () => {
     const sequence = makeFakeModel([{ id: "s1" }], 67);
-    vi.doMock("@/lib/prisma", () => ({ prisma: { sequence } }));
+    // getSequences also issues one batched sequenceEnrollment.groupBy to
+    // count ACTIVE enrollments without fetching their rows (see its own
+    // comment) — stubbed here because this fake prisma is model-by-model.
+    vi.doMock("@/lib/prisma", () => ({ prisma: { sequence, sequenceEnrollment: { groupBy: async () => [] } } }));
     vi.doMock("@/server/visibility", () => ({ sequenceVisibilityWhere: () => ({ companyId: "company-1" }) }));
 
     const { getSequences } = await import("../sequences");
@@ -111,7 +114,7 @@ describe("getSequences — server-side pagination", () => {
 
   it("a larger pageSize (100) combined with filters/search still uses count() for the same where as findMany() — no count/filter mismatch introduced by the new page-size range", async () => {
     const sequence = makeFakeModel([{ id: "s1" }], 240);
-    vi.doMock("@/lib/prisma", () => ({ prisma: { sequence } }));
+    vi.doMock("@/lib/prisma", () => ({ prisma: { sequence, sequenceEnrollment: { groupBy: async () => [] } } }));
     vi.doMock("@/server/visibility", () => ({ sequenceVisibilityWhere: () => ({ companyId: "company-1" }) }));
 
     const { getSequences } = await import("../sequences");

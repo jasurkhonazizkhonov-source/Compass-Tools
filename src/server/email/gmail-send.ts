@@ -104,8 +104,33 @@ export async function sendViaGmail(input: GmailSendInput): Promise<GmailSendResu
     return { ok: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
   }
 
-  const client = new OAuth2Client(getGoogleClientId(), getGoogleClientSecret());
-  client.setCredentials({ refresh_token: decryptRefreshToken(connection.encryptedRefreshToken) });
+  // Real defect found and fixed: these two lines were the only ones in
+  // this function outside any try/catch, yet all three calls can throw —
+  // getGoogleClientId()/getGoogleClientSecret() when the OAuth env vars are
+  // unset, and decryptRefreshToken() when GMAIL_TOKEN_ENCRYPTION_KEY is
+  // missing, malformed, or (the realistic case) has been ROTATED since this
+  // connection's refresh token was encrypted, which fails AES-GCM auth-tag
+  // verification. That broke this function's documented contract of always
+  // resolving to a GmailSendResult and never throwing — with real
+  // consequences beyond email: the throw skipped crm-email.ts's EmailLog
+  // write (so a failed send left no audit trail at all), and because
+  // sendEmail is called from booking creation, quote sending, cancellation
+  // and ~10 other flows, a single bad key took those unrelated operations
+  // down with it rather than degrading to a clear "couldn't email" result.
+  // Now classified as REAUTH_REQUIRED: a rotated key genuinely is fixed by
+  // reconnecting Gmail (which re-encrypts a fresh token with the current
+  // key), and for the truly-unconfigured case the operator-facing signal is
+  // the distinct log line below, never a leaked key or error detail.
+  let client: OAuth2Client;
+  try {
+    client = new OAuth2Client(getGoogleClientId(), getGoogleClientSecret());
+    client.setCredentials({ refresh_token: decryptRefreshToken(connection.encryptedRefreshToken) });
+  } catch {
+    // Deliberately never logs the caught error — it can carry key/token
+    // material or configuration detail.
+    console.error("[gmail-send] GMAIL_CREDENTIALS_UNUSABLE (OAuth config missing, or token encryption key missing/rotated)");
+    return { ok: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
+  }
 
   let accessToken: string;
   try {

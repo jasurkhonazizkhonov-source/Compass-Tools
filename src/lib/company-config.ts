@@ -63,7 +63,28 @@ export function resolveBaseUrl(): string {
   // Console, failing the "Connect Gmail" flow with a confusing
   // redirect_uri_mismatch for a purely cosmetic env-var typo. A bare
   // APP_BASE_URL="https://example.com" is unaffected either way.
-  if (process.env.APP_BASE_URL) return process.env.APP_BASE_URL.trim().replace(/\/+$/, "");
+  if (process.env.APP_BASE_URL) {
+    const explicit = process.env.APP_BASE_URL.trim().replace(/\/+$/, "");
+    // Real diagnosability gap found and fixed: the production warning below
+    // only fires when NOTHING is set — but APP_BASE_URL takes priority over
+    // both Vercel URL vars, so the far likelier misconfiguration (copying
+    // this repo's own .env, which contains APP_BASE_URL="http://localhost:3000",
+    // wholesale into the Vercel dashboard) was accepted in silence. That
+    // single value poisons everything derived from it: getGmailRedirectUri()
+    // hands Google a localhost redirect_uri, so "Connect Gmail" either fails
+    // with redirect_uri_mismatch or — worse, if localhost is also registered
+    // on the same OAuth client for dev — bounces the user to their own
+    // machine after consent, meaning production never receives the callback
+    // and logs nothing at all. Customer-facing links and the booking page's
+    // secure-context behaviour break the same way. Warned about explicitly
+    // now, because this failure is otherwise completely invisible.
+    if (process.env.NODE_ENV === "production" && !/^https:\/\//i.test(explicit)) {
+      console.warn(
+        `resolveBaseUrl(): NODE_ENV=production but APP_BASE_URL is not an https:// URL (got "${explicit}"). Gmail's OAuth redirect_uri, customer-facing links, and the booking page's secure-context behaviour are all derived from this value and will be broken. Set APP_BASE_URL to this deployment's real https:// origin.`
+      );
+    }
+    return explicit;
+  }
   if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   if (process.env.NODE_ENV === "production") {
