@@ -14,7 +14,11 @@ import type { NextConfig } from "next";
 const CSP = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' https://accounts.google.com",
-  "style-src 'self' 'unsafe-inline'",
+  // https://accounts.google.com is required here too: Google's Sign-In
+  // button loads its own stylesheet (accounts.google.com/gsi/style) — a
+  // real CSP violation caught by testing this in production, not just the
+  // script origin already allowed above.
+  "style-src 'self' 'unsafe-inline' https://accounts.google.com",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
   "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
