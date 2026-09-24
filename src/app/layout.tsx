@@ -5,7 +5,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { themeInitScript } from "@/lib/theme-script";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
-import { PRODUCT_NAME } from "@/lib/company-config";
+import { PRODUCT_NAME, resolveBaseUrl } from "@/lib/company-config";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -19,8 +19,31 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: PRODUCT_NAME,
+  // Lets every page's relative `alternates.canonical` / `openGraph.url`
+  // resolve against the real deployment origin instead of being silently
+  // dropped by Next.js. resolveBaseUrl() already returns the same
+  // https://www.compass-tools.com canonical origin the Gmail OAuth redirect
+  // logic depends on (via APP_BASE_URL) — reusing it here rather than
+  // hardcoding a second copy of that origin.
+  metadataBase: new URL(resolveBaseUrl()),
+  title: {
+    default: PRODUCT_NAME,
+    template: `%s — ${PRODUCT_NAME}`,
+  },
   description: "CRM for airline ticket sales and travel agents",
+  // Site-wide defaults; individual public marketing pages (see
+  // src/app/(marketing)/**) override title/description/url per page and
+  // inherit this same image/siteName unless they specify their own.
+  openGraph: {
+    siteName: PRODUCT_NAME,
+    images: [{ url: "/logo.png" }],
+    locale: "en_US",
+    type: "website",
+  },
+  twitter: {
+    card: "summary",
+    images: ["/logo.png"],
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

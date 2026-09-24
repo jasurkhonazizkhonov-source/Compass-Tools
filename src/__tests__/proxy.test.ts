@@ -68,3 +68,40 @@ describe("proxy — session-lookup database failure", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 });
+
+// The public marketing homepage / CRM Inquiry admin-only route pass added
+// the new public website (Part 3) and removed "/" from the proxy matcher
+// so it could be served publicly. These tests guard both halves of that
+// change: a non-Admin still can't reach the Admin-only inquiry list by
+// typing the URL directly (server-enforced, not just hidden from nav —
+// canViewGetInTouch is also checked again at the page level, see
+// src/app/(crm)/get-in-touch/page.tsx), and "/" staying out of the
+// matcher is a deliberate, documented choice rather than an accidental gap.
+describe("proxy — CRM Inquiry (/get-in-touch) is Admin-only", () => {
+  it("a signed-in non-Admin (e.g. Travel Agent) hitting /get-in-touch directly is redirected away, not shown the inquiry list", async () => {
+    findUnique.mockResolvedValue({ status: "ACTIVE", role: "TRAVEL_AGENT", sessionCreatedAt: new Date() });
+    const { proxy } = await import("../proxy");
+
+    const response = await proxy(makeRequest("/get-in-touch", "some-valid-looking-token"));
+
+    expect(response.headers.get("location")).not.toContain("/get-in-touch");
+  });
+
+  it("a signed-in Admin hitting /get-in-touch is let through", async () => {
+    findUnique.mockResolvedValue({ status: "ACTIVE", role: "ADMIN", sessionCreatedAt: new Date() });
+    const { proxy } = await import("../proxy");
+
+    const response = await proxy(makeRequest("/get-in-touch", "some-valid-looking-token"));
+
+    expect(response.headers.get("location")).toBeNull();
+  });
+});
+
+describe("proxy — matcher config", () => {
+  it("does not list \"/\" — the public marketing homepage manages its own auth check and must not be redirected to /login", async () => {
+    const { config } = await import("../proxy");
+
+    expect(config.matcher).not.toContain("/");
+    expect(config.matcher).toContain("/get-in-touch/:path*");
+  });
+});

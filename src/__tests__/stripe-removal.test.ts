@@ -187,6 +187,11 @@ describe("Stripe removal — repo-wide verification", () => {
         // PCI DSS "sensitive authentication data" the way a CVV is. Never
         // handles, stores, or even references an actual CVV value.
         path.join("server", "security", "ip-encryption.ts"),
+        // Public sitemap/robots config: only names the "/cvv-recollection"
+        // route PREFIX (a string literal matching the app's own folder
+        // name, allowed above) so crawlers don't index it — never handles,
+        // stores, or references an actual CVV value.
+        path.join("app", "robots.ts"),
       ].map((p) => path.join(ROOT, "src", p))
     );
     const offenders: string[] = [];

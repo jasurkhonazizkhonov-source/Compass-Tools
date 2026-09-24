@@ -152,7 +152,12 @@ export async function proxy(request: NextRequest) {
 
 export const config = {
   matcher: [
-    "/",
+    // "/" intentionally NOT listed: it's now the public marketing
+    // homepage (src/app/(marketing)/page.tsx), which performs its own
+    // getCurrentAccount() check — the same self-managed pattern /login
+    // already uses (also absent from this matcher) — redirecting a
+    // signed-in visitor to /dashboard while rendering the public page for
+    // everyone else. /dashboard itself remains fully gated below.
     "/dashboard",
     "/dashboard/:path*",
     "/leads/:path*",

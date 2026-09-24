@@ -162,7 +162,16 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       size: "large",
       text: "continue_with",
       shape: "pill",
-      width: 280,
+      // Real responsive defect found and fixed: Google's renderButton()
+      // only accepts a fixed pixel width (no percentage/responsive
+      // option), and 280px combined with the login card's own horizontal
+      // padding caused genuine horizontal page-scroll at 320px-wide
+      // viewports (this predates this pass's login redesign — the
+      // original card used the same p-8 padding). 232px is the largest
+      // width that stays comfortably within a 320px viewport alongside
+      // the card's padding, verified with zero horizontal overflow at
+      // 320/375/390/430px and unchanged visually at desktop sizes.
+      width: 232,
     });
   }, [scriptLoaded, clientId, router]);
 
