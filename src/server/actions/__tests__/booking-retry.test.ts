@@ -43,26 +43,10 @@ vi.mock("@/server/booking-notification", () => ({
   sendBookingSignedNotification: vi.fn(async () => {}),
 }));
 
-// Payment capture is the provider's job: the booking action only receives an
-// opaque capture reference and re-verifies it with the provider. These tests
-// stub that verification (the real one is covered in vaulted-methods tests and
-// the real-database integration suite) — no card data exists in any fixture.
-vi.mock("@/server/payments/provider", () => ({ getPaymentProvider: vi.fn(() => ({ id: "stripe" })) }));
-vi.mock("@/server/payments/vaulted-methods", () => ({
-  verifyVaultedSetup: vi.fn(async (setupIntentId: string) => ({
-    ok: true,
-    method: {
-      provider: "stripe",
-      providerCustomerId: "cus_test",
-      providerPaymentMethodId: `pm_${setupIntentId}`,
-      providerSetupIntentId: setupIntentId,
-      cardBrand: "Visa",
-      last4: "4242",
-      expiryMonth: 12,
-      expiryYear: new Date().getUTCFullYear() + 3,
-      cardFunding: "credit",
-      providerCardholderName: "Jane Traveler",
-    },
+vi.mock("@/server/security/payment-vault", () => ({
+  getPaymentVault: vi.fn(() => ({
+    store: vi.fn(async (pan: string) => `ENC:${pan}`),
+    reveal: vi.fn(async (ref: string) => ref.replace(/^ENC:/, "")),
   })),
 }));
 
@@ -189,8 +173,10 @@ vi.mock("@/lib/prisma", () => {
 
 function validCard(overrides: Partial<{ amount: number }> = {}) {
   return {
-    setupIntentId: "seti_test_1",
     cardholderName: "Jane Traveler",
+    cardNumber: "4111111111111111",
+    expiryMonth: 12,
+    expiryYear: new Date().getUTCFullYear() + 3,
     amount: 500,
     ...overrides,
   };

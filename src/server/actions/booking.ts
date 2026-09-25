@@ -11,10 +11,9 @@ import { calculatePricing } from "@/lib/pricing";
 import { resolveExchangeRate, convertBookingPricing, convertAmount } from "@/lib/currency";
 import { type EmailPaymentMethod } from "@/server/email/templates";
 import { transitionQuoteStatus, notifyQuoteActivity } from "@/server/quote-status";
-import { getPaymentProvider } from "@/server/payments/provider";
-import { verifyVaultedSetup, type VerifiedVaultedMethod } from "@/server/payments/vaulted-methods";
+import { getPaymentVault } from "@/server/security/payment-vault";
 import { recordHealthEvent } from "@/server/system/health-events";
-import { isPaymentAllocationValid } from "@/lib/card-validation";
+import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
 import { getClientIp } from "@/lib/request-ip";
 import { recordIpCapture } from "@/server/security/ip-capture";
 import { passengerSchema } from "@/server/actions/booking-schema";
@@ -102,16 +101,17 @@ export async function trackBookingFormStarted(token: string) {
   }
 }
 
-// One payment method, as part of a (possibly multi-card) payment split. The
-// customer typed the card into the payment provider's hosted fields (the
-// browser sent the number and security code straight to the provider), so this
-// app receives only the id of the completed capture — never a card number, an
-// expiry, or a security code. Everything stored about the card is read back
-// from the provider by verifyVaultedSetup(). (Any unknown extra key a stale
-// client still sends, e.g. a card field, is dropped by zod's object stripping.)
+// One customer-entered card, as part of a (possibly multi-card) payment
+// split. There is deliberately NO security-code field: Compass Tools never
+// asks for, receives, caches or stores a CVV/CVC. cardNumber exists only
+// transiently inside submitBooking()'s own function body and is never
+// logged or included in any error message. (An unknown extra key a stale
+// client still sends is dropped by zod's default object stripping.)
 const cardEntrySchema = z.object({
-  setupIntentId: z.string().min(6).max(80),
-  cardholderName: z.string().min(1).max(200),
+  cardholderName: z.string().min(1),
+  cardNumber: z.string().min(12).max(23), // allows spaces; stripped before validation
+  expiryMonth: z.number().int().min(1).max(12),
+  expiryYear: z.number().int(),
   amount: z.number().positive(),
 });
 
@@ -126,12 +126,12 @@ const submitBookingSchema = z.object({
   billingState: z.string().min(1),
   billingZip: z.string().min(1),
   billingCountry: z.string().min(1),
-  // Payment methods vaulted by the payment provider. One or more, each with
-  // its own allocated amount (a booking may split payment across multiple
-  // cards) — the server independently re-verifies every one with the provider
-  // and independently re-validates that the allocated amounts sum to the
-  // booking total. Nothing here authorizes or captures a charge: a saved
-  // payment method is not a payment.
+  // Card collection — native CRM fields, no external processor. One or
+  // more payment methods, each with its own allocated amount (a booking
+  // may split payment across multiple cards) — the server independently
+  // re-validates every one of these (format checks on the client are UX
+  // only, never trusted as a security control) and independently
+  // re-validates that the allocated amounts sum to the booking total.
   paymentMethods: z.array(cardEntrySchema).min(1).max(6),
   paymentConsent: z.literal(true),
   gratuityAmount: z.number().min(0),
@@ -235,56 +235,47 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
     return { ok: false, error: "This link is no longer active. Please contact your travel agent for your current quote." };
   }
 
-  // Server-side verification of every vaulted payment method with the
-  // provider — the authoritative check, independent of whatever the browser
-  // claims. A capture is accepted only if the provider itself reports it
-  // completed AND it was made for THIS quote. Error messages are generic and
-  // never echo provider text.
-  const provider = getPaymentProvider();
-  if (!provider) {
-    console.error("[booking] PAYMENT_PROVIDER_UNAVAILABLE");
-    await recordHealthEvent({
-      type: "BOOKING_PAYMENT_UNAVAILABLE",
-      category: "payment",
-      severity: "CRITICAL",
-      message: "A customer tried to finish a booking but no payment provider is configured. Nothing was charged and nothing was recorded.",
-    });
-    return { ok: false, error: "Online booking is temporarily unavailable. Nothing was charged and no booking was recorded. Please contact your travel agent." };
-  }
-  if (new Set(parsed.paymentMethods.map((c) => c.setupIntentId)).size !== parsed.paymentMethods.length) {
-    return { ok: false, error: "Payment information could not be processed" };
-  }
-  const preparedCards: Array<VerifiedVaultedMethod & { id: string; cardholderName: string; amount: number }> = [];
+  // Server-side payment validation — the authoritative check, independent
+  // of whatever the client already validated. Error messages are always
+  // generic; never echo any part of any submitted card number.
+  // preparedCards holds every field that is retained; no security code is
+  // ever part of it — see cardEntrySchema.
+  const preparedCards: Array<{ id: string; cardholderName: string; encryptedPan: string; last4: string; cardBrand: string | undefined; expiryMonth: number; expiryYear: number; amount: number }> = [];
   for (const card of parsed.paymentMethods) {
-    const verified = await verifyVaultedSetup(card.setupIntentId, { quoteId: quote.id, providerCustomerId: quote.contact.providerCustomerId }, provider);
-    if (!verified.ok) {
-      if (verified.reason === "provider_unavailable" || verified.reason === "not_configured") {
-        console.error(`[booking] PAYMENT_VERIFY_FAILED reason=${verified.reason} category=${verified.category ?? "-"}`);
-        await recordHealthEvent({
-          type: "PAYMENT_PROVIDER_ERROR",
-          category: "payment",
-          severity: "WARNING",
-          discriminator: "verify_setup",
-          message: "The payment provider could not be reached to verify a customer's payment method. Nothing was recorded; the customer was asked to retry.",
-          metadata: { reason: verified.reason, providerCategory: verified.category },
-        });
-        return { ok: false, error: "We couldn't verify your payment method right now. Nothing was charged and no booking was recorded. Please try again in a moment." };
-      }
-      if (verified.reason === "already_used") {
-        // A concurrent identical submission (double click, retry) already
-        // committed this very capture. If that booking is the SAME signer's,
-        // this request is a replay of it — answer with the original booking,
-        // never an error for something that in fact succeeded.
-        const winner = await findBookingForReplay(quote.id, parsed);
-        if (winner) return { ok: true, bookingReference: winner.bookingReference, bookingId: winner.id, alreadyCompleted: true };
-        return { ok: false, error: "Payment information could not be processed" };
-      }
-      if (verified.reason === "not_completed") {
-        return { ok: false, error: "Your card details were not completed. Please re-enter your card and try again. Nothing was charged." };
-      }
+    const cardNumberDigits = digitsOnly(card.cardNumber);
+    const cardBrand = detectCardBrand(cardNumberDigits);
+    if (!isValidCardNumber(cardNumberDigits)) {
       return { ok: false, error: "Payment information could not be processed" };
     }
-    preparedCards.push({ ...verified.method, id: crypto.randomUUID(), cardholderName: card.cardholderName, amount: card.amount });
+    if (!isValidExpiry(card.expiryMonth, card.expiryYear)) {
+      return { ok: false, error: "Payment information could not be processed" };
+    }
+    let encryptedPan: string;
+    try {
+      encryptedPan = await getPaymentVault().store(cardNumberDigits);
+    } catch (err) {
+      // e.g. the production fail-closed vault (see payment-vault.ts) or a
+      // missing CARD_ENCRYPTION_KEY. A configuration problem, not the
+      // customer's mistake — nothing has been written yet.
+      console.error(`[booking] CARD_VAULT_UNAVAILABLE (${safeErrorTag(err)})`);
+      await recordHealthEvent({
+        type: "BOOKING_PAYMENT_UNAVAILABLE",
+        category: "payment",
+        severity: "CRITICAL",
+        message: "A customer tried to finish a booking but the card vault is unavailable (production guard closed, or CARD_ENCRYPTION_KEY missing/invalid — see System Health). Nothing was charged or stored.",
+      });
+      return { ok: false, error: "We couldn't securely process your payment details right now. Nothing was charged and no booking was recorded. Please try again shortly or contact your travel agent." };
+    }
+    preparedCards.push({
+      id: crypto.randomUUID(),
+      cardholderName: card.cardholderName,
+      encryptedPan,
+      last4: lastFour(cardNumberDigits),
+      cardBrand: cardBrand === "Unknown" ? undefined : cardBrand,
+      expiryMonth: card.expiryMonth,
+      expiryYear: card.expiryYear,
+      amount: card.amount,
+    });
   }
 
   // Server recomputes the total from the quote's own stored USD pricing —
@@ -419,14 +410,7 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
                 // "Payment Methods" section, not only on this booking.
                 contactId: quote.contactId,
                 cardholderName: c.cardholderName,
-                // Provider vault references + display metadata only. There
-                // is no card number and no security code to store.
-                provider: c.provider,
-                providerCustomerId: c.providerCustomerId,
-                providerPaymentMethodId: c.providerPaymentMethodId,
-                providerSetupIntentId: c.providerSetupIntentId,
-                cardFunding: c.cardFunding,
-                vaultStatus: "VAULTED" as const,
+                encryptedPan: c.encryptedPan,
                 last4: c.last4,
                 cardBrand: c.cardBrand,
                 expiryMonth: c.expiryMonth,

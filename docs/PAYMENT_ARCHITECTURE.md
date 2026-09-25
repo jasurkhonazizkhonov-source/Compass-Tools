@@ -1,170 +1,98 @@
-# Payment architecture — provider-vaulted cards and manual charges
+# Payment architecture — how Compass Tools handles cards
 
-**Compass Tools is not a payment-card database and is not PCI DSS certified.**
-Card capture and storage are delegated to a PCI-compliant payment provider
-(Stripe, through the adapter boundary in `src/server/payments/`). This document
-states what the code does, what it deliberately refuses to do, and what must be
-configured. It describes engineering boundaries, not a compliance claim.
+Compass Tools keeps its **own** payment workflow. There is **no external payment
+provider** of any kind (no Stripe, PayPal, Adyen, Braintree, Authorize.net,
+Square, …): no SDK, no hosted fields, no webhooks, no provider keys. A customer
+enters their card on the booking form, the CRM encrypts it into its own database,
+and staff record payments by hand against the card on file. A repo-wide test
+(`src/__tests__/stripe-removal.test.ts`) fails if a provider dependency, key,
+webhook route or `src/server/payments` module reappears.
 
-## The business requirement, and how it is met
+**Compass Tools is not PCI DSS certified and this is not PCI DSS-grade key
+management.** The card vault is application-level AES-256-GCM encryption with a
+single environment key. That is a deliberate, owner-accepted design for this
+single-company CRM; it is not a compliance claim, and whoever operates a
+deployment carries the responsibility of running it that way. This document
+describes engineering boundaries only.
 
-Business Flights Travel must be able to charge a customer's card **later**
-(manually, by an authorized Admin) after the customer completes a booking.
+> **Do not remove this architecture again.** The customer card entry, the
+> encrypted vault, contact-level payment methods, masked display, Admin-only
+> Reveal, manual payment recording and payment history are core CRM features and
+> are covered by regression tests. A change that deletes them is a regression.
 
-```
-Customer types card details into the PROVIDER's hosted fields (iframes)
-   → provider vaults a reusable payment method
-   → Compass Tools receives only an opaque reference (SetupIntent id)
-   → submitBooking re-verifies that reference with the provider (server-side)
-   → booking commits atomically with the payment-method REFERENCE
-   → Admin later chooses "Manual charge" on the booking
-   → Compass Tools tells the provider to charge the vaulted method (off-session)
-   → provider processes it; result stored; signed webhooks keep it in sync
-```
+## Hard rules (enforced by tests, not just by convention)
 
-Because the provider holds the reusable credential, a later charge needs
-**neither the card number nor a stored security code**. That is what makes the
-requirement achievable without storing a CVV.
+1. **The card security code (CVV / CVC / CVV2 / CVC2 / CID), PIN, PIN block and
+   magnetic-stripe/track data are never collected, received, cached, stored,
+   logged, e-mailed or sent to analytics.** There is no field for one in the
+   customer form, no key for one in the booking action's input schema, no column
+   for one in any table and no in-memory cache. A client that still sends one has
+   it dropped at the schema boundary; a real-PostgreSQL test scans **every column
+   of every table** to prove a submitted marker value is nowhere
+   (`booking-submit.integration.test.ts`, "NO CVV ANYWHERE"). Customer consent
+   does not change this; there is no "temporary" or "24-hour" CVV store either.
+2. **No card data in URLs, browser storage, logs, analytics, error messages,
+   notifications or e-mail.** Staff e-mails and notifications carry brand +
+   last4 + expiry only. Logs carry a safe error category, never a message that
+   could embed a value. A free-text payment note that looks like a card number is
+   rejected.
+3. **The full card number leaves the database only through Reveal**, which is
+   permission-gated (`canRevealPaymentMethod`), IDOR-checked (the card must belong
+   to a booking/contact the actor may access), requires recent re-authentication
+   and writes an audit-log entry. Every other query omits the ciphertext column.
+4. **The vault fails closed in production.** `getPaymentVault()`
+   (`src/server/security/payment-vault.ts`) refuses to store or reveal a card when
+   `isProductionEnvironment()` is true (`src/lib/env.ts`: `APP_ENV` if set, else
+   `NODE_ENV`). The owner enables it on a real deployment **deliberately** by
+   setting `APP_ENV` to a non-production value (e.g. `staging`) **and** a valid
+   `CARD_ENCRYPTION_KEY` — see `docs/DEPLOYMENT.md` §5c. Until then a customer's
+   "Finish Booking" is refused with "nothing was charged and no booking was
+   recorded", and Admins see it in the readiness banner, System Health and
+   `GET /api/health`.
+5. **No real charges are made by the application.** "Confirm payment" only
+   *records* that staff took a payment through their own supplier/merchant
+   process. Tests and fixtures use only the card networks' published test numbers
+   (e.g. 4242 4242 4242 4242), never a real PAN.
 
-## Hard rules (enforced by tests, not just convention)
+## What exists
 
-1. **The card security code (CVV/CVC/CVV2/CVC2/CID), PIN and track data are never
-   collected by, sent to, cached in, stored by, logged by, e-mailed by, or
-   exported from Compass Tools.** The customer types the security code into the
-   provider's own iframe; it goes from their browser straight to the provider.
-   There is no field, key, column, cache or table for one. A request to add a
-   "temporary encrypted CVV vault", a 24-hour CVV cache or table, or a
-   scheduled-deletion workaround is refused: PCI DSS forbids retaining a
-   security code after authorization (including for card-on-file use), and
-   encryption or a short lifetime does not change that. If a particular
-   transaction genuinely needs a fresh security code, it must be collected again
-   through the provider's compliant interface — never retrieved from us.
-   - `stripe-removal.test.ts` fails if any executable source line mentions a
-     security code (one allow-listed defensive deny-list aside), and
-     `booking-submit.integration.test.ts` scans **every column of every table**
-     to prove a submitted marker value is nowhere.
-2. **Compass Tools holds no card number.** Full-number storage, the development
-   AES vault and the "Reveal" workflow were removed; no server code reads or
-   writes `PaymentMethod.encryptedPan` (a legacy nullable column left in place —
-   production never held a value in it).
-3. **No payment data in URLs, browser storage, logs, analytics, error messages,
-   notifications or e-mail.** Logs carry a safe error category, never payloads.
-   Audit rows carry last4 only. Webhook events store id/type/outcome, never the
-   payload. Provider free-text errors are never shown or stored.
-4. **Provider secrets never reach a browser.** Only the publishable key is sent
-   to a page (by design of the provider); the secret key and webhook secret are
-   read server-side only, and a repo test confines those variable names to
-   `src/server/payments/`.
-5. **No real charges in tests.** Tests use an in-memory fake provider; live
-   verification uses the provider's test mode and its official test cards.
-6. **`APP_ENV` cannot switch any of this off.** Booking availability depends
-   only on a valid provider configuration.
-
-## What Compass Tools stores, and what it cannot do
-
-| | |
+| Piece | Where |
 |---|---|
-| **Compass Tools stores** | provider name, provider customer id, provider payment-method id, the capture (SetupIntent) id, card brand, last4, expiry month/year, funding type, cardholder name, amount allocated, vault status, workflow status; per charge: amount, currency, status, provider PaymentIntent id, idempotency key, failure category/code (short vocabulary), refunded amount, who initiated it, timestamps. |
-| **The provider stores** | the card number and all card credentials. |
-| **Admins can see** | `Visa •••• 4242 · Expires 08/2029 · Cardholder`, allocation, vault status, charge history. |
-| **Nobody can retrieve from Compass Tools** | the full card number, the security code. There is no action, query or column that could return them. |
+| Customer card entry (cardholder, number, expiry, amount; split across several cards) | `src/components/booking/card-payment-section.tsx`, `booking-flow.tsx` |
+| Atomic booking submit incl. card storage | `src/server/actions/booking.ts` (`submitBooking`) |
+| Encrypted vault | `src/server/security/payment-vault.ts`, `card-encryption.ts` (`PaymentMethod.encryptedPan`) |
+| Vault readiness (pure env check, no secrets) | `src/server/security/card-vault-status.ts` |
+| Contact-level payment methods (add / edit / remove) | `src/server/actions/contact-payment-methods.ts` |
+| Masked display + Admin Reveal | `src/components/bookings/payment-method-card.tsx`, `revealPaymentMethod` in `src/server/actions/payment-methods.ts` |
+| Manual payment recording (success / failed, amount, currency, note, actor, timestamp), history | `confirmPaymentReceived` (status `SUCCEEDED` or `FAILED`) in `payment-methods.ts`, `charge-customer-panel.tsx` |
+| Authorization | `src/server/security/permissions.ts` (`canRevealPaymentMethod`, `canConfirmPayment`, `canAccessPaymentMethod`) |
 
-## Manual charge workflow (Admin only)
+Data kept per payment method: cardholder name, brand, last4, expiry, encrypted
+number, allocated amount, billing address, owner booking/contact, timestamps.
+Per recorded payment (`PaymentCharge`): amount, currency, status
+(`PENDING` / `SUCCEEDED` / `FAILED` / `CANCELED`), reference note, who recorded it
+and when.
 
-`initiateManualCharge` (`src/server/actions/manual-charge.ts` → `src/server/payments/manual-charge.ts`):
+## Currency
 
-- **Authorization:** Admin only (`canInitiateManualCharge`), re-checked on the
-  server; hidden buttons are not the control. The booking must be visible to the
-  actor and the payment method must belong to **that** booking (IDOR-safe).
-- **Exactly-once:** the dialog generates an idempotency key (unique column on
-  `PaymentCharge`), and the provider call reuses it. A double click, replay, or
-  retry after a timeout cannot charge twice; a key reused for a different
-  amount is refused; only one charge may be in flight per card.
-- **Never trusts the browser:** the request carries no status, currency, or
-  provider ids — those come from our own rows and the provider's response.
-- **Currency:** always the booking's own currency (e.g. AUD), never converted.
-- **Limits:** the existing charge ceiling (allocation × 5 + 5000), applied
-  cumulatively; expired, removed, detached, or legacy (never-vaulted) cards are
-  refused.
-- **Outcome unknown** (provider timeout): the charge stays `PENDING`, a
-  health incident is raised, and "Retry" re-asks the provider with the same key.
-- **Statuses:** `PENDING` → `SUCCEEDED` / `FAILED` / `CANCELED`; refunds move a
-  success to `PARTIALLY_REFUNDED` / `REFUNDED`. Status transitions are
-  forward-only and shared by the synchronous path and the webhooks
-  (`src/server/payments/charge-state.ts`). A saved payment method is **not** a
-  payment; booking/quote status rules (Ticketed→Booked, Confirmed→Charged, …)
-  are untouched.
-- **Audit:** `MANUAL_CHARGE_REQUESTED/SUCCEEDED/FAILED/PROCESSING`,
-  `PAYMENT_REFUNDED` with actor, booking, amount, currency, PaymentIntent id
-  and last4 only.
+The customer sees and pays in the quote's currency (e.g. AUD, `A$`); the amount
+recorded on a payment uses that currency and is never silently converted to USD.
+Internal profit, commission and sales-board figures stay in USD.
 
-Refunds (`refundManualCharge`) are Admin-only, idempotent per client key, and
-capped at what remains of the charge.
+## Booking submission and Finish Booking
 
-## Webhook: `POST /api/webhooks/payments`
+`submitBooking` validates the input, looks the quote up by its secure token,
+replays an existing booking for the same signer (idempotent double click /
+refresh / retry), refuses an already-booked or non-bookable quote, encrypts each
+card and then, in **one database transaction**, claims the quote (→ `SIGNED`) and
+creates the booking, passengers, signature (typed name, IP, user agent) and
+payment methods, and moves the lead to `BOOKED`. IP-vault entry, activity log,
+notification and staff e-mail run after the response and can never undo a booking.
+If the vault is unavailable nothing is written and the customer is told so.
 
-Authenticated **only** by the provider's signature over the raw body (HMAC
-verified in constant time, 5-minute replay window). Idempotent through
-`PaymentWebhookEvent`; out-of-order safe; unknown events acknowledged;
-handled: `payment_intent.succeeded/processing/payment_failed/canceled`,
-`charge.refunded`, `payment_method.detached`. Rejections raise a sanitized
-System Health incident carrying only the reason.
+## Choosing to go further (a business decision — not made here)
 
-## Configuration (Vercel → Settings → Environment Variables)
-
-| Variable | Purpose |
-|---|---|
-| `PAYMENT_PROVIDER` | `stripe` (selects the adapter). |
-| `STRIPE_SECRET_KEY` | Server-side API key (`sk_test_…` / `sk_live_…`, or a restricted `rk_…`). |
-| `STRIPE_PUBLISHABLE_KEY` | Public key for the hosted fields (`pk_test_…` / `pk_live_…`). Must be the same mode as the secret key. |
-| `STRIPE_WEBHOOK_SECRET` | Signing secret of the webhook endpoint (`whsec_…`). |
-
-Webhook endpoint to create in the provider dashboard:
-`https://<your-domain>/api/webhooks/payments`, events `payment_intent.succeeded`,
-`payment_intent.processing`, `payment_intent.payment_failed`,
-`payment_intent.canceled`, `charge.refunded`, `payment_method.detached`.
-
-**Test and live cannot be confused:** the secret and publishable keys must agree
-(a mismatch is reported *Invalid* and keeps bookings unavailable); System Health
-shows **Warning** when test keys run on a production deployment (real cards will
-be declined). Use test keys + the provider's official test cards for
-verification; switch to live keys only when you intend to take real payments.
-
-## System Health and readiness
-
-`/system-health` (Admin only) reports, without revealing any value:
-provider selected; credentials Configured / Missing / Invalid; the provider API
-probe (Healthy / Invalid credentials / Unreachable); card vaulting and manual
-(off-session) charging availability; test-vs-live mode; webhook secret; stuck or
-failing charges; plus incidents for provider errors, rejected webhooks and
-failed bookings. `/api/health` exposes only `bookingPayment: available|unavailable`
-and `paymentProvider: ready|not_configured|invalid` (configuration only, no
-network probe). The banner "Customers cannot complete bookings right now" shows
-exactly while the provider is not usable, and disappears only when its
-configuration is valid.
-
-## Resilience of the booking flow
-
-- Browser → provider capture, then a server action re-verifies the capture with
-  the provider (status, quote binding, customer binding, card validity,
-  not-already-used). A forged, incomplete, expired or foreign capture is refused.
-- The booking, passengers, signature (with IP), payment-method **reference**,
-  quote → SIGNED and lead → BOOKED commit in one database transaction. If it
-  fails, nothing is left behind.
-- A capture that succeeded but whose booking did not commit leaves only an
-  unused, uncharged vaulted method at the provider (no money moved, no booking
-  row). A retry reuses the same capture (idempotent setup keyed by quote+slot),
-  so the customer is not asked to re-enter the card; a duplicate submission
-  replays the original booking.
-- Provider timeouts are reported as "try again — nothing was charged"; provider
-  outages raise a System Health incident.
-
-## Data-model summary
-
-`PaymentMethod` (+ `provider`, `providerCustomerId`, `providerPaymentMethodId`,
-`providerSetupIntentId` (unique), `cardFunding`, `vaultStatus`), `PaymentCharge`
-(+ `provider`, `providerPaymentIntentId` (unique), `idempotencyKey` (unique),
-`failureCategory/Code`, `refundedAmount`, `refundIdempotencyKeys`), `Contact.providerCustomerId`
-(unique), `PaymentWebhookEvent`. All additive migrations; `encryptedPan` became
-nullable. The unused `CvvRecollectionRequest` table is left untouched (no code
-reads or writes it).
+If the business later wants to stop holding card numbers at all, that means
+adopting an external tokenization service — a separate project that would
+replace, not extend, this vault. The user has explicitly asked that no provider
+be introduced; nothing here is built toward one.

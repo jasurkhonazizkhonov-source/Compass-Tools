@@ -17,7 +17,7 @@ import { safeErrorTag } from "@/lib/safe-error-log";
 import { isProductionEnvironment } from "@/lib/env";
 import { trustedProxyConfig } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
-import { getPaymentProviderStatus, getPaymentProvider } from "@/server/payments/provider";
+import { getCardVaultStatus } from "@/server/security/card-vault-status";
 
 export type HealthState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type HealthGroup = "critical" | "warning" | "informational";
@@ -178,115 +178,41 @@ async function checkGmail(): Promise<HealthCheckResult> {
   });
 }
 
-// The provider's account probe is a real network call; cache it briefly so a
-// page refresh (or the throttled background evaluation) does not hammer it.
-const ACCESS_CACHE_MS = 60_000;
-let accessCache: { at: number; value: import("@/server/payments/provider").ProviderAccessCheck } | null = null;
-
-async function probeProviderAccess(): Promise<import("@/server/payments/provider").ProviderAccessCheck | null> {
-  const provider = getPaymentProvider();
-  if (!provider) return null;
-  if (accessCache && Date.now() - accessCache.at < ACCESS_CACHE_MS) return accessCache.value;
-  const value = await provider.checkAccess();
-  accessCache = { at: Date.now(), value };
-  return value;
-}
-
-/** Test hook — the probe cache is module state. */
-export function resetPaymentProbeCacheForTests() {
-  accessCache = null;
-}
-
-async function checkPaymentProvider(): Promise<HealthCheckResult> {
-  return guarded("payment.provider", "payment", "Payment provider & booking readiness", async () => {
-    const status = getPaymentProviderStatus();
-    const production = isProductionEnvironment();
-    const facts: Array<{ label: string; value: string }> = [
-      { label: "Environment", value: production ? "production" : "non-production" },
-      { label: "Provider selected", value: status.provider ?? "none (PAYMENT_PROVIDER is not set)" },
-      { label: "Card security code", value: "Never collected or stored by Compass Tools" },
+async function checkCardVault(): Promise<HealthCheckResult> {
+  return guarded("payment.vault", "payment", "Card vault & booking readiness", async () => {
+    const vault = getCardVaultStatus();
+    const onVercelProduction = process.env.VERCEL_ENV === "production";
+    const facts = [
+      { label: "Environment treated as", value: vault.productionGuard ? "production (vault guard closed)" : "non-production (vault guard open)" },
+      { label: "CARD_ENCRYPTION_KEY", value: vault.key === "configured" ? "Configured" : vault.key === "missing" ? "Missing" : "Invalid" },
+      { label: "Card storage", value: vault.storageAvailable ? "Available" : "Unavailable" },
+      { label: "Card security code", value: "Never collected or stored" },
     ];
-    if (status.state !== "ready") {
-      if (status.missing.length) facts.push({ label: "Missing", value: status.missing.join(", ") });
-      if (status.invalid.length) facts.push({ label: "Invalid", value: status.invalid.join(", ") });
-      const why = status.invalid.length ? "its credentials are invalid" : "it is not configured";
-      const action = status.state === "invalid"
-        ? "Fix the invalid credential(s) listed above in the Vercel environment variables (the secret key and publishable key must both be test keys or both be live keys), then redeploy."
-        : "Select and configure the payment provider: set PAYMENT_PROVIDER=stripe, STRIPE_SECRET_KEY, STRIPE_PUBLISHABLE_KEY and STRIPE_WEBHOOK_SECRET in the Vercel environment variables, then redeploy. See docs/PAYMENT_ARCHITECTURE.md. Do not work around this with APP_ENV.";
+    if (vault.blockedBy === "production_guard") {
       return {
-        // Bookings need a working provider in EVERY environment (there is no
-        // fallback vault), so this blocks customers wherever it happens; it is
-        // only "Critical" where real customers are affected.
-        state: production || status.state === "invalid" ? "CRITICAL" : "WARNING",
-        summary: `Customers cannot complete bookings: the payment provider ${why}. Nothing is charged and nothing is stored until it is.`,
-        action,
+        state: "CRITICAL",
+        summary: "Customers cannot complete bookings: this is treated as a production environment, where the card vault refuses to store cards (nothing is charged, no booking is recorded).",
+        action: "Enabling the CRM's own application-level card vault on this deployment is a deliberate decision: set APP_ENV to any value other than \"production\" (and a valid CARD_ENCRYPTION_KEY) in Vercel, then redeploy. See docs/DEPLOYMENT.md §5c — the vault uses application-managed encryption keys and is NOT PCI DSS-grade.",
         facts,
       };
     }
-
-    facts.push({ label: "Credentials", value: "Configured" }, { label: "Mode", value: status.mode });
-    const access = await probeProviderAccess();
-    if (!access || !access.ok) {
-      const reason = access?.reason ?? "error";
-      facts.push({ label: "Provider API", value: reason === "invalid_credentials" ? "Invalid credentials" : reason === "unreachable" ? "Unreachable" : "Error" });
-      if (reason === "invalid_credentials") {
-        return { state: "CRITICAL", summary: "The payment provider rejected the configured credentials, so customers cannot complete bookings.", action: "Replace the secret key in the Vercel environment variables with a current one from the provider dashboard, then redeploy.", facts };
-      }
-      return { state: "WARNING", summary: "The payment provider could not be reached to confirm it is working (it may be a brief outage).", action: "Retry in a minute; if it persists check the provider's status page.", facts };
-    }
-    facts.push({ label: "Provider API", value: "Healthy" }, { label: "Card vaulting", value: "Available" }, { label: "Manual (off-session) charging", value: access.chargesEnabled ? "Available" : "Not enabled on the provider account" });
-    if (!access.chargesEnabled) {
-      return { state: "CRITICAL", summary: "The provider account cannot accept charges yet (account setup is incomplete), so bookings can be saved but nothing can be charged.", action: "Finish the account activation in the provider dashboard.", facts };
-    }
-    if (status.mode === "test" && production) {
-      return { state: "WARNING", summary: "Payments are in TEST mode on a production deployment: real cards will be declined, so customers cannot genuinely pay.", action: "When you are ready to take real payments, replace the test keys with the live keys in the Vercel environment variables and redeploy.", facts };
-    }
-    return { state: "HEALTHY", summary: `Customers can complete bookings: card details are captured by ${status.provider}'s secure fields and vaulted there; Compass Tools keeps only references.`, facts };
-  });
-}
-
-async function checkPaymentWebhook(): Promise<HealthCheckResult> {
-  return guarded("payment.webhook", "payment", "Payment webhooks", async () => {
-    const status = getPaymentProviderStatus();
-    if (status.state !== "ready") return { state: "HEALTHY", summary: "Not applicable until a payment provider is configured.", facts: [{ label: "Signing secret", value: "n/a" }] };
-    const last = await prisma.paymentWebhookEvent.findFirst({ orderBy: { receivedAt: "desc" }, select: { receivedAt: true } });
-    const facts = [
-      { label: "Signing secret (STRIPE_WEBHOOK_SECRET)", value: status.webhookConfigured ? "Configured" : "Missing" },
-      { label: "Last event received", value: last ? last.receivedAt.toISOString() : "none yet" },
-    ];
-    if (!status.webhookConfigured) {
-      const required = isProductionEnvironment() && status.mode === "live";
+    if (vault.blockedBy === "key_missing" || vault.blockedBy === "key_invalid") {
       return {
-        state: required ? "CRITICAL" : "WARNING",
-        summary: "Webhook verification is not configured: refunds, disputes and delayed payment results made at the provider will not sync into the CRM, and its events will be rejected.",
-        action: "In the provider dashboard add an endpoint for /api/webhooks/payments (events: payment_intent.*, charge.refunded, payment_method.detached), then set its signing secret as STRIPE_WEBHOOK_SECRET in Vercel and redeploy.",
+        state: vault.productionGuard ? "CRITICAL" : "WARNING",
+        summary: `Customers cannot complete bookings: CARD_ENCRYPTION_KEY is ${vault.blockedBy === "key_missing" ? "not set" : "not a valid key"}, so a card cannot be encrypted for storage.`,
+        action: "Set CARD_ENCRYPTION_KEY to a base64-encoded 32-byte key (openssl rand -base64 32) in the environment, then redeploy. Cards already stored need the ORIGINAL key to be revealed — never replace a key that has data under it.",
         facts,
       };
     }
-    return { state: "HEALTHY", summary: "Webhook signature verification is configured.", facts };
-  });
-}
-
-async function checkPaymentActivity(): Promise<HealthCheckResult> {
-  return guarded("payment.activity", "payment", "Charges and payment methods", async () => {
-    const since = new Date(Date.now() - 24 * 3600_000);
-    const stuckBefore = new Date(Date.now() - 10 * 60_000);
-    const [succeeded, failed, config, stuck, vaulted] = await Promise.all([
-      prisma.paymentCharge.count({ where: { provider: { not: null }, status: "SUCCEEDED", createdAt: { gte: since } } }),
-      prisma.paymentCharge.count({ where: { provider: { not: null }, status: "FAILED", createdAt: { gte: since } } }),
-      prisma.paymentCharge.count({ where: { provider: { not: null }, status: "FAILED", failureCategory: "invalid_request", createdAt: { gte: since } } }),
-      prisma.paymentCharge.count({ where: { provider: { not: null }, status: "PENDING", createdAt: { lt: stuckBefore } } }),
-      prisma.paymentMethod.count({ where: { vaultStatus: "VAULTED", status: "ACTIVE" } }),
-    ]);
-    const facts = [
-      { label: "Charges succeeded / failed (24h)", value: `${succeeded} / ${failed}` },
-      { label: "Charges pending > 10 min", value: String(stuck) },
-      { label: "Saved (vaulted) payment methods", value: String(vaulted) },
-    ];
-    if (config > 0) return { state: "CRITICAL", summary: "The provider rejected recent charges as invalid requests — a credentials or configuration problem, not card declines.", action: "Check the provider credentials and account status.", facts };
-    if (stuck > 0) return { state: "WARNING", summary: `${stuck} charge(s) have been pending for over 10 minutes with no final result from the provider.`, action: "Open the booking and press Retry on the charge (safe — it cannot charge twice), or check the provider dashboard.", facts };
-    if (failed >= 5 && succeeded === 0) return { state: "WARNING", summary: "Every recent charge attempt failed.", action: "Review the declines; if unexpected, check the provider account.", facts };
-    return { state: "HEALTHY", summary: "No stuck or unusual payment activity.", facts };
+    if (onVercelProduction) {
+      return {
+        state: "WARNING",
+        summary: "Customers can complete bookings, using the CRM's application-level card vault on a production deployment. It encrypts cards with an application-managed key (AES-256-GCM) — development-grade, not PCI DSS-grade key management.",
+        action: "Keep Reveal limited to authorized Admins, protect CARD_ENCRYPTION_KEY, and consider a PCI-compliant vault before holding real cards at scale.",
+        facts,
+      };
+    }
+    return { state: "HEALTHY", summary: "Card storage is available: the vault key is valid and the environment guard is open.", facts };
   });
 }
 
@@ -321,6 +247,7 @@ async function checkEncryptionKeys(): Promise<HealthCheckResult> {
       { label: "IP vault encryption key", value: ipEnc },
       { label: "IP vault search key", value: ipHash },
       { label: "Gmail token key", value: gmail },
+      { label: "Card vault key", value: base64KeyStatus(process.env.CARD_ENCRYPTION_KEY, 32) },
     ];
     if (ipEnc === "Invalid" || ipHash === "Invalid" || gmail === "Invalid") {
       return { state: "CRITICAL", summary: "An encryption key is set but not a valid key; anything it protects cannot be read or written.", facts, action: "Regenerate it as a base64-encoded 32-byte key and update the environment." };
@@ -409,9 +336,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkConnectionPressure(),
     checkAuthConfig(),
     checkGmail(),
-    checkPaymentProvider(),
-    checkPaymentWebhook(),
-    checkPaymentActivity(),
+    checkCardVault(),
     checkSignerIp(),
     checkEncryptionKeys(),
     checkBookingIntegrity(),

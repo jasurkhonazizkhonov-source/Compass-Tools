@@ -1,32 +1,40 @@
-# Previous-Card Autofill — Security Scope
+# Previous-Card Autofill — Security Scope (Pass 25)
 
-## What is implemented
+## What was requested
 
-A **masked selector that autofills the cardholder name only.**
-`getPreviousPaymentMethodsForContact` (`src/server/queries/bookings.ts`) returns,
-per previously-used card, the cardholder name, last four digits, brand and
-expiry — for display in the dropdown. Choosing one fills **only the cardholder
-name** on the new card form. The customer always enters the card itself in the
-payment provider's secure fields.
+Let a customer filling out a booking form select a previously-used card
+from an earlier booking and have the payment section autofill from it.
 
-## Why the card itself is never autofilled
+## What is actually implemented
 
-Compass Tools holds **no card number and no security code**: the payment provider
-vaults the card (see `docs/PAYMENT_ARCHITECTURE.md`), and this app keeps only an
-opaque provider reference plus brand/last4/expiry. So there is nothing here to
-autofill a card *with*, and a card number could not be retrieved from the CRM
-even by an Admin.
+A **masked selector only**. `getPreviousPaymentMethodsForContact`
+(`src/server/queries/bookings.ts`) returns, per previously-used card:
+cardholder name, last 4 digits, card brand, expiry month/year. Selecting
+one autofills **only those fields** into the new card form. The customer
+must always manually re-type the full card number — it is
+never returned by this query, offered in the UI, or autofilled.
 
-Reusing a previously vaulted card on a **new** booking (skipping re-entry) is a
-possible future feature, and would work by referencing the provider's saved
-payment method — never by re-exposing card data. It would need its own review of
-consent and the provider's rules for reuse; it is not built.
+## Why the full card number is not autofilled
+
+This app's card storage (`src/server/security/payment-vault.ts`) is
+application-level AES-256-GCM encryption — **not** PCI DSS-grade key
+management (see `docs/PAYMENT_ARCHITECTURE.md`). Decrypting a stored PAN
+is reserved for the audited, Admin-only Reveal action. Re-exposing a
+previously-stored PAN into a brand-new, unrelated transaction — pulling
+decrypted card data back out of storage for a convenience feature rather
+than the original authorized charge it was collected for — is exactly the
+kind of unnecessary cardholder-data re-exposure that scope-reduction
+principles exist to prevent, so full-PAN autofill is deliberately not
+offered. The customer re-types the number; only the masked details
+(cardholder, brand, last 4, expiry) are offered.
 
 ## What this feature does NOT do
 
-- Never returns, logs, or transmits a card number or security code — this app
-  has neither.
-- Never sends card data to customer emails, internal notifications, or analytics.
-- Only returns cards belonging to the requesting customer's own contact record,
-  scoped server-side the same way passenger/billing history is (the query is
-  keyed on the quote's `contactId`, never on a client-supplied id).
+- Never returns, logs, or transmits a full card number for this purpose.
+- Never returns, stores, or offers a CVV for autofill. **Compass Tools never
+  collects or stores a CVV at all** — see `docs/PAYMENT_ARCHITECTURE.md`.
+- Never sends card data to customer emails, internal notifications, or
+  analytics.
+- Only returns cards belonging to the requesting customer's own
+  contact record, scoped server-side the same way passenger/billing
+  autofill is (never a client-supplied identifier trusted on its own).

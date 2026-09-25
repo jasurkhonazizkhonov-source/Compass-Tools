@@ -24,8 +24,9 @@ const enabled = !!URL_UNDER_TEST;
 
 if (enabled) {
   process.env.DATABASE_URL = URL_UNDER_TEST;
-  process.env.APP_ENV = "test";
+  process.env.APP_ENV = "test"; // non-production vault selection
   process.env.TRUSTED_PROXY = "vercel";
+  process.env.CARD_ENCRYPTION_KEY ??= randomBytes(32).toString("base64");
   process.env.IP_ENCRYPTION_KEY ??= randomBytes(32).toString("base64");
   process.env.IP_HASH_KEY ??= randomBytes(32).toString("base64");
 }
@@ -60,27 +61,37 @@ vi.mock("nanoid", () => ({ customAlphabet: () => () => forcedReference ?? Math.r
 
 const TAG = `it-${Date.now()}`;
 
-// A DB trigger (below) rejects any PaymentMethod insert whose last four digits
-// are 0000, to inject a failure at the PAYMENT-METHOD step — i.e. AFTER the
-// booking row itself has been written. The fake provider lets a test complete a
-// capture with exactly that last4.
+// A Luhn-valid 16-digit PAN whose last four digits are 0000 — used with a DB
+// trigger (below) that rejects exactly that card, to inject a failure at the
+// PAYMENT-METHOD step, i.e. AFTER the booking row itself has been written.
+function luhnValid(n: string): boolean {
+  let sum = 0;
+  for (let i = 0; i < n.length; i++) {
+    let d = Number(n[n.length - 1 - i]);
+    if (i % 2 === 1) {
+      d *= 2;
+      if (d > 9) d -= 9;
+    }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+const PAN_ENDING_0000 = (() => {
+  for (let mid = 0; mid < 100; mid++) {
+    const candidate = `41111111${String(mid).padStart(2, "0")}0000`;
+    if (luhnValid(candidate)) return candidate;
+  }
+  throw new Error("no luhn-valid test PAN found");
+})();
 
 describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", () => {
   let prisma: typeof import("@/lib/prisma").prisma;
   let submitBooking: typeof import("../booking").submitBooking;
-  let fake: import("@/test/fake-payment-provider").FakePaymentProvider;
-  let setProvider: typeof import("@/server/payments/provider").setPaymentProviderForTests;
-  let healthEvents: typeof import("@/server/system/health-events");
   const contactIds: string[] = [];
   let seq = 0;
 
   beforeAll(async () => {
     ({ prisma } = await import("@/lib/prisma"));
-    ({ setPaymentProviderForTests: setProvider } = await import("@/server/payments/provider"));
-    const { FakePaymentProvider } = await import("@/test/fake-payment-provider");
-    fake = new FakePaymentProvider();
-    setProvider(fake);
-    healthEvents = await import("@/server/system/health-events");
     ({ submitBooking } = await import("../booking"));
     await prisma.company.upsert({
       where: { id: "default-company" },
@@ -95,7 +106,6 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
 
   afterAll(async () => {
     if (!enabled) return;
-    setProvider(null);
     await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS it_reject_pm_0000 ON "PaymentMethod"`);
     await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS it_reject_pm_0000()`);
     await prisma.contact.deleteMany({ where: { id: { in: contactIds } } });
@@ -144,31 +154,7 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
         total: 570,
       },
     });
-    tokenToQuoteId.set(quote.secureToken, quote.id);
     return { contact, lead, quote };
-  }
-
-  // Like a customer's browser: one completed provider capture per quote, reused
-  // by every retry of that quote's form (so concurrent/repeated submits carry the
-  // SAME capture reference, as real retries do).
-  const tokenToQuoteId = new Map<string, string>();
-  const captureByToken = new Map<string, string>();
-  async function capture(quoteId: string, last4 = "4242") {
-    const { setupIntentId } = await fake.createSetupSession({ customerId: "cus_it", metadata: { quoteId, purpose: "booking" }, idempotencyKey: `it-${crypto.randomUUID()}` });
-    fake.completeSetup(setupIntentId, { last4 });
-    return setupIntentId;
-  }
-  function captureFor(token: string): string {
-    let id = captureByToken.get(token);
-    if (!id) {
-      // Synchronous fake bookkeeping (no network): create + complete inline.
-      const quoteId = tokenToQuoteId.get(token) ?? "unknown";
-      const seti = `seti_${crypto.randomUUID().replace(/-/g, "").slice(0, 14)}`;
-      fake.setups.set(seti, { id: seti, customerId: "cus_it", metadata: { quoteId, purpose: "booking" }, status: "succeeded", paymentMethodId: `pm_${crypto.randomUUID().replace(/-/g, "").slice(0, 14)}`, card: { brand: "visa", last4: "4242", expMonth: 12, expYear: new Date().getUTCFullYear() + 3, funding: "credit", cardholderName: "Jane Traveler" } });
-      captureByToken.set(token, seti);
-      id = seti;
-    }
-    return id;
   }
 
   function input(token: string, overrides: Record<string, unknown> = {}, total = 570) {
@@ -184,8 +170,10 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
       billingCountry: "US",
       paymentMethods: [
         {
-          setupIntentId: captureFor(token),
           cardholderName: "Jane Traveler",
+          cardNumber: "4111111111111111",
+          expiryMonth: 12,
+          expiryYear: new Date().getUTCFullYear() + 3,
           amount: total,
         },
       ],
@@ -214,19 +202,8 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(booking.signature?.ipAddress).toBe(currentIp);
     expect(booking.signature?.userAgent).toBe("IntegrationTest/1.0");
     expect(booking.paymentMethods).toHaveLength(1);
-    // Provider vault references + display metadata — no card number, no security code.
-    expect(booking.paymentMethods[0]).toMatchObject({
-      last4: "4242",
-      cardBrand: "Visa",
-      contactId: contact.id,
-      provider: "stripe",
-      vaultStatus: "VAULTED",
-      workflowStatus: "PENDING", // a saved payment method is NOT a payment
-      encryptedPan: null,
-    });
-    expect(booking.paymentMethods[0].providerPaymentMethodId).toMatch(/^pm_/);
-    expect(booking.paymentMethods[0].providerSetupIntentId).toMatch(/^seti_/);
-    expect(await prisma.paymentCharge.count({ where: { paymentMethod: { bookingId: booking.id } } })).toBe(0);
+    expect(booking.paymentMethods[0]).toMatchObject({ last4: "1111", contactId: contact.id });
+    expect(booking.paymentMethods[0].encryptedPan).not.toContain("4111111111111111");
     expect(booking.statusHistory).toHaveLength(1);
 
     const q = await prisma.quote.findUniqueOrThrow({ where: { id: quote.id }, include: { statusHistory: true } });
@@ -256,6 +233,7 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
     spies.forEach((spy) => spy.mockRestore());
     expect(logged).not.toContain(MARK);
+    expect(logged).not.toContain("4111111111111111"); // nor the card number
 
     // Every column of every table: the marker is nowhere.
     const tables = await prisma.$queryRaw<Array<{ table_name: string }>>`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`;
@@ -269,6 +247,7 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     // The stored card has no security-code field at all, and no plain PAN.
     const [pm] = await prisma.paymentMethod.findMany({ where: { bookingId: result.bookingId } });
     expect(Object.keys(pm).join(",")).not.toMatch(/cvv|cvc|security|cid/i);
+    expect(JSON.stringify(pm)).not.toContain("4111111111111111");
   });
 
   it("FULL signer IP: an IPv6 address is stored complete (untruncated) and the encrypted vault gets it too", async () => {
@@ -318,166 +297,6 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(result.ok).toBe(true);
     const sig = await prisma.signature.findFirstOrThrow({ where: { booking: { quoteId: quote.id } } });
     expect(sig.ipAddress).toBeNull();
-  });
-
-  describe("payment provider paths", () => {
-    const openEvents = (type: string) => prisma.healthEvent.count({ where: { type, resolvedAt: null } });
-
-    it("the provider being unreachable when verifying the capture returns a clear error, writes NOTHING, and raises a System Health incident", async () => {
-      const { PaymentProviderError } = await import("@/server/payments/provider");
-      const { quote, contact } = await makeQuote();
-      const body = input(quote.secureToken);
-      healthEvents.resetHealthEventThrottleForTests();
-      fake.failNextRetrieve = new PaymentProviderError("provider_unavailable", "network_error");
-      const r = await submitBooking(body);
-      await flushDeferred();
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toMatch(/couldn't verify your payment method/i);
-      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
-      expect(await prisma.paymentMethod.count({ where: { contactId: contact.id } })).toBe(0);
-      expect((await prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe("SENT");
-      expect(await openEvents("PAYMENT_PROVIDER_ERROR")).toBeGreaterThan(0);
-      // The very same form then succeeds on retry (same capture reference).
-      const retry = await submitBooking(body);
-      await flushDeferred();
-      expect(retry.ok).toBe(true);
-    });
-
-    it("a capture the customer never completed is refused (the browser's word is never enough)", async () => {
-      const { quote } = await makeQuote();
-      const { setupIntentId } = await fake.createSetupSession({ customerId: "cus_it", metadata: { quoteId: quote.id, purpose: "booking" }, idempotencyKey: `it-${crypto.randomUUID()}` });
-      const body = input(quote.secureToken);
-      body.paymentMethods[0].setupIntentId = setupIntentId; // created, never completed
-      const r = await submitBooking(body);
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toMatch(/not completed/i);
-      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
-    });
-
-    it("a completed capture made for a DIFFERENT quote cannot be used for this booking", async () => {
-      const a = await makeQuote();
-      const b = await makeQuote();
-      const body = input(a.quote.secureToken);
-      body.paymentMethods[0].setupIntentId = await capture(b.quote.id);
-      const r = await submitBooking(body);
-      expect(r.ok).toBe(false);
-      expect(await prisma.booking.count({ where: { quoteId: a.quote.id } })).toBe(0);
-    });
-
-    it("an unknown / forged capture id is refused without touching the database", async () => {
-      const { quote } = await makeQuote();
-      const body = input(quote.secureToken);
-      body.paymentMethods[0].setupIntentId = "seti_forged_by_a_browser";
-      const r = await submitBooking(body);
-      expect(r.ok).toBe(false);
-      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
-    });
-
-    it("the same capture cannot back two bookings (unique reference)", async () => {
-      const a = await makeQuote();
-      const first = await submitBooking(input(a.quote.secureToken));
-      await flushDeferred();
-      expect(first.ok).toBe(true);
-      const usedId = (await prisma.paymentMethod.findFirstOrThrow({ where: { booking: { quoteId: a.quote.id } } })).providerSetupIntentId!;
-      const b = await makeQuote();
-      // Even if its metadata were forged to point at the new quote, the id is already used.
-      fake.setups.get(usedId)!.metadata.quoteId = b.quote.id;
-      const body = input(b.quote.secureToken);
-      body.paymentMethods[0].setupIntentId = usedId;
-      const r = await submitBooking(body);
-      expect(r.ok).toBe(false);
-      expect(await prisma.booking.count({ where: { quoteId: b.quote.id } })).toBe(0);
-    });
-
-    it("a concurrent identical submission that loses the race (its read predates the commit) is answered with the ORIGINAL booking, not a 'payment' error", async () => {
-      const { quote } = await makeQuote();
-      const body = input(quote.secureToken);
-      const first = await submitBooking(body);
-      await flushDeferred();
-      expect(first.ok).toBe(true);
-      if (!first.ok) return;
-      // The second request read the quote BEFORE the first one committed: it sees no booking...
-      const original = prisma.quote.findUnique.bind(prisma.quote);
-      const spy = vi.spyOn(prisma.quote, "findUnique").mockImplementationOnce((async (args: never) => {
-        const row = await original(args);
-        return row ? { ...row, booking: null, status: "SENT" } : row;
-      }) as never);
-      try {
-        // ...and by the time it verifies the capture, that capture is already attached to the winner's booking.
-        const second = await submitBooking(body);
-        expect(second).toMatchObject({ ok: true, bookingId: first.bookingId, alreadyCompleted: true });
-      } finally {
-        spy.mockRestore();
-      }
-      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
-    });
-
-    it("but a DIFFERENT signer presenting the same capture is refused (it is not theirs)", async () => {
-      const { quote } = await makeQuote();
-      const body = input(quote.secureToken);
-      await submitBooking(body);
-      await flushDeferred();
-      const original = prisma.quote.findUnique.bind(prisma.quote);
-      const spy = vi.spyOn(prisma.quote, "findUnique").mockImplementationOnce((async (args: never) => {
-        const row = await original(args);
-        return row ? { ...row, booking: null, status: "SENT" } : row;
-      }) as never);
-      try {
-        const other = await submitBooking({ ...body, signedName: "Someone Else", contactEmail: "other@example.test" });
-        expect(other.ok).toBe(false);
-      } finally {
-        spy.mockRestore();
-      }
-      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
-    });
-
-    it("the same capture listed twice in one request is refused", async () => {
-      const { quote } = await makeQuote();
-      const body = input(quote.secureToken, {}, 570);
-      const id = body.paymentMethods[0].setupIntentId;
-      const r = await submitBooking({ ...body, paymentMethods: [{ ...body.paymentMethods[0], amount: 285, setupIntentId: id }, { ...body.paymentMethods[0], amount: 285, setupIntentId: id }] });
-      expect(r.ok).toBe(false);
-      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
-    });
-
-    it("no payment provider configured: refuses cleanly, records nothing, raises a critical incident", async () => {
-      const { quote } = await makeQuote();
-      const body = input(quote.secureToken);
-      healthEvents.resetHealthEventThrottleForTests();
-      setProvider(null);
-      try {
-        const r = await submitBooking(body);
-        await flushDeferred();
-        expect(r.ok).toBe(false);
-        if (!r.ok) expect(r.error).toMatch(/temporarily unavailable/i);
-        expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
-        expect(await openEvents("BOOKING_PAYMENT_UNAVAILABLE")).toBeGreaterThan(0);
-      } finally {
-        setProvider(fake);
-      }
-    });
-
-    it("split payment across two vaulted cards stores both, each with its own allocation", async () => {
-      const { quote } = await makeQuote();
-      const body = input(quote.secureToken);
-      const second = await capture(quote.id, "1881");
-      const r = await submitBooking({ ...body, paymentMethods: [{ ...body.paymentMethods[0], amount: 400 }, { setupIntentId: second, cardholderName: "Jane Traveler", amount: 170 }] });
-      await flushDeferred();
-      expect(r.ok).toBe(true);
-      const pms = await prisma.paymentMethod.findMany({ where: { booking: { quoteId: quote.id } }, orderBy: { amountAllocated: "desc" } });
-      expect(pms.map((p) => [p.last4, Number(p.amountAllocated)])).toEqual([["4242", 400], ["1881", 170]]);
-      expect(pms.every((p) => p.vaultStatus === "VAULTED" && p.encryptedPan === null)).toBe(true);
-    });
-
-    it("a booking is never a payment: no charge is created and the provider is never asked to charge", async () => {
-      const { quote } = await makeQuote();
-      fake.calls.length = 0;
-      const r = await submitBooking(input(quote.secureToken));
-      await flushDeferred();
-      expect(r.ok).toBe(true);
-      expect(fake.calls.some((c) => c.op === "charge")).toBe(false);
-      expect(await prisma.paymentCharge.count({ where: { paymentMethod: { booking: { quoteId: quote.id } } } })).toBe(0);
-    });
   });
 
   it("keeps a non-USD quote's customer-facing total in its own currency and the internal ledger in USD", async () => {
@@ -574,7 +393,7 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
   it("ATOMICITY (the original production hazard): the payment-method write fails AFTER the booking row exists — nothing may be left behind, and a clean retry with a good card then succeeds", async () => {
     const { quote, lead, contact } = await makeQuote();
     const bad = input(quote.secureToken);
-    bad.paymentMethods[0].setupIntentId = await capture(quote.id, "0000");
+    bad.paymentMethods[0].cardNumber = PAN_ENDING_0000;
 
     const failed = await submitBooking(bad);
     await flushDeferred();
@@ -625,6 +444,77 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(result.ok).toBe(false);
     expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
     expect((await prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe("SENT");
+  });
+
+  describe("card vault unavailable (fails closed — the exact condition that stops customers finishing a booking on a real deployment)", () => {
+    async function withEnv(patch: Record<string, string | undefined>, run: () => Promise<void>) {
+      const saved = Object.fromEntries(Object.keys(patch).map((k) => [k, process.env[k]]));
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      try {
+        await run();
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+    }
+
+    async function expectRefusedCleanly(quote: { id: string; secureToken: string }, leadId: string) {
+      const logged: string[] = [];
+      const spies = (["log", "warn", "error", "info"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void logged.push(a.map(String).join(" "))));
+      try {
+        const result = await submitBooking(input(quote.secureToken));
+        await flushDeferred();
+        expect(result.ok).toBe(false);
+        if (!result.ok) {
+          expect(result.error).toMatch(/nothing was charged and no booking was recorded/i);
+          expect(result.error).not.toMatch(/4111/);
+        }
+      } finally {
+        spies.forEach((s) => s.mockRestore());
+      }
+      expect(logged.join("\n")).toContain("CARD_VAULT_UNAVAILABLE");
+      expect(logged.join("\n")).not.toMatch(/4111\s?1111|411111111111/);
+      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
+      expect(await prisma.paymentMethod.count({ where: { booking: { quoteId: quote.id } } })).toBe(0);
+      expect((await prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).status).toBe("SENT");
+      expect((await prisma.lead.findUniqueOrThrow({ where: { id: leadId } })).status).toBe("QUOTED");
+    }
+
+    it("production guard closed (APP_ENV unset/production): refuses, writes nothing, leaves the quote SENT, logs only a category, and records a critical health incident", async () => {
+      const { quote, lead } = await makeQuote();
+      await withEnv({ APP_ENV: "production" }, () => expectRefusedCleanly(quote, lead.id));
+      const incident = await prisma.healthEvent.findFirst({ where: { type: "BOOKING_PAYMENT_UNAVAILABLE" }, orderBy: { lastSeenAt: "desc" } });
+      expect(incident).not.toBeNull();
+      expect(JSON.stringify(incident)).not.toMatch(/4111/);
+    });
+
+    it("CARD_ENCRYPTION_KEY missing: refuses cleanly too, and a retry succeeds once the vault is available again (no orphan from the failed attempt)", async () => {
+      const { quote, lead } = await makeQuote();
+      await withEnv({ CARD_ENCRYPTION_KEY: undefined }, () => expectRefusedCleanly(quote, lead.id));
+      const retry = await submitBooking(input(quote.secureToken));
+      expect(retry.ok).toBe(true);
+      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
+      expect(await prisma.paymentMethod.count({ where: { booking: { quoteId: quote.id } } })).toBe(1);
+    });
+  });
+
+  it("never writes a card number to console output during a successful booking", async () => {
+    const logged: string[] = [];
+    const spies = (["log", "warn", "error", "info"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void logged.push(a.map(String).join(" "))));
+    try {
+      const { quote } = await makeQuote();
+      const result = await submitBooking(input(quote.secureToken));
+      await flushDeferred();
+      expect(result.ok).toBe(true);
+    } finally {
+      spies.forEach((s) => s.mockRestore());
+    }
+    expect(logged.join("\n")).not.toMatch(/4111\s?1111\s?1111\s?1111/);
   });
 
   it("refuses to book a quote that is no longer SENT/READ/VIEWED (e.g. cancelled)", async () => {

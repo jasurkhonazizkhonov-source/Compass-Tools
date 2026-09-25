@@ -30,10 +30,10 @@ describe("GET /api/health", () => {
     expect(body.pool).toEqual({ max: 5, total: 2, idle: 1, waiting: 0 });
   });
 
-  const PAY_KEYS = ["PAYMENT_PROVIDER", "STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY", "STRIPE_WEBHOOK_SECRET", "APP_ENV", "VERCEL_ENV", "TRUSTED_PROXY", "VERCEL"];
-  async function withEnv(vars: Record<string, string | undefined>, fn: (get: () => Promise<{ readiness: Record<string, unknown> } & Record<string, unknown>>) => Promise<void>) {
-    const saved = Object.fromEntries(PAY_KEYS.map((k) => [k, process.env[k]]));
-    for (const k of PAY_KEYS) delete process.env[k];
+  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "VERCEL", "VERCEL_ENV"];
+  async function withEnv(vars: Record<string, string | undefined>, fn: (get: () => Promise<{ readiness: Record<string, unknown> }>) => Promise<void>) {
+    const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
+    for (const k of KEYS) delete process.env[k];
     for (const [k, v] of Object.entries(vars)) if (v !== undefined) process.env[k] = v;
     try {
       const { resetHealthCacheForTests } = await import("@/lib/health-check");
@@ -49,34 +49,29 @@ describe("GET /api/health", () => {
       }
     }
   }
+  const GOOD_KEY = Buffer.alloc(32, 9).toString("base64");
 
-  it("reports booking readiness from the REAL payment configuration (categories only): unavailable until a provider is configured, available once it is", async () => {
+  it("reports whether a customer's Finish Booking can store a card RIGHT NOW (categories only): the production guard, and the vault key", async () => {
     queryRaw.mockResolvedValue([{}]);
-    await withEnv({ TRUSTED_PROXY: "vercel" }, async (get) => {
-      expect((await get()).readiness).toEqual({ bookingPayment: "unavailable", paymentProvider: "not_configured", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
+    await withEnv({ APP_ENV: "staging", TRUSTED_PROXY: "vercel", CARD_ENCRYPTION_KEY: GOOD_KEY }, async (get) => {
+      expect((await get()).readiness).toEqual({ bookingCardStorage: "available", cardVaultKey: "configured", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
     });
-    await withEnv({ TRUSTED_PROXY: "vercel", PAYMENT_PROVIDER: "stripe", STRIPE_SECRET_KEY: "sk_live_" + "a".repeat(24), STRIPE_PUBLISHABLE_KEY: "pk_live_" + "b".repeat(24) }, async (get) => {
+    await withEnv({ APP_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY }, async (get) => {
       const body = await get();
-      expect(body.readiness).toEqual({ bookingPayment: "available", paymentProvider: "ready", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
-      // Never a provider name, key or value.
-      expect(JSON.stringify(body)).not.toMatch(/stripe|sk_live|pk_live/i);
+      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", cardVaultKey: "configured", signerIpCapture: "disabled", schema: "current", pendingMigrations: 0 });
+      expect(JSON.stringify(body)).not.toContain(GOOD_KEY);
     });
   });
 
-  it("invalid provider credentials (test/live mismatch) are reported as 'invalid' and keep bookings unavailable", async () => {
+  it("a missing or malformed CARD_ENCRYPTION_KEY makes card storage unavailable and is reported as a category, never a value", async () => {
     queryRaw.mockResolvedValue([{}]);
-    await withEnv({ PAYMENT_PROVIDER: "stripe", STRIPE_SECRET_KEY: "sk_test_" + "a".repeat(24), STRIPE_PUBLISHABLE_KEY: "pk_live_" + "b".repeat(24) }, async (get) => {
-      expect((await get()).readiness).toMatchObject({ bookingPayment: "unavailable", paymentProvider: "invalid" });
+    await withEnv({ APP_ENV: "staging" }, async (get) => {
+      expect((await get()).readiness).toMatchObject({ bookingCardStorage: "unavailable", cardVaultKey: "missing" });
     });
-  });
-
-  it("APP_ENV / VERCEL_ENV can never make bookings 'available' — only a real provider configuration can", async () => {
-    queryRaw.mockResolvedValue([{}]);
-    await withEnv({ APP_ENV: "staging", VERCEL_ENV: "production" }, async (get) => {
-      expect((await get()).readiness).toMatchObject({ bookingPayment: "unavailable" });
-    });
-    await withEnv({ APP_ENV: "development" }, async (get) => {
-      expect((await get()).readiness).toMatchObject({ bookingPayment: "unavailable" });
+    await withEnv({ APP_ENV: "staging", CARD_ENCRYPTION_KEY: "short-and-wrong-value" }, async (get) => {
+      const body = await get();
+      expect(body.readiness).toMatchObject({ bookingCardStorage: "unavailable", cardVaultKey: "invalid" });
+      expect(JSON.stringify(body)).not.toContain("short-and-wrong-value");
     });
   });
 

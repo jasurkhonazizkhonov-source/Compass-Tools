@@ -58,6 +58,7 @@
     "20260925010000_quote_send_claim_and_health_events",
     "20260926000000_payment_provider_vault",
     "20260926000100_payment_refund_keys",
-    "20260926000200_payment_charge_one_pending"
+    "20260926000200_payment_charge_one_pending",
+    "20260926000300_remove_stripe_payment_artifacts"
   ]
 }

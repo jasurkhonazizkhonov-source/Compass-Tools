@@ -150,10 +150,12 @@ export async function getContactDetail(contactId: string, viewer: Viewer) {
       activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actor: { select: ACCOUNT_NAME_SELECT } } },
       attachments: { orderBy: { createdAt: "desc" } },
       emailLogs: { orderBy: { createdAt: "desc" }, take: 20 },
-      // Explicit select allow-list, never `include: true`. Provider vault
-      // references are never selected here. Archived (removed) cards are
-      // excluded from this default list — their audit/charge history is
-      // preserved, just not shown here.
+      // Explicit select allow-list, never `include: true` — encryptedPan
+      // (the only field that can ever be decrypted into a full PAN) must
+      // never be reachable from this or any other ordinary query. Only
+      // revealPaymentMethod()/startSupplierPaymentAuthorization() ever
+      // select it. Archived (removed) cards are excluded from this default
+      // list — their audit/charge history is preserved, just not shown here.
       paymentMethods: {
         where: { status: "ACTIVE" },
         orderBy: { createdAt: "desc" },
@@ -166,7 +168,6 @@ export async function getContactDetail(contactId: string, viewer: Viewer) {
           expiryYear: true,
           bookingId: true,
           status: true,
-          vaultStatus: true,
           createdAt: true,
         },
       },

@@ -1,65 +1,65 @@
 "use client";
 
-import { forwardRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Button } from "@/components/ui/button";
 import { CardBrandLogo } from "@/components/ui/card-brand-logo";
-import { SecureCardFields, type SecureCardHandle } from "@/components/payments/secure-card-fields";
-import { cardBrandFromProvider } from "@/components/payments/brand";
+import { formatCardNumber, detectCardBrand, digitsOnly } from "@/lib/card-validation";
 import { formatMoney, type SupportedCurrency } from "@/lib/currency";
 import { X } from "lucide-react";
 
-/**
- * Everything the form itself holds about one payment method. There is no card
- * number, expiry or security code here — those live only inside the payment
- * provider's iframes. `slotKey` makes provider setup idempotent across
- * retries; `setupIntentId` is the opaque reference to the vaulted card once
- * the provider has confirmed it (kept so a retry after a later failure does
- * not ask the customer to type the card again).
- */
 export type CardFormState = {
   cardholderName: string;
+  cardNumber: string; // formatted for display, with spaces — digits-only before submit
+  expiryMonth: string;
+  expiryYear: string;
   amount: string;
-  slotKey: string;
-  setupIntentId: string | null;
 };
 
-export function newCardForm(): CardFormState {
-  return { cardholderName: "", amount: "", slotKey: crypto.randomUUID(), setupIntentId: null };
-}
+export const EMPTY_CARD_FORM: CardFormState = {
+  cardholderName: "",
+  cardNumber: "",
+  expiryMonth: "",
+  expiryYear: "",
+  amount: "",
+};
 
 /**
- * Card collection through the payment provider's hosted fields. The card
- * number, expiry and security code are typed into the provider's iframes and
- * sent straight to the provider; this app receives only an opaque reference
- * after the customer submits, and stores only that reference plus the brand,
- * last four digits and expiry the provider reports back.
+ * Native CRM-style card collection — plain input boxes plus a live
+ * decorative physical-card preview above them, no external JavaScript
+ * loaded, no hosted iframe, no redirect. Card data goes directly to this
+ * app's own submitBooking() action. There is deliberately NO security-code
+ * (CVV/CVC) field anywhere in this form — Compass Tools never collects,
+ * caches or stores one (see docs/PAYMENT_ARCHITECTURE.md).
  */
-export const CardPaymentSection = forwardRef<
-  SecureCardHandle,
-  {
-    value: CardFormState;
-    onChange: (next: CardFormState) => void;
-    label: string;
-    onRemove?: () => void;
-    publishableKey: string;
-    /** When set (the single-payment-method case), the amount is the whole
-     * booking total and isn't something the customer should have to type in
-     * themselves — render it as a fixed, read-only line instead of an
-     * editable input. Omit for the multi-card case, where each card needs an
-     * editable amount so the customer can split the total across cards. */
-    fixedAmount?: number;
-    /** The booking's currency (inherited from the quote) — every amount
-     * shown here, fixed or editable, is denominated in this, never a
-     * hardcoded USD. */
-    currency: SupportedCurrency;
-  }
->(function CardPaymentSection({ value, onChange, label, onRemove, publishableKey, fixedAmount, currency }, ref) {
-  const [brand, setBrand] = useState<string>("unknown");
+export function CardPaymentSection({
+  value,
+  onChange,
+  label,
+  onRemove,
+  fixedAmount,
+  currency,
+}: {
+  value: CardFormState;
+  onChange: (next: CardFormState) => void;
+  label: string;
+  onRemove?: () => void;
+  /** When set (the single-payment-method case), the amount is the whole
+   * booking total and isn't something the customer should have to type in
+   * themselves — render it as a fixed, read-only line instead of an
+   * editable input. Omit for the multi-card case, where each card needs an
+   * editable amount so the customer can split the total across cards. */
+  fixedAmount?: number;
+  /** The booking's currency (inherited from the quote) — every amount
+   * shown here, fixed or editable, is denominated in this, never a
+   * hardcoded USD. */
+  currency: SupportedCurrency;
+}) {
+  const brand = detectCardBrand(value.cardNumber);
+  const displayNumber = value.cardNumber || "•••• •••• •••• ••••";
   const displayName = value.cardholderName.trim().toUpperCase() || "CARDHOLDER NAME";
-  const locked = value.setupIntentId !== null;
+  const displayExpiry = value.expiryMonth && value.expiryYear ? `${value.expiryMonth.padStart(2, "0")}/${value.expiryYear.slice(-2)}` : "MM/YY";
 
   return (
     <div className="space-y-4">
@@ -71,10 +71,13 @@ export const CardPaymentSection = forwardRef<
             size="icon-sm"
             variant="ghost"
             onClick={onRemove}
-            // 28px visual size is fine for a staff/desktop CRM control but too
-            // small a touch target on this customer-facing, mobile-visible
-            // form; the invisible after:-inset-3 hit-area expansion brings the
-            // effective tappable area to ~44px without changing how it looks.
+            // Pass 22 fix — 28px visual size is fine for a staff/desktop
+            // CRM control but too small a touch target on this
+            // customer-facing, mobile-visible booking form; the invisible
+            // after:-inset-3 hit-area expansion (matching Checkbox's own
+            // established idiom, src/components/ui/checkbox.tsx) brings
+            // the effective tappable area to ~44px without changing how
+            // the button actually looks.
             className="relative text-muted-foreground hover:text-destructive after:absolute after:-inset-3"
             aria-label={`Remove ${label}`}
           >
@@ -83,21 +86,19 @@ export const CardPaymentSection = forwardRef<
         )}
       </div>
 
-      {/* Decorative preview — presentation only. It can show the brand the
-          provider detected and the name typed below; it never shows digits,
-          because this page never has them. */}
+      {/* Decorative physical-card preview — updates live as the customer types. Presentation only; the accessible inputs below are the real form controls. */}
       <div
         aria-hidden="true"
         className="rounded-xl p-5 text-white shadow-md"
         style={{ background: "linear-gradient(135deg, #1e293b 0%, #334155 60%, #1e293b 100%)" }}
       >
         <div className="flex items-center justify-between">
-          <CardBrandLogo brand={cardBrandFromProvider(brand)} />
+          <CardBrandLogo brand={brand} />
         </div>
-        <p className="mt-6 font-mono text-lg tracking-widest">•••• •••• •••• ••••</p>
+        <p className="mt-6 font-mono text-lg tracking-widest">{displayNumber}</p>
         <div className="mt-4 flex items-end justify-between">
           <p className="text-xs tracking-wide truncate max-w-[70%]">{displayName}</p>
-          <p className="text-xs tracking-wide">MM/YY</p>
+          <p className="text-xs tracking-wide">{displayExpiry}</p>
         </div>
       </div>
 
@@ -108,26 +109,61 @@ export const CardPaymentSection = forwardRef<
           onChange={(e) => onChange({ ...value, cardholderName: e.target.value })}
           placeholder="Full name as shown on card"
           autoComplete="cc-name"
-          disabled={locked}
         />
       </div>
-
-      {locked ? (
-        <p role="status" className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
-          Your card was securely verified. It will not be charged until you are contacted by your travel agent.
-        </p>
-      ) : (
-        <SecureCardFields ref={ref} publishableKey={publishableKey} onBrandChange={setBrand} />
-      )}
-
+      <div className="space-y-1.5">
+        <Label>Card Number *</Label>
+        <div className="relative">
+          <Input
+            value={value.cardNumber}
+            onChange={(e) => onChange({ ...value, cardNumber: formatCardNumber(e.target.value) })}
+            placeholder="Card number"
+            inputMode="numeric"
+            autoComplete="cc-number"
+            maxLength={23}
+            className="pr-16"
+          />
+          {brand !== "Unknown" && (
+            <span className="absolute right-3 top-1/2 -translate-y-1/2">
+              <CardBrandLogo brand={brand} />
+            </span>
+          )}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-4">
+        <div className="space-y-1.5">
+          <Label>Expiration *</Label>
+          <div className="flex items-center gap-1.5">
+            <Input
+              value={value.expiryMonth}
+              onChange={(e) => onChange({ ...value, expiryMonth: digitsOnly(e.target.value).slice(0, 2) })}
+              placeholder="MM"
+              inputMode="numeric"
+              autoComplete="cc-exp-month"
+              maxLength={2}
+              className="w-16 shrink-0 text-center"
+            />
+            <span className="text-muted-foreground">/</span>
+            <Input
+              value={value.expiryYear}
+              onChange={(e) => onChange({ ...value, expiryYear: digitsOnly(e.target.value).slice(0, 4) })}
+              placeholder="YYYY"
+              inputMode="numeric"
+              autoComplete="cc-exp-year"
+              maxLength={4}
+              className="w-20 shrink-0 text-center"
+            />
+          </div>
+        </div>
+      </div>
       {fixedAmount !== undefined ? (
         <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2">
-          <span className="text-sm text-muted-foreground">Amount authorized</span>
+          <span className="text-sm text-muted-foreground">Amount charged</span>
           <span className="text-sm font-semibold tabular-nums">{formatMoney(fixedAmount, currency)}</span>
         </div>
       ) : (
         <div className="space-y-1.5">
-          <Label>Amount for this card ({currency}) *</Label>
+          <Label>Amount to Charge ({currency}) *</Label>
           <Input
             value={value.amount}
             onChange={(e) => onChange({ ...value, amount: e.target.value.replace(/[^0-9.]/g, "") })}
@@ -139,13 +175,13 @@ export const CardPaymentSection = forwardRef<
       )}
     </div>
   );
-});
+}
 
 export function PaymentConsentCheckbox({ checked, onChange, companyName }: { checked: boolean; onChange: (v: boolean) => void; companyName: string }) {
   return (
     <label className="flex items-start gap-2 text-xs text-muted-foreground">
       <Checkbox checked={checked} onCheckedChange={(v) => onChange(v === true)} className="mt-0.5" />
-      <span>I authorize {companyName} to securely save this payment method with its payment provider for this booking, and to charge it for this booking&apos;s ticketing when authorized staff request it.</span>
+      <span>I authorize {companyName} to securely store this payment method for this booking&apos;s ticketing and supplier workflow.</span>
     </label>
   );
 }

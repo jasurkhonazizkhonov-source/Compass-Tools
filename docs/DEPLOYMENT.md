@@ -33,11 +33,11 @@ Project → Settings → Environment Variables) for a real deployment:
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. Never reuse across companies. |
 | `INITIAL_ADMIN_EMAIL` | Recommended for first setup | The Google account that becomes this deployment's first Admin. See §2b below. Only matters until the first Account is created; safe (and recommended) to remove afterward. |
 | `APP_BASE_URL` | Recommended | This deployment's public URL. On Vercel this can usually be left unset and falls back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL` automatically. |
-| `PAYMENT_PROVIDER` / `STRIPE_SECRET_KEY` / `STRIPE_PUBLISHABLE_KEY` / `STRIPE_WEBHOOK_SECRET` | Yes, to take bookings | The payment provider. Customers cannot complete bookings until these are set and valid (the secret and publishable keys must both be test or both be live). Compass Tools stores no card numbers and no security codes — see `docs/PAYMENT_ARCHITECTURE.md` and §5c. |
+| `CARD_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. See `src/server/security/card-encryption.ts`'s file comment before handling real cardholder data. |
 | `IP_ENCRYPTION_KEY` / `IP_HASH_KEY` | Yes | Two SEPARATE fresh values per deployment: `openssl rand -base64 32` (run it twice). See `src/server/security/ip-encryption.ts`'s file comment — one key reversibly encrypts a captured IP, the other produces a one-way search index; never reuse either across deployments or with each other. |
 | `TRUSTED_PROXY` | Automatic on Vercel; explicit elsewhere | On Vercel it is detected automatically (`VERCEL=1`); set it explicitly for any other proxy, or to `none` to opt out. See §5 below. |
 | `CRON_SECRET` | Recommended in production | See §5a below. |
-| `APP_ENV` | Optional | Only for a **self-hosted** staging box that runs a production-mode build (`NODE_ENV=production`) but should be treated as non-production by security guards. It has **no effect on a Vercel production deployment** (`VERCEL_ENV=production` is always production) and must never be used to switch off the card-vault guard. See `src/lib/env.ts` and `docs/PAYMENT_ARCHITECTURE.md`. |
+| `APP_ENV` | **Required for customer bookings on a real deployment** | The card vault refuses to store cards while the environment counts as production (`APP_ENV`, else `NODE_ENV`). Setting `APP_ENV` to a non-production value (e.g. `staging`) is the owner's deliberate opt-in to the CRM's application-level card vault (not PCI DSS-grade — see `docs/PAYMENT_ARCHITECTURE.md`). Leave it unset and customers' "Finish Booking" is refused (fail closed). See §5c. |
 | `BOOKING_IP_RETENTION_DAYS` | Deprecated — do not set | Pass 33: booking submission IP data is retained indefinitely by design; this variable is no longer read anywhere. Setting it does nothing. See `docs/ip-vault-compliance.md`. |
 
 ## 2a. Configure the Google OAuth client for THIS deployment's domain
@@ -380,43 +380,35 @@ The source is fixed by *which route was called*, never by the request body. The
 Business Flights app cannot create Admin notifications, so the CRM adds them
 itself (throttled, idempotent) the next time an Admin's bell polls.
 
-## 5c. Payments: enabling customer bookings and manual charges
+## 5c. Customer bookings in production (the card vault opt-in)
 
-Card capture and storage are done by a PCI-compliant payment provider (Stripe,
-via `src/server/payments/`); Compass Tools keeps only provider references and
-display details (brand, last four, expiry) and **never** a card number or
-security code. Full design: `docs/PAYMENT_ARCHITECTURE.md`.
+Compass Tools has its own payment workflow (see `docs/PAYMENT_ARCHITECTURE.md`):
+the customer enters a card on the booking form and the CRM stores it encrypted
+(AES-256-GCM, `CARD_ENCRYPTION_KEY`) in its own database; staff view it masked,
+Admins can Reveal it, and payments are recorded manually. There is **no external
+payment provider**. This is application-level encryption, **not PCI DSS-grade**
+key management — running it is the owner's decision and responsibility. The card
+security code (CVV/CVC) is **never** collected or stored.
 
-**Vercel → Settings → Environment Variables** (Production; use Preview for test
-keys):
+So that it is never used by accident, the vault **fails closed** while the
+environment counts as production: every customer's "Finish Booking" is refused
+with a message that nothing was charged and no booking was recorded. For
+customers to complete bookings on a real deployment, **all** of these must be set
+in the host's environment (Vercel → Project → Settings → Environment Variables):
 
-| Variable | Value |
-|---|---|
-| `PAYMENT_PROVIDER` | `stripe` |
-| `STRIPE_SECRET_KEY` | `sk_test_…` (sandbox) or `sk_live_…` (live) — or a restricted `rk_…` key with PaymentIntents, SetupIntents, Customers, PaymentMethods and Refunds write access |
-| `STRIPE_PUBLISHABLE_KEY` | the matching `pk_test_…` / `pk_live_…` (same mode as the secret key) |
-| `STRIPE_WEBHOOK_SECRET` | `whsec_…` of the endpoint below |
+1. `CARD_ENCRYPTION_KEY` — a valid base64 32-byte key (`openssl rand -base64 32`).
+2. `APP_ENV` — a **non-production** value such as `staging` (the deliberate opt-in
+   described in the table above).
+3. `IP_ENCRYPTION_KEY` and `IP_HASH_KEY` — for the signer IP vault (booking still
+   works without them; the IP entry is then skipped and reported).
+4. `TRUSTED_PROXY` — automatic on Vercel.
 
-**Webhook endpoint** (Stripe dashboard → Developers → Webhooks): URL
-`https://<your-domain>/api/webhooks/payments`; events
-`payment_intent.succeeded`, `payment_intent.processing`,
-`payment_intent.payment_failed`, `payment_intent.canceled`,
-`charge.refunded`, `payment_method.detached`.
-
-**Rollout order**
-1. Set the three keys with **test** values, redeploy. System Health →
-   "Payment provider & booking readiness" shows a **Warning** ("TEST mode on a
-   production deployment") — expected. Use the provider's official test cards
-   to run a booking end to end and an Admin manual charge from the booking page.
-2. Create the webhook endpoint and set `STRIPE_WEBHOOK_SECRET`; confirm
-   "Payment webhooks" turns Healthy after the first event.
-3. When you intend to take real payments, replace the keys with the **live**
-   values and redeploy. The health check turns Healthy only if the provider
-   accepts the credentials and the account can charge.
-
-**Never** try to enable bookings with `APP_ENV`; it has no effect on payments.
-The card security code is never stored anywhere in this system, and no setting
-can make it be.
+Check the state without any secret: `GET /api/health` →
+`readiness.bookingCardStorage` (`available` / `unavailable`),
+`readiness.cardVaultKey` (`configured` / `missing` / `invalid`),
+`readiness.signerIpCapture`. Admins also see a banner and System Health
+("Card vault & booking readiness") naming the exact reason. Never paste a key
+value into a ticket, log or chat.
 
 Signer IP capture is separate and automatic on Vercel (section 5); System
 Health reports it under "Signer IP capture".
@@ -454,7 +446,7 @@ It returns HTTP 503 with a safe error category when the database is unreachable.
 
 **System Health (Admin only).** `/system-health` (sidebar → System Health) runs
 live checks — database reachability/latency, migration state, connection
-headroom, Google sign-in configuration, Gmail, payment provider readiness,
+headroom, Google sign-in configuration, Gmail, card vault & booking readiness,
 signer IP capture, encryption keys, half-finished bookings, the lead queue — and
 lists recorded incidents (repeated failures collapse into one incident with a
 count; resolved ones are kept 30 days). It reports configuration only as

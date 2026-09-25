@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
-import { getPaymentProviderStatus } from "@/server/payments/provider";
+import { getCardVaultStatus } from "@/server/security/card-vault-status";
 import { trustedProxyMode } from "@/lib/request-ip";
 
 // Admin-only heads-up for two conditions the customer booking flow depends on
@@ -15,18 +15,19 @@ export function SystemReadinessBanner({ role }: { role: string | undefined }) {
 
   const issues: Array<{ title: string; detail: string }> = [];
 
-  // Shown whenever customers genuinely cannot complete a booking (in ANY
-  // environment there is no fallback card store): the payment provider is not
-  // selected/configured, or a credential is invalid. It disappears only when the
-  // provider configuration is valid — System Health additionally probes the
-  // provider's API, which this synchronous banner deliberately does not.
-  const payment = getPaymentProviderStatus();
-  if (payment.state !== "ready") {
-    const problems = [...payment.missing.map((m) => `${m} (missing)`), ...payment.invalid.map((m) => `${m} (invalid)`)];
+  // Mirrors exactly what getPaymentVault() does at "Finish Booking", so this
+  // banner is shown precisely while customers really cannot finish a booking.
+  const vault = getCardVaultStatus();
+  if (!vault.storageAvailable) {
+    const why =
+      vault.blockedBy === "production_guard"
+        ? "This is a production environment and the card vault refuses to store cards there unless the deployment has deliberately been told otherwise (APP_ENV — docs/DEPLOYMENT.md §5c)."
+        : vault.blockedBy === "key_missing"
+          ? "CARD_ENCRYPTION_KEY is not set, so a card cannot be encrypted for storage."
+          : "CARD_ENCRYPTION_KEY is set but is not a valid base64-encoded 32-byte key, so a card cannot be encrypted for storage.";
     issues.push({
       title: "Customers cannot complete bookings right now",
-      detail:
-        `The payment provider isn't ready${problems.length ? `: ${problems.join(", ")}` : ""}. Card entry is turned off, so nothing is charged and nothing is stored. Set the provider's environment variables in Vercel and redeploy — see docs/PAYMENT_ARCHITECTURE.md.`,
+      detail: `${why} Every customer's "Finish Booking" is refused with a message that nothing was charged and no booking was recorded.`,
     });
   }
   if (trustedProxyMode() === "none") {

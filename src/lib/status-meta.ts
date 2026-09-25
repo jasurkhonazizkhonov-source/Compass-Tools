@@ -79,8 +79,6 @@ export const PAYMENT_CHARGE_STATUS_META: Record<PaymentChargeStatus, { label: st
   SUCCEEDED: { label: "Succeeded", tone: "success" },
   FAILED: { label: "Failed", tone: "destructive" },
   CANCELED: { label: "Canceled", tone: "neutral" },
-  REFUNDED: { label: "Refunded", tone: "neutral" },
-  PARTIALLY_REFUNDED: { label: "Partially refunded", tone: "warning" },
 };
 
 export const ENROLLMENT_STATUS_META: Record<EnrollmentStatus, { label: string; tone: StatusTone }> = {

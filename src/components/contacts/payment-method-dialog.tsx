@@ -1,80 +1,97 @@
 "use client";
 
-import { useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogTrigger } from "@/components/ui/dialog";
 import { CardBrandLogo } from "@/components/ui/card-brand-logo";
-import { SecureCardFields, type SecureCardHandle } from "@/components/payments/secure-card-fields";
-import { cardBrandFromProvider } from "@/components/payments/brand";
-import { createContactPaymentSetup, saveContactPaymentMethod, editPaymentMethod } from "@/server/actions/contact-payment-methods";
+import { formatCardNumber, detectCardBrand, digitsOnly, isValidCardNumber, isValidExpiry } from "@/lib/card-validation";
+import { addContactPaymentMethod, editPaymentMethod } from "@/server/actions/contact-payment-methods";
 import { Plus, Loader2 } from "lucide-react";
 
+type FormState = {
+  cardholderName: string;
+  cardNumber: string;
+  expiryMonth: string;
+  expiryYear: string;
+};
+
+const EMPTY: FormState = { cardholderName: "", cardNumber: "", expiryMonth: "", expiryYear: "" };
+
 /**
- * Shared add/edit dialog for a Contact-level payment method.
- *
- * ADD: the staff member types the card into the payment provider's hosted
- * fields (exactly as a customer would on the booking form). The number and
- * security code go straight to the provider and never through this app; we keep
- * only the provider's reference plus brand/last4/expiry.
- *
- * EDIT: only the cardholder name can change. The card itself lives with the
- * provider — to change a card, add a new one and remove the old one.
+ * Shared add/edit dialog for a Contact-level payment method. Deliberately
+ * has no CVV field at all — see addContactPaymentMethod's doc comment for
+ * why a card entered here (no signed-booking-form provenance) has no
+ * legitimate channel to even transiently hold one. Editing never displays
+ * or requests the existing PAN — replacing it requires the full number to
+ * be typed in fresh, behind an explicit "Replace card number" toggle so the
+ * common case (just fixing the name or expiry) doesn't force re-entry.
  */
 export function PaymentMethodDialog({
   contactId,
   mode,
   existing,
   trigger,
-  publishableKey,
 }: {
   contactId: string;
   mode: "add" | "edit";
   existing?: { id: string; cardholderName: string; last4: string; cardBrand: string | null; expiryMonth: number; expiryYear: number };
   trigger?: React.ReactNode;
-  /** The provider's PUBLISHABLE key, or null when no provider is configured (adding is then unavailable). */
-  publishableKey?: string | null;
 }) {
   const [open, setOpen] = useState(false);
-  const [name, setName] = useState(existing?.cardholderName ?? "");
+  const [form, setForm] = useState<FormState>(
+    existing
+      ? { cardholderName: existing.cardholderName, cardNumber: "", expiryMonth: String(existing.expiryMonth).padStart(2, "0"), expiryYear: String(existing.expiryYear) }
+      : EMPTY
+  );
+  const [replacingCard, setReplacingCard] = useState(mode === "add");
   const [isPending, startTransition] = useTransition();
-  const handle = useRef<SecureCardHandle | null>(null);
-  // Stable per dialog session: the provider idempotency key for the capture.
-  const slotKey = useRef<string>(crypto.randomUUID());
+
+  const brand = detectCardBrand(form.cardNumber);
 
   function reset() {
-    setName(existing?.cardholderName ?? "");
-    slotKey.current = crypto.randomUUID();
+    setForm(
+      existing
+        ? { cardholderName: existing.cardholderName, cardNumber: "", expiryMonth: String(existing.expiryMonth).padStart(2, "0"), expiryYear: String(existing.expiryYear) }
+        : EMPTY
+    );
+    setReplacingCard(mode === "add");
   }
 
   function submit() {
-    if (!name.trim()) {
+    const expiryMonth = Number(form.expiryMonth);
+    const expiryYear = Number(form.expiryYear);
+    if (!form.cardholderName.trim()) {
       toast.error("Cardholder name is required");
       return;
     }
+    if (!isValidExpiry(expiryMonth, expiryYear)) {
+      toast.error("Enter a valid, non-expired expiration date");
+      return;
+    }
+    if (replacingCard) {
+      const digits = digitsOnly(form.cardNumber);
+      if (!isValidCardNumber(digits)) {
+        toast.error("Enter a valid card number");
+        return;
+      }
+    }
+
     startTransition(async () => {
       try {
         if (mode === "add") {
-          if (!handle.current?.isComplete()) {
-            toast.error("Enter the complete card details");
-            return;
-          }
-          const setup = await createContactPaymentSetup({ contactId, slotKey: slotKey.current });
-          if (!setup.ok) {
-            toast.error(setup.error);
-            return;
-          }
-          const confirmed = await handle.current.confirmSetup(setup.clientSecret, name.trim());
-          if (!confirmed.ok) {
-            toast.error(confirmed.error);
-            return;
-          }
-          await saveContactPaymentMethod({ contactId, setupIntentId: confirmed.setupIntentId, cardholderName: name.trim() });
+          await addContactPaymentMethod({ contactId, cardholderName: form.cardholderName, cardNumber: form.cardNumber, expiryMonth, expiryYear });
           toast.success("Payment method added");
         } else if (existing) {
-          await editPaymentMethod({ paymentMethodId: existing.id, cardholderName: name.trim() });
+          await editPaymentMethod({
+            paymentMethodId: existing.id,
+            cardholderName: form.cardholderName,
+            expiryMonth,
+            expiryYear,
+            cardNumber: replacingCard ? form.cardNumber : undefined,
+          });
           toast.success("Payment method updated");
         }
         setOpen(false);
@@ -84,8 +101,6 @@ export function PaymentMethodDialog({
       }
     });
   }
-
-  const cannotAdd = mode === "add" && !publishableKey;
 
   return (
     <Dialog
@@ -110,28 +125,71 @@ export function PaymentMethodDialog({
         <div className="space-y-4">
           <div className="space-y-1.5">
             <Label>Cardholder Name</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="John Example" autoComplete="cc-name" />
+            <Input value={form.cardholderName} onChange={(e) => setForm({ ...form, cardholderName: e.target.value })} placeholder="John Example" autoComplete="cc-name" />
           </div>
 
-          {mode === "edit" && existing ? (
+          {mode === "edit" && existing && !replacingCard ? (
             <div className="space-y-1.5">
-              <Label>Card</Label>
+              <Label>Card Number</Label>
               <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm">
-                <CardBrandLogo brand={cardBrandFromProvider(existing.cardBrand)} />
-                •••• {existing.last4} · Expires {String(existing.expiryMonth).padStart(2, "0")}/{existing.expiryYear}
+                <CardBrandLogo brand={(existing.cardBrand as never) || "Unknown"} />
+                •••• •••• •••• {existing.last4}
               </div>
-              <p className="text-xs text-muted-foreground">The card itself is held by the payment provider and can&apos;t be edited. To change it, add a new card and remove this one.</p>
+              <button type="button" onClick={() => setReplacingCard(true)} className="text-xs text-primary hover:underline">
+                Replace card number
+              </button>
             </div>
-          ) : cannotAdd ? (
-            <p role="alert" className="text-sm text-destructive">No payment provider is configured, so a card can&apos;t be added right now.</p>
           ) : (
-            publishableKey && <SecureCardFields ref={handle} publishableKey={publishableKey} />
+            <div className="space-y-1.5">
+              <Label>Card Number</Label>
+              <div className="relative">
+                <Input
+                  value={form.cardNumber}
+                  onChange={(e) => setForm({ ...form, cardNumber: formatCardNumber(e.target.value) })}
+                  placeholder="4111 1111 1111 1111"
+                  inputMode="numeric"
+                  autoComplete="cc-number"
+                  maxLength={23}
+                  className="pr-16"
+                />
+                {brand !== "Unknown" && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2">
+                    <CardBrandLogo brand={brand} />
+                  </span>
+                )}
+              </div>
+            </div>
           )}
+
+          <div className="space-y-1.5">
+            <Label>Expiration</Label>
+            <div className="flex items-center gap-1.5">
+              <Input
+                value={form.expiryMonth}
+                onChange={(e) => setForm({ ...form, expiryMonth: digitsOnly(e.target.value).slice(0, 2) })}
+                placeholder="MM"
+                inputMode="numeric"
+                autoComplete="cc-exp-month"
+                maxLength={2}
+                className="w-16 text-center"
+              />
+              <span className="text-muted-foreground">/</span>
+              <Input
+                value={form.expiryYear}
+                onChange={(e) => setForm({ ...form, expiryYear: digitsOnly(e.target.value).slice(0, 4) })}
+                placeholder="YYYY"
+                inputMode="numeric"
+                autoComplete="cc-exp-year"
+                maxLength={4}
+                className="w-20 text-center"
+              />
+            </div>
+          </div>
         </div>
 
         <DialogFooter>
           <Button variant="outline" onClick={() => setOpen(false)} disabled={isPending}>Cancel</Button>
-          <Button onClick={submit} disabled={isPending || cannotAdd} className="gap-1.5">
+          <Button onClick={submit} disabled={isPending} className="gap-1.5">
             {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
             {mode === "add" ? "Add Card" : "Save Changes"}
           </Button>

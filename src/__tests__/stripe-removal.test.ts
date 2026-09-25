@@ -2,14 +2,11 @@ import { describe, it, expect } from "vitest";
 import { readFileSync, readdirSync, statSync } from "fs";
 import path from "path";
 
-// Repo-wide static guards for the payment architecture. History: the original
-// native Stripe integration was removed; card capture is now delegated to a
-// PCI-compliant provider (Stripe, through the adapter boundary in
-// src/server/payments/) via the provider's hosted fields. These tests walk real
-// source/config files on disk (nothing mocked) and pin the properties that must
-// never regress: no SDK dependency, provider secrets confined to the adapter
-// boundary, the removed legacy modules stay removed, and Compass Tools never
-// handles a card security code or stores card credentials.
+// Repo-wide static verification that Stripe has been fully removed, per the
+// project spec's explicit requirement to prove this before completion. This
+// walks real source/config files on disk rather than mocking anything —
+// it's the one test in this suite that's about the state of the repository
+// itself, not the behavior of a function.
 
 const ROOT = path.resolve(__dirname, "..", "..");
 const SKIP_DIRS = new Set(["node_modules", ".next", ".git", "dist", "build"]);
@@ -38,22 +35,18 @@ function sourceFiles(): string[] {
     .filter((f) => !f.includes(`${path.sep}__tests__${path.sep}`)); // this file (and other test files) legitimately need to name the forbidden terms as literal strings to assert against
 }
 
-describe("Payment provider boundary — repo-wide verification", () => {
-  it("package.json has no payment SDK dependency (the adapter uses the provider's REST API; the browser library is loaded from the provider's own domain)", () => {
+describe("Stripe removal — repo-wide verification", () => {
+  it("package.json has no Stripe dependency of any kind", () => {
     const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf-8"));
     const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
     const stripeDeps = Object.keys(allDeps).filter((name) => name.toLowerCase().includes("stripe"));
     expect(stripeDeps).toEqual([]);
   });
 
-  it("provider credential env vars are referenced ONLY inside the payments boundary (and the Admin health check that reports Configured/Missing for them) — never in a route, action, component or client bundle", () => {
+  it("no Stripe API key / secret / webhook-secret env vars are referenced anywhere in source", () => {
     const forbidden = ["STRIPE_SECRET_KEY", "STRIPE_PUBLISHABLE_KEY", "STRIPE_PUBLIC_KEY", "STRIPE_WEBHOOK_SECRET"];
-    const allowed = [path.join("src", "server", "payments") + path.sep, path.join("src", "server", "system", "health-checks.ts")];
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
-      if (allowed.some((a) => path.relative(ROOT, file).startsWith(a))) continue;
-      // Real-database integration tests are tests like any other: they set fake keys to drive the readiness checks.
-      if (file.includes(`${path.sep}__integration__${path.sep}`)) continue;
       const content = readFileSync(file, "utf-8");
       for (const term of forbidden) {
         if (content.includes(term)) offenders.push(`${file}: ${term}`);
@@ -75,30 +68,7 @@ describe("Payment provider boundary — repo-wide verification", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("no file outside src/server and src/lib reads a provider/payment credential from the environment (so none can reach a client bundle)", () => {
-    const offenders: string[] = [];
-    for (const file of sourceFiles()) {
-      if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
-      const rel = path.relative(ROOT, file);
-      if (rel.startsWith(path.join("src", "server") + path.sep) || rel.startsWith(path.join("src", "lib") + path.sep)) continue;
-      const content = readFileSync(file, "utf-8");
-      if (/process\.env\.(STRIPE|PAYMENT)_/.test(content) || /NEXT_PUBLIC_[A-Z_]*(STRIPE|PAYMENT)/.test(content)) offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it("the provider's browser library is loaded ONLY by the dedicated loader, from the provider's own domain", () => {
-    const offenders: string[] = [];
-    for (const file of sourceFiles()) {
-      if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
-      const rel = path.relative(ROOT, file);
-      if (rel === path.join("src", "components", "payments", "stripe-js.ts")) continue;
-      if (readFileSync(file, "utf-8").includes("js.stripe.com")) offenders.push(rel);
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it("the legacy Stripe webhook route, Stripe client module, and Stripe payment-section component no longer exist", () => {
+  it("the Stripe webhook route, Stripe client module, and Stripe payment-section component no longer exist", () => {
     const forbiddenPaths = [
       path.join(ROOT, "src", "app", "api", "webhooks", "stripe", "route.ts"),
       path.join(ROOT, "src", "lib", "stripe.ts"),
@@ -108,6 +78,50 @@ describe("Payment provider boundary — repo-wide verification", () => {
     for (const p of forbiddenPaths) {
       expect(() => statSync(p)).toThrow();
     }
+  });
+
+  it("no external payment-provider surface exists: no provider module, webhook route, provider env var, CSP host or provider-named schema field", () => {
+    for (const parts of [
+      ["src", "server", "payments"],
+      ["src", "app", "api", "webhooks"],
+      ["src", "server", "actions", "payment-setup.ts"],
+      ["src", "components", "payments"],
+    ]) {
+      expect(() => statSync(path.join(ROOT, ...parts))).toThrow();
+    }
+    const providers = /stripe|paypal|adyen|braintree|authorize\.net|square(?:up)?\.com|PAYMENT_PROVIDER/i;
+    const nextConfig = readFileSync(path.join(ROOT, "next.config.ts"), "utf-8");
+    expect(nextConfig).not.toMatch(providers);
+    expect(nextConfig).not.toMatch(/js\.stripe\.com|frame-src[^;]*payment/i);
+    const schemaCode = readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf-8")
+      .split(/\r?\n/)
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    expect(schemaCode).not.toMatch(/providerCustomerId|providerPaymentMethodId|PaymentWebhookEvent|PaymentVaultStatus/);
+    const envExample = readFileSync(path.join(ROOT, ".env.example"), "utf-8");
+    expect(envExample.split(/\r?\n/).filter((l) => !l.trim().startsWith("#")).join("\n")).not.toMatch(providers);
+  });
+
+  it("the CRM's own payment architecture is present and must not be removed again (vault, customer card entry, masked display + Reveal, manual payment recording, contact payment methods)", () => {
+    const required = [
+      ["src", "server", "security", "payment-vault.ts"],
+      ["src", "server", "security", "card-encryption.ts"],
+      ["src", "server", "security", "card-vault-status.ts"],
+      ["src", "server", "actions", "payment-methods.ts"],
+      ["src", "server", "actions", "contact-payment-methods.ts"],
+      ["src", "components", "booking", "card-payment-section.tsx"],
+      ["src", "components", "bookings", "payment-method-card.tsx"],
+      ["src", "components", "bookings", "charge-customer-panel.tsx"],
+      ["docs", "PAYMENT_ARCHITECTURE.md"],
+    ];
+    for (const parts of required) {
+      expect(() => statSync(path.join(ROOT, ...parts)), parts.join("/")).not.toThrow();
+    }
+    const schema = readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf-8");
+    expect(schema).toMatch(/model PaymentMethod \{[\s\S]*?encryptedPan\s+String\b/);
+    expect(schema).toMatch(/model PaymentCharge \{/);
+    const actions = readFileSync(path.join(ROOT, "src", "server", "actions", "payment-methods.ts"), "utf-8");
+    for (const fn of ["revealPaymentMethod", "confirmPaymentReceived"]) expect(actions).toContain(`export async function ${fn}`);
   });
 
   it("the Prisma schema has no payment_intent / setup_intent fields, and no field/model literally named or prefixed with Stripe (explanatory prose comments contrasting Stripe's tokenization model are expected and fine)", () => {
@@ -135,12 +149,7 @@ describe("Payment provider boundary — repo-wide verification", () => {
     // model it points to is independently verified immediately below to
     // hold no actual CVV value column either — this isn't a blind
     // exception, it's backed by its own assertion.
-    // Comment lines may (and do) EXPLAIN that no security code is stored; only code lines count.
-    const body = modelMatch![1]
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("//"))
-      .join("\n")
-      .replace(/^\s*cvvRecollectionRequests\s+CvvRecollectionRequest\[\].*$/m, "");
+    const body = modelMatch![1].replace(/^\s*cvvRecollectionRequests\s+CvvRecollectionRequest\[\].*$/m, "");
     expect(body).not.toMatch(/cvv/i);
     expect(body).not.toMatch(/cvc/i);
     expect(body).not.toMatch(/\bcid\b/i);
@@ -175,7 +184,8 @@ describe("Payment provider boundary — repo-wide verification", () => {
       if (path.relative(ROOT, file) === DEFENSIVE_DENY_LIST) continue;
       const code = readFileSync(file, "utf-8")
         .replace(/\/\*[\s\S]*?\*\//g, "")
-        .split("\n")
+        // \r?\n: on a Windows checkout files have CRLF, and a stray \r would stop the comment strip matching.
+        .split(/\r?\n/)
         .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
         .join("\n");
       if (/cvv|\bcvc\b|security_?code|\bcid\b/i.test(code)) offenders.push(path.relative(ROOT, file));
@@ -190,58 +200,9 @@ describe("Payment provider boundary — repo-wide verification", () => {
       ["src", "server", "actions", "cvv-recollection.ts"],
       ["src", "components", "customer", "cvv-recollection-form.tsx"],
       ["src", "app", "cvv-recollection"],
-      // The development card vault and its reveal workflow: card numbers are
-      // held only by the payment provider now.
-      ["src", "server", "security", "payment-vault.ts"],
-      ["src", "server", "security", "card-encryption.ts"],
     ];
     for (const parts of removed) {
       expect(() => statSync(path.join(ROOT, ...parts))).toThrow();
     }
-  });
-
-  it("the unused legacy CvvRecollectionRequest table is not referenced by ANY code (no route, action, UI, job or health check treats it as a feature)", () => {
-    const offenders: string[] = [];
-    for (const file of sourceFiles()) {
-      if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
-      if (path.relative(ROOT, file) === path.join("src", "__tests__", "stripe-removal.test.ts")) continue;
-      if (/cvvRecollectionRequest/i.test(readFileSync(file, "utf-8"))) offenders.push(path.relative(ROOT, file));
-    }
-    expect(offenders).toEqual([]);
-    // ...and the table itself has no column that could hold a security code (checked by the schema test above).
-  });
-
-  it("no executable source reads or writes the legacy encryptedPan column, and no action can reveal a card number", () => {
-    const offenders: string[] = [];
-    for (const file of sourceFiles()) {
-      if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
-      if (file.includes(`${path.sep}__integration__${path.sep}`)) continue;
-      const code = readFileSync(file, "utf-8")
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        .split("\n")
-        .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
-        .join("\n");
-      if (/encryptedPan|revealPaymentMethod|getPaymentVault|decryptPan|encryptPan/.test(code)) offenders.push(path.relative(ROOT, file));
-    }
-    expect(offenders).toEqual([]);
-  });
-
-  it("no payment-related server file logs or serializes a raw request/body/headers object (structured-redaction rule: log safe tags, never payloads)", () => {
-    const offenders: string[] = [];
-    const dirs = [path.join(ROOT, "src", "server", "payments"), path.join(ROOT, "src", "app", "api", "webhooks")];
-    for (const dir of dirs) {
-      for (const file of walk(dir)) {
-        if (!file.endsWith(".ts") || file.includes(`${path.sep}__tests__${path.sep}`)) continue;
-        const code = readFileSync(file, "utf-8")
-          .replace(/\/\*[\s\S]*?\*\//g, "")
-          .split("\n")
-          .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
-          .join("\n");
-        // console.* with an interpolated body/payload/headers/err.message, or JSON.stringify of the raw event/body.
-        if (/console\.(log|error|warn|info)\([^)]*(rawBody|\bbody\b|payload|headers|\.message|event\.data)/.test(code)) offenders.push(path.relative(ROOT, file));
-        if (/JSON\.stringify\((rawBody|body|event|req\b|request)/.test(code)) offenders.push(path.relative(ROOT, file));
-      }
-    }
-    expect(offenders).toEqual([]);
   });
 });

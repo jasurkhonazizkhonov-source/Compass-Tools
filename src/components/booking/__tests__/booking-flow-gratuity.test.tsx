@@ -15,8 +15,6 @@ import { GRATUITY_PRESETS } from "@/lib/pricing";
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/server/actions/booking", () => ({ submitBooking: vi.fn(async () => ({ ok: true })) }));
-vi.mock("@/server/actions/payment-setup", () => ({ createBookingPaymentSetup: vi.fn(async () => ({ ok: true, clientSecret: "seti_secret", setupIntentId: "seti_test" })) }));
-vi.mock("@/components/payments/secure-card-fields", async () => await import("@/test/secure-card-fields-stub"));
 vi.mock("@/server/queries/reference-data", () => ({
   searchAirports: vi.fn(async () => []),
   searchAirlines: vi.fn(async () => []),
@@ -24,7 +22,6 @@ vi.mock("@/server/queries/reference-data", () => ({
 }));
 
 const BASE_PROPS = {
-  paymentConfig: { ready: true as const, publishableKey: "pk_test_stub_key_value" },
   token: "test-token",
   segments: [],
   adults: 1,

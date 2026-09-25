@@ -1,40 +1,143 @@
 "use server";
 
 import { z } from "zod";
+import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
-import { canConfirmPayment } from "@/lib/permissions";
+import { canRevealPaymentMethod, canConfirmPayment } from "@/lib/permissions";
+import { getPaymentVault } from "@/server/security/payment-vault";
+import { requireRecentAuthentication } from "@/server/security/privileged-access";
 import { isChargeAmountAllowed } from "@/lib/payment-limits";
+import { getClientIp } from "@/lib/request-ip";
+import { canAccessPaymentMethod } from "@/server/payment-method-access";
 import { bookingVisibilityWhere } from "@/server/visibility";
 import { formatMoney, isSupportedCurrency } from "@/lib/currency";
 
-// There is intentionally NO "reveal card number" action in this file (or
-// anywhere): payment methods are vaulted by the payment provider, so Compass
-// Tools holds no card number to reveal. Charging is done through the provider
-// (see src/server/actions/manual-charge.ts). What remains here is RECORD
-// keeping for payments an agent made outside the CRM.
+async function auditPaymentMethodAccess(params: {
+  actorId: string | undefined;
+  paymentMethodId: string;
+  bookingId: string | undefined | null;
+  last4: string | undefined | null;
+  success: boolean;
+  reason?: string;
+}) {
+  let ip: string | undefined;
+  try {
+    ip = getClientIp(await headers());
+  } catch {
+    // headers() can throw outside a request context (e.g. a test harness) — audit logging must never block on it.
+  }
+  await prisma.auditLog.create({
+    data: {
+      actorId: params.actorId,
+      action: params.success ? "PAYMENT_METHOD_REVEALED" : "PAYMENT_METHOD_REVEAL_DENIED",
+      entityType: "PaymentMethod",
+      entityId: params.paymentMethodId,
+      // Deliberately never includes the PAN or CVV — only the last four
+      // digits (already-masked data), never the full card number.
+      metadata: {
+        bookingId: params.bookingId ?? null,
+        last4: params.last4 ?? null,
+        result: params.success ? "SUCCESS" : "DENIED",
+        reason: params.reason ?? null,
+        ip: ip ?? null,
+      },
+    },
+  });
+}
+
+const GENERIC_DENIAL = "You are not authorized to reveal this payment method";
+
+/**
+ * The privileged reveal workflow — every step below corresponds directly
+ * to the numbered steps in the spec this was built against:
+ *   1-3: authenticated session, active account, role + explicit
+ *        payments.reveal permission (canRevealPaymentMethod checks both).
+ *   4:   this specific booking's payment method, not just "any" — reuses
+ *        the exact same bookingVisibilityWhere() every other booking-detail
+ *        access goes through, so a restricted agent can't reveal a card on
+ *        a booking outside their own scope even with payments.reveal.
+ *   5-6: recent authentication / MFA — see requireRecentAuthentication in
+ *        privileged-access.ts. Fails closed in production (no real MFA
+ *        system exists yet); development explicitly reports
+ *        NOT_AVAILABLE_IN_DEVELOPMENT and allows the action through.
+ *   7:   audit event recorded for both success and denial.
+ *   8-9: decrypt server-side via the PaymentVault abstraction, return only
+ *        to this call's caller.
+ *   10-11: auto-hide timeout + Hide button — implemented client-side in
+ *        the component that calls this action, never here.
+ *   12:  this is the only export in the codebase that ever reads
+ *        encryptedPan — no other query/action touches that column.
+ */
+export async function revealPaymentMethod(paymentMethodId: string) {
+  const actor = await getCurrentAccount();
+
+  if (!actor || actor.status !== "ACTIVE") {
+    await auditPaymentMethodAccess({ actorId: actor?.id, paymentMethodId, bookingId: undefined, last4: undefined, success: false, reason: "NO_ACTIVE_SESSION" });
+    throw new Error(GENERIC_DENIAL);
+  }
+  if (!canRevealPaymentMethod(actor)) {
+    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: undefined, last4: undefined, success: false, reason: "MISSING_PERMISSION" });
+    throw new Error(GENERIC_DENIAL);
+  }
+
+  const paymentMethod = await prisma.paymentMethod.findUnique({
+    where: { id: paymentMethodId },
+    select: { id: true, encryptedPan: true, cardholderName: true, cardBrand: true, expiryMonth: true, expiryYear: true, last4: true, bookingId: true, contactId: true },
+  });
+  if (!paymentMethod) {
+    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: undefined, last4: undefined, success: false, reason: "NOT_FOUND" });
+    throw new Error(GENERIC_DENIAL);
+  }
+
+  // Protects against IDOR/BOLA — a valid paymentMethodId alone is not
+  // enough; the underlying booking OR contact (whichever this card is
+  // actually attached to) must also be one this account can see.
+  const accessible = await canAccessPaymentMethod(actor, paymentMethod);
+  if (!accessible) {
+    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: false, reason: "RECORD_NOT_ACCESSIBLE" });
+    throw new Error(GENERIC_DENIAL);
+  }
+
+  const stepUp = requireRecentAuthentication();
+  if (!stepUp.ok) {
+    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: false, reason: stepUp.reason });
+    throw new Error(GENERIC_DENIAL);
+  }
+
+  const pan = await getPaymentVault().reveal(paymentMethod.encryptedPan);
+  await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: true });
+
+  return {
+    cardholderName: paymentMethod.cardholderName,
+    pan,
+    cardBrand: paymentMethod.cardBrand,
+    expiryMonth: paymentMethod.expiryMonth,
+    expiryYear: paymentMethod.expiryYear,
+  };
+}
 
 const confirmPaymentSchema = z.object({
   bookingId: z.string(),
   paymentMethodId: z.string(),
   amount: z.number().positive(),
   status: z.enum(["SUCCEEDED", "FAILED"]),
-  // A card number pasted into a free-text note must never be stored.
+  // A card number typed into a free-text note must never be stored.
   referenceNote: z
     .string()
     .max(500)
-    .refine((v) => !/(?:d[ -]?){13,19}/.test(v), "Never put card numbers in a note")
+    .refine((v) => !/\b(?:\d[ -]?){13,19}\b/.test(v), "Never put card numbers in a note")
     .optional(),
 });
 
 /**
- * RECORD-ONLY: an authorized human (payments.charge) attests that a payment
- * was taken OUTSIDE the CRM (for example directly with the airline or supplier)
- * and records the outcome. Charging the vaulted card through the payment
- * provider is a different, Admin-only action (manual-charge.ts) that moves real
- * money and is verified by the provider; this one only writes a note. A booking may have multiple payment
+ * Replaces the old Stripe-driven automatic charge-success signal: an
+ * authorized human (payments.charge) attests that they personally
+ * processed a SPECIFIC payment method's charge with the airline/supplier
+ * — using the card revealed above, entered by hand into that external
+ * system — and records the outcome. A booking may have multiple payment
  * methods (split payment across cards); each is confirmed independently,
  * identified explicitly by paymentMethodId rather than assuming "the"
  * booking's card. Does NOT touch Quote status — that's driven purely by
@@ -82,6 +185,7 @@ export async function confirmPaymentReceived(input: z.infer<typeof confirmPaymen
     throw new Error("That amount is outside the allowed range for this payment method");
   }
 
+  // The customer's own payment currency (never a bare $ for AUD/EUR/GBP…).
   const chargeCurrency = isSupportedCurrency(booking.quote.currency) ? booking.quote.currency : "USD";
   const charge = await prisma.paymentCharge.create({
     data: {
@@ -110,8 +214,8 @@ export async function confirmPaymentReceived(input: z.infer<typeof confirmPaymen
     type: "PAYMENT_CONFIRMED",
     description:
       data.status === "SUCCEEDED"
-        ? `Payment of ${formatMoney(data.amount, chargeCurrency)} recorded as received (taken outside the CRM)`
-        : `Payment attempt of ${formatMoney(data.amount, chargeCurrency)} recorded as failed (taken outside the CRM)`,
+        ? `Payment of ${formatMoney(data.amount, chargeCurrency)} confirmed manually`
+        : `Payment attempt of ${formatMoney(data.amount, chargeCurrency)} recorded as failed`,
   });
 
   // Quote status is no longer driven by payment confirmation — it's now

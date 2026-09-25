@@ -6,11 +6,10 @@ import { getContactDetail, contactRecordExists } from "@/server/queries/contacts
 import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canManageContactPaymentMethods, canDeleteContact, canViewContacts } from "@/lib/permissions";
+import { canReassignLeads, canRevealPaymentMethod, canManageContactPaymentMethods, canDeleteContact, canViewContacts } from "@/lib/permissions";
 import { CustomerInfoCard } from "@/components/leads/customer-info-card";
 import { ReassignContactDialog } from "@/components/contacts/reassign-contact-dialog";
 import { PaymentMethodsPanel } from "@/components/contacts/payment-methods-panel";
-import { getPaymentClientConfig } from "@/server/payments/provider";
 import { NewLeadDialog } from "@/components/leads/new-lead-dialog";
 import { CallButton } from "@/components/crm/call-button";
 import { EmailComposerButton } from "@/components/crm/email-composer-dialog";
@@ -32,7 +31,6 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
   const currentAccount = await getCurrentAccount();
   if (!canViewContacts(currentAccount?.role)) notFound();
   const viewer = currentAccount ? { id: currentAccount.id, role: currentAccount.role, companyId: currentAccount.companyId } : null;
-  const paymentClientConfig = getPaymentClientConfig();
   const [contact, agents, leadEligibleAgents] = await Promise.all([
     getContactDetail(id, viewer),
     currentAccount ? listTaskEligibleAgents(currentAccount.companyId) : Promise.resolve([]),
@@ -207,9 +205,8 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
                 <PaymentMethodsPanel
                   contactId={contact.id}
                   paymentMethods={contact.paymentMethods}
+                  canReveal={canRevealPaymentMethod(currentAccount)}
                   canManage={canManageContactPaymentMethods(currentAccount)}
-                  // Only the publishable key ever reaches the browser.
-                  publishableKey={paymentClientConfig.ready ? paymentClientConfig.publishableKey : null}
                 />
               </TabsContent>
 

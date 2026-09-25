@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useRef, useState, useTransition } from "react";
+import { useId, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, PenLine, ShieldCheck, Pencil, CheckCircle2 } from "lucide-react";
@@ -12,19 +12,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { FlightItineraryDisplay } from "@/components/quotes/flight-itinerary-display";
 import { PassengerForm, type PassengerFormState } from "@/components/booking/passenger-form";
-import { CardPaymentSection, PaymentConsentCheckbox, newCardForm, type CardFormState } from "@/components/booking/card-payment-section";
-import type { SecureCardHandle } from "@/components/payments/secure-card-fields";
+import { CardPaymentSection, PaymentConsentCheckbox, EMPTY_CARD_FORM, type CardFormState } from "@/components/booking/card-payment-section";
 import { LegalAgreementAccordion } from "@/components/booking/legal-agreement-accordion";
 import { CountrySelect } from "@/components/booking/country-select";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { PaymentBadge } from "@/components/crm/payment-badge";
 import { PhoneInput, DEFAULT_PHONE_COUNTRY } from "@/components/crm/phone-input";
 import { Plus } from "lucide-react";
 import { calculatePricing, GRATUITY_PRESETS } from "@/lib/pricing";
 import { buildPricingSnapshot, formatMoney, type SupportedCurrency } from "@/lib/currency";
 import { normalizePhoneNumber, type CountryCode } from "@/lib/phone";
 import { submitBooking } from "@/server/actions/booking";
-import { createBookingPaymentSetup } from "@/server/actions/payment-setup";
-import { vaultCards } from "@/components/booking/vault-cards";
+import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour } from "@/lib/card-validation";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import type { AirlineOption } from "@/server/queries/reference-data";
 
@@ -74,11 +73,8 @@ export function BookingFlow({
   previousPassengerOptions,
   previousBillingAddresses,
   previousPaymentMethods,
-  paymentConfig,
 }: {
   token: string;
-  /** Whether the payment provider is configured, and the PUBLISHABLE key its hosted card fields need (never a secret). When not ready the form explains that online booking is unavailable instead of offering card entry. */
-  paymentConfig: { ready: true; publishableKey: string } | { ready: false };
   segments: SegmentDisplay;
   /** Exchange workflow — the customer's existing itinerary, shown in its
    * own clearly-labeled section above the proposed one. Omitted (or
@@ -240,10 +236,7 @@ export function BookingFlow({
   const [billingState, setBillingState] = useState("");
   const [billingZip, setBillingZip] = useState("");
   const [billingCountry, setBillingCountry] = useState("United States");
-  const [cards, setCards] = useState<CardFormState[]>(() => [newCardForm()]);
-  // One handle per card slot into the provider's hosted fields. The handle can
-  // send the card to the provider; it cannot read it.
-  const cardHandles = useRef<Array<SecureCardHandle | null>>([]);
+  const [cards, setCards] = useState<CardFormState[]>([EMPTY_CARD_FORM]);
   const [paymentConsent, setPaymentConsent] = useState(false);
   const [gratuity, setGratuity] = useState(0);
   const [termsAccepted, setTermsAccepted] = useState(false);
@@ -285,7 +278,6 @@ export function BookingFlow({
   const remaining = Math.round((displayPricing.total - totalAllocated) * 100) / 100;
 
   function validate(): string | null {
-    if (!paymentConfig.ready) return "Online booking is temporarily unavailable. Please contact your travel agent.";
     for (const [i, p] of passengers.entries()) {
       if (!p.firstName || !p.lastName) return `Passenger ${i + 1}: first and last name are required`;
       if (!p.dateOfBirth) return `Passenger ${i + 1}: date of birth is required`;
@@ -298,8 +290,8 @@ export function BookingFlow({
     for (const [i, card] of cards.entries()) {
       const label = cards.length > 1 ? `Payment Method ${i + 1}: ` : "";
       if (!card.cardholderName.trim()) return `${label}Cardholder name is required`;
-      // The card itself is validated by the provider's fields (Luhn, expiry, security code); we only know whether they report it complete.
-      if (!card.setupIntentId && !cardHandles.current[i]?.isComplete()) return `${label}Please enter your complete card details`;
+      if (!isValidCardNumber(card.cardNumber)) return `${label}Please enter a valid card number`;
+      if (!isValidExpiry(Number(card.expiryMonth), Number(card.expiryYear))) return `${label}Please enter a valid expiration date`;
       if (amountFor(card) <= 0) return `${label}Please enter an amount to charge`;
     }
     if (Math.abs(remaining) > 0.01) {
@@ -314,11 +306,10 @@ export function BookingFlow({
   }
 
   function addPaymentMethod() {
-    setCards((prev) => [...prev, newCardForm()]);
+    setCards((prev) => [...prev, EMPTY_CARD_FORM]);
   }
 
   function removePaymentMethod(index: number) {
-    cardHandles.current.splice(index, 1);
     setCards((prev) => prev.filter((_, i) => i !== index));
   }
 
@@ -326,14 +317,16 @@ export function BookingFlow({
     setCards((prev) => prev.map((c, i) => (i === index ? next : c)));
   }
 
-  // Autofills ONLY the cardholder name from a previously used card. The card
-  // itself is always entered afresh in the provider's secure fields — this app
-  // has no card number to offer. See docs/PAYMENT_AUTOFILL_SECURITY.md.
+  // Pass 25 §3-6/§14-16 — autofills ONLY the customer-safe fields already
+  // in the selector list (cardholder name + expiry). The card number and
+  // card number is never touched — never returned by the query, so there is
+  // nothing to autofill it WITH; the customer always types it in
+  // manually. (No CVV is collected at all.) See docs/PAYMENT_AUTOFILL_SECURITY.md.
   function applyPreviousPaymentMethod(index: number, option: NonNullable<typeof previousPaymentMethods>[number]) {
     setCards((prev) =>
       prev.map((c, i) =>
         i === index
-          ? { ...c, cardholderName: option.cardholderName }
+          ? { ...c, cardholderName: option.cardholderName, expiryMonth: String(option.expiryMonth).padStart(2, "0"), expiryYear: String(option.expiryYear) }
           : c
       )
     );
@@ -368,28 +361,7 @@ export function BookingFlow({
       toast.error(error);
       return;
     }
-    if (!paymentConfig.ready) {
-      toast.error("Online booking is temporarily unavailable. Please contact your travel agent.");
-      return;
-    }
     startSubmitting(async () => {
-      // Step 1 — for each card not yet vaulted: ask the server to start a
-      // provider capture, then let the provider's hosted fields send the card
-      // to the provider. Only an opaque reference comes back to this page.
-      const vaultedResult = await vaultCards({
-        token,
-        cards,
-        handles: cardHandles.current,
-        createSetup: createBookingPaymentSetup,
-        // Remember each reference immediately: if a later step fails, a retry must not make the customer re-enter this card.
-        onVaulted: (index, setupIntentId) => setCards((prev) => prev.map((c, idx) => (idx === index ? { ...c, setupIntentId } : c))),
-      });
-      if (!vaultedResult.ok) {
-        toast.error(vaultedResult.error);
-        return;
-      }
-      const vaulted = vaultedResult.cards;
-
       let result: Awaited<ReturnType<typeof submitBooking>>;
       try {
         result = await submitBooking({
@@ -414,9 +386,11 @@ export function BookingFlow({
           billingState,
           billingZip,
           billingCountry,
-          paymentMethods: vaulted.map((c) => ({
-            setupIntentId: c.setupIntentId as string,
-            cardholderName: c.cardholderName.trim(),
+          paymentMethods: cards.map((c) => ({
+            cardholderName: c.cardholderName,
+            cardNumber: c.cardNumber,
+            expiryMonth: Number(c.expiryMonth),
+            expiryYear: Number(c.expiryYear),
             amount: amountFor(c),
           })),
           paymentConsent: true,
@@ -451,8 +425,14 @@ export function BookingFlow({
       }
 
       if (result.ok) {
+        // Once the card has been stored the full number never needs to exist in
+        // this component's state again.
+        setCards((prev) => prev.map((c) => ({ ...c, cardNumber: "" })));
         router.push(`/quote/${token}/confirmation`);
       } else {
+        // A rejection (e.g. a temporary storage problem) keeps what the
+        // customer typed so a retry is one click — the same value already sat
+        // in this state before they pressed Finish Booking.
         toast.error(result.error);
       }
     });
@@ -535,12 +515,7 @@ export function BookingFlow({
         <Card className="shadow-none">
           <CardHeader><CardTitle role="heading" aria-level={2} className="text-sm font-medium">Payment</CardTitle></CardHeader>
           <CardContent className="space-y-6">
-            {!paymentConfig.ready && (
-              <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm">
-                Online booking is temporarily unavailable, so we can&apos;t take your payment method right now. Nothing has been charged. Please contact {companyName} to complete your booking.
-              </p>
-            )}
-            {paymentConfig.ready && cards.map((c, i) => {
+            {cards.map((c, i) => {
               const cardAutofillId = `${autofillBaseId}-card-${i}`;
               return (
                 <div key={i} className={i > 0 ? "pt-6 border-t" : undefined}>
@@ -565,14 +540,10 @@ export function BookingFlow({
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">You&apos;ll still need to enter the card details in the secure form below.</p>
+                      <p className="text-xs text-muted-foreground">You&apos;ll still need to enter the full card number.</p>
                     </div>
                   )}
                   <CardPaymentSection
-                    ref={(handle) => {
-                      cardHandles.current[i] = handle;
-                    }}
-                    publishableKey={paymentConfig.ready ? paymentConfig.publishableKey : ""}
                     value={c}
                     onChange={(next) => updatePaymentMethod(i, next)}
                     label={cards.length > 1 ? `Payment Method ${i + 1}` : "Card Details"}
@@ -776,9 +747,12 @@ export function BookingFlow({
                 <div className="space-y-1.5">
                   {cards.map((c, i) => (
                     <div key={i} className="flex items-center justify-between gap-2">
-                      <span className="text-sm text-muted-foreground">
-                        {cards.length > 1 ? `Payment method ${i + 1}` : "Card"} — {c.cardholderName.trim() || "cardholder"} · entered securely
-                      </span>
+                      <PaymentBadge
+                        cardBrand={detectCardBrand(c.cardNumber) === "Unknown" ? null : detectCardBrand(c.cardNumber)}
+                        cardLast4={lastFour(c.cardNumber) || null}
+                        expiryMonth={c.expiryMonth ? Number(c.expiryMonth) : null}
+                        expiryYear={c.expiryYear ? Number(c.expiryYear) : null}
+                      />
                       {cards.length > 1 && <span className="text-xs text-muted-foreground shrink-0">{formatMoney(Number(c.amount) || 0, currency)}</span>}
                     </div>
                   ))}
