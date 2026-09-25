@@ -39,11 +39,12 @@ describe("isRetriableConnectError", () => {
 });
 
 describe("backoffDelayMs", () => {
-  it("grows exponentially and adds bounded jitter", () => {
-    expect(backoffDelayMs(0, 300, () => 0)).toBe(300);
-    expect(backoffDelayMs(1, 300, () => 0)).toBe(900);
-    expect(backoffDelayMs(0, 300, () => 1)).toBe(450);
-    expect(backoffDelayMs(2, 300, () => 0)).toBe(2700);
+  it("doubles each attempt up to a 4s cap and adds bounded jitter", () => {
+    expect(backoffDelayMs(0, 250, () => 0)).toBe(250);
+    expect(backoffDelayMs(1, 250, () => 0)).toBe(500);
+    expect(backoffDelayMs(2, 250, () => 0)).toBe(1000);
+    expect(backoffDelayMs(5, 250, () => 0)).toBe(4000); // capped
+    expect(backoffDelayMs(0, 250, () => 1)).toBe(375); // +50% jitter at most
   });
 });
 
@@ -118,6 +119,30 @@ describe("wrapPoolWithConnectRetry", () => {
 
     await expect(pool.connect() as Promise<unknown>).rejects.toThrow();
     expect(calls()).toBe(2);
+  });
+
+  it("fires onRelease when a client is handed back (promise form: client.release; callback form: done)", async () => {
+    const onRelease = vi.fn();
+    const released: unknown[] = [];
+    const client: { id: number; release?: (e?: unknown) => void } = { id: 5, release: (e) => void released.push(e) };
+    const pool: ConnectablePool = {
+      connect(cb) {
+        if (typeof cb === "function") {
+          cb(undefined, client, (e) => void released.push(e));
+          return;
+        }
+        return Promise.resolve(client);
+      },
+    };
+    wrapPoolWithConnectRetry(pool, { retries: 1, baseDelayMs: 1, sleep: noSleep, onRelease });
+
+    const c = (await pool.connect()) as typeof client;
+    c.release!("err-arg"); // the caller releases through the client, as Prisma's transactions do
+    expect(onRelease).toHaveBeenCalledTimes(1);
+    expect(released).toContain("err-arg"); // the ORIGINAL release still ran, with its argument
+
+    await new Promise<void>((resolve) => pool.connect((_e, _c, done) => { done(); resolve(); })); // the callback form pool.query() uses
+    expect(onRelease).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry when there is no error (single call)", async () => {

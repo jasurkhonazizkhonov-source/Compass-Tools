@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 import { wrapPoolWithConnectRetry, type ConnectablePool } from "@/lib/db-connection-retry";
@@ -19,25 +20,30 @@ function connectionStringWithoutSslMode(url: string): string {
   return u.toString();
 }
 
-// Pool sizing and timeouts are configurable per environment rather than
-// hard-coded from a single past measurement of one database. An earlier
-// revision capped this at 3 connections / 5s based on a max_connections
-// reading from a database that no longer exists; under real use that cap
-// was itself the failure: one CRM page issues 20-37 statements, every open
-// tab polls in the background, and with 3 connections shared by all of it
-// the queue outran the 5s acquisition timeout — pg-pool then threw
-// "timeout exceeded when trying to connect", which the CRM rendered as
-// "This page couldn't load" (reproduced locally with 10 concurrent page
-// loads against a 300ms-latency database, and against production with as
-// few as 5 concurrent requests). Defaults below favour throughput on a
-// high-latency link while staying modest per instance; a genuinely
-// connection-limited database is handled by the connect-retry wrapper
-// (see src/lib/db-connection-retry.ts) and, properly, by pointing
-// DATABASE_URL at a connection pooler. Tune with:
-//   DATABASE_POOL_MAX                 max connections per instance (default 5)
+// WHY THESE DEFAULTS (measured against production, not guessed):
+//   - GET /api/health showed a steady-state round trip of ~68ms but ~970ms to
+//     open a NEW connection, so reusing a connection is valuable but a big
+//     pool buys little — the queries are cheap once connected.
+//   - Under concurrent load the production database answered with Postgres
+//     SQLSTATE 53300 (too_many_connections): each concurrently running
+//     serverless instance opens its own connection(s), so total demand is
+//     (instances x pool max) and the database's small connection limit is
+//     the binding constraint. Hence a SMALL per-instance pool (a request
+//     rarely needs more than a couple of connections at once), idle
+//     connections released quickly and — critically — BEFORE the instance
+//     is suspended (see holdInstanceUntilIdleConnectionsClose), and patient
+//     jittered retries when the database is momentarily out of slots so a
+//     burst becomes a short queue rather than a wall of 500s.
+//   - An earlier revision capped the pool at 3 / 5s from a reading of a
+//     database that no longer exists, with no retry: connection-slot errors
+//     surfaced as "This page couldn't load".
+// The durable fix is a connection pooler in front of Postgres and/or Vercel
+// Fluid compute (many requests per instance) — see docs/DEPLOYMENT.md §5b.
+// Tune with:
+//   DATABASE_POOL_MAX                 max connections per instance (default 2)
 //   DATABASE_POOL_CONNECT_TIMEOUT_MS  per-attempt acquisition timeout (default 8000)
-//   DATABASE_POOL_IDLE_TIMEOUT_MS     idle connection lifetime (default 10000)
-//   DATABASE_CONNECT_RETRIES          extra acquisition attempts (default 2)
+//   DATABASE_POOL_IDLE_TIMEOUT_MS     idle connection lifetime (default 4000)
+//   DATABASE_CONNECT_RETRIES          extra acquisition attempts (default 6)
 function intFromEnv(name: string, fallback: number, min: number, max: number): number {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -48,10 +54,10 @@ function intFromEnv(name: string, fallback: number, min: number, max: number): n
 /** Pool sizing/timeouts actually in effect (also used by the health check). */
 export function getPoolSettings() {
   return {
-    max: intFromEnv("DATABASE_POOL_MAX", 5, 1, 50),
+    max: intFromEnv("DATABASE_POOL_MAX", 2, 1, 50),
     connectionTimeoutMillis: intFromEnv("DATABASE_POOL_CONNECT_TIMEOUT_MS", 8_000, 1_000, 60_000),
-    idleTimeoutMillis: intFromEnv("DATABASE_POOL_IDLE_TIMEOUT_MS", 10_000, 1_000, 600_000),
-    connectRetries: intFromEnv("DATABASE_CONNECT_RETRIES", 2, 0, 5),
+    idleTimeoutMillis: intFromEnv("DATABASE_POOL_IDLE_TIMEOUT_MS", 4_000, 1_000, 600_000),
+    connectRetries: intFromEnv("DATABASE_CONNECT_RETRIES", 6, 0, 10),
   };
 }
 
@@ -64,6 +70,35 @@ export function getPrismaPoolStats(): { total: number; idle: number; waiting: nu
   return { total: poolForStats.totalCount, idle: poolForStats.idleCount, waiting: poolForStats.waitingCount };
 }
 
+// A serverless instance is frozen soon after its last response, and a frozen
+// process cannot run the pool's idle timer — so its open database
+// connections stay occupied (counting against the database's small
+// connection limit) until the instance is eventually recycled, potentially
+// minutes later. That is how a modest burst of traffic can leave the
+// production database "full" long after the burst ended. The fix (the same
+// idea as Vercel's attachDatabasePool) is to keep the instance alive, via
+// after(), just long enough for the pool to close its idle connections
+// itself. Debounced: every release extends one shared deadline rather than
+// scheduling a new hold. Outside a request scope (tests, scripts, build)
+// after() throws and this is a harmless no-op.
+let holdUntil = 0;
+let holdActive = false;
+function holdInstanceUntilIdleConnectionsClose(idleTimeoutMs: number) {
+  holdUntil = Date.now() + idleTimeoutMs + 500;
+  if (holdActive) return;
+  holdActive = true;
+  try {
+    after(async () => {
+      while (Date.now() < holdUntil) {
+        await new Promise((resolve) => setTimeout(resolve, Math.max(50, Math.min(500, holdUntil - Date.now()))));
+      }
+      holdActive = false;
+    });
+  } catch {
+    holdActive = false;
+  }
+}
+
 // Subclassed (rather than importing "pg" directly, which is only a
 // transitive dependency) to reach the adapter's own Pool exactly once, when
 // Prisma first connects.
@@ -74,8 +109,9 @@ class ResilientPrismaPg extends PrismaPg {
     poolForStats = pool;
     wrapPoolWithConnectRetry(pool, {
       retries: getPoolSettings().connectRetries,
-      baseDelayMs: 300,
+      baseDelayMs: 250,
       onRetry: ({ attempt, reason }) => console.warn(`[db] connection acquire retry ${attempt}: ${reason}`),
+      onRelease: () => holdInstanceUntilIdleConnectionsClose(getPoolSettings().idleTimeoutMillis),
     });
     return adapter;
   }

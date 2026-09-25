@@ -34,6 +34,8 @@ export type ConnectRetryOptions = {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   onRetry?: (info: { attempt: number; reason: string }) => void;
+  /** Called every time a checked-out client is returned to the pool. */
+  onRelease?: () => void;
 };
 
 const TRANSIENT_MESSAGE_PATTERNS = [
@@ -68,9 +70,14 @@ export function isRetriableConnectError(err: unknown): boolean {
 }
 
 export function backoffDelayMs(attempt: number, baseDelayMs: number, random: () => number = Math.random): number {
-  // 300ms, ~900ms, ~2.7s ... plus up to 50% jitter so concurrent retriers
-  // do not all wake up and hit the pool in the same instant.
-  const exp = baseDelayMs * Math.pow(3, attempt);
+  // Doubles each attempt (250ms, 500ms, 1s, 2s, 4s, 4s...) capped at 4s, plus
+  // up to 50% jitter so concurrent retriers do not all wake up and hit the
+  // database in the same instant. When the DATABASE ITSELF is out of
+  // connection slots (SQLSTATE 53300) the slots free up as other in-flight
+  // requests finish — typically well within a couple of seconds — so a
+  // patient, spread-out retry turns a burst into a short queue instead of a
+  // wall of 500s.
+  const exp = Math.min(baseDelayMs * Math.pow(2, attempt), 4_000);
   return Math.round(exp + random() * exp * 0.5);
 }
 
@@ -97,11 +104,29 @@ export function wrapPoolWithConnectRetry(pool: ConnectablePool, options: Connect
       original((err, client, done) => (err ? reject(err) : resolve({ client, done })));
     });
 
+  // pg-pool assigns a fresh release function to the client on every
+  // checkout, so it is wrapped per acquisition (both the promise and the
+  // callback form hand the same function to their caller).
+  function withReleaseHook(result: { client: unknown; done: (release?: unknown) => void }) {
+    const onRelease = options.onRelease;
+    if (!onRelease) return result;
+    const original = result.done;
+    const wrapped = (releaseArg?: unknown) => {
+      try {
+        original(releaseArg);
+      } finally {
+        onRelease();
+      }
+    };
+    (result.client as { release?: unknown }).release = wrapped;
+    return { client: result.client, done: wrapped };
+  }
+
   async function acquire() {
     let lastError: unknown;
     for (let i = 0; i <= options.retries; i++) {
       try {
-        return await attempt();
+        return withReleaseHook(await attempt());
       } catch (err) {
         lastError = err;
         if (i === options.retries || !isRetriableConnectError(err)) throw err;

@@ -372,14 +372,14 @@ Optional per-instance tuning (defaults are sensible; see `src/lib/prisma.ts`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DATABASE_POOL_MAX` | `5` | Max connections per server instance. Keep `instances x this` under your database's connection limit. |
+| `DATABASE_POOL_MAX` | `2` | Max connections per server instance. Keep `instances x this` under your database's connection limit. |
 | `DATABASE_POOL_CONNECT_TIMEOUT_MS` | `8000` | How long one attempt waits for a free connection. |
-| `DATABASE_POOL_IDLE_TIMEOUT_MS` | `10000` | How long an idle connection is kept. |
-| `DATABASE_CONNECT_RETRIES` | `2` | Extra attempts (with backoff) when acquiring a connection times out or the server is momentarily out of slots. Only the connection-acquire step is retried, so a write can never be duplicated. |
+| `DATABASE_POOL_IDLE_TIMEOUT_MS` | `4000` | How long an idle connection is kept. The instance is held alive just long enough after each request for this to fire before the platform suspends it (a suspended process cannot close its connections, which otherwise stay counted against the database's limit). |
+| `DATABASE_CONNECT_RETRIES` | `6` | Extra attempts (jittered exponential backoff, up to ~4s apart) when acquiring a connection times out or the database is momentarily out of connection slots (SQLSTATE 53300). Only the connection-acquire step is retried, so a write can never be duplicated. |
 
 **Health check.** `GET /api/health` is public and returns database
 round-trip times and pool occupancy (no hostnames, credentials or queries),
-e.g. `{"status":"ok","database":{"ok":true,"secondQueryMs":38},"pool":{"max":5,...}}`.
+e.g. `{"status":"ok","database":{"ok":true,"secondQueryMs":68},"pool":{"max":2,...}}`. Under a burst it also reveals why it fails, e.g. `PrismaClientKnownRequestError(P2010/TooManyConnections/53300)` means the database is out of connection slots.
 `secondQueryMs` is the steady-state cost of one database round trip: if it
 is in the hundreds, the database is far from the functions (fix the region).
 It returns HTTP 503 with a safe error category when the database is unreachable.
