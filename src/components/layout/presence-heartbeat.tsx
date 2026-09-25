@@ -1,20 +1,21 @@
 "use client";
 
-import { useEffect } from "react";
 import { heartbeat } from "@/server/actions/dev-session";
+import { useSharedPoll } from "@/lib/use-shared-poll";
 
-// Dev-mode presence signal: while a dev-session account is "acting as" the
-// current user, ping lastSeenAt periodically so the Accounts page's
-// online/offline indicator reflects real activity. This is a placeholder
-// for real presence (authenticated sessions + websockets/heartbeat) once
-// auth lands — same field, same UI, different data source.
+// Presence signal: ping lastSeenAt periodically so the Accounts page's
+// online/offline indicator reflects real activity. One tab per browser sends
+// it (see use-shared-poll.ts) — presence belongs to the person, not to each
+// of the tabs they happen to have open.
 export function PresenceHeartbeat({ accountId }: { accountId: string | undefined }) {
-  useEffect(() => {
-    if (!accountId) return;
-    heartbeat();
-    const interval = setInterval(() => heartbeat(), 45_000);
-    return () => clearInterval(interval);
-  }, [accountId]);
-
+  useSharedPoll({
+    key: `presence:${accountId ?? ""}`,
+    enabled: !!accountId,
+    fetcher: async () => {
+      await heartbeat();
+    },
+    visibleIntervalMs: 45_000,
+    hiddenIntervalMs: 45_000,
+  });
   return null;
 }

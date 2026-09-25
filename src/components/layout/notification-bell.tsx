@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
 import { Bell, CheckCheck, AlertTriangle, Clock, UserPlus, UserMinus, Eye, Mail, Inbox } from "lucide-react";
@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { fetchMyNotifications, markNotificationRead, markAllNotificationsRead } from "@/server/actions/notifications";
 import { cn } from "@/lib/utils";
+import { useSharedPoll } from "@/lib/use-shared-poll";
 
 type NotificationItem = {
   id: string;
@@ -33,6 +34,8 @@ type NotificationItem = {
 const QUOTE_NOTIFICATION_TYPES = new Set(["QUOTE_READ", "QUOTE_VIEWED", "QUOTE_SIGNED"]);
 
 const POLL_INTERVAL_MS = 30_000;
+// A hidden leader tab has nobody watching the bell.
+const HIDDEN_POLL_INTERVAL_MS = 60_000;
 
 export function NotificationBell({ accountId }: { accountId: string | undefined }) {
   const router = useRouter();
@@ -40,27 +43,17 @@ export function NotificationBell({ accountId }: { accountId: string | undefined 
   const [unreadCount, setUnreadCount] = useState(0);
   const [isPending, startTransition] = useTransition();
 
-  useEffect(() => {
-    if (!accountId) return;
-    let cancelled = false;
-    async function poll() {
-      try {
-        const result = await fetchMyNotifications();
-        if (!cancelled) {
-          setItems(result.items);
-          setUnreadCount(result.unreadCount);
-        }
-      } catch {
-        // Transient — e.g. a dev-server restart. Next interval tick retries.
-      }
-    }
-    poll();
-    const interval = setInterval(poll, POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-    };
-  }, [accountId]);
+  useSharedPoll({
+    key: `notifications:${accountId ?? ""}`,
+    enabled: !!accountId,
+    fetcher: fetchMyNotifications,
+    onData: (result) => {
+      setItems(result.items);
+      setUnreadCount(result.unreadCount);
+    },
+    visibleIntervalMs: POLL_INTERVAL_MS,
+    hiddenIntervalMs: HIDDEN_POLL_INTERVAL_MS,
+  });
 
   if (!accountId) return null;
 

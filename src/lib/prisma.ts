@@ -1,5 +1,6 @@
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
+import { wrapPoolWithConnectRetry, type ConnectablePool } from "@/lib/db-connection-retry";
 
 declare global {
   var __prisma: PrismaClient | undefined;
@@ -18,73 +19,92 @@ function connectionStringWithoutSslMode(url: string): string {
   return u.toString();
 }
 
-// Real bug found and fixed: measured directly against the actual database
-// (SELECT setting FROM pg_settings WHERE name = 'max_connections') — this
-// Aiven Postgres instance allows only 20 total connections, and ~9-10 of
-// those are permanently held by Aiven's own background/management
-// processes (pg_failover_slots worker, management-agent, TimescaleDB
-// Background Worker Launcher, pg_cron scheduler — confirmed via
-// pg_stat_activity), leaving roughly 10-11 for ALL actual application
-// traffic combined (this CRM, and anything else that connects to the same
-// database — e.g. the public website's own lead/subscriber/inquiry
-// submission path). node-postgres's own Pool defaults `max` to 10 when
-// unset (confirmed in node_modules/pg-pool/index.js:
-// `this.options.max = this.options.max || this.options.poolSize || 10`) —
-// which this adapter never overrode. Each warm Vercel serverless
-// function instance constructs its OWN separate pool (the lazy-singleton
-// below caches one client per container, not across containers), so under
-// even modest concurrent traffic, multiple simultaneously-warm instances
-// each opening up to 10 connections can collectively exceed the
-// database's entire remaining budget — at which point Postgres refuses
-// new connections outright ("sorry, too many clients already") for
-// whichever query happens to need one at that moment. That failure isn't
-// tied to any specific page or route — it depends only on connection
-// pressure at that instant — which matches an intermittent "sometimes,
-// different pages" production symptom far better than any single page's
-// own code. Capped conservatively here so a single instance can never
-// alone consume more than a small fraction of the available budget,
-// leaving headroom for other concurrent instances and for whatever else
-// shares this database.
-const MAX_POOL_CONNECTIONS_PER_INSTANCE = 3;
+// Pool sizing and timeouts are configurable per environment rather than
+// hard-coded from a single past measurement of one database. An earlier
+// revision capped this at 3 connections / 5s based on a max_connections
+// reading from a database that no longer exists; under real use that cap
+// was itself the failure: one CRM page issues 20-37 statements, every open
+// tab polls in the background, and with 3 connections shared by all of it
+// the queue outran the 5s acquisition timeout — pg-pool then threw
+// "timeout exceeded when trying to connect", which the CRM rendered as
+// "This page couldn't load" (reproduced locally with 10 concurrent page
+// loads against a 300ms-latency database, and against production with as
+// few as 5 concurrent requests). Defaults below favour throughput on a
+// high-latency link while staying modest per instance; a genuinely
+// connection-limited database is handled by the connect-retry wrapper
+// (see src/lib/db-connection-retry.ts) and, properly, by pointing
+// DATABASE_URL at a connection pooler. Tune with:
+//   DATABASE_POOL_MAX                 max connections per instance (default 5)
+//   DATABASE_POOL_CONNECT_TIMEOUT_MS  per-attempt acquisition timeout (default 8000)
+//   DATABASE_POOL_IDLE_TIMEOUT_MS     idle connection lifetime (default 10000)
+//   DATABASE_CONNECT_RETRIES          extra acquisition attempts (default 2)
+function intFromEnv(name: string, fallback: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n >= min && n <= max ? n : fallback;
+}
 
-// Real gap found and fixed alongside the pool cap above: node-postgres
-// leaves `connectionTimeoutMillis` unset by default, meaning a caller that
-// can't immediately get a pool connection (the pool is at its max and
-// every existing connection is busy) waits INDEFINITELY rather than
-// failing with a catchable error. Confirmed via git history
-// (vercel.json + the "make Vercel cron Hobby-compatible" commit) that
-// this deployment runs on Vercel's Hobby plan, whose serverless functions
-// have a short execution timeout (10s by default; no `maxDuration`
-// override exists anywhere in this repo) — an indefinite wait for a
-// connection doesn't resolve into a normal JS exception at all in that
-// case, it gets silently killed by the platform once the function's whole
-// execution budget runs out, bypassing every try/catch and safe-logging
-// convention this codebase has (proxy.ts's SESSION_LOOKUP_FAILED,
-// google-auth.ts's SERVER_ERROR, etc. — none of that runs if the process
-// itself is killed externally). A bounded timeout here means a genuinely
-// saturated pool instead fails FAST with a real, catchable
-// `PrismaClientInitializationError`-family exception well before the
-// platform's own kill, so it flows through this app's existing error
-// handling and produces an actual diagnosable log line rather than an
-// untraceable platform-level timeout. Chosen short enough to leave the
-// rest of a request's own budget intact on Hobby's 10s ceiling, long
-// enough to comfortably cover a real (non-saturated) connection
-// establishment.
-const POOL_CONNECTION_TIMEOUT_MS = 5_000;
+/** Pool sizing/timeouts actually in effect (also used by the health check). */
+export function getPoolSettings() {
+  return {
+    max: intFromEnv("DATABASE_POOL_MAX", 5, 1, 50),
+    connectionTimeoutMillis: intFromEnv("DATABASE_POOL_CONNECT_TIMEOUT_MS", 8_000, 1_000, 60_000),
+    idleTimeoutMillis: intFromEnv("DATABASE_POOL_IDLE_TIMEOUT_MS", 10_000, 1_000, 600_000),
+    connectRetries: intFromEnv("DATABASE_CONNECT_RETRIES", 2, 0, 5),
+  };
+}
+
+type PoolStatsSource = { totalCount: number; idleCount: number; waitingCount: number };
+let poolForStats: PoolStatsSource | undefined;
+
+/** Live pool occupancy for this instance, or null before first use. */
+export function getPrismaPoolStats(): { total: number; idle: number; waiting: number } | null {
+  if (!poolForStats) return null;
+  return { total: poolForStats.totalCount, idle: poolForStats.idleCount, waiting: poolForStats.waitingCount };
+}
+
+// Subclassed (rather than importing "pg" directly, which is only a
+// transitive dependency) to reach the adapter's own Pool exactly once, when
+// Prisma first connects.
+class ResilientPrismaPg extends PrismaPg {
+  async connect() {
+    const adapter = await super.connect();
+    const pool = adapter.underlyingDriver() as unknown as ConnectablePool & PoolStatsSource;
+    poolForStats = pool;
+    wrapPoolWithConnectRetry(pool, {
+      retries: getPoolSettings().connectRetries,
+      baseDelayMs: 300,
+      onRetry: ({ attempt, reason }) => console.warn(`[db] connection acquire retry ${attempt}: ${reason}`),
+    });
+    return adapter;
+  }
+}
 
 function createPrismaClient() {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
     throw new Error("DATABASE_URL is not set. Configure it in your environment before using the database.");
   }
-  const adapter = new PrismaPg({
-    connectionString: connectionStringWithoutSslMode(databaseUrl),
-    // Aiven's managed Postgres uses a CA not in Node's default trust store.
-    // Encrypted-but-unverified is an accepted tradeoff for this dev/test DB.
-    ssl: { rejectUnauthorized: false },
-    max: MAX_POOL_CONNECTIONS_PER_INSTANCE,
-    connectionTimeoutMillis: POOL_CONNECTION_TIMEOUT_MS,
-  });
+  const settings = getPoolSettings();
+  const adapter = new ResilientPrismaPg(
+    {
+      connectionString: connectionStringWithoutSslMode(databaseUrl),
+      // Aiven's managed Postgres uses a CA not in Node's default trust store.
+      // Encrypted-but-unverified is an accepted tradeoff for this dev/test DB.
+      ssl: { rejectUnauthorized: false },
+      max: settings.max,
+      connectionTimeoutMillis: settings.connectionTimeoutMillis,
+      idleTimeoutMillis: settings.idleTimeoutMillis,
+      keepAlive: true,
+    },
+    {
+      // An idle pooled client can error (the server closed it, a NAT
+      // dropped it). Without a listener Node treats that as an uncaught
+      // exception; log a safe tag and let the pool discard the client.
+      onPoolError: (err) => console.error(`[db] idle pool client error (${err.constructor.name})`),
+    }
+  );
   return new PrismaClient({ adapter });
 }
 

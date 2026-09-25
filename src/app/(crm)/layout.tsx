@@ -10,6 +10,13 @@ import { getGmailConnectionState } from "@/server/queries/gmail-connection";
 import { getCompanyForAccountId, getCompanyById } from "@/server/queries/company";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 
+// Vercel's default function limit is 10s. This app talks to Postgres over a
+// high-latency link and every CRM page issues many sequential statements — a healthy-but-slow request must not be
+// killed by the platform (which bypasses every try/catch and error
+// boundary and leaves a half-finished operation). 60s is the ceiling that
+// is valid on every Vercel plan.
+export const maxDuration = 60;
+
 export default async function CrmLayout({ children }: { children: React.ReactNode }) {
   const current = await getCurrentAccount();
   // Real diagnosability gap found and fixed: this Promise.all runs on

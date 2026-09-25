@@ -2,8 +2,13 @@
 // Airline ticket sales CRM for Business Flights Travel
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider        = "prisma-client"
+  output          = "../src/generated/prisma"
+  // Loads includes/selects of relations in ONE joined statement instead of one
+  // statement per relation. This app runs over a high-latency database link,
+  // where each extra statement costs a full round trip (a lead detail page
+  // issued 34 statements; measured 4 -> 1 for lead+contact+airports).
+  previewFeatures = ["relationJoins"]
 }
 
 datasource db {

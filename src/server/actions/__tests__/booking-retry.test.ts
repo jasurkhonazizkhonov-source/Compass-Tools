@@ -13,7 +13,7 @@ import { Prisma } from "@/generated/prisma/client";
 // IP/timestamp can never be silently overwritten by a later request.
 
 type FakeSignature = { id: string; bookingId: string; signedName: string; signedAt: Date; ipAddress: string | undefined; userAgent: string | undefined };
-type FakeBooking = { id: string; quoteId: string; createdAt: Date; signature: FakeSignature };
+type FakeBooking = { id: string; quoteId: string; createdAt: Date; signature: FakeSignature; bookingReference: string; contactEmail: string };
 
 let quoteBooking: FakeBooking | null;
 let bookingsCreated: FakeBooking[];
@@ -66,8 +66,8 @@ vi.mock("@/server/security/ip-capture", () => ({
   }),
 }));
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     quote: {
       findUnique: vi.fn(async () => {
         if (quoteBooking) {
@@ -120,12 +120,18 @@ vi.mock("@/lib/prisma", () => ({
         };
       }),
       update: vi.fn(async () => ({})),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     quoteStatusHistory: { create: vi.fn(async () => ({})) },
     lead: { update: vi.fn(async () => ({})) },
     leadStatusHistory: { create: vi.fn(async () => ({})) },
     booking: {
-      create: vi.fn(async ({ data }: { data: { quoteId: string; signature: { create: { signedName: string; ipAddress: string | undefined; userAgent: string | undefined } } } }) => {
+      // Used by submitBooking's replay lookup after a lost race / P2002.
+      findUnique: vi.fn(async ({ where }: { where: { quoteId: string } }) => {
+        const b = bookingsCreated.find((x) => x.quoteId === where.quoteId);
+        return b ? { id: b.id, bookingReference: b.bookingReference, contactEmail: b.contactEmail, signature: { signedName: b.signature.signedName } } : null;
+      }),
+      create: vi.fn(async ({ data }: { data: { quoteId: string; bookingReference: string; contactEmail: string; signature: { create: { signedName: string; ipAddress: string | undefined; userAgent: string | undefined } } } }) => {
         // Pass 19 §8 — models the REAL database guarantee
         // (`Booking.quoteId @unique` in schema.prisma), independent of
         // `quoteBooking` (which only reflects what the mocked
@@ -147,7 +153,7 @@ vi.mock("@/lib/prisma", () => ({
           ipAddress: data.signature.create.ipAddress,
           userAgent: data.signature.create.userAgent,
         };
-        const booking: FakeBooking = { id, quoteId: "quote-1", createdAt: signature.signedAt, signature };
+        const booking: FakeBooking = { id, quoteId: "quote-1", createdAt: signature.signedAt, signature, bookingReference: data.bookingReference, contactEmail: data.contactEmail };
         bookingsCreated.push(booking);
         return booking;
       }),
@@ -158,9 +164,15 @@ vi.mock("@/lib/prisma", () => ({
     itinerary: {
       findUnique: vi.fn(async () => null),
     },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
-  },
-}));
+    // submitBooking now signs inside ONE interactive transaction (callback
+    // form); the array form is kept for any other caller. The callback
+    // receives this same fake as its `tx`.
+    $transaction: vi.fn(async (arg: unknown) =>
+      typeof arg === "function" ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as Promise<unknown>[])
+    ),
+  };
+  return { prisma };
+});
 
 function validCard(overrides: Partial<{ amount: number }> = {}) {
   return {
@@ -258,7 +270,7 @@ describe("submitBooking — retry / idempotency", () => {
     expect(bookingsCreated).toHaveLength(1);
   });
 
-  it("a second submission attempt against an already-booked quote is rejected outright — no second Booking/Signature is ever created, and the first signature's IP/timestamp is never touched", async () => {
+  it("a second submission by the SAME signer against an already-booked quote replays the original confirmation — no second Booking/Signature is ever created, and the first signature's IP/timestamp is never touched", async () => {
     const { submitBooking } = await import("../booking");
     const first = await submitBooking(baseInput());
     expect(first.ok).toBe(true);
@@ -269,10 +281,15 @@ describe("submitBooking — retry / idempotency", () => {
     const originalIp = quoteBooking.signature.ipAddress;
     const originalSignedAt = quoteBooking.signature.signedAt;
 
+    // A lost response / timeout / refresh / browser retry from the same
+    // customer must land on the original booking's confirmation, not on a
+    // confusing "already booked" error for something that succeeded.
     const second = await submitBooking(baseInput());
-    expect(second.ok).toBe(false);
-    if (!second.ok) {
-      expect(second.error).toMatch(/already been booked/i);
+    expect(second.ok).toBe(true);
+    if (second.ok && first.ok) {
+      expect(second.bookingId).toBe(first.bookingId);
+      expect(second.bookingReference).toBe(first.bookingReference);
+      expect(second.alreadyCompleted).toBe(true);
     }
 
     // Still exactly one Booking ever created — the retry never reached the
@@ -280,6 +297,18 @@ describe("submitBooking — retry / idempotency", () => {
     expect(bookingsCreated).toHaveLength(1);
     expect(quoteBooking.signature.ipAddress).toBe(originalIp);
     expect(quoteBooking.signature.signedAt).toBe(originalSignedAt);
+  });
+
+  it("a submission by a DIFFERENT person (e.g. someone else holding the link) against an already-booked quote is still refused", async () => {
+    const { submitBooking } = await import("../booking");
+    const first = await submitBooking(baseInput());
+    expect(first.ok).toBe(true);
+    quoteBooking = bookingsCreated[0];
+
+    const second = await submitBooking({ ...baseInput(), signedName: "Someone Else", contactEmail: "other@example.com" });
+    expect(second.ok).toBe(false);
+    if (!second.ok) expect(second.error).toMatch(/already been booked/i);
+    expect(bookingsCreated).toHaveLength(1);
   });
 
   // Pass 19 §8 — the TRUE race, not the sequential case above. Both calls
@@ -292,19 +321,31 @@ describe("submitBooking — retry / idempotency", () => {
   // catch around that create() call, so the second request would have
   // thrown an unhandled Prisma error instead of the same clean message
   // the sequential case already returns.
-  it("a genuine race — two requests that BOTH pass the upfront check — still results in exactly one Booking, with the second returning the same clean error rather than throwing", async () => {
+  it("a genuine race — two IDENTICAL requests that BOTH pass the upfront check — still results in exactly one Booking; the loser gets the winner's confirmation rather than an error or a duplicate", async () => {
     const { submitBooking } = await import("../booking");
     // quoteBooking intentionally stays null for both calls — modeling that
     // neither request's upfront read observed the other's not-yet-committed write.
     const [first, second] = await Promise.all([submitBooking(baseInput()), submitBooking(baseInput())]);
-    const results = [first, second];
-    const succeeded = results.filter((r) => r.ok);
-    const failed = results.filter((r) => !r.ok);
-    expect(succeeded).toHaveLength(1);
-    expect(failed).toHaveLength(1);
-    if (!failed[0].ok) {
-      expect(failed[0].error).toMatch(/already been booked/i);
+    expect(first.ok && second.ok).toBe(true);
+    if (first.ok && second.ok) {
+      // Both customers-clicks resolve to the SAME booking...
+      expect(second.bookingId).toBe(first.bookingId);
+      // ...and exactly one of them was the replay.
+      expect([first.alreadyCompleted, second.alreadyCompleted].filter(Boolean)).toHaveLength(1);
     }
     expect(bookingsCreated).toHaveLength(1); // never two, regardless of which request "won"
+  });
+
+  it("a genuine race between DIFFERENT signers: exactly one wins, the other is told the quote is already booked", async () => {
+    const { submitBooking } = await import("../booking");
+    const [first, second] = await Promise.all([
+      submitBooking(baseInput()),
+      submitBooking({ ...baseInput(), signedName: "Someone Else", contactEmail: "other@example.com" }),
+    ]);
+    const results = [first, second];
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    const failed = results.find((r) => !r.ok);
+    if (failed && !failed.ok) expect(failed.error).toMatch(/already been booked/i);
+    expect(bookingsCreated).toHaveLength(1);
   });
 });

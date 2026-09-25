@@ -10,7 +10,7 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 // whether the script was invoked directly.
 
 let redact: (text: unknown) => string;
-let isDatabaseEmptyOfCrmPresence: (prisma: { $queryRawUnsafe: (sql: string) => Promise<unknown[]> }) => Promise<boolean>;
+let isDatabaseEmptyOfCrmPresence: (client: { query: (sql: string) => Promise<{ rows: unknown[] }> }) => Promise<boolean>;
 let tryInitializeDatabase: () => Promise<void>;
 
 beforeAll(async () => {
@@ -18,7 +18,7 @@ beforeAll(async () => {
 });
 
 function fakePrisma(row: { company_exists: boolean; migrations_table_exists: boolean }) {
-  return { $queryRawUnsafe: async () => [row] };
+  return { query: async () => ({ rows: [row] }) };
 }
 
 describe("vercel-build.mjs redact()", () => {

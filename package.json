@@ -13,6 +13,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:seed:reference-data": "tsx prisma/seed.ts --reference-data-only",
     "generate:reference-json": "tsx prisma/seed-data/generate-json.ts",
+    "db:find-incomplete-bookings": "tsx scripts/find-incomplete-bookings.ts",
     "test:fresh-db": "tsx scripts/fresh-database-check.ts",
     "migration:safety-check": "tsx scripts/migration-safety-check.ts"
   },

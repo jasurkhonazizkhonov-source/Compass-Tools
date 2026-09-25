@@ -109,9 +109,10 @@ function describeDatabaseTarget() {
 // run compass-tools's own migrations. Deliberately conservative — a
 // database with ANY trace of prior CRM presence is treated as non-empty
 // so migrate deploy (always safe there) proceeds without needing the
-// explicit flag.
-export async function isDatabaseEmptyOfCrmPresence(prisma) {
-  const rows = await prisma.$queryRawUnsafe(
+// explicit flag. Takes any object with a pg-style `query(sql)` so tests
+// can stub it.
+export async function isDatabaseEmptyOfCrmPresence(client) {
+  const { rows } = await client.query(
     `SELECT to_regclass('public."Company"') IS NOT NULL AS company_exists,
             to_regclass('public."_prisma_migrations"') IS NOT NULL AS migrations_table_exists`
   );
@@ -119,13 +120,22 @@ export async function isDatabaseEmptyOfCrmPresence(prisma) {
   return !row.company_exists && !row.migrations_table_exists;
 }
 
-async function connectPrisma(databaseUrl) {
-  const { PrismaPg } = await import("@prisma/adapter-pg");
-  const { PrismaClient } = await import("../src/generated/prisma/client.ts");
+// Uses the plain `pg` driver directly — NOT the generated Prisma client.
+// This script runs under bare `node` (no bundler/TypeScript loader), and
+// the generated client is TypeScript with extensionless relative imports
+// (`./enums`), which Node's native type-stripping cannot resolve: the
+// first live test against a reachable database failed with "Cannot find
+// module .../generated/prisma/enums", meaning this gate had silently never
+// worked on Vercel either (it always fell into "could not check database
+// state" and skipped migrations). `pg` is plain CommonJS and already a
+// declared dependency.
+async function connectClient(databaseUrl) {
+  const { default: pg } = await import("pg");
   const u = new URL(databaseUrl);
   u.searchParams.delete("sslmode");
-  const adapter = new PrismaPg({ connectionString: u.toString(), ssl: { rejectUnauthorized: false } });
-  return new PrismaClient({ adapter });
+  const client = new pg.Client({ connectionString: u.toString(), ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 15_000 });
+  await client.connect();
+  return client;
 }
 
 function runMigrateDeploy() {
@@ -157,14 +167,17 @@ export async function tryInitializeDatabase() {
 
   console.log(`[vercel-build] DATABASE_URL target: ${describeDatabaseTarget()}`);
 
-  let prisma;
+  let client;
   let looksEmpty;
   try {
-    prisma = await connectPrisma(databaseUrl);
-    looksEmpty = await isDatabaseEmptyOfCrmPresence(prisma);
+    client = await connectClient(databaseUrl);
+    looksEmpty = await isDatabaseEmptyOfCrmPresence(client);
   } catch (err) {
-    console.warn("[vercel-build] Could not check database state — continuing build anyway.", err?.constructor?.name || "");
-    if (prisma) await prisma.$disconnect().catch(() => {});
+    // The error CLASS and SQLSTATE/system code only — never the message,
+    // which can embed connection detail.
+    const code = err && typeof err === "object" && "code" in err ? ` code=${String(err.code)}` : "";
+    console.warn(`[vercel-build] Could not check database state — continuing build anyway. (${err?.constructor?.name || "Error"}${code})`);
+    if (client) await client.end().catch(() => {});
     return;
   }
 
@@ -179,7 +192,7 @@ export async function tryInitializeDatabase() {
           `intentional, DATABASE_URL is likely misconfigured for this deployment — verify it points at the correct ` +
           `database before setting ${AUTO_INIT_ENV_VAR}.`
       );
-      await prisma.$disconnect().catch(() => {});
+      await client.end().catch(() => {});
       return;
     }
     console.log(`[vercel-build] Database appears empty and ${AUTO_INIT_ENV_VAR}=true — proceeding with initialization.`);
@@ -187,7 +200,7 @@ export async function tryInitializeDatabase() {
     console.log("[vercel-build] Existing Company table or migrations history found — proceeding (migrate deploy is safe/idempotent here regardless).");
   }
 
-  await prisma.$disconnect().catch(() => {});
+  await client.end().catch(() => {});
 
   try {
     runMigrateDeploy();

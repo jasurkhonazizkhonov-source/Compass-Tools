@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { customAlphabet } from "nanoid";
 import { headers } from "next/headers";
+import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
@@ -21,7 +22,8 @@ import { sendBookingSignedNotification } from "@/server/booking-notification";
 import { resolveBaseUrl } from "@/lib/company-config";
 import { LEGAL_CONTENT_VERSION } from "@/lib/legal-content";
 import { checkPublicRateLimitFromRequest, RATE_LIMITS } from "@/server/security/rate-limit";
-import { isQuoteBookable } from "@/lib/exchange-proposal";
+import { BOOKABLE_QUOTE_STATUSES, isQuoteBookable } from "@/lib/exchange-proposal";
+import { safeErrorTag } from "@/lib/safe-error-log";
 
 const bookingRefAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 7);
 
@@ -139,71 +141,139 @@ const submitBookingSchema = z.object({
 
 export type SubmitBookingInput = z.infer<typeof submitBookingSchema>;
 
-export async function submitBooking(input: SubmitBookingInput) {
+export type SubmitBookingResult =
+  | { ok: true; bookingReference: string; bookingId: string; alreadyCompleted?: true }
+  | { ok: false; error: string; /** The request may or may not have been recorded — the client keeps the form filled and re-checks instead of clearing it. */ outcomeUnknown?: true };
+
+// Thrown inside the signing transaction when the quote is no longer in a
+// bookable status at the moment of the write (cancelled, superseded, or
+// already signed by a concurrent request). Aborting the transaction rolls
+// back everything written so far in it.
+class QuoteNoLongerBookableError extends Error {}
+
+const GENERIC_INCOMPLETE_MESSAGE =
+  "We couldn't confirm your booking right now. Nothing has been lost — please wait a minute and reload this page. If your booking was received you'll be taken to your confirmation; otherwise you can safely try again.";
+
+/** Runs non-critical follow-up work after the response has been sent. Falls
+ * back to running inline when there is no request scope (unit tests,
+ * scripts) so the work is never silently dropped. */
+async function runAfterResponse(task: () => Promise<void>): Promise<void> {
+  try {
+    after(task);
+  } catch {
+    await task();
+  }
+}
+
+/** One follow-up step: its failure is logged with a safe tag (class name /
+ * Prisma code only, never the message) and NEVER propagated — by the time
+ * these run, the booking is already durably committed. */
+async function bestEffort(label: string, step: () => Promise<unknown>): Promise<void> {
+  try {
+    await step();
+  } catch (err) {
+    console.error(`[booking] POST_COMMIT_STEP_FAILED step=${label} (${safeErrorTag(err)})`);
+  }
+}
+
+function sameSigner(
+  existing: { contactEmail: string; signature: { signedName: string } | null },
+  submitted: { contactEmail: string; signedName: string }
+): boolean {
+  const norm = (s: string) => s.trim().toLowerCase();
+  return !!existing.signature && norm(existing.signature.signedName) === norm(submitted.signedName) && norm(existing.contactEmail) === norm(submitted.contactEmail);
+}
+
+export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBookingResult> {
   // Pass 25 §28 — public-endpoint rate limiting, checked first, before any
   // parsing/DB work. Fails open (never blocks) when no trustworthy client
   // IP is available — see rate-limit.ts's own doc comment for why that's
-  // the correct, deliberate behavior, not an oversight.
-  const rateLimitCheck = await checkPublicRateLimitFromRequest("BOOKING_SUBMIT", RATE_LIMITS.BOOKING_SUBMIT);
+  // the correct, deliberate behavior, not an oversight. A database error
+  // inside the limiter itself also fails open (logged): the limiter is an
+  // anti-abuse control, and if the database is genuinely down the signing
+  // transaction below fails on its own with a clear result.
+  let rateLimitCheck: Awaited<ReturnType<typeof checkPublicRateLimitFromRequest>> = { allowed: true };
+  try {
+    rateLimitCheck = await checkPublicRateLimitFromRequest("BOOKING_SUBMIT", RATE_LIMITS.BOOKING_SUBMIT);
+  } catch (err) {
+    console.error(`[booking] RATE_LIMIT_CHECK_FAILED (${safeErrorTag(err)})`);
+  }
   if (!rateLimitCheck.allowed) {
-    return { ok: false as const, error: "Too many booking attempts from this connection. Please wait a few minutes and try again." };
+    return { ok: false, error: "Too many booking attempts from this connection. Please wait a few minutes and try again." };
   }
 
-  const parsed = submitBookingSchema.parse(input);
+  // Server-side validation is authoritative. A malformed submission is a
+  // normal, expected outcome for a public endpoint — returned as a result
+  // the form can show, never thrown as an unhandled exception (which the
+  // customer would see as a generic "This page couldn't load").
+  const validated = submitBookingSchema.safeParse(input);
+  if (!validated.success) {
+    return { ok: false, error: "Some of the information provided is missing or invalid. Please review the form and try again." };
+  }
+  const parsed = validated.data;
 
   const quote = await prisma.quote.findUnique({
     where: { secureToken: parsed.token },
-    include: { lead: true, contact: true, agent: true, sentByAgent: true, booking: true },
+    include: { lead: true, contact: true, agent: true, sentByAgent: true, booking: { include: { signature: true } } },
   });
-  if (!quote) return { ok: false as const, error: "Quote not found" };
-  if (quote.status === "CANCELED") return { ok: false as const, error: "This quote has been canceled" };
-  if (quote.booking) return { ok: false as const, error: "This quote has already been booked" };
+  if (!quote) return { ok: false, error: "Quote not found" };
+  if (quote.status === "CANCELED") return { ok: false, error: "This quote has been canceled" };
+  if (quote.booking) {
+    // Idempotent replay: the SAME signer re-submitting after a lost
+    // response, a timeout, a refresh, or a browser retry gets the original
+    // booking's confirmation — not a confusing "already booked" error for
+    // something that did in fact succeed. Anyone else holding the link is
+    // still refused.
+    if (sameSigner(quote.booking, parsed)) {
+      return { ok: true, bookingReference: quote.booking.bookingReference, bookingId: quote.booking.id, alreadyCompleted: true };
+    }
+    return { ok: false, error: "This quote has already been booked" };
+  }
   // Pass 26 §2 — stale/superseded/pre-review token protection, the real
   // authorization boundary a customer's secureToken must satisfy before it
-  // can ever create a Booking. `quote.booking == null` above rules out a
-  // quote that's already been signed, but nothing previously stopped a
-  // token for a quote that was NEVER actually sent (DRAFT, still
-  // PENDING_EXCHANGE_APPROVAL/EXCHANGE_APPROVED before sendQuote), or one
-  // that WAS sent but has since been superseded by a revised proposal
-  // (EXCHANGE_SUPERSEDED) or rejected outright (EXCHANGE_DISAPPROVED) —
-  // every one of those still had a real, guessable-only-by-having-received-
-  // the-original-email secureToken that would otherwise have silently
-  // accepted a signature. isQuoteBookable (src/lib/exchange-proposal.ts) is
-  // the one shared allow-list; only a quote actually SENT to the customer
-  // and not yet acted on may be booked.
+  // can ever create a Booking. isQuoteBookable (src/lib/exchange-proposal.ts)
+  // is the one shared allow-list; only a quote actually SENT to the
+  // customer and not yet acted on may be booked.
   if (!isQuoteBookable(quote.status)) {
-    return { ok: false as const, error: "This link is no longer active. Please contact your travel agent for your current quote." };
+    return { ok: false, error: "This link is no longer active. Please contact your travel agent for your current quote." };
   }
 
-  // Server-side validation — the authoritative check, independent of
-  // whatever the client already validated. Error messages are always
+  // Server-side payment validation — the authoritative check, independent
+  // of whatever the client already validated. Error messages are always
   // generic; never echo any part of any submitted card number or CVV.
-  // Each card's cardNumberDigits/cvv exist only for the duration of this
-  // loop iteration — never carried into the Prisma write, a log line, or
-  // any error message.
   // preparedCards holds every field that is permanently retained (per the
   // approved architecture). The CVV is deliberately kept in a SEPARATE
-  // array, cvvsByIndex, that never touches preparedCards, never reaches the
-  // Prisma create() call below, and is only ever used once — to seed the
-  // transient authorization cache (cvv-cache.ts) immediately after the
-  // corresponding PaymentMethod row's id is known. Once that seeding loop
-  // finishes, cvvsByIndex goes out of scope and is not referenced again.
-  const preparedCards: Array<{ cardholderName: string; encryptedPan: string; last4: string; cardBrand: string | undefined; expiryMonth: number; expiryYear: number; amount: number }> = [];
+  // array, cvvsByIndex, that never touches preparedCards, never reaches a
+  // Prisma call, and is only ever used once — to seed the transient
+  // authorization cache (cvv-cache.ts) after the commit below.
+  const preparedCards: Array<{ id: string; cardholderName: string; encryptedPan: string; last4: string; cardBrand: string | undefined; expiryMonth: number; expiryYear: number; amount: number }> = [];
   const cvvsByIndex: string[] = [];
   for (const card of parsed.paymentMethods) {
     const cardNumberDigits = digitsOnly(card.cardNumber);
     const cardBrand = detectCardBrand(cardNumberDigits);
     if (!isValidCardNumber(cardNumberDigits)) {
-      return { ok: false as const, error: "Payment information could not be processed" };
+      return { ok: false, error: "Payment information could not be processed" };
     }
     if (!isValidExpiry(card.expiryMonth, card.expiryYear)) {
-      return { ok: false as const, error: "Payment information could not be processed" };
+      return { ok: false, error: "Payment information could not be processed" };
     }
     if (!isValidCvvFormat(card.cvv, cardBrand)) {
-      return { ok: false as const, error: "Payment information could not be processed" };
+      return { ok: false, error: "Payment information could not be processed" };
     }
-    const encryptedPan = await getPaymentVault().store(cardNumberDigits);
+    let encryptedPan: string;
+    try {
+      encryptedPan = await getPaymentVault().store(cardNumberDigits);
+    } catch (err) {
+      // e.g. the production fail-closed vault (see payment-vault.ts) or a
+      // missing CARD_ENCRYPTION_KEY. A configuration problem, not the
+      // customer's mistake — nothing has been written yet.
+      console.error(`[booking] CARD_VAULT_UNAVAILABLE (${safeErrorTag(err)})`);
+      return { ok: false, error: "We couldn't securely process your payment details right now. Nothing was charged and no booking was recorded. Please try again shortly or contact your travel agent." };
+    }
     preparedCards.push({
+      // Explicit id so the CVV cache can be keyed to exactly this row
+      // without a read-back — see the cvv seeding loop below.
+      id: crypto.randomUUID(),
       cardholderName: card.cardholderName,
       encryptedPan,
       last4: lastFour(cardNumberDigits),
@@ -231,19 +301,16 @@ export async function submitBooking(input: SubmitBookingInput) {
 
   // Booking currency always inherits the quote's own currency — the same
   // frozen exchange rate captured on Quote.exchangeRate when the quote was
-  // sent (never a freshly-looked-up rate; see buildPricingSnapshot's own
-  // comment for why re-converting later would drift from what the
-  // customer was actually quoted). This is the authoritative total that
-  // payment allocation is validated against and that gets persisted below
-  // — a USD quote keeps rate 1 and this is a no-op.
+  // sent (never a freshly-looked-up rate). This is the authoritative total
+  // that payment allocation is validated against and that gets persisted
+  // below — a USD quote keeps rate 1 and this is a no-op.
   const rate = resolveExchangeRate(quote.currency, quote.exchangeRate ? Number(quote.exchangeRate) : null);
   const pricing = convertBookingPricing(usdPricing, rate);
 
   // Payment allocation must exactly cover the booking total — see
-  // isPaymentAllocationValid's own comment for why (no partial-payment
-  // business rule exists in this app).
+  // isPaymentAllocationValid's own comment for why.
   if (!isPaymentAllocationValid(preparedCards.map((c) => c.amount), pricing.total)) {
-    return { ok: false as const, error: "Payment allocation does not match the booking total" };
+    return { ok: false, error: "Payment allocation does not match the booking total" };
   }
 
   const bookingReference = `BFT-${bookingRefAlphabet()}`;
@@ -254,113 +321,165 @@ export async function submitBooking(input: SubmitBookingInput) {
   // rather than being stored as a garbage string).
   const ip = getClientIp(headerList);
   const userAgent = headerList.get("user-agent") ?? undefined;
+  const now = new Date();
 
-  // Pass 19 §8 — race-condition audit. The `if (quote.booking) return ...`
-  // check above is a real check, but it reads BEFORE this create — a
-  // genuine double-click (or a refresh-during-submit resending the same
-  // request) can race two submitBooking calls close enough together that
-  // BOTH pass that check before either has committed a Booking row. The
-  // actual data-integrity guarantee is `Booking.quoteId @unique` in the
-  // schema (already in place, not new) — Postgres itself rejects the
-  // second concurrent insert, so a duplicate Booking was never actually
-  // possible. What WAS missing: nothing here caught that specific,
-  // predictable failure, so the unlucky second request would have thrown
-  // an unhandled Prisma unique-constraint error instead of returning the
-  // same clean, already-established "This quote has already been booked"
-  // message the non-race path already gives. This narrows a rare bad-UX
-  // edge case (a customer's second, redundant click seeing a generic
-  // error instead of a clear one) without changing the actual safety
-  // guarantee, which was already correct.
+  // ── THE critical section ───────────────────────────────────────────────
+  // Everything that must be all-or-nothing happens in ONE transaction: the
+  // Booking (with its passengers, signature, status history and every
+  // payment method), the Quote -> SIGNED transition, and the Lead -> BOOKED
+  // transition with their histories. Previously these were separate writes
+  // (booking, then each card, then a second transaction for the statuses),
+  // so a failure or platform timeout partway through — likely, given ~50
+  // sequential round trips to a remote database — left a Booking row with
+  // no payment methods and a quote still not SIGNED; the customer's retry
+  // then hit "already booked" and the booking form redirected to a
+  // "confirmation" for a booking that was never actually completed.
+  //
+  // Race safety: the quote's own status is claimed with a conditional
+  // updateMany FIRST. Only one concurrent request can move it out of a
+  // bookable status; every other request sees count 0 and aborts, rolling
+  // back. Booking.quoteId @unique remains the last-resort backstop (P2002).
   let booking;
   try {
-    booking = await prisma.booking.create({
-    data: {
-      quoteId: quote.id,
-      leadId: quote.leadId,
-      contactId: quote.contactId,
-      bookingReference,
-      contactPhone: parsed.contactPhone,
-      contactEmail: parsed.contactEmail,
-      billingAddress: parsed.billingAddress,
-      billingApt: parsed.billingApt,
-      billingCity: parsed.billingCity,
-      billingState: parsed.billingState,
-      billingZip: parsed.billingZip,
-      billingCountry: parsed.billingCountry,
-      gratuityAmount: pricing.gratuity,
-      totalAmount: pricing.total,
-      termsAcceptedAt: new Date(),
-      // Pass 24 — the version of the legal text actually shown on THIS
-      // signing (see legal-content.ts's own doc comment); never touched
-      // afterward, and never backfilled for bookings that predate this
-      // field (they simply keep termsVersion = null).
-      termsVersion: LEGAL_CONTENT_VERSION,
-      status: "PENDING_TICKETING",
-      // Pass 22 fix — these three columns are documented (see
-      // convertToUsd's own comment in currency.ts) as ALWAYS USD, the same
-      // "agent tracks internal cost in USD" convention Quote itself uses —
-      // unlike gratuityAmount/totalAmount just above, which are correctly
-      // the customer-currency-converted `pricing` values. This previously
-      // seeded all three from the CONVERTED `pricing` breakdown instead of
-      // the raw `usdPricing` one, so every non-USD booking silently stored
-      // a foreign-currency figure in a column computeBookingProfitUsd (and
-      // the ticketing UI's bare "$" Ticket Cost field) both treat as
-      // already-correct USD — producing a wrong profit/commission number
-      // for that booking unless a ticketing agent happened to overwrite
-      // every one of these fields before confirming it. These remain a
-      // pre-fill/starting point for the ticketing agent to edit once the
-      // real airline cost is known, exactly as before — only the currency
-      // of the seeded number changes.
-      fareAmount: usdPricing.ticketSubtotal,
-      taxAmount: usdPricing.taxes,
-      serviceFeeAmount: usdPricing.serviceFee,
-      statusHistory: { create: [{ toStatus: "PENDING_TICKETING" }] },
-      passengers: {
-        create: parsed.passengers.map((p) => ({
-          type: p.type,
-          firstName: p.firstName,
-          middleName: p.middleName,
-          lastName: p.lastName,
-          // Explicit UTC-midnight anchor for this date-only ("YYYY-MM-DD")
-          // value — matches the established pattern for date-only fields
-          // elsewhere in this app (e.g. Account.hiredAt in
-          // account-row-editor.tsx). A bare new Date("YYYY-MM-DD") already
-          // parses as UTC per spec, but this app's naive (non-tz) Postgres
-          // `timestamp` columns have shown local-process-timezone-dependent
-          // round-trip behavior — being explicit here removes any doubt and
-          // keeps every date-only write site in the app doing the same thing.
-          dateOfBirth: p.dateOfBirth ? new Date(`${p.dateOfBirth}T00:00:00.000Z`) : undefined,
-          gender: p.gender,
-          tsaKnownTravelerNumber: p.tsaKnownTravelerNumber,
-          globalEntryNumber: p.globalEntryNumber,
-          frequentFlyerAirline: p.frequentFlyerAirline,
-          frequentFlyerNumber: p.frequentFlyerNumber,
-        })),
+    booking = await prisma.$transaction(
+      async (tx) => {
+        const claimed = await tx.quote.updateMany({
+          where: { id: quote.id, status: { in: [...BOOKABLE_QUOTE_STATUSES] } },
+          data: {
+            status: "SIGNED",
+            signedAt: now,
+            lastActivityAt: now,
+            // Quote.gratuity/Quote.total are the quote's own internal USD
+            // ledger fields — must stay USD here (usdPricing), never the
+            // currency-converted `pricing`, or a non-USD quote's own record
+            // would be silently corrupted with converted numbers.
+            gratuity: usdPricing.gratuity,
+            total: usdPricing.total,
+          },
+        });
+        if (claimed.count === 0) throw new QuoteNoLongerBookableError();
+
+        const created = await tx.booking.create({
+          data: {
+            quoteId: quote.id,
+            leadId: quote.leadId,
+            contactId: quote.contactId,
+            bookingReference,
+            contactPhone: parsed.contactPhone,
+            contactEmail: parsed.contactEmail,
+            billingAddress: parsed.billingAddress,
+            billingApt: parsed.billingApt,
+            billingCity: parsed.billingCity,
+            billingState: parsed.billingState,
+            billingZip: parsed.billingZip,
+            billingCountry: parsed.billingCountry,
+            gratuityAmount: pricing.gratuity,
+            totalAmount: pricing.total,
+            termsAcceptedAt: now,
+            // Pass 24 — the version of the legal text actually shown on THIS
+            // signing; never touched afterward.
+            termsVersion: LEGAL_CONTENT_VERSION,
+            status: "PENDING_TICKETING",
+            // Pass 22 fix — these three columns are ALWAYS USD (the same
+            // "agent tracks internal cost in USD" convention Quote uses),
+            // unlike gratuityAmount/totalAmount above, which are the
+            // customer-currency-converted `pricing` values. They remain a
+            // pre-fill for the ticketing agent to edit once the real
+            // airline cost is known.
+            fareAmount: usdPricing.ticketSubtotal,
+            taxAmount: usdPricing.taxes,
+            serviceFeeAmount: usdPricing.serviceFee,
+            statusHistory: { create: [{ toStatus: "PENDING_TICKETING" }] },
+            passengers: {
+              create: parsed.passengers.map((p) => ({
+                type: p.type,
+                firstName: p.firstName,
+                middleName: p.middleName,
+                lastName: p.lastName,
+                // Explicit UTC-midnight anchor for this date-only value —
+                // see the established pattern for date-only fields.
+                dateOfBirth: p.dateOfBirth ? new Date(`${p.dateOfBirth}T00:00:00.000Z`) : undefined,
+                gender: p.gender,
+                tsaKnownTravelerNumber: p.tsaKnownTravelerNumber,
+                globalEntryNumber: p.globalEntryNumber,
+                frequentFlyerAirline: p.frequentFlyerAirline,
+                frequentFlyerNumber: p.frequentFlyerNumber,
+              })),
+            },
+            signature: {
+              create: { signedName: parsed.signedName, ipAddress: ip, userAgent },
+            },
+            paymentMethods: {
+              create: preparedCards.map((c) => ({
+                id: c.id,
+                // Also attributed to the customer's Contact record (§34): a
+                // booking-submitted card must show up under the Contact's own
+                // "Payment Methods" section, not only on this booking.
+                contactId: quote.contactId,
+                cardholderName: c.cardholderName,
+                encryptedPan: c.encryptedPan,
+                last4: c.last4,
+                cardBrand: c.cardBrand,
+                expiryMonth: c.expiryMonth,
+                expiryYear: c.expiryYear,
+                amountAllocated: c.amount,
+                consentGivenAt: now,
+              })),
+            },
+          },
+          include: { signature: true },
+        });
+
+        await tx.quoteStatusHistory.create({ data: { quoteId: quote.id, fromStatus: quote.status, toStatus: "SIGNED" } });
+        await tx.lead.update({ where: { id: quote.leadId }, data: { status: "BOOKED" } });
+        await tx.leadStatusHistory.create({ data: { leadId: quote.leadId, fromStatus: quote.lead.status, toStatus: "BOOKED" } });
+        return created;
       },
-      signature: {
-        create: { signedName: parsed.signedName, ipAddress: ip, userAgent },
-      },
-    },
-    include: { signature: true },
-    });
+      // Interactive-transaction defaults (2s to acquire / 5s to finish) are
+      // far too tight for a multi-statement write over a high-latency link
+      // and would abort a perfectly healthy booking. Bounded well inside the
+      // 60s function limit (see quote/layout.tsx).
+      { maxWait: 15_000, timeout: 40_000 }
+    );
   } catch (err) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
-      return { ok: false as const, error: "This quote has already been booked" };
+    if (err instanceof QuoteNoLongerBookableError) {
+      // Lost a race: another request signed this quote, or it was
+      // cancelled/superseded between our read and our write. If it was the
+      // same signer's duplicate, replay that booking's confirmation.
+      const winner = await findBookingForReplay(quote.id, parsed);
+      if (winner) return { ok: true, bookingReference: winner.bookingReference, bookingId: winner.id, alreadyCompleted: true };
+      return { ok: false, error: "This link is no longer active. Please contact your travel agent for your current quote." };
     }
-    throw err;
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      const winner = await findBookingForReplay(quote.id, parsed);
+      if (winner) return { ok: true, bookingReference: winner.bookingReference, bookingId: winner.id, alreadyCompleted: true };
+      return { ok: false, error: "This quote has already been booked" };
+    }
+    // Anything else (a dropped connection, a pool timeout, a commit whose
+    // outcome is unknown): log the safe category, then check whether the
+    // transaction actually committed before telling the customer anything.
+    console.error(`[booking] SIGNING_TRANSACTION_FAILED (${safeErrorTag(err)})`);
+    let committed: Awaited<ReturnType<typeof findBookingForReplay>> = null;
+    try {
+      committed = await findBookingForReplay(quote.id, parsed);
+    } catch {
+      // Could not even look — the outcome is genuinely unknown.
+    }
+    if (committed) return { ok: true, bookingReference: committed.bookingReference, bookingId: committed.id, alreadyCompleted: true };
+    return { ok: false, error: GENERIC_INCOMPLETE_MESSAGE, outcomeUnknown: true };
   }
 
-  // Correlation log for the signing event itself — no request/correlation-
-  // id concept exists elsewhere in this codebase, so a full framework would
-  // be disproportionate here. Signature.id + Booking.id + signedAt already
-  // form a stable, unique key; logging them at the moment of signing makes
-  // this event grep-able against the deployment platform's own request
-  // logs (e.g. Vercel's dashboard, searchable by timestamp) for fraud/
-  // dispute investigation, without inventing new infrastructure. Never logs
-  // the raw IP itself — only whether one was actually captured — since a
-  // platform's own log dashboard is a much less tightly-controlled surface
-  // than the permission-gated Reveal flow/IP vault that hold the real
-  // value; see request-ip.ts and ip-encryption.ts's own header comments.
+  // ── Committed. Nothing below can fail the booking. ─────────────────────
+  // Seed each card's transient CVV authorization cache (in-memory only —
+  // cvv-cache.ts is the ONLY write of a CVV anywhere, and never a Prisma
+  // call). Keyed by the exact id used in the create above, from the same
+  // loop index, so a CVV can never be cached under another card's id.
+  for (let i = 0; i < preparedCards.length; i++) {
+    cacheCvv(preparedCards[i].id, cvvsByIndex[i]);
+  }
+
+  // Correlation log for the signing event itself (never the raw IP — only
+  // whether one was captured; see request-ip.ts / ip-encryption.ts).
   console.log(
     JSON.stringify({
       event: "booking_signed",
@@ -371,157 +490,126 @@ export async function submitBooking(input: SubmitBookingInput) {
     })
   );
 
-  // "IP vault" — an additional, permanent, encrypted, cross-booking
-  // history row (see IpCapture's schema doc comment), on top of this
-  // booking's own Signature.ipAddress above. Best-effort: never blocks or
-  // fails the booking itself. Covers both a first-time booking and an
-  // exchange's own signing step (same submitBooking call for both — an
-  // exchange quote's originalQuoteId is set, an ordinary quote's is not).
-  await recordIpCapture({
-    ip,
-    userAgent,
-    formType: quote.originalQuoteId ? "EXCHANGE_BOOKING" : "NEW_BOOKING",
-    bookingId: booking.id,
-    signerName: parsed.signedName,
-    signerEmail: parsed.contactEmail,
-    companyId: quote.contact?.companyId,
-    quoteId: quote.id,
-  });
-
-  // Payment methods are created individually (not as a single nested
-  // `create: [...]`) specifically so each row's generated id is known the
-  // instant it's created, with zero ambiguity about which id corresponds to
-  // which card — a nested create + a separate unordered read-back could not
-  // give that guarantee, and guessing wrong here would mean caching a CVV
-  // under the WRONG payment method's id (i.e. cross-card CVV leakage),
-  // which is explicitly forbidden. Each card's CVV is cached (see
-  // cvv-cache.ts — the ONLY write of a CVV value anywhere in this codebase,
-  // and never a Prisma call) immediately after that specific card's row
-  // exists, using cvvsByIndex[i] from the exact same loop index that built
-  // preparedCards[i].
-  for (let i = 0; i < preparedCards.length; i++) {
-    const c = preparedCards[i];
-    const paymentMethod = await prisma.paymentMethod.create({
-      data: {
-        bookingId: booking.id,
-        // Also attributed to the customer's Contact record — see §34: a
-        // booking-submitted card must be associated with both Contact and
-        // Booking, so it shows up under the Contact's own "Payment Methods"
-        // section, not only on this specific booking's detail page.
-        contactId: quote.contactId,
-        cardholderName: c.cardholderName,
-        encryptedPan: c.encryptedPan,
-        last4: c.last4,
-        cardBrand: c.cardBrand,
-        expiryMonth: c.expiryMonth,
-        expiryYear: c.expiryYear,
-        amountAllocated: c.amount,
-        consentGivenAt: new Date(),
-      },
-    });
-    cacheCvv(paymentMethod.id, cvvsByIndex[i]);
-  }
-
-  // SIGNED is transitioned inline here (rather than via
-  // transitionQuoteStatus) because it must stay atomic with the Lead ->
-  // BOOKED update in the same transaction — but it still bumps
-  // lastActivityAt and fires the same agent notification via
-  // notifyQuoteActivity() afterward, so this path stays consistent with
-  // every other quote-status transition rather than silently diverging.
-  await prisma.$transaction([
-    // Quote.gratuity/Quote.total are the quote's own internal USD ledger
-    // fields (agent-entered pricing, source of truth for the itinerary
-    // builder/quote email) — must stay USD here, using usdPricing, never
-    // the currency-converted `pricing` above, or a non-USD quote's own
-    // record would get silently corrupted with converted numbers.
-    prisma.quote.update({ where: { id: quote.id }, data: { status: "SIGNED", signedAt: new Date(), lastActivityAt: new Date(), gratuity: usdPricing.gratuity, total: usdPricing.total } }),
-    prisma.quoteStatusHistory.create({ data: { quoteId: quote.id, fromStatus: quote.status, toStatus: "SIGNED" } }),
-    prisma.lead.update({ where: { id: quote.leadId }, data: { status: "BOOKED" } }),
-    prisma.leadStatusHistory.create({ data: { leadId: quote.leadId, fromStatus: quote.lead.status, toStatus: "BOOKED" } }),
-  ]);
-
-  await logActivity({
-    quoteId: quote.id,
-    leadId: quote.leadId,
-    contactId: quote.contactId,
-    bookingId: booking.id,
-    type: "BOOKING_SUBMITTED",
-    description: `Booking ${bookingReference} submitted by customer`,
-  });
-
-  await notifyQuoteActivity(
-    { id: quote.id, agentId: quote.agentId, leadId: quote.leadId, quoteNumber: quote.quoteNumber, contact: quote.contact },
-    "SIGNED"
-  );
-
-  // "Booking Form Signed" staff notification — see
-  // src/server/booking-notification.ts for the full recipient/sender/
-  // idempotency/failure-handling logic. Called after everything above has
-  // already committed, so a notification problem can never affect the
-  // booking's own success — sendBookingSignedNotification() never throws.
-  {
-    const baseUrl = resolveBaseUrl();
-    const paymentMethods: EmailPaymentMethod[] = preparedCards.map((c) => ({
-      cardBrand: c.cardBrand ?? null,
-      last4: c.last4,
-      expiryMonth: c.expiryMonth,
-      expiryYear: c.expiryYear,
-      amountAllocated: c.amount,
-    }));
-
-    await sendBookingSignedNotification({
-      bookingId: booking.id,
-      bookingReference,
-      bookingCreatedAt: booking.createdAt,
-      bookingUrl: `${baseUrl}/bookings/${booking.id}`,
-      quoteId: quote.id,
-      leadId: quote.leadId,
-      contactId: quote.contactId,
-      // The user who ORIGINALLY sent this quote, not necessarily whoever
-      // currently owns the lead — see Quote.sentByAgentId's doc comment.
-      // Falls back to the current agent only for a quote sent before that
-      // field existed (sentByAgentId is null for it).
-      agent: (() => {
-        const sender = quote.sentByAgent ?? quote.agent;
-        return sender ? { id: sender.id, email: sender.email, fullName: sender.fullName } : null;
-      })(),
-      customerFirstName: quote.contact.firstName,
-      customerMiddleName: quote.contact.middleName,
-      customerLastName: quote.contact.lastName,
-      ip,
-      signedName: parsed.signedName,
-      contactEmail: parsed.contactEmail,
-      contactPhone: parsed.contactPhone,
-      passengers: parsed.passengers.map((p) => ({
-        firstName: p.firstName,
-        middleName: p.middleName ?? null,
-        lastName: p.lastName,
-        // Same UTC-midnight anchor as the passenger-creation site above.
-        dateOfBirth: p.dateOfBirth ? new Date(`${p.dateOfBirth}T00:00:00.000Z`) : null,
-        type: p.type,
-      })),
-      paymentMethods,
-      pricing: {
-        adults: quote.adults,
-        children: quote.children,
-        infants: quote.infants,
-        adultPrice: convertAmount(Number(quote.adultPrice), rate),
-        childPrice: convertAmount(Number(quote.childPrice), rate),
-        infantPrice: convertAmount(Number(quote.infantPrice), rate),
-        taxes: pricing.taxes,
-        serviceFee: pricing.serviceFee,
-        gratuity: pricing.gratuity,
-        total: pricing.total,
-        currency: quote.currency,
-      },
-    });
-  }
-
   revalidatePath(`/leads/${quote.leadId}`);
   revalidatePath("/leads");
   revalidatePath(`/quotes/${quote.id}`);
   revalidatePath("/bookings");
   revalidatePath("/dashboard");
 
-  return { ok: true as const, bookingReference, bookingId: booking.id };
+  // Everything else — the IP vault record, the activity-timeline entry, the
+  // agent notification and the staff email — is deliberately AFTER the
+  // response: it is optional relative to the booking existing, and a Gmail
+  // outage or slow email API previously sat on the customer's critical path
+  // (and, when it threw, made a successfully signed booking look failed).
+  await runAfterResponse(async () => {
+    await Promise.allSettled([
+      bestEffort("ip_vault", () =>
+        // "IP vault" — an additional, permanent, encrypted, cross-booking
+        // history row on top of this booking's own Signature.ipAddress.
+        // Covers both a first-time booking and an exchange's signing step.
+        recordIpCapture({
+          ip,
+          userAgent,
+          formType: quote.originalQuoteId ? "EXCHANGE_BOOKING" : "NEW_BOOKING",
+          bookingId: booking.id,
+          signerName: parsed.signedName,
+          signerEmail: parsed.contactEmail,
+          companyId: quote.contact?.companyId,
+          quoteId: quote.id,
+        })
+      ),
+      bestEffort("activity_log", () =>
+        logActivity({
+          quoteId: quote.id,
+          leadId: quote.leadId,
+          contactId: quote.contactId,
+          bookingId: booking.id,
+          type: "BOOKING_SUBMITTED",
+          description: `Booking ${bookingReference} submitted by customer`,
+        })
+      ),
+      // SIGNED is transitioned inline above (atomic with the Lead -> BOOKED
+      // update), so the agent notification that transitionQuoteStatus would
+      // normally fire is sent here instead, keeping this path consistent
+      // with every other quote-status transition.
+      bestEffort("agent_notification", () =>
+        notifyQuoteActivity(
+          { id: quote.id, agentId: quote.agentId, leadId: quote.leadId, quoteNumber: quote.quoteNumber, contact: quote.contact },
+          "SIGNED"
+        )
+      ),
+    ]);
+
+    // "Booking Form Signed" staff notification email — see
+    // src/server/booking-notification.ts for recipient/sender/idempotency
+    // logic. It never throws, but is wrapped anyway: this is the step most
+    // exposed to an external API (Gmail).
+    await bestEffort("staff_email", async () => {
+      const baseUrl = resolveBaseUrl();
+      const paymentMethods: EmailPaymentMethod[] = preparedCards.map((c) => ({
+        cardBrand: c.cardBrand ?? null,
+        last4: c.last4,
+        expiryMonth: c.expiryMonth,
+        expiryYear: c.expiryYear,
+        amountAllocated: c.amount,
+      }));
+
+      await sendBookingSignedNotification({
+        bookingId: booking.id,
+        bookingReference,
+        bookingCreatedAt: booking.createdAt,
+        bookingUrl: `${baseUrl}/bookings/${booking.id}`,
+        quoteId: quote.id,
+        leadId: quote.leadId,
+        contactId: quote.contactId,
+        // The user who ORIGINALLY sent this quote, not necessarily whoever
+        // currently owns the lead — see Quote.sentByAgentId's doc comment.
+        agent: (() => {
+          const sender = quote.sentByAgent ?? quote.agent;
+          return sender ? { id: sender.id, email: sender.email, fullName: sender.fullName } : null;
+        })(),
+        customerFirstName: quote.contact.firstName,
+        customerMiddleName: quote.contact.middleName,
+        customerLastName: quote.contact.lastName,
+        ip,
+        signedName: parsed.signedName,
+        contactEmail: parsed.contactEmail,
+        contactPhone: parsed.contactPhone,
+        passengers: parsed.passengers.map((p) => ({
+          firstName: p.firstName,
+          middleName: p.middleName ?? null,
+          lastName: p.lastName,
+          dateOfBirth: p.dateOfBirth ? new Date(`${p.dateOfBirth}T00:00:00.000Z`) : null,
+          type: p.type,
+        })),
+        paymentMethods,
+        pricing: {
+          adults: quote.adults,
+          children: quote.children,
+          infants: quote.infants,
+          adultPrice: convertAmount(Number(quote.adultPrice), rate),
+          childPrice: convertAmount(Number(quote.childPrice), rate),
+          infantPrice: convertAmount(Number(quote.infantPrice), rate),
+          taxes: pricing.taxes,
+          serviceFee: pricing.serviceFee,
+          gratuity: pricing.gratuity,
+          total: pricing.total,
+          currency: quote.currency,
+        },
+      });
+    });
+  });
+
+  return { ok: true, bookingReference, bookingId: booking.id };
+}
+
+/** The booking for this quote, if one exists and was signed by the same
+ * person (name + email) as the current submission. Used to turn a lost
+ * race, a P2002, or an ambiguous commit into the original confirmation. */
+async function findBookingForReplay(quoteId: string, submitted: { contactEmail: string; signedName: string }) {
+  const existing = await prisma.booking.findUnique({
+    where: { quoteId },
+    select: { id: true, bookingReference: true, contactEmail: true, signature: { select: { signedName: true } } },
+  });
+  return existing && sameSigner(existing, submitted) ? existing : null;
 }

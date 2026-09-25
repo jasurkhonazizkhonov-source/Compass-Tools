@@ -83,9 +83,16 @@ export async function signOut() {
  * the parameter, so this can only ever touch the caller's own
  * lastSeenAt, never another account's presence indicator.
  */
+// A heartbeat that lands within this window of the previous one carries no
+// new information for the online/offline indicator, so it skips the write
+// (one fewer database round trip per poll; multiple windows/devices of the
+// same person otherwise each wrote every 45s).
+const HEARTBEAT_MIN_WRITE_INTERVAL_MS = 30_000;
+
 export async function heartbeat() {
   const actor = await getCurrentAccount();
   if (!actor) return;
+  if (actor.lastSeenAt && Date.now() - actor.lastSeenAt.getTime() < HEARTBEAT_MIN_WRITE_INTERVAL_MS) return;
   await prisma.account.update({
     where: { id: actor.id },
     data: { lastSeenAt: new Date() },

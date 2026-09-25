@@ -33,8 +33,8 @@ vi.mock("@/server/security/ip-capture", () => ({ recordIpCapture: vi.fn(async ()
 
 let bookingCreateCalled: boolean;
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     quote: {
       findUnique: vi.fn(async () => ({
         id: "quote-1",
@@ -60,6 +60,7 @@ vi.mock("@/lib/prisma", () => ({
         booking: fakeQuote.booking,
       })),
       update: vi.fn(async () => ({})),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     quoteStatusHistory: { create: vi.fn(async () => ({})) },
     lead: { update: vi.fn(async () => ({})) },
@@ -72,9 +73,15 @@ vi.mock("@/lib/prisma", () => ({
     },
     paymentMethod: { create: vi.fn(async () => ({ id: "pm-1" })) },
     itinerary: { findUnique: vi.fn(async () => null) },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
-  },
-}));
+    // submitBooking now signs inside ONE interactive transaction (callback
+    // form); the array form is kept for any other caller. The callback
+    // receives this same fake as its `tx`.
+    $transaction: vi.fn(async (arg: unknown) =>
+      typeof arg === "function" ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as Promise<unknown>[])
+    ),
+  };
+  return { prisma };
+});
 
 const input = {
   token: "tok-1",

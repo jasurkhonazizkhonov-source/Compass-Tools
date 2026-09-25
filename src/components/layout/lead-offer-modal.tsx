@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "
 import { getMyLeadOffer, acceptLeadOffer, skipLeadOffer } from "@/server/actions/lead-queue";
 import { leadSourceLabel } from "@/lib/status-meta";
 import { formatPhoneInternational } from "@/lib/phone";
+import { useSharedPoll } from "@/lib/use-shared-poll";
 import type { LeadSource } from "@/generated/prisma/client";
 
 type Offer = {
@@ -87,44 +88,19 @@ export function LeadOfferModal({ accountId }: { accountId: string | undefined })
   // from a client-side timer that could be reset — a refresh, a new tab, or
   // a dropped connection all just re-sync to the same authoritative value
   // on the next poll instead of restarting the clock.
-  useEffect(() => {
-    if (!accountId) return;
-    let cancelled = false;
-    async function poll() {
-      try {
-        const result = await getMyLeadOffer();
-        if (!cancelled) setOffer(result);
-      } catch {
-        // Transient — next interval tick retries.
-      }
-    }
-
-    // Re-armed on every visibility change rather than left running at a
-    // fixed rate: foreground gets the responsive 3s cadence a live 60s
-    // countdown needs, a hidden tab drops to a slow background heartbeat.
-    let interval: ReturnType<typeof setInterval>;
-    function armInterval() {
-      clearInterval(interval);
-      const ms = document.visibilityState === "hidden" ? HIDDEN_TAB_POLL_INTERVAL_MS : POLL_INTERVAL_MS;
-      interval = setInterval(poll, ms);
-    }
-    function handleVisibilityChange() {
-      // Poll immediately on becoming visible again — the countdown/offer
-      // shown must never wait out a stale up-to-15s-old hidden-tab poll
-      // before re-syncing with the server's authoritative state.
-      if (document.visibilityState === "visible") poll();
-      armInterval();
-    }
-
-    poll();
-    armInterval();
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [accountId]);
+  // ONE poller per browser (see use-shared-poll.ts): the most recently
+  // visible tab polls at the foreground rate and shares each result with the
+  // other CRM tabs, instead of every tab polling for itself. A newly visible
+  // tab takes over and polls immediately, so an offer that arrived while
+  // backgrounded is never stale once the user looks at it.
+  useSharedPoll({
+    key: `lead-offer:${accountId ?? ""}`,
+    enabled: !!accountId,
+    fetcher: getMyLeadOffer,
+    onData: setOffer,
+    visibleIntervalMs: POLL_INTERVAL_MS,
+    hiddenIntervalMs: HIDDEN_TAB_POLL_INTERVAL_MS,
+  });
 
   useEffect(() => {
     if (!offer) return;

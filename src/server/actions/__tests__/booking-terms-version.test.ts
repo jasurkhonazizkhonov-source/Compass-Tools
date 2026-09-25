@@ -36,8 +36,8 @@ vi.mock("@/server/security/payment-vault", () => ({
 vi.mock("@/server/security/cvv-cache", () => ({ cacheCvv: vi.fn() }));
 vi.mock("@/server/security/ip-capture", () => ({ recordIpCapture: vi.fn(async () => {}) }));
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     quote: {
       findUnique: vi.fn(async () => ({
         id: "quote-1",
@@ -63,6 +63,7 @@ vi.mock("@/lib/prisma", () => ({
         booking: quoteHasBooking ? { id: "existing-booking" } : null,
       })),
       update: vi.fn(async () => ({})),
+      updateMany: vi.fn(async () => ({ count: 1 })),
     },
     quoteStatusHistory: { create: vi.fn(async () => ({})) },
     lead: { update: vi.fn(async () => ({})) },
@@ -83,9 +84,15 @@ vi.mock("@/lib/prisma", () => ({
     },
     paymentMethod: { create: vi.fn(async () => ({ id: `pm-${nextId++}` })) },
     itinerary: { findUnique: vi.fn(async () => null) },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
-  },
-}));
+    // submitBooking now signs inside ONE interactive transaction (callback
+    // form); the array form is kept for any other caller. The callback
+    // receives this same fake as its `tx`.
+    $transaction: vi.fn(async (arg: unknown) =>
+      typeof arg === "function" ? (arg as (tx: unknown) => unknown)(prisma) : Promise.all(arg as Promise<unknown>[])
+    ),
+  };
+  return { prisma };
+});
 
 function baseInput(overrides: Partial<{ termsAccepted: true }> = {}) {
   return {
@@ -136,7 +143,11 @@ describe("submitBooking — legal content version tracking (Pass 24)", () => {
 
   it("rejects the submission outright when terms were not accepted — no Booking is ever created, so no unversioned row can be written this way", async () => {
     const { submitBooking } = await import("../booking");
-    await expect(submitBooking({ ...baseInput(), termsAccepted: false as unknown as true })).rejects.toThrow();
+    // A malformed submission is a normal outcome for a public endpoint —
+    // returned as a result the form can show, not thrown into the error
+    // boundary. The safety property is unchanged: nothing is written.
+    const result = await submitBooking({ ...baseInput(), termsAccepted: false as unknown as true });
+    expect(result.ok).toBe(false);
     expect(bookingsCreated).toHaveLength(0);
   });
 

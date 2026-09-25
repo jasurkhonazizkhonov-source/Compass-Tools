@@ -198,6 +198,10 @@ describe("Stripe removal — repo-wide verification", () => {
     for (const file of sourceFiles()) {
       if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
       if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
+      // Real-database integration tests (env-gated, see docs/DEPLOYMENT.md
+      // §8) are tests like any other: they submit a fake test card, and the
+      // CVV is only ever an input literal, never persisted.
+      if (file.includes(`${path.sep}__integration__${path.sep}`)) continue;
       if (allowed.has(file)) continue;
       const content = readFileSync(file, "utf-8");
       if (/\bcvv\b|\bcvc\b|security_?code/i.test(content)) offenders.push(file);

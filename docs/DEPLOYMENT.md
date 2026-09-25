@@ -216,6 +216,21 @@ that seeds/backfills data (the `Company` row, `Account.companyId`,
 `Contact.companyId`) is a no-op on zero existing rows and simply creates
 the schema fresh.
 
+### 3a. Automatic migrations on Vercel (`scripts/vercel-build.mjs`)
+
+On Vercel the `vercel-build` script runs `prisma migrate deploy` before
+`next build`. It is deliberately conservative and never destructive:
+
+| Database state | What happens |
+|---|---|
+| Already has the `Company` table or Prisma's `_prisma_migrations` history (the normal case) | `prisma migrate deploy` runs — a no-op when up to date, or applies only the migrations that are missing. Existing data is never touched. |
+| Completely empty (no Compass Tools footprint) | **Nothing is created** unless `DATABASE_AUTO_INIT=true` is set for that environment. Without it the build logs why and continues. This stops a mistyped/stale `DATABASE_URL` from silently turning an unrelated empty database into an orphaned CRM. |
+| Unreachable, or a migration fails | Logged (credentials redacted) and the build continues; the app's runtime error handling covers the rest. It never drops, resets or force-pushes anything. |
+
+Verified against real PostgreSQL by `scripts/__integration__/vercel-build.integration.test.ts`
+(empty, empty + opt-in, healthy-with-data, partially migrated, failing
+migration). See §8 for how to run it.
+
 ## 4. Bootstrap the company and its first Admin
 
 `prisma/seed.ts` seeds fake demo data (for local development only) — do
@@ -338,6 +353,42 @@ before going live):
 openssl rand -base64 32
 ```
 
+## 5b. Database connection settings, region and health check
+
+The CRM issues many small queries per page, so **latency between the
+serverless function and the database is the single biggest performance and
+reliability factor**. Two things matter more than any code setting:
+
+1. **Region.** In Vercel → Project → Settings → Functions, set the Function
+   Region to the region closest to your PostgreSQL host. (Measured on this
+   project's original deployment: functions ran in `iad1` with roughly
+   half a second per database round trip.)
+2. **A connection pooler**, if your provider offers one (Aiven, Neon,
+   Supabase, PgBouncer): point `DATABASE_URL` at it. Many serverless
+   instances each opening their own connections is what exhausts small
+   databases.
+
+Optional per-instance tuning (defaults are sensible; see `src/lib/prisma.ts`):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `DATABASE_POOL_MAX` | `5` | Max connections per server instance. Keep `instances x this` under your database's connection limit. |
+| `DATABASE_POOL_CONNECT_TIMEOUT_MS` | `8000` | How long one attempt waits for a free connection. |
+| `DATABASE_POOL_IDLE_TIMEOUT_MS` | `10000` | How long an idle connection is kept. |
+| `DATABASE_CONNECT_RETRIES` | `2` | Extra attempts (with backoff) when acquiring a connection times out or the server is momentarily out of slots. Only the connection-acquire step is retried, so a write can never be duplicated. |
+
+**Health check.** `GET /api/health` is public and returns database
+round-trip times and pool occupancy (no hostnames, credentials or queries),
+e.g. `{"status":"ok","database":{"ok":true,"secondQueryMs":38},"pool":{"max":5,...}}`.
+`secondQueryMs` is the steady-state cost of one database round trip: if it
+is in the hundreds, the database is far from the functions (fix the region).
+It returns HTTP 503 with a safe error category when the database is unreachable.
+
+**Correlating a "This page couldn't load — Error ref: NNN" screen.** The
+number is the Next.js error digest. Search the deployment's Runtime Logs for
+that exact number: the server logs the underlying error next to it, plus a
+`[crm-layout]` / `[proxy]` / `[booking]` line with a safe error category.
+
 ## 6. First login and branding setup
 
 Once deployed, the person whose email was passed to
@@ -351,3 +402,24 @@ but can be edited there too.
 Every subsequent user (any role) is created by an existing Admin through
 the in-app `/users` page — `prisma/bootstrap-company.ts` is only ever run
 once, at initial setup.
+
+## 8. Running the real-database integration tests
+
+The normal `npm test` never needs a database. The tests that prove
+transactional and concurrency behaviour run only against a **disposable**
+PostgreSQL you point them at (they create and delete their own rows; the
+recovery test creates and drops its own scratch database — never use a
+server holding data you care about):
+
+```bash
+# 1. a scratch database with the migrations applied
+DATABASE_URL=postgres://user:pass@127.0.0.1:5432/scratch npx prisma migrate deploy
+
+# 2. booking atomicity/idempotency/concurrency + lead-queue concurrency
+INTEGRATION_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/scratch \
+  npx vitest run src/server/actions/__integration__
+
+# 3. deploy-time recovery logic (creates/drops its own database on that server)
+INTEGRATION_ADMIN_DATABASE_URL=postgres://user:pass@127.0.0.1:5432/postgres \
+  npx vitest run scripts/__integration__
+```

@@ -11,15 +11,26 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { PaginationControls } from "@/components/crm/pagination-controls";
 import { redirectToValidPageIfNeeded } from "@/lib/pagination";
-import { INQUIRY_STATUS_META, INQUIRY_SUBJECT_LABELS } from "@/lib/status-meta";
+import { INQUIRY_STATUS_META, INQUIRY_STATUS_ORDER, INQUIRY_SUBJECT_LABELS } from "@/lib/status-meta";
+import type { InquiryStatus } from "@/generated/prisma/client";
+import { cn } from "@/lib/utils";
 import { InquiryDeleteButton } from "@/components/get-in-touch/inquiry-delete-button";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
+// Inquiry messages can be up to 5,000 characters; the list shows a short
+// preview and the full text lives on the detail page.
+function messagePreview(message: string, max = 90): string {
+  const oneLine = message.replace(/s+/g, " ").trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max).trimEnd()}…` : oneLine;
+}
+
 /**
- * Part 9 — admin-only public-website inquiry inbox. All admins see every
+ * Part 9 — admin-only public-website inquiry inbox ("CRM Inquiries" in the
+ * sidebar; the route keeps its original /get-in-touch path, which is also
+ * the name of the public website's contact form that feeds it). All admins see every
  * incoming inquiry (companywide, not per-admin) — matches the spec's "all
  * admins see incoming inquiries." Pass 7 — database-paginated at 25/page;
  * still its own separate model/query from Leads (never merged).
@@ -29,11 +40,16 @@ export default async function GetInTouchPage({ searchParams }: { searchParams: S
   const page = sp.page ? Number(sp.page) : 1;
   const pageSize = typeof sp.pageSize === "string" ? Number(sp.pageSize) : undefined;
 
+  // Unrecognised ?status= values are ignored (show everything) rather than
+  // erroring — a stale or hand-edited URL is not a server error.
+  const statusParam = typeof sp.status === "string" ? sp.status : undefined;
+  const statusFilter = INQUIRY_STATUS_ORDER.find((st) => st === statusParam) as InquiryStatus | undefined;
+
   const current = await getCurrentAccount();
   if (!canViewGetInTouch(current?.role)) notFound();
 
   const [{ inquiries, total, pageCount, pageSize: effectivePageSize }, unreadCount] = await Promise.all([
-    getContactInquiries({ companyId: current!.companyId, page, pageSize }),
+    getContactInquiries({ companyId: current!.companyId, status: statusFilter, page, pageSize }),
     getUnreadInquiryCount(current!.companyId),
   ]);
   redirectToValidPageIfNeeded(sp, "/get-in-touch", page, pageCount);
@@ -41,14 +57,34 @@ export default async function GetInTouchPage({ searchParams }: { searchParams: S
   return (
     <div className="space-y-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Get in Touch</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">CRM Inquiries</h1>
         <p className="text-sm text-muted-foreground">
-          {total} inquir{total === 1 ? "y" : "ies"} · {unreadCount} unread
+          Messages sent through the website&apos;s Get in Touch form · {total} inquir{total === 1 ? "y" : "ies"}
+          {statusFilter ? ` (${INQUIRY_STATUS_META[statusFilter].label})` : ""} · {unreadCount} unread
         </p>
       </div>
 
+      <nav aria-label="Filter inquiries by status" className="flex flex-wrap gap-1.5">
+        {[undefined, ...INQUIRY_STATUS_ORDER].map((st) => {
+          const active = st === statusFilter;
+          return (
+            <Link
+              key={st ?? "all"}
+              href={st ? `/get-in-touch?status=${st}` : "/get-in-touch"}
+              aria-current={active ? "page" : undefined}
+              className={cn(
+                "rounded-full border px-3 py-1 text-xs transition-colors",
+                active ? "border-primary bg-primary text-primary-foreground" : "bg-card text-muted-foreground hover:bg-muted"
+              )}
+            >
+              {st ? INQUIRY_STATUS_META[st].label : "All"}
+            </Link>
+          );
+        })}
+      </nav>
+
       {inquiries.length === 0 ? (
-        <EmptyState icon={Inbox} title="No inquiries yet" description="Submissions from the public website's Get in Touch form appear here." />
+        <EmptyState icon={Inbox} title={statusFilter ? "No inquiries with this status" : "No inquiries yet"} description="Submissions from the public website's Get in Touch form appear here." />
       ) : (
         <div className="rounded-lg border bg-card overflow-x-auto">
           <Table>
@@ -59,6 +95,7 @@ export default async function GetInTouchPage({ searchParams }: { searchParams: S
                 <TableHead>Email</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Subject</TableHead>
+                <TableHead>Message</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Assigned</TableHead>
                 <TableHead>Received</TableHead>
@@ -82,6 +119,9 @@ export default async function GetInTouchPage({ searchParams }: { searchParams: S
                     <TableCell className="text-sm text-muted-foreground">{i.email}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{i.phone ?? "—"}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{INQUIRY_SUBJECT_LABELS[i.subject]}</TableCell>
+                    <TableCell className="max-w-[18rem] truncate text-sm text-muted-foreground" title="Open the inquiry to read the full message">
+                      {messagePreview(i.message)}
+                    </TableCell>
                     <TableCell><StatusBadge label={meta.label} tone={meta.tone} /></TableCell>
                     <TableCell className="text-sm text-muted-foreground">{i.assignedAdmin?.fullName ?? "—"}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{formatDistanceToNow(i.createdAt, { addSuffix: true })}</TableCell>

@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect } from "react";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -27,6 +29,13 @@ import { Button } from "@/components/ui/button";
 // to re-log it. What this adds: a scoped, on-brand, retryable fallback
 // instead of the generic full-page replacement, without ever inventing a
 // success state or hiding that a real error occurred.
+// Signed-in CRM areas (the ones a "Return to Dashboard" link makes sense
+// for). Customer pages (/quote/...) and the public site must NOT offer it.
+const CRM_PATH_PREFIXES = ["/dashboard", "/leads", "/contacts", "/quotes", "/bookings", "/sequences", "/tasks", "/subscriptions", "/get-in-touch", "/accounts", "/users", "/company", "/commissions", "/salesboard"];
+function isCrmPath(pathname: string | null): boolean {
+  return !!pathname && CRM_PATH_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
 export default function CrmSegmentError({
   error,
   retry,
@@ -35,6 +44,7 @@ export default function CrmSegmentError({
   retry: () => void;
 }) {
   const isServerError = !!error.digest;
+  const pathname = usePathname();
 
   useEffect(() => {
     // Client-side-only note for whoever has devtools open — the real,
@@ -61,6 +71,11 @@ export default function CrmSegmentError({
         <Button onClick={() => retry()} className="w-full">
           Try again
         </Button>
+        {isCrmPath(pathname) && (
+          <Button asChild variant="outline" className="w-full">
+            <Link href="/dashboard">Return to Dashboard</Link>
+          </Button>
+        )}
         {error.digest && <p className="text-[11px] text-muted-foreground/70">Error ref: {error.digest}</p>}
       </div>
     </div>

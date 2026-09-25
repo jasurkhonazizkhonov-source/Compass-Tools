@@ -72,7 +72,10 @@ const NAV_ITEMS: Array<{
   { href: "/commissions", label: "Commissions", icon: DollarSign, visible: canViewCommissions },
   { href: "/salesboard", label: "Salesboard", icon: Trophy, visible: canViewSalesboard },
   { href: "/accounts", label: "Accounts", icon: UserCog, visible: (role) => !!role },
-  { href: "/get-in-touch", label: "Get in Touch", icon: Inbox, visible: canViewGetInTouch },
+  // Admin-only (canViewGetInTouch). Named for what it is to staff — the CRM's
+  // inbound-inquiry inbox; the route keeps the /get-in-touch path of the
+  // public form that feeds it.
+  { href: "/get-in-touch", label: "CRM Inquiries", icon: Inbox, visible: canViewGetInTouch },
   { href: "/subscriptions", label: "Subscriptions", icon: Send, visible: canViewSubscriptions },
   // Admin-only user management — distinct from the general Accounts
   // directory above. Hiding this nav item is a UX nicety only; the actual

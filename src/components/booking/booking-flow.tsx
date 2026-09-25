@@ -364,45 +364,72 @@ export function BookingFlow({
       return;
     }
     startSubmitting(async () => {
-      const result = await submitBooking({
-        token,
-        passengers: passengers.map((p) => ({
-          type: p.type,
-          firstName: p.firstName,
-          middleName: p.middleName || undefined,
-          lastName: p.lastName,
-          dateOfBirth: p.dateOfBirth,
-          gender: p.gender,
-          tsaKnownTravelerNumber: p.tsaKnownTravelerNumber || undefined,
-          globalEntryNumber: p.globalEntryNumber || undefined,
-          frequentFlyerAirline: p.frequentFlyerAirline?.name,
-          frequentFlyerNumber: p.frequentFlyerNumber || undefined,
-        })),
-        contactPhone: normalizedPhone ?? phoneNational,
-        contactEmail: email,
-        billingAddress,
-        billingApt: billingApt || undefined,
-        billingCity,
-        billingState,
-        billingZip,
-        billingCountry,
-        paymentMethods: cards.map((c) => ({
-          cardholderName: c.cardholderName,
-          cardNumber: c.cardNumber,
-          expiryMonth: Number(c.expiryMonth),
-          expiryYear: Number(c.expiryYear),
-          cvv: c.cvv,
-          amount: amountFor(c),
-        })),
-        paymentConsent: true,
-        gratuityAmount: gratuity,
-        termsAccepted: true,
-        signedName,
-      });
+      let result: Awaited<ReturnType<typeof submitBooking>>;
+      try {
+        result = await submitBooking({
+          token,
+          passengers: passengers.map((p) => ({
+            type: p.type,
+            firstName: p.firstName,
+            middleName: p.middleName || undefined,
+            lastName: p.lastName,
+            dateOfBirth: p.dateOfBirth,
+            gender: p.gender,
+            tsaKnownTravelerNumber: p.tsaKnownTravelerNumber || undefined,
+            globalEntryNumber: p.globalEntryNumber || undefined,
+            frequentFlyerAirline: p.frequentFlyerAirline?.name,
+            frequentFlyerNumber: p.frequentFlyerNumber || undefined,
+          })),
+          contactPhone: normalizedPhone ?? phoneNational,
+          contactEmail: email,
+          billingAddress,
+          billingApt: billingApt || undefined,
+          billingCity,
+          billingState,
+          billingZip,
+          billingCountry,
+          paymentMethods: cards.map((c) => ({
+            cardholderName: c.cardholderName,
+            cardNumber: c.cardNumber,
+            expiryMonth: Number(c.expiryMonth),
+            expiryYear: Number(c.expiryYear),
+            cvv: c.cvv,
+            amount: amountFor(c),
+          })),
+          paymentConsent: true,
+          gratuityAmount: gratuity,
+          termsAccepted: true,
+          signedName,
+        });
+      } catch {
+        // The request itself failed (dropped connection, a timeout, the server
+        // restarting) — the OUTCOME is unknown: the booking may well have been
+        // recorded. Never let this escape into the app's error boundary (a
+        // customer would see a generic "This page couldn't load" for what may
+        // be a completed booking). Card details are deliberately left in the
+        // form so a retry is a single click; submitBooking is idempotent for
+        // the same signer, and reloading this page sends a customer whose
+        // booking WAS recorded straight to their confirmation.
+        toast.error(
+          "We couldn't confirm your booking because the connection was interrupted. Checking now — if your booking was received you'll be taken to your confirmation, otherwise please press Finish Booking again.",
+          { duration: 10000 }
+        );
+        router.refresh();
+        return;
+      }
+
+      if (!result.ok && result.outcomeUnknown) {
+        // The server could not tell whether its own commit landed (see
+        // submitBooking). Keep the form filled and re-check: if the booking
+        // was recorded, the refreshed page redirects to the confirmation.
+        toast.error(result.error, { duration: 10000 });
+        router.refresh();
+        return;
+      }
 
       // The CVV (and, defensively, the full card number) never need to
-      // exist in this component's state again after submission, whether
-      // it succeeded or failed.
+      // exist in this component's state again after a definitive result,
+      // whether it succeeded or was rejected.
       setCards((prev) => prev.map((c) => ({ ...c, cardNumber: "", cvv: "" })));
 
       if (result.ok) {

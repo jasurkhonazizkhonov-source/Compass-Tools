@@ -145,6 +145,22 @@ describe("heartbeat — session-derived, never a client-supplied accountId", () 
     expect(accounts.get("agent-1")!.lastSeenAt).toBeNull();
   });
 
+  it("skips the database write when the previous heartbeat was under 30s ago (multiple tabs/devices no longer each write)", async () => {
+    const { establishSession, heartbeat } = await import("../dev-session");
+    await establishSession("admin-1");
+    const recent = new Date(Date.now() - 5_000);
+    accounts.get("admin-1")!.lastSeenAt = recent;
+
+    await heartbeat();
+
+    expect(accounts.get("admin-1")!.lastSeenAt).toBe(recent); // untouched
+
+    const stale = new Date(Date.now() - 60_000);
+    accounts.get("admin-1")!.lastSeenAt = stale;
+    await heartbeat();
+    expect(accounts.get("admin-1")!.lastSeenAt!.getTime()).toBeGreaterThan(stale.getTime());
+  });
+
   it("is a safe no-op when there is no valid session (no cookie, or a stale/superseded token)", async () => {
     const { heartbeat } = await import("../dev-session");
     await expect(heartbeat()).resolves.toBeUndefined();

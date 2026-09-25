@@ -1,6 +1,13 @@
 import type { Metadata } from "next";
 import { CustomerThemeProvider } from "@/components/customer/customer-theme-provider";
 
+// Vercel's default function limit is 10s. This app talks to Postgres over a
+// high-latency link and the customer booking action performs a multi-step write — a healthy-but-slow request must not be
+// killed by the platform (which bypasses every try/catch and error
+// boundary and leaves a half-finished operation). 60s is the ceiling that
+// is valid on every Vercel plan.
+export const maxDuration = 60;
+
 // Pass 13 §38/§40 — this layout sits ABOVE the [token] dynamic segment, so
 // it cannot resolve which Company owns a specific quote (Next.js layout
 // params only include segments at or above the layout itself) — this
