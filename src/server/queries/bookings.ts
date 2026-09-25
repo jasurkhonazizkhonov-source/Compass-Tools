@@ -83,11 +83,11 @@ export async function getBookingDetail(bookingId: string, viewer: Viewer) {
       signature: {
         select: { id: true, signedName: true, signedAt: true },
       },
-      // Explicit field allow-list — deliberately NOT `include: true` — so
-      // `encryptedPan` can never leak into an ordinary booking-detail read
-      // by construction, even if a future field is added to PaymentMethod.
-      // The full PAN is only ever selected inside the dedicated, audited
-      // revealPaymentMethod() action. A booking may have multiple payment
+      // Explicit field allow-list — deliberately NOT `include: true` — so a
+      // future sensitive column can never leak into an ordinary booking-detail
+      // read by construction. (Provider vault references such as
+      // providerPaymentMethodId are read only server-side by the manual-charge
+      // action, never selected here.) A booking may have multiple payment
       // methods (split payment across cards) — ordered so "Payment Method
       // 1"/"2"/… labels in the UI stay stable across reloads.
       paymentMethods: {
@@ -102,6 +102,7 @@ export async function getBookingDetail(bookingId: string, viewer: Viewer) {
           amountAllocated: true,
           status: true,
           workflowStatus: true,
+          vaultStatus: true,
           consentGivenAt: true,
           createdAt: true,
           updatedAt: true,
@@ -268,14 +269,8 @@ export type PreviousPaymentMethodOption = {
  * PaymentMethod select in this same file) — the full card number is
  * genuinely NOT retrievable through this path, by design, not by
  * oversight. See docs/PAYMENT_AUTOFILL_SECURITY.md for the full reasoning:
- * this app's card vault (payment-vault.ts) is explicitly dev-only and
- * FAILS CLOSED in production — re-exposing a decrypted PAN into a NEW,
- * unrelated booking form merely for autofill convenience would (a) be
- * architecturally impossible in any real production deployment of this
- * app, since the vault refuses to reveal anything there, and (b) even in
- * dev, re-exposing a stored PAN to a new transaction is exactly the kind
- * of unnecessary re-exposure PCI scope-reduction principles exist to
- * prevent. Selecting an option here can only ever autofill the
+ * card numbers are held only by the payment provider, so this app has no
+ * PAN to re-expose into a new booking form at all. Selecting an option here can only ever autofill the
  * customer-safe fields already returned by this query (cardholder name,
  * expiry) — the customer must always manually re-enter the card number
  * and security code; neither is ever offered for autofill.

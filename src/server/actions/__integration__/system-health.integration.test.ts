@@ -216,7 +216,7 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
     it("reports every check, each with a state, and never throws", async () => {
       const results = await checks.runHealthChecks();
       const ids = results.map((r) => r.id);
-      for (const id of ["database.connectivity", "database.migrations", "database.connections", "auth.google", "email.gmail", "payment.provider", "signer.ip", "security.keys", "bookings.integrity", "leads.queue", "incidents.open"]) {
+      for (const id of ["database.connectivity", "database.migrations", "database.connections", "auth.google", "email.gmail", "payment.provider", "payment.webhook", "payment.activity", "signer.ip", "security.keys", "bookings.integrity", "leads.queue", "incidents.open"]) {
         expect(ids).toContain(id);
       }
       for (const r of results) expect(["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"]).toContain(r.state);
@@ -251,10 +251,10 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
       process.env.IP_ENCRYPTION_KEY = original;
     });
 
-    it("an optional feature that is simply not configured is not flagged as broken (no provider outside production is HEALTHY)", async () => {
-      // This suite runs with a non-production environment.
+    it("no provider outside production is a WARNING (bookings are blocked in every environment — there is no fallback card store), never HEALTHY", async () => {
       const r = byId(await checks.runHealthChecks(), "payment.provider");
-      expect(r.state).toBe("HEALTHY");
+      expect(r.state).toBe("WARNING");
+      expect(r.summary).toMatch(/customers cannot complete bookings/i);
       expect(JSON.stringify(r)).toContain("Never collected or stored");
     });
 
@@ -265,7 +265,7 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
       try {
         const r = byId(await checks.runHealthChecks(), "payment.provider");
         expect(r.state).toBe("CRITICAL");
-        expect(r.summary).toMatch(/bookings cannot be completed/i);
+        expect(r.summary).toMatch(/customers cannot complete bookings/i);
         expect(r.action ?? "").toMatch(/Do not work around this with APP_ENV/);
       } finally {
         for (const [k, v] of Object.entries(saved)) {
@@ -275,10 +275,145 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
       }
     });
 
+    describe("payment readiness reflects the REAL provider state", () => {
+      const asProduction = async (fn: () => Promise<void>) => {
+        const saved = { VERCEL_ENV: process.env.VERCEL_ENV };
+        process.env.VERCEL_ENV = "production";
+        try {
+          await fn();
+        } finally {
+          if (saved.VERCEL_ENV === undefined) delete process.env.VERCEL_ENV;
+          else process.env.VERCEL_ENV = saved.VERCEL_ENV;
+        }
+      };
+      const withEnv = async (vars: Record<string, string | undefined>, fn: () => Promise<void>) => {
+        const saved: Record<string, string | undefined> = {};
+        for (const [k, v] of Object.entries(vars)) {
+          saved[k] = process.env[k];
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+        try {
+          await fn();
+        } finally {
+          for (const [k, v] of Object.entries(saved)) {
+            if (v === undefined) delete process.env[k];
+            else process.env[k] = v;
+          }
+        }
+      };
+      let fake: import("@/test/fake-payment-provider").FakePaymentProvider;
+      let providerMod: typeof import("@/server/payments/provider");
+      beforeEach(async () => {
+        providerMod = await import("@/server/payments/provider");
+        const { FakePaymentProvider } = await import("@/test/fake-payment-provider");
+        fake = new FakePaymentProvider();
+        checks.resetPaymentProbeCacheForTests();
+      });
+      afterAll(() => providerMod?.setPaymentProviderForTests(null));
+
+      it("provider configured + reachable + charging enabled (live mode) => HEALTHY, with what was verified", async () => {
+        fake.setMode("live");
+        providerMod.setPaymentProviderForTests(fake);
+        await asProduction(async () => {
+          const r = byId(await checks.runHealthChecks(), "payment.provider");
+          expect(r.state).toBe("HEALTHY");
+          const facts = JSON.stringify(r.facts);
+          expect(facts).toContain("Card vaulting");
+          expect(facts).toContain("Manual (off-session) charging");
+          expect(facts).toContain("Available");
+        });
+      });
+
+      it("TEST-mode keys on a production deployment => WARNING (customers cannot genuinely pay), not HEALTHY", async () => {
+        providerMod.setPaymentProviderForTests(fake); // fake mode = test
+        await asProduction(async () => {
+          const r = byId(await checks.runHealthChecks(), "payment.provider");
+          expect(r.state).toBe("WARNING");
+          expect(r.summary).toMatch(/TEST mode/i);
+        });
+      });
+
+      it("the provider rejecting the credentials => CRITICAL", async () => {
+        fake.access = { ok: false, reason: "invalid_credentials" };
+        providerMod.setPaymentProviderForTests(fake);
+        const r = byId(await checks.runHealthChecks(), "payment.provider");
+        expect(r.state).toBe("CRITICAL");
+        expect(r.summary).toMatch(/rejected the configured credentials/i);
+      });
+
+      it("the provider being unreachable => WARNING (could be a brief outage), never a false HEALTHY", async () => {
+        fake.access = { ok: false, reason: "unreachable" };
+        providerMod.setPaymentProviderForTests(fake);
+        expect(byId(await checks.runHealthChecks(), "payment.provider").state).toBe("WARNING");
+      });
+
+      it("an account that cannot accept charges => CRITICAL (manual charging cannot work)", async () => {
+        fake.access = { ok: true, chargesEnabled: false };
+        providerMod.setPaymentProviderForTests(fake);
+        const r = byId(await checks.runHealthChecks(), "payment.provider");
+        expect(r.state).toBe("CRITICAL");
+        expect(JSON.stringify(r.facts)).toContain("Not enabled");
+      });
+
+      it("keys that disagree on test/live => CRITICAL 'invalid', naming WHICH variable — never a value", async () => {
+        providerMod.setPaymentProviderForTests(null);
+        await withEnv({ PAYMENT_PROVIDER: "stripe", STRIPE_SECRET_KEY: "sk_test_" + "x".repeat(24), STRIPE_PUBLISHABLE_KEY: "pk_live_" + "y".repeat(24) }, async () => {
+          const r = byId(await checks.runHealthChecks(), "payment.provider");
+          expect(r.state).toBe("CRITICAL");
+          expect(JSON.stringify(r)).toContain("STRIPE_PUBLISHABLE_KEY");
+          expect(JSON.stringify(r)).not.toContain("x".repeat(24));
+          expect(JSON.stringify(r)).not.toContain("y".repeat(24));
+        });
+      });
+
+      it("webhook check: not applicable without a provider; a verified secret => HEALTHY", async () => {
+        providerMod.setPaymentProviderForTests(null);
+        expect(byId(await checks.runHealthChecks(), "payment.webhook").state).toBe("HEALTHY");
+        providerMod.setPaymentProviderForTests(fake);
+        const on = byId(await checks.runHealthChecks(), "payment.webhook");
+        expect(on.state).toBe("HEALTHY");
+        expect(JSON.stringify(on.facts)).toContain("Configured");
+      });
+
+      it("webhook check: a missing signing secret is a WARNING (CRITICAL for live mode in production), pointing at the endpoint — never a secret", async () => {
+        providerMod.setPaymentProviderForTests(null);
+        const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ charges_enabled: true }), { status: 200 }));
+        try {
+          await withEnv({ PAYMENT_PROVIDER: "stripe", STRIPE_SECRET_KEY: "sk_live_" + "a".repeat(24), STRIPE_PUBLISHABLE_KEY: "pk_live_" + "b".repeat(24), STRIPE_WEBHOOK_SECRET: undefined }, async () => {
+            const dev = byId(await checks.runHealthChecks(), "payment.webhook");
+            expect(dev.state).toBe("WARNING");
+            expect(dev.action).toContain("/api/webhooks/payments");
+            expect(JSON.stringify(dev)).not.toContain("a".repeat(24));
+            await asProduction(async () => {
+              expect(byId(await checks.runHealthChecks(), "payment.webhook").state).toBe("CRITICAL");
+            });
+          });
+        } finally {
+          fetchSpy.mockRestore();
+        }
+      });
+
+      it("charge activity: stuck PENDING > 10 min => WARNING; provider 'invalid request' failures => CRITICAL", async () => {
+        providerMod.setPaymentProviderForTests(fake);
+        const contact = await prisma.contact.create({ data: { firstName: "Act", lastName: TAG, companyId: "default-company" } });
+        contactIds.push(contact.id);
+        const pm = await prisma.paymentMethod.create({ data: { contactId: contact.id, cardholderName: "x", last4: "4242", expiryMonth: 1, expiryYear: new Date().getUTCFullYear() + 3, vaultStatus: "VAULTED", provider: "stripe" } });
+        const stuck = await prisma.paymentCharge.create({ data: { paymentMethodId: pm.id, amount: 10, currency: "usd", status: "PENDING", provider: "stripe", idempotencyKey: crypto.randomUUID() } });
+        await prisma.paymentCharge.update({ where: { id: stuck.id }, data: { createdAt: new Date(Date.now() - 30 * 60_000) } });
+        const warn = byId(await checks.runHealthChecks(), "payment.activity");
+        expect(warn.state).toBe("WARNING");
+        expect(warn.action).toMatch(/cannot charge twice/i);
+        await prisma.paymentCharge.update({ where: { id: stuck.id }, data: { status: "SUCCEEDED" } });
+        await prisma.paymentCharge.create({ data: { paymentMethodId: pm.id, amount: 10, currency: "usd", status: "FAILED", provider: "stripe", failureCategory: "invalid_request", idempotencyKey: crypto.randomUUID() } });
+        expect(byId(await checks.runHealthChecks(), "payment.activity").state).toBe("CRITICAL");
+      });
+    });
+
     it("a half-finished booking (no payment method) is surfaced for Admin review and NOTHING is changed", async () => {
       const contact = await prisma.contact.create({ data: { firstName: "Orphan", lastName: TAG, primaryEmail: `o-${TAG}@example.test`, companyId: "default-company" } });
       contactIds.push(contact.id);
-      const lead = await prisma.lead.create({ data: { contactId: contact.id, status: "QUOTED" } });
+      const lead = await prisma.lead.create({ data: { contactId: contact.id, status: "QUOTED", source: "OTHER" } });
       const quote = await prisma.quote.create({ data: { quoteNumber: `Q-${TAG}`, secureToken: `tok-${TAG}`, leadId: lead.id, contactId: contact.id, status: "SIGNED", adults: 1, adultPrice: 1, total: 1 } });
       const booking = await prisma.booking.create({
         data: { quoteId: quote.id, leadId: lead.id, contactId: contact.id, bookingReference: `ORPH${Date.now().toString(36).slice(-5).toUpperCase()}`, contactPhone: "+1", contactEmail: "o@example.test", billingAddress: "x", billingCity: "x", billingState: "x", billingZip: "x", billingCountry: "US" },

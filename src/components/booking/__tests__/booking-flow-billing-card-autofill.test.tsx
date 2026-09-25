@@ -7,12 +7,14 @@ import { BookingFlow } from "../booking-flow";
 import { CustomerThemeProvider } from "@/components/customer/customer-theme-provider";
 
 // Pass 25 §7-9/§3-6 — billing-address and masked-card autofill selectors.
-// The card selector's central security property: it must NEVER autofill
-// (or even offer) the card number or CVV — only cardholder name + expiry,
-// matching docs/PAYMENT_AUTOFILL_SECURITY.md.
+// The card selector's central security property: it can only ever autofill
+// the cardholder NAME — this app has no card number to offer (the provider
+// holds it), matching docs/PAYMENT_AUTOFILL_SECURITY.md.
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/server/actions/booking", () => ({ submitBooking: vi.fn(async () => ({ ok: true })) }));
+vi.mock("@/server/actions/payment-setup", () => ({ createBookingPaymentSetup: vi.fn(async () => ({ ok: true, clientSecret: "seti_secret", setupIntentId: "seti_test" })) }));
+vi.mock("@/components/payments/secure-card-fields", async () => await import("@/test/secure-card-fields-stub"));
 vi.mock("@/server/queries/reference-data", () => ({
   searchAirports: vi.fn(async () => []),
   searchAirlines: vi.fn(async () => []),
@@ -20,6 +22,7 @@ vi.mock("@/server/queries/reference-data", () => ({
 }));
 
 const BASE_PROPS = {
+  paymentConfig: { ready: true as const, publishableKey: "pk_test_stub_key_value" },
   token: "test-token",
   segments: [],
   adults: 1,
@@ -72,7 +75,7 @@ describe("BookingFlow — previous billing address selector (Pass 25)", () => {
   });
 });
 
-describe("BookingFlow — previous card selector (Pass 25) — masked-only, never the card number/CVV", () => {
+describe("BookingFlow — previous card selector (Pass 25) — masked-only, name autofill only", () => {
   it("no previous cards: no selector shown", () => {
     renderBookingFlow({ previousPaymentMethods: [] });
     expect(screen.queryByLabelText(/autofill from a previously used card/i)).not.toBeInTheDocument();
@@ -86,7 +89,7 @@ describe("BookingFlow — previous card selector (Pass 25) — masked-only, neve
     expect(screen.getByRole("option", { name: /Visa ending in 4242/i })).toBeInTheDocument();
   });
 
-  it("selecting a previous card autofills ONLY cardholder name and expiry — the card number field stays empty", async () => {
+  it("selecting a previous card autofills ONLY the cardholder name — the card itself is always entered in the provider's secure fields", async () => {
     const user = userEvent.setup();
     renderBookingFlow({ previousPaymentMethods: [PREVIOUS_CARD] });
     const select = screen.getByLabelText(/autofill from a previously used card/i);
@@ -94,14 +97,16 @@ describe("BookingFlow — previous card selector (Pass 25) — masked-only, neve
     await user.click(screen.getByRole("option", { name: /Visa ending in 4242/i }));
 
     expect(screen.getByDisplayValue("Jane Traveler")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("12")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("2028")).toBeInTheDocument();
-    // The card-number input must still be empty — never autofilled.
-    expect(screen.getByPlaceholderText(/card number/i)).toHaveValue("");
+    // Neither the previous card's expiry nor its last four is put into any input.
+    expect(screen.queryByDisplayValue("12")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("2028")).not.toBeInTheDocument();
+    expect(screen.queryByDisplayValue("4242")).not.toBeInTheDocument();
+    // The provider's hosted fields are what take the card.
+    expect(screen.getByTestId("secure-card-fields")).toBeInTheDocument();
   });
 
-  it("tells the customer they still need to enter the card number and security code", () => {
+  it("tells the customer they still need to enter the card details in the secure form", () => {
     renderBookingFlow({ previousPaymentMethods: [PREVIOUS_CARD] });
-    expect(screen.getByText(/still need to enter the full card number and security code/i)).toBeInTheDocument();
+    expect(screen.getByText(/still need to enter the card details in the secure form/i)).toBeInTheDocument();
   });
 });

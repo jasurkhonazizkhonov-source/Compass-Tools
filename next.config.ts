@@ -13,7 +13,10 @@ import type { NextConfig } from "next";
 // which third-party origins the app loads from.
 const CSP = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://accounts.google.com",
+  // js.stripe.com: the payment provider's browser library. The card number,
+  // expiry and security code are typed into ITS iframes, so they never pass
+  // through this app's own scripts, server or database.
+  "script-src 'self' 'unsafe-inline' https://accounts.google.com https://js.stripe.com",
   // https://accounts.google.com is required here too: Google's Sign-In
   // button loads its own stylesheet (accounts.google.com/gsi/style) — a
   // real CSP violation caught by testing this in production, not just the
@@ -21,8 +24,8 @@ const CSP = [
   "style-src 'self' 'unsafe-inline' https://accounts.google.com",
   "img-src 'self' data: https:",
   "font-src 'self' data:",
-  "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
-  "frame-src https://accounts.google.com",
+  "connect-src 'self' https://accounts.google.com https://www.googleapis.com https://api.stripe.com https://r.stripe.com https://q.stripe.com https://m.stripe.network",
+  "frame-src https://accounts.google.com https://js.stripe.com https://hooks.stripe.com https://m.stripe.network",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

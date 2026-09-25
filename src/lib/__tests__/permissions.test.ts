@@ -7,6 +7,7 @@ import {
   canRevealPaymentMethod,
   canConfirmPayment,
   canManageContactPaymentMethods,
+  canInitiateManualCharge,
   canDeletePaymentMethod,
   canRevealBookingIp,
   canViewDashboard,
@@ -203,6 +204,16 @@ describe("admin permission uniformity — role alone bypasses the grant array", 
   it("canConfirmPayment: Admin is always true regardless of grants", () => {
     expect(canConfirmPayment(ADMIN_WITH_NO_GRANTS)).toBe(true);
     expect(canConfirmPayment(MANAGER_WITH_NO_GRANTS)).toBe(false);
+  });
+
+  it("canInitiateManualCharge: Admin ONLY — no other role and no payment grant can ever move money", () => {
+    for (const role of EVERY_ROLE) {
+      expect(canInitiateManualCharge({ role })).toBe(role === "ADMIN");
+      // Every payment grant in the book does not change that.
+      expect(canInitiateManualCharge({ role, paymentPermissions: ["payments.charge", "payments.confirm_manual_payment", "payments.manage", "payments.reveal"] } as never)).toBe(role === "ADMIN");
+    }
+    expect(canInitiateManualCharge(null)).toBe(false);
+    expect(canInitiateManualCharge(undefined)).toBe(false);
   });
 
   it("canManageContactPaymentMethods: Admin is always true regardless of grants", () => {

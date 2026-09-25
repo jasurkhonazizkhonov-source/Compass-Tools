@@ -273,6 +273,9 @@ model Contact {
   // so "this customer's payment methods" is always one query regardless of
   // how the card was collected.
   paymentMethods PaymentMethod[]
+  // The payment provider's customer object for this contact (see provider.ts).
+  // Reused across bookings so a contact's vaulted methods live under one customer.
+  providerCustomerId String? @unique
   matchedInquiries ContactInquiry[]
 
   @@index([primaryEmail])
@@ -1506,7 +1509,10 @@ model PaymentMethod {
   // the dedicated revealPaymentMethod() server action — every other query
   // touching PaymentMethod must omit this column. See this model's header
   // comment above for what is intentionally absent from here.
-  encryptedPan   String
+  // LEGACY (development vault only; production never held one). New payment
+  // methods are vaulted by the payment provider and have NO card number here —
+  // only the provider references below. Nullable for that reason.
+  encryptedPan   String?
   last4          String
   cardBrand      String?
   expiryMonth    Int
@@ -1523,6 +1529,21 @@ model PaymentMethod {
   // Explicit customer consent to have their card securely stored for this
   // booking's ticketing/supplier workflow.
   consentGivenAt DateTime?
+
+  // ── Provider vault reference (see src/server/payments/provider.ts) ──────
+  // The provider holds the card credentials; Compass Tools keeps only these
+  // opaque references plus the display metadata above (brand/last4/expiry/
+  // cardholder). The card security code (CVV/CVC) is entered into the
+  // provider's own hosted fields and never reaches, or is stored by, this app.
+  provider                String?
+  providerCustomerId      String?
+  providerPaymentMethodId String?
+  // The SetupIntent (or equivalent) that produced this vaulted method — unique,
+  // so one collected method can never back two booking records.
+  providerSetupIntentId   String?  @unique
+  cardFunding             String?
+  vaultStatus             PaymentVaultStatus @default(NOT_VAULTED)
+
   createdAt      DateTime            @default(now())
   updatedAt      DateTime            @updatedAt
 
@@ -1531,6 +1552,7 @@ model PaymentMethod {
 
   @@index([bookingId])
   @@index([contactId])
+  @@index([providerPaymentMethodId])
 }
 
 // CVV recollection follow-up (delayed-charge compliant path) — asking the
@@ -1570,6 +1592,18 @@ enum PaymentChargeStatus {
   SUCCEEDED
   FAILED
   CANCELED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+// Whether a PaymentMethod is usable for a later provider charge. NOT_VAULTED
+// = a legacy/record-only card with nothing the provider can charge; VAULTED =
+// the provider holds a reusable credential; DETACHED = it was removed at the
+// provider (by us or in the provider's dashboard) and can no longer be charged.
+enum PaymentVaultStatus {
+  NOT_VAULTED
+  VAULTED
+  DETACHED
 }
 
 // A record of a MANUAL payment confirmation — an authorized CRM user
@@ -1591,11 +1625,40 @@ model PaymentCharge {
   errorMessage    String?
   initiatedById   String?
   initiatedBy     Account?            @relation("PaymentChargeInitiator", fields: [initiatedById], references: [id])
+
+  // ── Provider charge (null provider = a legacy MANUAL RECORD) ───────────
+  provider                String?
+  providerPaymentIntentId String?     @unique
+  // Client-generated per "Manual charge" dialog and unique here, so a double
+  // click, a retried request or a replay can never create a second charge.
+  idempotencyKey          String?     @unique
+  // Short fixed vocabulary only (declined / authentication_required / ...) —
+  // never provider free text, never card data.
+  failureCategory         String?
+  failureCode             String?
+  refundedAmount          Decimal     @default(0) @db.Decimal(10, 2)
+  // Client keys of refunds already applied to refundedAmount, so a duplicate
+  // refund request (double click, replay) can never be counted twice.
+  refundIdempotencyKeys   String[]    @default([])
   createdAt       DateTime            @default(now())
   updatedAt       DateTime            @updatedAt
 
   @@index([paymentMethodId])
   @@index([status])
+}
+
+// One row per provider webhook event id already handled — the idempotency
+// ledger that makes a duplicated or replayed webhook a no-op. Holds no
+// payload (nothing sensitive), only the id, type and outcome.
+model PaymentWebhookEvent {
+  id          String    @id
+  provider    String
+  type        String
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  outcome     String?
+
+  @@index([receivedAt])
 }
 
 model BookingStatusHistory {

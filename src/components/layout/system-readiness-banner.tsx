@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
-import { isProductionEnvironment } from "@/lib/env";
+import { getPaymentProviderStatus } from "@/server/payments/provider";
 import { trustedProxyMode } from "@/lib/request-ip";
 
 // Admin-only heads-up for two conditions the customer booking flow depends on
@@ -15,11 +15,18 @@ export function SystemReadinessBanner({ role }: { role: string | undefined }) {
 
   const issues: Array<{ title: string; detail: string }> = [];
 
-  if (isProductionEnvironment()) {
+  // Shown whenever customers genuinely cannot complete a booking (in ANY
+  // environment there is no fallback card store): the payment provider is not
+  // selected/configured, or a credential is invalid. It disappears only when the
+  // provider configuration is valid — System Health additionally probes the
+  // provider's API, which this synchronous banner deliberately does not.
+  const payment = getPaymentProviderStatus();
+  if (payment.state !== "ready") {
+    const problems = [...payment.missing.map((m) => `${m} (missing)`), ...payment.invalid.map((m) => `${m} (invalid)`)];
     issues.push({
       title: "Customers cannot complete bookings right now",
       detail:
-        "No PCI-compliant payment provider is integrated, so this production environment refuses to take or store card details: every customer's \"Finish Booking\" is refused with a message that nothing was charged. This is deliberate — see docs/PAYMENT_ARCHITECTURE.md for what enabling bookings requires.",
+        `The payment provider isn't ready${problems.length ? `: ${problems.join(", ")}` : ""}. Card entry is turned off, so nothing is charged and nothing is stored. Set the provider's environment variables in Vercel and redeploy — see docs/PAYMENT_ARCHITECTURE.md.`,
     });
   }
   if (trustedProxyMode() === "none") {

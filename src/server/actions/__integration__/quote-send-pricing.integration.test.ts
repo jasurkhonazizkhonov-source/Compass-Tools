@@ -69,7 +69,7 @@ describe.skipIf(!enabled)("quote pricing guard and send idempotency — real Pos
       data: { firstName: "Jane", lastName: `Traveler${n}`, primaryEmail: emails[0], companyId: "default-company", emails: { create: emails.map((email, i) => ({ email, isPrimary: i === 0 })) } },
     });
     contactIds.push(contact.id);
-    const lead = await prisma.lead.create({ data: { contactId: contact.id, status: "NEW" } });
+    const lead = await prisma.lead.create({ data: { contactId: contact.id, status: "NEW", source: "OTHER" } });
     const quote = await prisma.quote.create({
       data: {
         quoteNumber: `Q-${TAG}-${n}`,

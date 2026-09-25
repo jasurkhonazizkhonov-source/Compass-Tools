@@ -1,17 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { Eye, EyeOff, Loader2, ShieldAlert } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { AlertTriangle, ShieldCheck } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { CardBrandLogo } from "@/components/ui/card-brand-logo";
-import { revealPaymentMethod, updatePaymentMethodWorkflowStatus } from "@/server/actions/payment-methods";
+import { updatePaymentMethodWorkflowStatus } from "@/server/actions/payment-methods";
 import { formatMoney, type SupportedCurrency } from "@/lib/currency";
-import type { CardBrand } from "@/lib/card-validation";
-import type { PaymentMethodStatus, PaymentWorkflowStatus } from "@/generated/prisma/client";
-
-const REVEAL_TIMEOUT_SECONDS = 60;
+import { cardBrandFromProvider } from "@/components/payments/brand";
+import type { PaymentMethodStatus, PaymentVaultStatus, PaymentWorkflowStatus } from "@/generated/prisma/client";
 
 const WORKFLOW_STATUS_LABELS: Record<PaymentWorkflowStatus, string> = {
   PENDING: "Pending",
@@ -21,12 +17,10 @@ const WORKFLOW_STATUS_LABELS: Record<PaymentWorkflowStatus, string> = {
   CANCELLED: "Cancelled",
 };
 
-type RevealedCard = {
-  cardholderName: string;
-  pan: string;
-  cardBrand: string | null;
-  expiryMonth: number;
-  expiryYear: number;
+const VAULT_LABELS: Record<PaymentVaultStatus, { label: string; detail: string }> = {
+  VAULTED: { label: "Vaulted", detail: "Saved securely with the payment provider — it can be charged from this page." },
+  NOT_VAULTED: { label: "Legacy record", detail: "Recorded before the payment provider was connected. There is nothing to charge from the CRM." },
+  DETACHED: { label: "Removed at provider", detail: "This card was removed at the payment provider and can no longer be charged." },
 };
 
 type PaymentMethodSummary = {
@@ -39,94 +33,45 @@ type PaymentMethodSummary = {
   amountAllocated: number;
   workflowStatus: PaymentWorkflowStatus;
   status: PaymentMethodStatus;
+  vaultStatus: PaymentVaultStatus;
 };
 
+function isExpired(month: number, year: number, now = new Date()): boolean {
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth() + 1;
+  return year < y || (year === y && month < m);
+}
+
 /**
- * A permission-gated privileged view on the card: Reveal is masked by
- * default, auto-hides after 60s and shows the retained PAN/cardholder/
- * expiration/brand (development vault only — the production vault is
- * fail-closed, see payment-vault.ts). There is no security code (CVV/CVC)
- * anywhere in this app: it is never collected, cached or displayed. The
- * revealed data lives only in this component's local state and is cleared
- * on unmount.
+ * The safe view of one saved payment method on a booking: brand, last four,
+ * expiry, cardholder, amount allocated, and whether the payment provider holds
+ * a chargeable credential for it. There is no way to see a full card number or
+ * a security code from here — Compass Tools has neither. Charging is done in the
+ * panel below this card (Admin only).
  */
 export function PaymentMethodCard({
   bookingId,
   label,
   paymentMethod,
-  canReveal,
   canManageStatus,
   currency,
 }: {
   bookingId: string;
   label: string;
   paymentMethod: PaymentMethodSummary;
-  canReveal: boolean;
   canManageStatus: boolean;
   /** The booking's actual transaction currency — never assume USD for a
    * customer payment amount (see lib/currency.ts's formatMoney). */
   currency: SupportedCurrency;
 }) {
-  const [revealed, setRevealed] = useState<RevealedCard | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(REVEAL_TIMEOUT_SECONDS);
-  const [isPending, setIsPending] = useState(false);
-  // Two independent timers, deliberately not one: `revealTickRef` only ever
-  // decrements the displayed countdown (a plain functional setState update,
-  // nothing else). `revealExpiryRef` is a single one-shot setTimeout,
-  // scheduled once when Reveal is clicked, whose callback is the ONLY place
-  // that ever calls hide(). Nothing calls hide() from inside
-  // setSecondsLeft's updater (calling setState-triggering code from an
-  // updater is what produced a "Cannot update a component (Router) while
-  // rendering a different component" error in this app before).
-  const revealTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const revealExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  function clearRevealTimers() {
-    if (revealTickRef.current) {
-      clearInterval(revealTickRef.current);
-      revealTickRef.current = null;
-    }
-    if (revealExpiryRef.current) {
-      clearTimeout(revealExpiryRef.current);
-      revealExpiryRef.current = null;
-    }
-  }
-
-  function hide() {
-    clearRevealTimers();
-    setRevealed(null);
-  }
-
-  useEffect(
-    () => () => {
-      clearRevealTimers();
-    },
-    [paymentMethod.id]
-  );
-
-  async function reveal() {
-    setIsPending(true);
-    try {
-      const result = await revealPaymentMethod(paymentMethod.id);
-      setRevealed(result);
-      setSecondsLeft(REVEAL_TIMEOUT_SECONDS);
-      clearRevealTimers();
-      revealTickRef.current = setInterval(() => {
-        setSecondsLeft((s) => Math.max(0, s - 1));
-      }, 1000);
-      revealExpiryRef.current = setTimeout(hide, REVEAL_TIMEOUT_SECONDS * 1000);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to reveal payment method");
-    } finally {
-      setIsPending(false);
-    }
-  }
-
   function setWorkflowStatus(next: PaymentWorkflowStatus) {
     updatePaymentMethodWorkflowStatus({ paymentMethodId: paymentMethod.id, bookingId, workflowStatus: next })
       .then(() => toast.success("Status updated"))
       .catch((err) => toast.error(err instanceof Error ? err.message : "Failed to update status"));
   }
+
+  const vault = VAULT_LABELS[paymentMethod.vaultStatus];
+  const expired = isExpired(paymentMethod.expiryMonth, paymentMethod.expiryYear);
 
   return (
     <div className="space-y-3 rounded-md border p-3">
@@ -146,19 +91,24 @@ export function PaymentMethodCard({
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <div>
           <p className="text-xs text-muted-foreground">Card</p>
           <p className="text-sm font-medium flex items-center gap-1.5">
-            <CardBrandLogo brand={(paymentMethod.cardBrand as CardBrand) || "Unknown"} />
-            •••• •••• •••• {paymentMethod.last4}
+            <CardBrandLogo brand={cardBrandFromProvider(paymentMethod.cardBrand)} />
+            •••• {paymentMethod.last4}
           </p>
         </div>
         <div>
-          <p className="text-xs text-muted-foreground">Expiration</p>
-          <p className="text-sm font-medium">
+          <p className="text-xs text-muted-foreground">Expires</p>
+          <p className={`text-sm font-medium ${expired ? "text-destructive" : ""}`}>
             {String(paymentMethod.expiryMonth).padStart(2, "0")}/{paymentMethod.expiryYear}
+            {expired ? " (expired)" : ""}
           </p>
+        </div>
+        <div>
+          <p className="text-xs text-muted-foreground">Cardholder</p>
+          <p className="text-sm font-medium break-words">{paymentMethod.cardholderName}</p>
         </div>
         <div>
           <p className="text-xs text-muted-foreground">Allocated</p>
@@ -166,40 +116,12 @@ export function PaymentMethodCard({
         </div>
       </div>
 
-      {canReveal && (
-        <div>
-          {revealed ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-3 space-y-3">
-              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-                <ShieldAlert className="h-3.5 w-3.5" />
-                Privileged view — auto-hides in {secondsLeft}s
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Cardholder Name" value={revealed.cardholderName} />
-                <Field label="Card Number" value={revealed.pan.replace(/(.{4})/g, "$1 ").trim()} />
-                <Field label="Expiration" value={`${String(revealed.expiryMonth).padStart(2, "0")}/${revealed.expiryYear}`} />
-              </div>
-              <Button size="sm" variant="outline" onClick={hide} className="gap-1.5">
-                <EyeOff className="h-3.5 w-3.5" /> Hide
-              </Button>
-            </div>
-          ) : (
-            <Button size="sm" variant="outline" onClick={reveal} disabled={isPending} className="gap-1.5">
-              {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
-              Reveal
-            </Button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Field({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <p className="text-xs text-muted-foreground">{label}</p>
-      <p className="text-sm font-medium font-mono break-words">{value}</p>
+      <p className="flex items-start gap-1.5 text-xs text-muted-foreground">
+        {paymentMethod.vaultStatus === "VAULTED" ? <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success" /> : <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />}
+        <span>
+          <span className="font-medium text-foreground">{vault.label}.</span> {vault.detail} The card number and security code are held only by the payment provider.
+        </span>
+      </p>
     </div>
   );
 }

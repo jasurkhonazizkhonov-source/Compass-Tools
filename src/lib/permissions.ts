@@ -321,6 +321,16 @@ export function canConfirmPayment(account: PaymentAccount): boolean {
   return hasPaymentPermission(account, "payments.charge") || hasPaymentPermission(account, "payments.confirm_manual_payment");
 }
 
+/**
+ * Charging (and refunding) a customer's vaulted payment method from the CRM.
+ * Deliberately narrower than canConfirmPayment: this moves real money, so it is
+ * Admin only — no per-account grant, no other role, however privileged. Every
+ * server action re-checks it; hiding the button is never the control.
+ */
+export function canInitiateManualCharge(account: { role: AccountRole } | null | undefined): boolean {
+  return account?.role === "ADMIN";
+}
+
 /** Add/Edit/Remove a Contact's stored payment methods (independent of any
  * specific booking) — same three-role ceiling as every other privileged
  * payment action, gated on the existing payments.collect grant (already

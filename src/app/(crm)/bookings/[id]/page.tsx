@@ -13,7 +13,7 @@ import { StatusBadge } from "@/components/crm/status-badge";
 import { BOOKING_STATUS_META } from "@/lib/status-meta";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canRevealPaymentMethod, canConfirmPayment, canRevealBookingIp, canDeleteBooking, canViewBookings, canEnterTicketingInfo } from "@/lib/permissions";
+import { canInitiateManualCharge, canConfirmPayment, canRevealBookingIp, canDeleteBooking, canViewBookings, canEnterTicketingInfo } from "@/lib/permissions";
 import { deleteBooking } from "@/server/actions/bookings";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { formatMoney, isSupportedCurrency } from "@/lib/currency";
@@ -190,8 +190,8 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                         amountAllocated: Number(pm.amountAllocated),
                         workflowStatus: pm.workflowStatus,
                         status: pm.status,
+                        vaultStatus: pm.vaultStatus,
                       }}
-                      canReveal={canRevealPaymentMethod(currentAccount)}
                       canManageStatus={canConfirmPayment(currentAccount)}
                       currency={currency}
                     />
@@ -199,9 +199,18 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                       <ChargeCustomerPanel
                         bookingId={booking.id}
                         paymentMethodId={pm.id}
-                        defaultAmount={Number(pm.amountAllocated)}
+                        cardLabel={`${pm.cardBrand ?? "Card"} •••• ${pm.last4}`}
+                        defaultAmount={Math.max(
+                          0,
+                          Number(pm.amountAllocated) -
+                            pm.charges
+                              .filter((c) => c.provider !== null && (c.status === "SUCCEEDED" || c.status === "PARTIALLY_REFUNDED" || c.status === "PENDING"))
+                              .reduce((sum, c) => sum + Number(c.amount) - Number(c.refundedAmount), 0)
+                        )}
                         currency={currency}
                         canConfirm={canConfirmPayment(currentAccount)}
+                        canManualCharge={canInitiateManualCharge(currentAccount)}
+                        chargeBlockedReason={chargeBlockedReason(pm)}
                         charges={pm.charges.map((c) => ({
                           id: c.id,
                           amount: Number(c.amount),
@@ -211,6 +220,9 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                           errorMessage: c.errorMessage,
                           createdAt: c.createdAt,
                           initiatedBy: c.initiatedBy ? { fullName: c.initiatedBy.fullName } : null,
+                          provider: c.provider,
+                          refundedAmount: Number(c.refundedAmount),
+                          failureCategory: c.failureCategory,
                         }))}
                       />
                     </div>
@@ -311,4 +323,16 @@ function Field({ label, value, className }: { label: string; value: string; clas
       <p className="text-sm font-medium break-words">{value}</p>
     </div>
   );
+}
+
+/** Why a saved card can't be charged from the CRM right now, or null when it can. */
+function chargeBlockedReason(pm: { status: string; vaultStatus: string; expiryMonth: number; expiryYear: number }): string | null {
+  if (pm.status !== "ACTIVE") return "This payment method was removed.";
+  if (pm.vaultStatus === "NOT_VAULTED") return "This is a legacy record without a payment-provider vault, so it can't be charged from the CRM.";
+  if (pm.vaultStatus === "DETACHED") return "This card was removed at the payment provider and can no longer be charged.";
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth() + 1;
+  if (pm.expiryYear < y || (pm.expiryYear === y && pm.expiryMonth < m)) return "This card has expired. Ask the customer for a new payment method.";
+  return null;
 }

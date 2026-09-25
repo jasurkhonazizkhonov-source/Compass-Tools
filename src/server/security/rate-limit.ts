@@ -138,6 +138,8 @@ export const RATE_LIMITS = {
   CONTACT_INQUIRY: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
   /** The CRM website's own contact form — its own counter, so the two
    * inquiry systems never share (or exhaust) each other's allowance. */
+  /** Starting a hosted card capture for a booking (creates a provider SetupIntent). A customer needs one per card per attempt; generous for retries and split payments, tight enough to stop a scripted flood of provider objects. */
+  PAYMENT_SETUP: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
   CRM_INQUIRY: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
   /** Pass 26 §35 — the public newsletter signup form. Idempotent
    * (upsert), so a slightly higher ceiling than the others doesn't risk

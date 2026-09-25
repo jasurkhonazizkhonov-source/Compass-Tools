@@ -14,7 +14,7 @@ export default defineConfig({
     // the exact same tests consistently finish in well under 1s) — this is
     // resource contention between worker threads, not a real hang. Raised
     // rather than chased, since there's no actual slow operation to fix.
-    testTimeout: 20_000,
+    testTimeout: 45_000,
     // Same contention story for setup hooks that import a large module graph
     // (the real-database integration suites).
     hookTimeout: 60_000,

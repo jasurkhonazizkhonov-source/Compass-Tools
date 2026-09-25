@@ -13,6 +13,7 @@ import { getCompanyForContactId } from "@/server/queries/company";
 import { resolveAirlineCodes } from "@/server/queries/reference-data";
 import { isSupportedCurrency } from "@/lib/currency";
 import { isQuoteBookable } from "@/lib/exchange-proposal";
+import { getPaymentClientConfig } from "@/server/payments/provider";
 
 export const dynamic = "force-dynamic";
 // Server Actions inherit their time limit from the page they are used on —
@@ -92,6 +93,8 @@ export default async function BookingPage({ params }: { params: Promise<{ token:
   const resolvedFrequentFlyerAirlines = previousFrequentFlyerAirlines.length ? await resolveAirlineCodes(previousFrequentFlyerAirlines) : {};
 
 
+  const paymentConfig = getPaymentClientConfig();
+
   return (
     <div className="min-h-screen bg-muted/30">
       <CustomerHeader subtitle="Complete your booking" maxWidth="max-w-6xl" logoUrl={company.logoWebUrl} companyName={company.name} />
@@ -128,6 +131,8 @@ export default async function BookingPage({ params }: { params: Promise<{ token:
           }))}
           previousBillingAddresses={previousBillingAddresses}
           previousPaymentMethods={previousPaymentMethods}
+          // Only the publishable key ever reaches the browser.
+          paymentConfig={paymentConfig.ready ? { ready: true, publishableKey: paymentConfig.publishableKey } : { ready: false }}
         />
       </main>
     </div>
