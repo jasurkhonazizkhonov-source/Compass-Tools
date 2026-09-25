@@ -14,18 +14,12 @@ import { redirectToValidPageIfNeeded } from "@/lib/pagination";
 import { INQUIRY_STATUS_META, INQUIRY_STATUS_ORDER, INQUIRY_SUBJECT_LABELS } from "@/lib/status-meta";
 import type { InquiryStatus } from "@/generated/prisma/client";
 import { cn } from "@/lib/utils";
+import { messagePreview } from "@/lib/message-preview";
 import { InquiryDeleteButton } from "@/components/get-in-touch/inquiry-delete-button";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
-
-// Inquiry messages can be up to 5,000 characters; the list shows a short
-// preview and the full text lives on the detail page.
-function messagePreview(message: string, max = 90): string {
-  const oneLine = message.replace(/s+/g, " ").trim();
-  return oneLine.length > max ? `${oneLine.slice(0, max).trimEnd()}…` : oneLine;
-}
 
 /**
  * Part 9 — admin-only public-website inquiry inbox ("CRM Inquiries" in the

@@ -353,6 +353,35 @@ before going live):
 openssl rand -base64 32
 ```
 
+## 5c. Enabling customer bookings in production (a deliberate decision)
+
+The customer booking form collects card details, and this CRM stores them
+with an **application-level encryption key — a development-grade vault that
+is explicitly NOT PCI DSS compliant** (see the warnings in
+`src/server/security/card-encryption.ts` and `payment-vault.ts`). To make sure
+that is never used by accident, the vault **refuses to run when the
+environment is production** (`APP_ENV=production`, or `APP_ENV` unset on a
+production build). In that state every customer's "Finish Booking" is rejected
+with a message that nothing was charged and no booking was recorded — the
+Admin banner in the CRM and `GET /api/health` (`readiness.bookingCardStorage`)
+both report it as `unavailable`.
+
+Choose one, on purpose:
+
+1. **Accept the development-grade vault for this deployment** (the choice
+   documented for this project): set `APP_ENV` to any value other than
+   `production` (for example `staging`) in Vercel → Settings → Environment
+   Variables, then redeploy. Do this only if you have accepted the compliance
+   position of storing card numbers this way; it does **not** make card
+   storage any safer, it only lifts the guard.
+2. **Wire a real, PCI-compliant vault or a tokenizing processor** in
+   `getPaymentVault()` before taking real cards (the recommended long-term
+   answer). Leave `APP_ENV` unset until then.
+
+Separately, set `TRUSTED_PROXY=vercel` (section 5) so the signer's IP address
+is captured and the public forms are rate limited; `readiness.signerIpCapture`
+reports `disabled` until you do.
+
 ## 5b. Database connection settings, region and health check
 
 The CRM issues many small queries per page, so **latency between the

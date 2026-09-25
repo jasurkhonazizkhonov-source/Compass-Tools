@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import { SidebarShell } from "@/components/layout/sidebar";
 import { Topbar } from "@/components/layout/topbar";
 import { PresenceHeartbeat } from "@/components/layout/presence-heartbeat";
+import { SystemReadinessBanner } from "@/components/layout/system-readiness-banner";
 import { GmailConnectToast } from "@/components/layout/gmail-connect-toast";
 import { toSidebarAccount } from "@/lib/account-format";
 import { getCurrentAccount } from "@/lib/dev-session";
@@ -71,7 +72,10 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
       <SidebarShell current={navAccount} companyName={company.name}>
         <div className="flex min-h-screen flex-col">
           <Topbar current={navAccount} queueStatus={queueStatus} gmailStatus={gmailStatus} companyName={company.name} />
-          <main className="flex-1 p-4 md:p-6">{children}</main>
+          <main className="flex-1 p-4 md:p-6">
+            <SystemReadinessBanner role={current?.role} />
+            {children}
+          </main>
         </div>
       </SidebarShell>
     </div>
