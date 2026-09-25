@@ -6,7 +6,6 @@ import {
   luhnCheck,
   isValidCardNumber,
   isValidExpiry,
-  isValidCvvFormat,
   lastFour,
   isPaymentAllocationValid,
 } from "../card-validation";
@@ -89,17 +88,6 @@ describe("isValidExpiry", () => {
   });
 });
 
-describe("isValidCvvFormat", () => {
-  it("requires 3 digits for non-Amex brands", () => {
-    expect(isValidCvvFormat("123", "Visa")).toBe(true);
-    expect(isValidCvvFormat("12", "Visa")).toBe(false);
-    expect(isValidCvvFormat("1234", "Visa")).toBe(false);
-  });
-  it("requires 4 digits for American Express", () => {
-    expect(isValidCvvFormat("1234", "American Express")).toBe(true);
-    expect(isValidCvvFormat("123", "American Express")).toBe(false);
-  });
-});
 
 describe("lastFour", () => {
   it("returns only the last four digits, ignoring formatting", () => {

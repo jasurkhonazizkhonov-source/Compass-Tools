@@ -14,7 +14,6 @@ export type CardFormState = {
   cardNumber: string; // formatted for display, with spaces — digits-only before submit
   expiryMonth: string;
   expiryYear: string;
-  cvv: string;
   amount: string;
 };
 
@@ -23,7 +22,6 @@ export const EMPTY_CARD_FORM: CardFormState = {
   cardNumber: "",
   expiryMonth: "",
   expiryYear: "",
-  cvv: "",
   amount: "",
 };
 
@@ -31,8 +29,9 @@ export const EMPTY_CARD_FORM: CardFormState = {
  * Native CRM-style card collection — plain input boxes plus a live
  * decorative physical-card preview above them, no external JavaScript
  * loaded, no hosted iframe, no redirect. Card data goes directly to this
- * app's own submitBooking() action (see its comment for where the CVV is
- * validated and then discarded, never persisted).
+ * app's own submitBooking() action. There is deliberately NO security-code
+ * (CVV/CVC) field anywhere in this form — Compass Tools never collects,
+ * caches or stores one (see docs/PAYMENT_ARCHITECTURE.md).
  */
 export function CardPaymentSection({
   value,
@@ -131,7 +130,7 @@ export function CardPaymentSection({
           )}
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4">
         <div className="space-y-1.5">
           <Label>Expiration *</Label>
           <div className="flex items-center gap-1.5">
@@ -155,19 +154,6 @@ export function CardPaymentSection({
               className="w-20 shrink-0 text-center"
             />
           </div>
-        </div>
-        <div className="space-y-1.5">
-          <Label>CVV *</Label>
-          <Input
-            value={value.cvv}
-            onChange={(e) => onChange({ ...value, cvv: digitsOnly(e.target.value).slice(0, 4) })}
-            placeholder="***"
-            inputMode="numeric"
-            autoComplete="cc-csc"
-            type="password"
-            maxLength={4}
-            className="w-24"
-          />
         </div>
       </div>
       {fixedAmount !== undefined ? (

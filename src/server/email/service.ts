@@ -1,4 +1,5 @@
 import { sendViaGmail } from "@/server/email/gmail-send";
+import { recordHealthEvent } from "@/server/system/health-events";
 
 // Email service abstraction — every outbound email in the CRM goes through
 // sendEmail(), which sends via the Gmail API as the CRM Account identified
@@ -32,5 +33,20 @@ export type SendEmailResult =
   | { ok: false; error: string; code?: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "SEND_FAILED" };
 
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  return sendViaGmail(input);
+  const result = await sendViaGmail(input);
+  if (!result.ok) {
+    // One de-duplicated System Health incident per failure kind — never the
+    // recipient, subject, body or provider error text (those can carry
+    // personal data); only the short category code.
+    const code = result.code ?? "SEND_FAILED";
+    await recordHealthEvent({
+      type: "EMAIL_SEND_FAILED",
+      category: "email",
+      severity: "WARNING",
+      discriminator: code,
+      message: `An outbound email could not be sent (${code}).`,
+      metadata: { code },
+    });
+  }
+  return result;
 }

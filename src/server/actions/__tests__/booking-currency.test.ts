@@ -56,9 +56,6 @@ vi.mock("@/server/security/payment-vault", () => ({
   })),
 }));
 
-vi.mock("@/server/security/cvv-cache", () => ({
-  cacheCvv: vi.fn(),
-}));
 
 vi.mock("@/server/security/ip-capture", () => ({
   recordIpCapture: vi.fn(async () => {}),
@@ -134,7 +131,7 @@ function baseInput(totalAmount: number) {
     billingState: "IL",
     billingZip: "62704",
     billingCountry: "US",
-    paymentMethods: [{ cardholderName: "Jane Traveler", cardNumber: "4111111111111111", expiryMonth: 12, expiryYear: new Date().getUTCFullYear() + 3, cvv: "123", amount: totalAmount }],
+    paymentMethods: [{ cardholderName: "Jane Traveler", cardNumber: "4111111111111111", expiryMonth: 12, expiryYear: new Date().getUTCFullYear() + 3, amount: totalAmount }],
     paymentConsent: true as const,
     gratuityAmount: 0,
     termsAccepted: true as const,

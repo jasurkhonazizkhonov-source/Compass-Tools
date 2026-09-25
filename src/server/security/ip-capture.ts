@@ -9,6 +9,8 @@
 // specifically because it's an internal write helper, not itself an
 // action callable from the client.
 import { prisma } from "@/lib/prisma";
+import { safeErrorTag } from "@/lib/safe-error-log";
+import { recordHealthEvent } from "@/server/system/health-events";
 import { isValidIpAddress, normalizeIp } from "@/lib/request-ip";
 import { encryptIp, hashIpForSearch, hashSubnetForSearch } from "./ip-encryption";
 import { assessRisk, HIGH_RISK_THRESHOLD, VELOCITY_WINDOW_MS } from "./ip-risk";
@@ -124,9 +126,18 @@ export async function recordIpCapture(params: {
     // operation, and a cancellation confirmation has no core dependency on
     // this row at all. A vault write failure (e.g. IP_ENCRYPTION_KEY
     // missing/misconfigured in a given environment) must never block or
-    // roll back the real booking/cancellation it's attached to. Logs only
-    // the error message (never the plaintext IP — see the module comment
-    // on "never log raw IPs in application logs").
-    console.error("IP vault capture failed (non-fatal, booking/cancellation still succeeded):", err instanceof Error ? err.message : err);
+    // roll back the real booking/cancellation it's attached to. Logs only a
+    // safe category tag (never the message, never the plaintext IP — see the
+    // module comment on "never log raw IPs in application logs") and raises a
+    // de-duplicated System Health incident so an Admin can see the vault is
+    // not being written (e.g. IP_ENCRYPTION_KEY missing or invalid).
+    console.error(`IP vault capture failed (non-fatal, booking/cancellation still succeeded) (${safeErrorTag(err)})`);
+    await recordHealthEvent({
+      type: "IP_VAULT_CAPTURE_FAILED",
+      category: "security",
+      severity: "WARNING",
+      message: "A signing event could not be written to the encrypted IP vault. The signature record itself (with the IP) is intact.",
+      metadata: { failure: safeErrorTag(err), formType: params.formType },
+    });
   }
 }

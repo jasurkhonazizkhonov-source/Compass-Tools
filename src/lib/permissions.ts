@@ -195,6 +195,12 @@ export function canViewGetInTouch(role: AccountRole | undefined) {
   return role === "ADMIN";
 }
 
+// Admin-only System Health center (checks, incidents, readiness). Enforced at
+// the sidebar, proxy.ts, the page and any action — never by hiding a link alone.
+export function canViewSystemHealth(role: AccountRole | undefined) {
+  return role === "ADMIN";
+}
+
 // Part 10/11 — Admin and Marketing Agent both see Subscriptions (the one
 // CRM surface Marketing Agent is allowed at all, alongside Accounts).
 export function canViewSubscriptions(role: AccountRole | undefined) {
@@ -277,7 +283,7 @@ export const PAYMENT_PERMISSION_LABELS: Record<PaymentPermission, string> = {
   "payments.reveal": "Reveal full card number",
   "payments.manage": "Manage payment permissions",
   "payments.charge": "Record manual payment confirmation",
-  "payments.manual_supplier_payment": "Start Supplier Payment (CVV authorization)",
+  "payments.manual_supplier_payment": "Legacy grant — no longer used for any workflow (still permits Reveal)",
   "payments.confirm_manual_payment": "Confirm manual supplier payment",
 };
 
@@ -298,7 +304,7 @@ export function canRevealPaymentMethod(account: PaymentAccount): boolean {
   if (!account) return false;
   // Every Admin has identical effective permissions — role alone is
   // sufficient, never gated by that specific account's grant array. See
-  // the same bypass on canConfirmPayment/canAuthorizeSupplierPayment/
+  // the same bypass on canConfirmPayment/
   // canManageContactPaymentMethods/canRevealBookingIp below.
   if (account.role === "ADMIN") return true;
   if (!REVEAL_ELIGIBLE_ROLES.includes(account.role)) return false;
@@ -313,24 +319,6 @@ export function canConfirmPayment(account: PaymentAccount): boolean {
   if (account.role === "ADMIN") return true;
   if (!canChargePayments(account.role)) return false;
   return hasPaymentPermission(account, "payments.charge") || hasPaymentPermission(account, "payments.confirm_manual_payment");
-}
-
-/**
- * Gates the "Start Supplier Payment" short-lived authorization workflow (see
- * server/security/cvv-authorization.ts) — a deliberately narrower check than
- * canRevealPaymentMethod. That workflow surfaces more sensitive, transient
- * verification data during an active authorization, so it requires the
- * specific payments.manual_supplier_payment grant; holding only
- * payments.reveal (view/reveal card number, nothing transient involved) is
- * NOT sufficient here, even though the reverse is true for
- * canRevealPaymentMethod. Same three-role ceiling as every other
- * payment-reveal-adjacent action.
- */
-export function canAuthorizeSupplierPayment(account: PaymentAccount): boolean {
-  if (!account) return false;
-  if (account.role === "ADMIN") return true;
-  if (!REVEAL_ELIGIBLE_ROLES.includes(account.role)) return false;
-  return hasPaymentPermission(account, "payments.manual_supplier_payment");
 }
 
 /** Add/Edit/Remove a Contact's stored payment methods (independent of any

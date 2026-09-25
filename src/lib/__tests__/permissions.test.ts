@@ -6,7 +6,6 @@ import {
   canDeleteBooking,
   canRevealPaymentMethod,
   canConfirmPayment,
-  canAuthorizeSupplierPayment,
   canManageContactPaymentMethods,
   canDeletePaymentMethod,
   canRevealBookingIp,
@@ -17,6 +16,7 @@ import {
   canViewTasks,
   canViewBookings,
   canViewGetInTouch,
+  canViewSystemHealth,
   canViewSubscriptions,
   canViewCommissions,
   canViewSalesboard,
@@ -80,6 +80,11 @@ describe("page-visibility matrix — every role x every gated route", () => {
     for (const role of EVERY_ROLE) {
       expect(canViewQuotesPage(role)).toBe(role !== "MARKETING_AGENT");
     }
+  });
+
+  it("canViewSystemHealth: Admin only — every other role, and a missing role, is refused", () => {
+    for (const role of EVERY_ROLE) expect(canViewSystemHealth(role)).toBe(role === "ADMIN");
+    expect(canViewSystemHealth(undefined)).toBe(false);
   });
 
   it("canViewGetInTouch: Admin only", () => {
@@ -198,11 +203,6 @@ describe("admin permission uniformity — role alone bypasses the grant array", 
   it("canConfirmPayment: Admin is always true regardless of grants", () => {
     expect(canConfirmPayment(ADMIN_WITH_NO_GRANTS)).toBe(true);
     expect(canConfirmPayment(MANAGER_WITH_NO_GRANTS)).toBe(false);
-  });
-
-  it("canAuthorizeSupplierPayment: Admin is always true regardless of grants", () => {
-    expect(canAuthorizeSupplierPayment(ADMIN_WITH_NO_GRANTS)).toBe(true);
-    expect(canAuthorizeSupplierPayment(MANAGER_WITH_NO_GRANTS)).toBe(false);
   });
 
   it("canManageContactPaymentMethods: Admin is always true regardless of grants", () => {

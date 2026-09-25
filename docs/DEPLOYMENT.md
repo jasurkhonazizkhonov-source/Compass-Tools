@@ -35,9 +35,10 @@ Project → Settings → Environment Variables) for a real deployment:
 | `APP_BASE_URL` | Recommended | This deployment's public URL. On Vercel this can usually be left unset and falls back to `VERCEL_PROJECT_PRODUCTION_URL`/`VERCEL_URL` automatically. |
 | `CARD_ENCRYPTION_KEY` | Yes | Generate a fresh, unique value per deployment: `openssl rand -base64 32`. See `src/server/security/card-encryption.ts`'s file comment before handling real cardholder data. |
 | `IP_ENCRYPTION_KEY` / `IP_HASH_KEY` | Yes | Two SEPARATE fresh values per deployment: `openssl rand -base64 32` (run it twice). See `src/server/security/ip-encryption.ts`'s file comment — one key reversibly encrypts a captured IP, the other produces a one-way search index; never reuse either across deployments or with each other. |
-| `TRUSTED_PROXY` | Yes, in production | See §5 below. |
+| `TRUSTED_PROXY` | Automatic on Vercel; explicit elsewhere | On Vercel it is detected automatically (`VERCEL=1`); set it explicitly for any other proxy, or to `none` to opt out. See §5 below. |
 | `CRON_SECRET` | Recommended in production | See §5a below. |
-| `APP_ENV` | Optional | Escape hatch for a deployment that runs a production-mode build (`NODE_ENV=production`, set automatically by `next build`/`next start`) but should still be treated as non-production by security-sensitive guards (card-vault selection, privileged step-up auth) — e.g. a staging environment. Falls back to `NODE_ENV` when unset, so a real production deploy is caught automatically either way. See `src/lib/env.ts`. |
+| `APP_ENV` | Optional | Only for a **self-hosted** staging box that runs a production-mode build (`NODE_ENV=production`) but should be treated as non-production by security guards. It has **no effect on a Vercel production deployment** (`VERCEL_ENV=production` is always production) and must never be used to switch off the card-vault guard. See `src/lib/env.ts` and `docs/PAYMENT_ARCHITECTURE.md`. |
+| `PAYMENT_PROVIDER` | Not yet | Names the PCI-compliant payment provider once an adapter has been implemented (`src/server/payments/provider.ts`). No adapter ships today, so setting it does **not** make payments ready. See `docs/PAYMENT_ARCHITECTURE.md`. |
 | `BOOKING_IP_RETENTION_DAYS` | Deprecated — do not set | Pass 33: booking submission IP data is retained indefinitely by design; this variable is no longer read anywhere. Setting it does nothing. See `docs/ip-vault-compliance.md`. |
 
 ## 2a. Configure the Google OAuth client for THIS deployment's domain
@@ -277,12 +278,23 @@ real IP address (`src/lib/request-ip.ts`) — get this wrong and either
 booking IPs won't be captured at all, or (much worse) a malicious client
 could spoof their recorded IP by sending a fake header.
 
-- **Vercel** (this app's default target — see `vercel.json`): set
-  `TRUSTED_PROXY=vercel`. Vercel's edge network is the sole hop between the
-  customer and this app's serverless functions, so its `X-Forwarded-For` is
-  authoritative there.
+- **Vercel** (this app's default target — see `vercel.json`): **nothing to
+  set.** When `TRUSTED_PROXY` is unset and the runtime is Vercel
+  (`VERCEL=1`, which only the platform sets), the `vercel` mode is selected
+  automatically. Vercel's edge overwrites `X-Forwarded-For` (and sets
+  `X-Real-IP` / `X-Vercel-Forwarded-For`) itself and never forwards a
+  client-supplied value, so those are authoritative. The app reads
+  `X-Vercel-Forwarded-For`, then `X-Real-IP`, then `X-Forwarded-For`, and
+  **never** the RFC 7239 `Forwarded` header or `CF-Connecting-IP` in this mode
+  — Vercel does not sanitize those, so a client could spoof them. An explicit
+  `TRUSTED_PROXY` always wins (including `none`, to opt out). The address is
+  stored complete (IPv4 or full IPv6), validated, and a malformed, private or
+  reserved value records nothing rather than junk. Because rate limiting keys
+  on this same address, enabling it also turns on per-IP rate limits for the
+  public booking/inquiry forms.
 - **Cloudflare in front of the origin**: set `TRUSTED_PROXY=cloudflare`
-  (trusts `CF-Connecting-IP`).
+  (reads only `CF-Connecting-IP`; `X-Forwarded-For` is ignored because its
+  left-most value is client-controlled behind Cloudflare).
 - **A custom nginx reverse proxy**: set `TRUSTED_PROXY=nginx`.
 - **AWS Application Load Balancer (ALB) in front of the origin** (ECS/EC2/
   Fargate deployments): set `TRUSTED_PROXY=generic`. ALB appends the real
@@ -369,34 +381,31 @@ The source is fixed by *which route was called*, never by the request body. The
 Business Flights app cannot create Admin notifications, so the CRM adds them
 itself (throttled, idempotent) the next time an Admin's bell polls.
 
-## 5c. Enabling customer bookings in production (a deliberate decision)
+## 5c. Customer bookings in production (a payment-provider integration, not a switch)
 
-The customer booking form collects card details, and this CRM stores them
-with an **application-level encryption key — a development-grade vault that
-is explicitly NOT PCI DSS compliant** (see the warnings in
-`src/server/security/card-encryption.ts` and `payment-vault.ts`). To make sure
-that is never used by accident, the vault **refuses to run when the
-environment is production** (`APP_ENV=production`, or `APP_ENV` unset on a
-production build). In that state every customer's "Finish Booking" is rejected
-with a message that nothing was charged and no booking was recorded — the
-Admin banner in the CRM and `GET /api/health` (`readiness.bookingCardStorage`)
-both report it as `unavailable`.
+Compass Tools is **not a payment-card database** (see
+`docs/PAYMENT_ARCHITECTURE.md`). The customer booking form's card capture
+depends on the `PaymentVault`, whose only implementation is a
+**development-grade** wrapper that is explicitly not PCI compliant. So that it
+can never be used by accident, the vault **refuses to run in production**:
+every customer's "Finish Booking" is rejected with a message that nothing was
+charged and no booking was recorded. The Admin banner, System Health
+("Payment provider & booking readiness") and `GET /api/health`
+(`readiness.bookingCardStorage`, `readiness.paymentProvider`) all report it.
 
-Choose one, on purpose:
+**Do not lift this guard with `APP_ENV`.** `APP_ENV=staging` (or any value)
+has no effect on a Vercel production deployment and, on any host, it would only
+enable the non-compliant development vault. The card security code (CVV/CVC) is
+**never** collected or stored by this application regardless.
 
-1. **Accept the development-grade vault for this deployment** (the choice
-   documented for this project): set `APP_ENV` to any value other than
-   `production` (for example `staging`) in Vercel → Settings → Environment
-   Variables, then redeploy. Do this only if you have accepted the compliance
-   position of storing card numbers this way; it does **not** make card
-   storage any safer, it only lifts the guard.
-2. **Wire a real, PCI-compliant vault or a tokenizing processor** in
-   `getPaymentVault()` before taking real cards (the recommended long-term
-   answer). Leave `APP_ENV` unset until then.
+The only way to take real cards is to integrate a PCI-compliant provider behind
+`src/server/payments/provider.ts` (hosted fields → tokens; the CRM keeps only
+tokens and display details) — steps and provider-selection criteria are in
+`docs/PAYMENT_ARCHITECTURE.md`. Until then, production bookings stay off; that
+is an intended, visible state, not a bug.
 
-Separately, set `TRUSTED_PROXY=vercel` (section 5) so the signer's IP address
-is captured and the public forms are rate limited; `readiness.signerIpCapture`
-reports `disabled` until you do.
+Signer IP capture is separate and automatic on Vercel (section 5); System
+Health reports it under "Signer IP capture".
 
 ## 5b. Database connection settings, region and health check
 
@@ -428,6 +437,21 @@ e.g. `{"status":"ok","database":{"ok":true,"secondQueryMs":68},"pool":{"max":2,.
 `secondQueryMs` is the steady-state cost of one database round trip: if it
 is in the hundreds, the database is far from the functions (fix the region).
 It returns HTTP 503 with a safe error category when the database is unreachable.
+
+**System Health (Admin only).** `/system-health` (sidebar → System Health) runs
+live checks — database reachability/latency, migration state, connection
+headroom, Google sign-in configuration, Gmail, payment provider readiness,
+signer IP capture, encryption keys, half-finished bookings, the lead queue — and
+lists recorded incidents (repeated failures collapse into one incident with a
+count; resolved ones are kept 30 days). It reports configuration only as
+Configured / Missing / Invalid, never a value. A new **critical** incident
+notifies every Admin ("Review System Health"). `/api/health` stays public and
+reveals only booleans/categories. **Connection pressure honestly:** this app
+cannot fix a small database plan by itself — the durable fixes are a connection
+pooler (PgBouncer or the provider's pooled endpoint) in `DATABASE_URL`, a
+higher connection limit, and Fluid compute / a region next to the database; the
+System Health "Database connection headroom" check tells you when you are
+close.
 
 **Correlating a "This page couldn't load — Error ref: NNN" screen.** The
 number is the Next.js error digest. Search the deployment's Runtime Logs for

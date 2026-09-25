@@ -60,11 +60,6 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-const destroyCvvAuthorizationsForAccount = vi.fn();
-vi.mock("@/server/security/cvv-cache", () => ({
-  destroyCvvAuthorizationsForAccount: (...args: [string]) => destroyCvvAuthorizationsForAccount(...args),
-}));
-
 beforeEach(() => {
   accounts = new Map([
     ["admin-1", { id: "admin-1", activeSessionId: null, sessionCreatedAt: null, lastSeenAt: null }],
@@ -119,12 +114,6 @@ describe("establishSession — session issuance", () => {
     await establishSession("agent-1");
 
     expect(accounts.get("admin-1")!.activeSessionId).toBe(adminToken);
-  });
-
-  it("destroys any CVV authorization state the account was holding on every login — a fresh login is a fresh authentication boundary", async () => {
-    const { establishSession } = await import("../dev-session");
-    await establishSession("admin-1");
-    expect(destroyCvvAuthorizationsForAccount).toHaveBeenCalledWith("admin-1");
   });
 });
 
@@ -199,21 +188,5 @@ describe("signOut — real server-side invalidation", () => {
     const { signOut } = await import("../dev-session");
     cookieJar.set("compass_dev_account", "some-token-that-matches-nothing");
     await expect(signOut()).resolves.not.toThrow();
-  });
-
-  it("destroys the signed-out account's active CVV authorization state, not some other account's", async () => {
-    const { establishSession, signOut } = await import("../dev-session");
-    await establishSession("admin-1");
-    destroyCvvAuthorizationsForAccount.mockClear(); // ignore the call establishSession itself made
-    await signOut();
-    expect(destroyCvvAuthorizationsForAccount).toHaveBeenCalledWith("admin-1");
-    expect(destroyCvvAuthorizationsForAccount).not.toHaveBeenCalledWith("agent-1");
-  });
-
-  it("a sign-out with no matching session does not attempt to destroy any account's CVV state", async () => {
-    const { signOut } = await import("../dev-session");
-    cookieJar.set("compass_dev_account", "some-token-that-matches-nothing");
-    await signOut();
-    expect(destroyCvvAuthorizationsForAccount).not.toHaveBeenCalled();
   });
 });

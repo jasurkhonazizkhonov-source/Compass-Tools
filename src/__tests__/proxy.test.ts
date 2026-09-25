@@ -97,6 +97,37 @@ describe("proxy — CRM Inquiry (/get-in-touch) is Admin-only", () => {
   });
 });
 
+describe("proxy — System Health (/system-health) is Admin-only", () => {
+  it.each(["MANAGER", "TICKETING_AGENT", "TRAVEL_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"])(
+    "a signed-in %s typing the URL directly is redirected away, never shown the page",
+    async (role) => {
+      findUnique.mockResolvedValue({ status: "ACTIVE", role, sessionCreatedAt: new Date() });
+      const { proxy } = await import("../proxy");
+      const response = await proxy(makeRequest("/system-health", "some-valid-looking-token"));
+      expect(response.headers.get("location")).not.toBeNull();
+      expect(response.headers.get("location")).not.toContain("/system-health");
+    }
+  );
+
+  it("a signed-in Admin is let through", async () => {
+    findUnique.mockResolvedValue({ status: "ACTIVE", role: "ADMIN", sessionCreatedAt: new Date() });
+    const { proxy } = await import("../proxy");
+    const response = await proxy(makeRequest("/system-health", "some-valid-looking-token"));
+    expect(response.headers.get("location")).toBeNull();
+  });
+
+  it("a signed-OUT visitor is sent to /login", async () => {
+    const { proxy } = await import("../proxy");
+    const response = await proxy(makeRequest("/system-health"));
+    expect(response.headers.get("location")).toContain("/login");
+  });
+
+  it("is in the matcher, so the guard actually runs for it (and for sub-paths)", async () => {
+    const { config } = await import("../proxy");
+    expect(config.matcher).toContain("/system-health/:path*");
+  });
+});
+
 describe("proxy — implausible session cookies never reach the database", () => {
   it.each([["garbage with spaces", "not a token!"], ["NUL byte", "abc%00defghijk"], ["oversized", "A".repeat(5000)], ["too short", "ab"]])(
     "%s: redirects to /login without a database lookup",

@@ -50,9 +50,6 @@ vi.mock("@/server/security/payment-vault", () => ({
   })),
 }));
 
-vi.mock("@/server/security/cvv-cache", () => ({
-  cacheCvv: vi.fn(),
-}));
 
 // The IP-vault write itself is exhaustively covered in isolation by
 // ip-capture.test.ts — here we only assert submitBooking calls it with the
@@ -180,7 +177,6 @@ function validCard(overrides: Partial<{ amount: number }> = {}) {
     cardNumber: "4111111111111111",
     expiryMonth: 12,
     expiryYear: new Date().getUTCFullYear() + 3,
-    cvv: "123",
     amount: 500,
     ...overrides,
   };

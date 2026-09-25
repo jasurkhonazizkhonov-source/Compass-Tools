@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { getRecentNotifications, getUnreadNotificationCount } from "@/server/queries/notifications";
-import { canViewGetInTouch } from "@/lib/permissions";
+import { canViewGetInTouch, canViewSystemHealth } from "@/lib/permissions";
 import { ensureInquiryNotifications } from "@/server/admin-notifications";
+import { evaluateHealthThrottled } from "@/server/system/health-monitor";
 
 // All three actions below deliberately ignore any client-supplied account/
 // notification-ownership claim and re-derive the actor from the session
@@ -25,6 +26,10 @@ export async function fetchMyNotifications() {
   // website (a separate app that cannot create notifications itself) have a
   // notification. Throttled and best-effort — never affects this poll.
   if (canViewGetInTouch(actor.role)) await ensureInquiryNotifications(actor.companyId).catch(() => undefined);
+  // Admins: a new critical condition (a missing key, a pending migration, a
+  // failing mailbox…) raises a "Review System Health" notification without
+  // anyone having to open the page. Throttled per instance, never throws.
+  if (canViewSystemHealth(actor.role)) await evaluateHealthThrottled();
   const [items, unreadCount] = await Promise.all([
     getRecentNotifications(actor.id),
     getUnreadNotificationCount(actor.id),

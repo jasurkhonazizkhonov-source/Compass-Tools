@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { isValidIpAddress, getClientIp, trustedProxyMode, normalizeIp, isPrivateOrReservedIp } from "../request-ip";
+import { isValidIpAddress, getClientIp, trustedProxyMode, trustedProxyConfig, normalizeIp, isPrivateOrReservedIp } from "../request-ip";
 
 describe("isValidIpAddress", () => {
   it("accepts valid IPv4 addresses", () => {
@@ -91,16 +91,23 @@ describe("isPrivateOrReservedIp", () => {
   });
 });
 
-describe("trustedProxyMode", () => {
+describe("trustedProxyMode / trustedProxyConfig", () => {
   const original = process.env.TRUSTED_PROXY;
+  const originalVercel = process.env.VERCEL;
+  beforeEach(() => {
+    delete process.env.VERCEL;
+  });
   afterEach(() => {
     if (original === undefined) delete process.env.TRUSTED_PROXY;
     else process.env.TRUSTED_PROXY = original;
+    if (originalVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = originalVercel;
   });
 
-  it("defaults to 'none' when unset", () => {
+  it("defaults to 'none' when unset and not on Vercel", () => {
     delete process.env.TRUSTED_PROXY;
     expect(trustedProxyMode()).toBe("none");
+    expect(trustedProxyConfig()).toEqual({ mode: "none", source: "none" });
   });
 
   it("defaults to 'none' for an unrecognized value (fails closed, never guesses)", () => {
@@ -108,22 +115,56 @@ describe("trustedProxyMode", () => {
     expect(trustedProxyMode()).toBe("none");
   });
 
-  it("accepts each documented mode", () => {
+  it("accepts each documented mode as an explicit choice", () => {
     for (const mode of ["vercel", "cloudflare", "nginx", "generic"]) {
       process.env.TRUSTED_PROXY = mode;
-      expect(trustedProxyMode()).toBe(mode);
+      expect(trustedProxyConfig()).toEqual({ mode, source: "explicit" });
     }
+  });
+
+  it("selects 'vercel' automatically when the Vercel runtime identifies itself and nothing is configured", () => {
+    delete process.env.TRUSTED_PROXY;
+    process.env.VERCEL = "1";
+    expect(trustedProxyConfig()).toEqual({ mode: "vercel", source: "platform" });
+  });
+
+  it("an unrecognized TRUSTED_PROXY value on Vercel falls through to the platform mode, never to a guessed one", () => {
+    process.env.TRUSTED_PROXY = "some-typo";
+    process.env.VERCEL = "1";
+    expect(trustedProxyConfig()).toEqual({ mode: "vercel", source: "platform" });
+  });
+
+  it("an explicit TRUSTED_PROXY=none always wins over the platform signal — an operator can opt out", () => {
+    process.env.TRUSTED_PROXY = "none";
+    process.env.VERCEL = "1";
+    expect(trustedProxyConfig()).toEqual({ mode: "none", source: "explicit" });
+  });
+
+  it("an explicit TRUSTED_PROXY wins over the platform signal", () => {
+    process.env.TRUSTED_PROXY = "cloudflare";
+    process.env.VERCEL = "1";
+    expect(trustedProxyConfig()).toEqual({ mode: "cloudflare", source: "explicit" });
+  });
+
+  it("VERCEL values other than '1' are not treated as the Vercel runtime", () => {
+    delete process.env.TRUSTED_PROXY;
+    process.env.VERCEL = "true";
+    expect(trustedProxyMode()).toBe("none");
   });
 });
 
 describe("getClientIp — no trusted proxy configured (the secure default)", () => {
   const original = process.env.TRUSTED_PROXY;
+  const originalVercel = process.env.VERCEL;
   beforeEach(() => {
     delete process.env.TRUSTED_PROXY;
+    delete process.env.VERCEL;
   });
   afterEach(() => {
     if (original === undefined) delete process.env.TRUSTED_PROXY;
     else process.env.TRUSTED_PROXY = original;
+    if (originalVercel === undefined) delete process.env.VERCEL;
+    else process.env.VERCEL = originalVercel;
   });
 
   it("never trusts X-Forwarded-For when no trusted proxy is configured — prevents direct-client spoofing", () => {
@@ -172,9 +213,30 @@ describe("getClientIp — TRUSTED_PROXY=vercel", () => {
     expect(getClientIp(headers)).toBe("198.51.100.7");
   });
 
-  it("prefers X-Forwarded-For over X-Real-IP when both are present", () => {
-    const headers = new Headers({ "x-forwarded-for": "203.0.113.42", "x-real-ip": "198.51.100.7" });
-    expect(getClientIp(headers)).toBe("203.0.113.42");
+  it("prefers X-Vercel-Forwarded-For, then X-Real-IP, then X-Forwarded-For", () => {
+    expect(getClientIp(new Headers({ "x-vercel-forwarded-for": "203.0.113.1", "x-real-ip": "203.0.113.2", "x-forwarded-for": "203.0.113.3" }))).toBe("203.0.113.1");
+    expect(getClientIp(new Headers({ "x-real-ip": "203.0.113.2", "x-forwarded-for": "203.0.113.3" }))).toBe("203.0.113.2");
+    expect(getClientIp(new Headers({ "x-forwarded-for": "203.0.113.3" }))).toBe("203.0.113.3");
+  });
+
+  it("falls through to the next Vercel-set header when an earlier one is malformed", () => {
+    const headers = new Headers({ "x-vercel-forwarded-for": "not-an-ip", "x-forwarded-for": "203.0.113.3" });
+    expect(getClientIp(headers)).toBe("203.0.113.3");
+  });
+
+  it("NEVER reads the RFC 7239 Forwarded header — Vercel passes a client-sent one through untouched, so it is spoofable", () => {
+    expect(getClientIp(new Headers({ forwarded: "for=8.8.8.8" }))).toBeUndefined();
+    // ...and a spoofed one can't outrank the header Vercel itself sets.
+    expect(getClientIp(new Headers({ forwarded: "for=8.8.8.8", "x-forwarded-for": "203.0.113.42" }))).toBe("203.0.113.42");
+  });
+
+  it("NEVER reads CF-Connecting-IP — a client can send it directly to a Vercel deployment", () => {
+    expect(getClientIp(new Headers({ "cf-connecting-ip": "8.8.8.8" }))).toBeUndefined();
+  });
+
+  it("returns a full, untruncated IPv6 address", () => {
+    const full = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
+    expect(getClientIp(new Headers({ "x-vercel-forwarded-for": full }))).toBe(full);
   });
 
   it("resolves a valid IPv6 address", () => {
@@ -193,26 +255,6 @@ describe("getClientIp — TRUSTED_PROXY=vercel", () => {
 
   it("trims whitespace around the first hop", () => {
     const headers = new Headers({ "x-forwarded-for": "  203.0.113.42  , 10.0.0.1" });
-    expect(getClientIp(headers)).toBe("203.0.113.42");
-  });
-
-  it("prefers the RFC 7239 Forwarded header over X-Forwarded-For when both are present", () => {
-    const headers = new Headers({ forwarded: "for=192.0.2.60;proto=https", "x-forwarded-for": "203.0.113.42" });
-    expect(getClientIp(headers)).toBe("192.0.2.60");
-  });
-
-  it("parses a quoted IPv6 Forwarded header with a port", () => {
-    const headers = new Headers({ forwarded: 'for="[2001:db8:cafe::17]:4711";proto=https' });
-    expect(getClientIp(headers)).toBe("2001:db8:cafe::17");
-  });
-
-  it("strips a port suffix from an IPv4 Forwarded value", () => {
-    const headers = new Headers({ forwarded: "for=203.0.113.9:51820" });
-    expect(getClientIp(headers)).toBe("203.0.113.9");
-  });
-
-  it("takes only the first element of a multi-hop Forwarded header", () => {
-    const headers = new Headers({ forwarded: "for=203.0.113.42, for=70.41.3.18" });
     expect(getClientIp(headers)).toBe("203.0.113.42");
   });
 
@@ -267,6 +309,42 @@ describe("getClientIp — TRUSTED_PROXY=vercel", () => {
   });
 });
 
+describe("getClientIp — TRUSTED_PROXY=generic (operator-asserted overwriting proxy: RFC 7239 Forwarded is honoured)", () => {
+  const original = process.env.TRUSTED_PROXY;
+  beforeEach(() => {
+    process.env.TRUSTED_PROXY = "generic";
+  });
+  afterEach(() => {
+    if (original === undefined) delete process.env.TRUSTED_PROXY;
+    else process.env.TRUSTED_PROXY = original;
+  });
+
+  it("prefers the RFC 7239 Forwarded header over X-Forwarded-For when both are present", () => {
+    const headers = new Headers({ forwarded: "for=192.0.2.60;proto=https", "x-forwarded-for": "203.0.113.42" });
+    expect(getClientIp(headers)).toBe("192.0.2.60");
+  });
+
+  it("parses a quoted IPv6 Forwarded header with a port", () => {
+    const headers = new Headers({ forwarded: 'for="[2001:db8:cafe::17]:4711";proto=https' });
+    expect(getClientIp(headers)).toBe("2001:db8:cafe::17");
+  });
+
+  it("strips a port suffix from an IPv4 Forwarded value", () => {
+    const headers = new Headers({ forwarded: "for=203.0.113.9:51820" });
+    expect(getClientIp(headers)).toBe("203.0.113.9");
+  });
+
+  it("takes only the first element of a multi-hop Forwarded header", () => {
+    const headers = new Headers({ forwarded: "for=203.0.113.42, for=70.41.3.18" });
+    expect(getClientIp(headers)).toBe("203.0.113.42");
+  });
+
+  it("falls back to X-Forwarded-For then X-Real-IP", () => {
+    expect(getClientIp(new Headers({ "x-forwarded-for": "203.0.113.42, 10.0.0.1" }))).toBe("203.0.113.42");
+    expect(getClientIp(new Headers({ "x-real-ip": "198.51.100.7" }))).toBe("198.51.100.7");
+  });
+});
+
 describe("getClientIp — TRUSTED_PROXY=cloudflare", () => {
   const original = process.env.TRUSTED_PROXY;
   beforeEach(() => {
@@ -277,14 +355,14 @@ describe("getClientIp — TRUSTED_PROXY=cloudflare", () => {
     else process.env.TRUSTED_PROXY = original;
   });
 
-  it("prefers CF-Connecting-IP over X-Forwarded-For", () => {
+  it("reads CF-Connecting-IP and never the client-controllable X-Forwarded-For", () => {
     const headers = new Headers({ "cf-connecting-ip": "198.51.100.9", "x-forwarded-for": "203.0.113.42" });
     expect(getClientIp(headers)).toBe("198.51.100.9");
   });
 
-  it("falls back to X-Forwarded-For when CF-Connecting-IP is absent", () => {
+  it("ignores X-Forwarded-For entirely — behind Cloudflare its left-most value is client-controlled", () => {
     const headers = new Headers({ "x-forwarded-for": "203.0.113.42" });
-    expect(getClientIp(headers)).toBe("203.0.113.42");
+    expect(getClientIp(headers)).toBeUndefined();
   });
 });
 
@@ -354,25 +432,51 @@ describe("getClientIp — production TRUSTED_PROXY warning (never a trust decisi
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it("suggests the detected platform in the warning message when a platform-identifying env var is present", async () => {
+  it("suggests the detected platform (Cloudflare Pages) in the warning when it cannot be trusted automatically", async () => {
+    vi.resetModules();
+    delete process.env.TRUSTED_PROXY;
+    delete process.env.VERCEL;
+    process.env.APP_ENV = "production";
+    process.env.CF_PAGES = "1";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const { getClientIp: freshGetClientIp } = await import("../request-ip");
+      freshGetClientIp(new Headers());
+      expect(warnSpy.mock.calls[0][0]).toMatch(/cloudflare/i);
+    } finally {
+      delete process.env.CF_PAGES;
+    }
+  });
+
+  it("on Vercel with TRUSTED_PROXY unset the platform mode applies: no warning, and the edge-set header is read", async () => {
     vi.resetModules();
     delete process.env.TRUSTED_PROXY;
     process.env.APP_ENV = "production";
     process.env.VERCEL = "1";
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { getClientIp: freshGetClientIp } = await import("../request-ip");
-    freshGetClientIp(new Headers());
-    expect(warnSpy.mock.calls[0][0]).toMatch(/vercel/i);
+    expect(freshGetClientIp(new Headers({ "x-forwarded-for": "203.0.113.42" }))).toBe("203.0.113.42");
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 
-  it("never blindly trusts the detected platform hint — a spoofed header is still rejected even with the hint present", async () => {
+  it("on Vercel a spoofed Forwarded header is still rejected", async () => {
     vi.resetModules();
     delete process.env.TRUSTED_PROXY;
     process.env.APP_ENV = "production";
     process.env.VERCEL = "1";
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { getClientIp: freshGetClientIp } = await import("../request-ip");
-    const headers = new Headers({ "x-forwarded-for": "8.8.8.8" });
-    expect(freshGetClientIp(headers)).toBeUndefined();
+    expect(freshGetClientIp(new Headers({ forwarded: "for=8.8.8.8" }))).toBeUndefined();
+  });
+
+  it("an explicit TRUSTED_PROXY=none on Vercel opts out: nothing is trusted and the warning fires", async () => {
+    vi.resetModules();
+    process.env.TRUSTED_PROXY = "none";
+    process.env.APP_ENV = "production";
+    process.env.VERCEL = "1";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { getClientIp: freshGetClientIp } = await import("../request-ip");
+    expect(freshGetClientIp(new Headers({ "x-forwarded-for": "8.8.8.8" }))).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(1);
   });
 });

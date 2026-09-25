@@ -1,11 +1,13 @@
+import Link from "next/link";
 import { AlertTriangle } from "lucide-react";
 import { isProductionEnvironment } from "@/lib/env";
 import { trustedProxyMode } from "@/lib/request-ip";
 
-// Admin-only heads-up for two settings the customer booking flow depends on
+// Admin-only heads-up for two conditions the customer booking flow depends on
 // and that FAIL CLOSED by design — so a missing one never looks like an error
 // anywhere obvious; customers just cannot finish a booking, or the signer's
-// IP address quietly is not recorded. Pure environment inspection (no
+// IP address quietly is not recorded. The full picture (and history) is on the
+// Admin-only System Health page. Pure environment inspection (no
 // database query, no secret ever shown): it renders nothing when everything
 // is in place. The same facts are exposed, as booleans only, by /api/health.
 export function SystemReadinessBanner({ role }: { role: string | undefined }) {
@@ -17,14 +19,14 @@ export function SystemReadinessBanner({ role }: { role: string | undefined }) {
     issues.push({
       title: "Customers cannot complete bookings right now",
       detail:
-        "Card details cannot be stored in this production environment (APP_ENV is unset or set to \"production\", and no production-grade card vault is configured), so every customer's \"Finish Booking\" is refused with a message that nothing was charged. Enabling it is a deliberate security decision — see docs/DEPLOYMENT.md, section 5c.",
+        "No PCI-compliant payment provider is integrated, so this production environment refuses to take or store card details: every customer's \"Finish Booking\" is refused with a message that nothing was charged. This is deliberate — see docs/PAYMENT_ARCHITECTURE.md for what enabling bookings requires.",
     });
   }
   if (trustedProxyMode() === "none") {
     issues.push({
       title: "Signer IP addresses are not being recorded",
       detail:
-        "TRUSTED_PROXY is not set, so the customer's IP address is deliberately never read from request headers. On Vercel set TRUSTED_PROXY to \"vercel\" (docs/DEPLOYMENT.md, section 5). It also enables rate limiting on the public booking and inquiry forms.",
+        "No trusted proxy is configured (TRUSTED_PROXY is unset off Vercel, or explicitly \"none\"), so the customer's IP address is deliberately never read from request headers. Set TRUSTED_PROXY to describe the real proxy (docs/DEPLOYMENT.md, section 5). It also enables rate limiting on the public booking and inquiry forms.",
     });
   }
 
@@ -41,7 +43,9 @@ export function SystemReadinessBanner({ role }: { role: string | undefined }) {
           </div>
         </div>
       ))}
-      <p className="pl-7 text-xs text-muted-foreground">Only Admins see this notice.</p>
+      <p className="pl-7 text-xs text-muted-foreground">
+        Only Admins see this notice. <Link href="/system-health" className="font-medium underline underline-offset-2">Open System Health</Link>
+      </p>
     </div>
   );
 }

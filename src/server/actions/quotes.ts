@@ -22,6 +22,8 @@ import { quoteVisibilityWhere, leadAccessForQuoting } from "@/server/visibility"
 import { SUPPORTED_CURRENCIES, buildPricingSnapshot } from "@/lib/currency";
 import { isQuoteCancelable } from "@/lib/quote-cancelability";
 import { segmentSchema } from "@/server/actions/quote-segment-schema";
+import { Prisma } from "@/generated/prisma/client";
+import { PRICING_EDITABLE_STATUSES, SENDABLE_QUOTE_STATUSES, QUOTE_SEND_DEDUPE_WINDOW_MS, isQuotePricingEditable, isQuoteSendable } from "@/lib/quote-send-rules";
 
 const quoteNumberAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
 
@@ -141,41 +143,78 @@ export async function createQuote(input: CreateQuoteInput) {
   return { quoteId: quote.id };
 }
 
-export async function updateQuotePricing(
-  quoteId: string,
-  patch: {
-    adults: number;
-    children: number;
-    infants: number;
-    adultPrice: number;
-    childPrice: number;
-    infantPrice: number;
-    taxes: number;
-    serviceFee: number;
-    gratuity: number;
-    currency?: (typeof SUPPORTED_CURRENCIES)[number];
-    exchangeRate?: number;
-  }
-) {
-  const actor = await getCurrentAccount();
-  const existing = await prisma.quote.findFirst({ where: { id: quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true } });
-  if (!existing) throw new Error("Quote not found");
+const updatePricingSchema = z
+  .object({
+    adults: z.number().int().min(1),
+    children: z.number().int().min(0),
+    infants: z.number().int().min(0),
+    adultPrice: z.number().min(0),
+    childPrice: z.number().min(0),
+    infantPrice: z.number().min(0),
+    taxes: z.number().min(0),
+    serviceFee: z.number().min(0),
+    gratuity: z.number().min(0),
+    currency: z.enum(SUPPORTED_CURRENCIES).optional(),
+    exchangeRate: z.number().positive().optional(),
+    /** ISO timestamp of the quote version the editor loaded. When supplied,
+     * the write only applies if nobody has changed the quote since — a stale
+     * editor gets a clear error instead of silently overwriting newer data. */
+    expectedUpdatedAt: z.string().datetime().optional(),
+  })
+  .refine((v) => (v.currency ?? "USD") === "USD" || (v.exchangeRate !== undefined && v.exchangeRate > 0), {
+    message: "An exchange rate is required for a non-USD currency",
+    path: ["exchangeRate"],
+  });
 
-  const pricing = calculatePricing(patch);
-  const currency = patch.currency ?? "USD";
-  const quote = await prisma.quote.update({
-    where: { id: quoteId },
+export type UpdateQuotePricingInput = z.input<typeof updatePricingSchema>;
+
+/**
+ * Edits a quote's pricing — only while it is still an unsent DRAFT (see
+ * quote-send-rules.ts for why). The status condition lives INSIDE the write
+ * (a single conditional UPDATE), not in a separate read beforehand, so a
+ * concurrent send that flips the quote to SENT between "check" and "write"
+ * cannot be overwritten: the UPDATE simply matches no row. Optional
+ * expectedUpdatedAt adds optimistic concurrency against a second editor.
+ */
+export async function updateQuotePricing(quoteId: string, patch: UpdateQuotePricingInput) {
+  const { expectedUpdatedAt, ...fields } = updatePricingSchema.parse(patch);
+  const actor = await getCurrentAccount();
+  const existing = await prisma.quote.findFirst({ where: { id: quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true, status: true } });
+  if (!existing) throw new Error("Quote not found");
+  if (!isQuotePricingEditable(existing.status)) {
+    throw new Error("This quote has already been sent, so its pricing can no longer be changed. Create a new quote or use the Exchange workflow.");
+  }
+
+  const pricing = calculatePricing(fields);
+  const currency = fields.currency ?? "USD";
+  const result = await prisma.quote.updateMany({
+    where: {
+      id: quoteId,
+      status: { in: [...PRICING_EDITABLE_STATUSES] },
+      ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}),
+    },
     data: {
-      ...patch,
+      adults: fields.adults,
+      children: fields.children,
+      infants: fields.infants,
+      adultPrice: fields.adultPrice,
+      childPrice: fields.childPrice,
+      infantPrice: fields.infantPrice,
+      taxes: fields.taxes,
+      serviceFee: fields.serviceFee,
+      gratuity: fields.gratuity,
       currency,
-      exchangeRate: currency === "USD" ? null : patch.exchangeRate,
+      exchangeRate: currency === "USD" ? null : fields.exchangeRate,
       total: pricing.total,
     },
   });
+  if (result.count !== 1) {
+    throw new Error("This quote changed while you were editing it (it may have just been sent, or edited elsewhere). Reload it and try again.");
+  }
   revalidatePath(`/quotes/${quoteId}`);
-  // Plain, serializable summary — Prisma's Decimal fields on `quote` can't
-  // cross the server-action/RSC boundary to a client caller.
-  return { id: quote.id, total: pricing.total };
+  // Plain, serializable summary — Prisma's Decimal fields can't cross the
+  // server-action/RSC boundary to a client caller.
+  return { id: quoteId, total: pricing.total };
 }
 
 /**
@@ -236,6 +275,9 @@ export async function sendQuote(quoteId: string, recipientEmail?: string) {
     },
   });
   if (!quote) throw new Error("Quote not found");
+  if (!isQuoteSendable(quote.status)) {
+    return { ok: false as const, error: "This quote can no longer be sent — the customer has already acted on it, or it was canceled." };
+  }
 
   // The contact's own known emails (ContactEmail rows), falling back to the
   // denormalized primaryEmail for a contact that predates that table ever
@@ -288,106 +330,184 @@ export async function sendQuote(quoteId: string, recipientEmail?: string) {
     currency,
     quote.exchangeRate ? Number(quote.exchangeRate) : 1
   );
-  await prisma.quote.update({
-    where: { id: quoteId },
-    // Captured only once — the first time a quote is actually sent — and
-    // never overwritten by a later resend or reassignment, unlike agentId.
-    // See Quote.sentByAgentId's schema doc comment.
-    data: { pricingSnapshot, sentByAgentId: quote.sentByAgentId ?? quote.agentId },
-  });
 
-  const baseUrl = resolveBaseUrl();
-  const viewDealUrl = `${baseUrl}/quote/${quote.secureToken}`;
-  const trackingPixelUrl = `${baseUrl}/api/track/quote-open/${quote.secureToken}`;
-  // Extra Leg segments are a "bonus" the customer only sees once they click
-  // through to View Deal — the initial quote email never includes them.
-  // The segment stays untouched in the DB; this only affects what's mapped
-  // into the email HTML.
-  const emailSegments = (quote.itinerary?.segments ?? []).filter((s) => !s.isExtraLeg);
-  // Customer-facing initial quote email — omit the aircraft row entirely
-  // rather than showing a placeholder when unknown.
-  const segments = toEmailSegments(emailSegments);
-  const company = await getCompanyForAccountId(quote.agent.id);
-  // Only set for an exchange quote — see Quote.originalQuoteId and
-  // buildQuoteEmail's own doc comment on this param.
-  const originalItinerarySegments = quote.originalQuote?.itinerary
-    ? toEmailSegments(quote.originalQuote.itinerary.segments.filter((s) => !s.isExtraLeg))
-    : undefined;
+  // Server-side idempotency: an identical send of this quote to this address
+  // inside the dedupe window (double click, retried request, second tab) is
+  // one send. The claim is one atomic INSERT / conditional UPDATE, so two
+  // concurrent requests can never both pass it.
+  if (!(await claimQuoteSend(quoteId, toEmail))) {
+    return { ok: true as const, duplicate: true as const };
+  }
 
-  const { subject, html } = buildQuoteEmail({
-    customerFirstName: quote.contact.firstName,
-    customerLastName: quote.contact.lastName,
-    agentFullName: quote.agent.fullName,
-    agent: { fullName: quote.agent.fullName, email: quote.agent.email, phone: quote.agent.phone },
-    tripType: (quote.itinerary?.tripType ?? "ONE_WAY").replace("_", " "),
-    passengerCount: getPassengerCount(quote),
-    segments,
-    pricing: {
-      adults: quote.adults,
-      children: quote.children,
-      infants: quote.infants,
-      ...pricingSnapshot,
-    },
-    viewDealUrl,
-    trackingPixelUrl,
-    company,
-    originalItinerarySegments,
-  });
+  // Narrowed above ("no agent" returned early); a const keeps that narrowing
+  // inside the closure below.
+  const agent = quote.agent;
+  // Once the email has actually gone out the claim must stay, so a retry after
+  // a later (post-send) failure cannot email the customer a second time.
+  let emailSent = false;
+  const deliverQuote = async () => {
+    const baseUrl = resolveBaseUrl();
+    const viewDealUrl = `${baseUrl}/quote/${quote.secureToken}`;
+    const trackingPixelUrl = `${baseUrl}/api/track/quote-open/${quote.secureToken}`;
+    // Extra Leg segments are a "bonus" the customer only sees once they click
+    // through to View Deal — the initial quote email never includes them.
+    // The segment stays untouched in the DB; this only affects what's mapped
+    // into the email HTML.
+    const emailSegments = (quote.itinerary?.segments ?? []).filter((s) => !s.isExtraLeg);
+    // Customer-facing initial quote email — omit the aircraft row entirely
+    // rather than showing a placeholder when unknown.
+    const segments = toEmailSegments(emailSegments);
+    const company = await getCompanyForAccountId(agent.id);
+    // Only set for an exchange quote — see Quote.originalQuoteId and
+    // buildQuoteEmail's own doc comment on this param.
+    const originalItinerarySegments = quote.originalQuote?.itinerary
+      ? toEmailSegments(quote.originalQuote.itinerary.segments.filter((s) => !s.isExtraLeg))
+      : undefined;
 
-  const result = await sendEmail({
-    accountId: quote.agent.id,
-    to: toEmail,
-    subject,
-    html,
-    senderName: quote.agent.fullName,
-    replyTo: quote.agent.email,
-  });
+    const { subject, html } = buildQuoteEmail({
+      customerFirstName: quote.contact.firstName,
+      customerLastName: quote.contact.lastName,
+      agentFullName: agent.fullName,
+      agent: { fullName: agent.fullName, email: agent.email, phone: agent.phone },
+      tripType: (quote.itinerary?.tripType ?? "ONE_WAY").replace("_", " "),
+      passengerCount: getPassengerCount(quote),
+      segments,
+      pricing: {
+        adults: quote.adults,
+        children: quote.children,
+        infants: quote.infants,
+        ...pricingSnapshot,
+      },
+      viewDealUrl,
+      trackingPixelUrl,
+      company,
+      originalItinerarySegments,
+    });
 
-  await prisma.emailLog.create({
-    data: {
-      type: "QUOTE",
+    const result = await sendEmail({
+      accountId: agent.id,
+      to: toEmail,
       subject,
-      fromEmail: quote.agent.email,
-      toEmail,
-      status: result.ok ? "SENT" : "FAILED",
-      errorMessage: result.ok ? undefined : result.error,
-      messageId: result.ok ? result.messageId : undefined,
-      leadId: quote.leadId,
-      quoteId: quote.id,
-      contactId: quote.contactId,
-    },
-  });
+      html,
+      senderName: agent.fullName,
+      replyTo: agent.email,
+    });
 
-  if (!result.ok) {
-    return { ok: false as const, error: result.error };
-  }
+    emailSent = result.ok;
+    await prisma.emailLog.create({
+      data: {
+        type: "QUOTE",
+        subject,
+        fromEmail: agent.email,
+        toEmail,
+        status: result.ok ? "SENT" : "FAILED",
+        errorMessage: result.ok ? undefined : result.error,
+        messageId: result.ok ? result.messageId : undefined,
+        leadId: quote.leadId,
+        quoteId: quote.id,
+        contactId: quote.contactId,
+      },
+    });
 
-  await transitionQuoteStatus(quoteId, "SENT");
-
-  // Auto-advance the lead to QUOTED now that the quote genuinely reached
-  // the customer — only after a successful send, never merely on quote
-  // creation. Guarded against regressing an already-BOOKED lead, and never
-  // allowed to fail the (already-successful) send: the quote's own SENT
-  // status is the authoritative, already-persisted record of what
-  // happened even if this best-effort follow-up write fails.
-  try {
-    const lead = await prisma.lead.findUnique({ where: { id: quote.leadId }, select: { status: true } });
-    if (lead && lead.status !== "QUOTED" && lead.status !== "BOOKED") {
-      // Uses the unchecked core directly, not the public updateLeadStatus —
-      // access to this lead was already established above via the quote's
-      // own visibility (quoteVisibilityWhere), which is a different (and for
-      // Flight Expert, broader) resource group than leadVisibilityWhere.
-      await applyLeadStatusChange(quote.leadId, "QUOTED", actor?.id, "Automatically updated after quote was sent");
+    if (!result.ok) {
+      // Nothing reached the customer — free the claim so the agent can retry
+      // immediately instead of waiting out the dedupe window.
+      await releaseQuoteSend(quoteId, toEmail);
+      return { ok: false as const, error: result.error };
     }
+
+    await transitionQuoteStatus(quoteId, "SENT");
+
+    // Auto-advance the lead to QUOTED now that the quote genuinely reached
+    // the customer — only after a successful send, never merely on quote
+    // creation. Guarded against regressing an already-BOOKED lead, and never
+    // allowed to fail the (already-successful) send: the quote's own SENT
+    // status is the authoritative, already-persisted record of what
+    // happened even if this best-effort follow-up write fails.
+    try {
+      const lead = await prisma.lead.findUnique({ where: { id: quote.leadId }, select: { status: true } });
+      if (lead && lead.status !== "QUOTED" && lead.status !== "BOOKED") {
+        // Uses the unchecked core directly, not the public updateLeadStatus —
+        // access to this lead was already established above via the quote's
+        // own visibility (quoteVisibilityWhere), which is a different (and for
+        // Flight Expert, broader) resource group than leadVisibilityWhere.
+        await applyLeadStatusChange(quote.leadId, "QUOTED", actor?.id, "Automatically updated after quote was sent");
+      }
+    } catch (err) {
+      console.error(`Failed to auto-update lead status to QUOTED (lead ${quote.leadId}):`, err);
+    }
+
+    revalidatePath(`/quotes/${quoteId}`);
+    revalidatePath(`/leads/${quote.leadId}`);
+    revalidatePath("/quotes");
+
+    return { ok: true as const };
+  };
+
+  try {
+    // The status AND every pricing input are part of the write's own
+    // condition: if the quote was edited or moved on after we read it (so
+    // the snapshot we just computed no longer matches what is stored), the
+    // UPDATE matches nothing and nothing is emailed.
+    const frozen = await prisma.quote.updateMany({
+      where: {
+        id: quoteId,
+        status: { in: [...SENDABLE_QUOTE_STATUSES] },
+        currency: quote.currency,
+        exchangeRate: quote.exchangeRate,
+        adultPrice: quote.adultPrice,
+        childPrice: quote.childPrice,
+        infantPrice: quote.infantPrice,
+        taxes: quote.taxes,
+        serviceFee: quote.serviceFee,
+        gratuity: quote.gratuity,
+        total: quote.total,
+      },
+      // sentByAgentId is captured only once — the first time a quote is
+      // actually sent — and never overwritten by a later resend or
+      // reassignment, unlike agentId. See Quote.sentByAgentId's schema doc.
+      data: { pricingSnapshot, sentByAgentId: quote.sentByAgentId ?? quote.agentId },
+    });
+    if (frozen.count !== 1) {
+      await releaseQuoteSend(quoteId, toEmail);
+      return { ok: false as const, error: "This quote was changed while it was being sent. Nothing was emailed — please review it and send again." };
+    }
+    return await deliverQuote();
   } catch (err) {
-    console.error(`Failed to auto-update lead status to QUOTED (lead ${quote.leadId}):`, err);
+    if (!emailSent) await releaseQuoteSend(quoteId, toEmail);
+    throw err;
   }
+}
 
-  revalidatePath(`/quotes/${quoteId}`);
-  revalidatePath(`/leads/${quote.leadId}`);
-  revalidatePath("/quotes");
+/**
+ * Atomically claims the right to send `quoteId` to `recipientEmail`. Returns
+ * false when an identical send happened inside QUOTE_SEND_DEDUPE_WINDOW_MS.
+ * Insert-or-conditional-update on a (quoteId, recipientEmail) primary key, so
+ * concurrent callers race on the database, not on process memory (a
+ * serverless deployment runs many instances).
+ */
+async function claimQuoteSend(quoteId: string, recipientEmail: string): Promise<boolean> {
+  const email = recipientEmail.trim().toLowerCase();
+  try {
+    await prisma.quoteSendClaim.create({ data: { quoteId, recipientEmail: email } });
+    return true;
+  } catch (err) {
+    if (!(err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002")) throw err;
+  }
+  const renewed = await prisma.quoteSendClaim.updateMany({
+    where: { quoteId, recipientEmail: email, claimedAt: { lt: new Date(Date.now() - QUOTE_SEND_DEDUPE_WINDOW_MS) } },
+    data: { claimedAt: new Date() },
+  });
+  return renewed.count === 1;
+}
 
-  return { ok: true as const };
+/** Best-effort: a failed release only means a retry waits out the window. */
+async function releaseQuoteSend(quoteId: string, recipientEmail: string): Promise<void> {
+  try {
+    await prisma.quoteSendClaim.deleteMany({ where: { quoteId, recipientEmail: recipientEmail.trim().toLowerCase() } });
+  } catch {
+    // ignored — see above
+  }
 }
 
 /**

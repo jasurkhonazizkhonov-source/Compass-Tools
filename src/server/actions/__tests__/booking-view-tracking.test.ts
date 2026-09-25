@@ -46,9 +46,6 @@ vi.mock("@/server/security/payment-vault", () => ({
     reveal: vi.fn(async (ref: string) => ref.replace(/^ENC:/, "")),
   })),
 }));
-vi.mock("@/server/security/cvv-cache", () => ({
-  cacheCvv: vi.fn(),
-}));
 vi.mock("@/server/security/ip-capture", () => ({
   recordIpCapture: vi.fn(async () => {}),
 }));

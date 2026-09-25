@@ -174,7 +174,6 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
           cardNumber: "4111111111111111",
           expiryMonth: 12,
           expiryYear: new Date().getUTCFullYear() + 3,
-          cvv: "123",
           amount: total,
         },
       ],
@@ -218,6 +217,86 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(await prisma.activity.count({ where: { bookingId: booking.id, type: "BOOKING_SUBMITTED" } })).toBe(1);
     expect(await prisma.ipCapture.count({ where: { bookingId: booking.id } })).toBe(1);
     expect(sendStaffEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("NO CVV ANYWHERE: even if a stale client still sends a security code, it is never stored, cached, logged or echoed — not in any table of the database", async () => {
+    const { quote } = await makeQuote();
+    const spies = [vi.spyOn(console, "log"), vi.spyOn(console, "error"), vi.spyOn(console, "warn"), vi.spyOn(console, "info")];
+    const MARK = "CVVMARK-8f3a1c";
+    const base = input(quote.secureToken);
+    const withCode = { ...base, paymentMethods: base.paymentMethods.map((c) => ({ ...c, cvv: MARK, cvc: MARK, securityCode: MARK })) };
+    const result = await submitBooking(withCode as never);
+    await flushDeferred();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
+    spies.forEach((spy) => spy.mockRestore());
+    expect(logged).not.toContain(MARK);
+    expect(logged).not.toContain("4111111111111111"); // nor the card number
+
+    // Every column of every table: the marker is nowhere.
+    const tables = await prisma.$queryRaw<Array<{ table_name: string }>>`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`;
+    const hits: string[] = [];
+    for (const { table_name } of tables) {
+      const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${table_name}" t WHERE t::text LIKE '%${MARK}%'`);
+      if (rows[0].n > 0) hits.push(table_name);
+    }
+    expect(hits).toEqual([]);
+
+    // The stored card has no security-code field at all, and no plain PAN.
+    const [pm] = await prisma.paymentMethod.findMany({ where: { bookingId: result.bookingId } });
+    expect(Object.keys(pm).join(",")).not.toMatch(/cvv|cvc|security|cid/i);
+    expect(JSON.stringify(pm)).not.toContain("4111111111111111");
+  });
+
+  it("FULL signer IP: an IPv6 address is stored complete (untruncated) and the encrypted vault gets it too", async () => {
+    const { quote } = await makeQuote();
+    const ipv6 = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
+    requestHeaders = new Map([
+      ["x-vercel-forwarded-for", ipv6],
+      ["user-agent", "IntegrationTest/1.0"],
+    ]);
+    const result = await submitBooking(input(quote.secureToken));
+    await flushDeferred();
+    expect(result.ok).toBe(true);
+    const sig = await prisma.signature.findFirstOrThrow({ where: { booking: { quoteId: quote.id } } });
+    expect(sig.ipAddress).toBe(ipv6);
+    expect(sig.ipAddress).toHaveLength(ipv6.length);
+    const vault = await prisma.ipCapture.findMany({ where: { booking: { quoteId: quote.id } } });
+    expect(vault.length).toBeGreaterThan(0);
+    // The vault row never holds the plain address.
+    expect(JSON.stringify(vault)).not.toContain(ipv6);
+  });
+
+  it("SPOOF-PROOF signer IP: a client-supplied Forwarded / CF-Connecting-IP header cannot set the recorded address on Vercel", async () => {
+    const { quote } = await makeQuote();
+    const real = "203.0.113.77";
+    requestHeaders = new Map([
+      ["x-vercel-forwarded-for", real],
+      ["forwarded", "for=8.8.8.8"],
+      ["cf-connecting-ip", "8.8.4.4"],
+      ["user-agent", "IntegrationTest/1.0"],
+    ]);
+    const result = await submitBooking(input(quote.secureToken));
+    await flushDeferred();
+    expect(result.ok).toBe(true);
+    const sig = await prisma.signature.findFirstOrThrow({ where: { booking: { quoteId: quote.id } } });
+    expect(sig.ipAddress).toBe(real);
+  });
+
+  it("a malformed / private forwarded address records NO IP rather than junk (the booking still succeeds)", async () => {
+    const { quote } = await makeQuote();
+    requestHeaders = new Map([
+      ["x-vercel-forwarded-for", "'; DROP TABLE \"Signature\"; --"],
+      ["x-forwarded-for", "10.0.0.5"],
+      ["user-agent", "IntegrationTest/1.0"],
+    ]);
+    const result = await submitBooking(input(quote.secureToken));
+    await flushDeferred();
+    expect(result.ok).toBe(true);
+    const sig = await prisma.signature.findFirstOrThrow({ where: { booking: { quoteId: quote.id } } });
+    expect(sig.ipAddress).toBeNull();
   });
 
   it("keeps a non-USD quote's customer-facing total in its own currency and the internal ledger in USD", async () => {

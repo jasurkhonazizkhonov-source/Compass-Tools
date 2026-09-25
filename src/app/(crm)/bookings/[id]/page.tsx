@@ -13,7 +13,7 @@ import { StatusBadge } from "@/components/crm/status-badge";
 import { BOOKING_STATUS_META } from "@/lib/status-meta";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canRevealPaymentMethod, canConfirmPayment, canRevealBookingIp, canAuthorizeSupplierPayment, canDeleteBooking, canViewBookings, canEnterTicketingInfo } from "@/lib/permissions";
+import { canRevealPaymentMethod, canConfirmPayment, canRevealBookingIp, canDeleteBooking, canViewBookings, canEnterTicketingInfo } from "@/lib/permissions";
 import { deleteBooking } from "@/server/actions/bookings";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { formatMoney, isSupportedCurrency } from "@/lib/currency";
@@ -192,7 +192,6 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                         status: pm.status,
                       }}
                       canReveal={canRevealPaymentMethod(currentAccount)}
-                      canAuthorizeSupplierPayment={canAuthorizeSupplierPayment(currentAccount)}
                       canManageStatus={canConfirmPayment(currentAccount)}
                       currency={currency}
                     />

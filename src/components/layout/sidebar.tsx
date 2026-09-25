@@ -22,6 +22,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   MessagesSquare,
+  HeartPulse,
 } from "lucide-react";
 import { CompassMark } from "@/components/brand/compass-mark";
 import { cn } from "@/lib/utils";
@@ -36,6 +37,7 @@ import {
   canViewTasks,
   canViewSequencesPage,
   canViewGetInTouch,
+  canViewSystemHealth,
   canViewSubscriptions,
   canViewCommissions,
   canViewSalesboard,
@@ -91,6 +93,9 @@ const NAV_ITEMS: Array<{
   // pattern as /users (proxy.ts + page-level check + every action
   // re-asserting admin).
   { href: "/company", label: "Company", icon: Building2, visible: (role) => canManageAccounts(role) },
+  // Admin-only operational health (checks, incidents, readiness) — same
+  // three-layer enforcement: proxy.ts + the page + no client-side secrets.
+  { href: "/system-health", label: "System Health", icon: HeartPulse, visible: canViewSystemHealth },
 ];
 
 export function SidebarBrand({ companyName, collapsed = false }: { companyName?: string; collapsed?: boolean }) {

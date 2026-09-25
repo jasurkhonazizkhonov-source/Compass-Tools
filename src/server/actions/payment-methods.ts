@@ -11,7 +11,6 @@ import { getPaymentVault } from "@/server/security/payment-vault";
 import { requireRecentAuthentication } from "@/server/security/privileged-access";
 import { isChargeAmountAllowed } from "@/lib/payment-limits";
 import { getClientIp } from "@/lib/request-ip";
-import { destroyCvv } from "@/server/security/cvv-cache";
 import { canAccessPaymentMethod } from "@/server/payment-method-access";
 import { bookingVisibilityWhere } from "@/server/visibility";
 
@@ -199,12 +198,6 @@ export async function confirmPaymentReceived(input: z.infer<typeof confirmPaymen
     data: { workflowStatus: data.status === "SUCCEEDED" ? "CONFIRMED" : "FAILED" },
   });
 
-  // Authorization success or failure is one of the required CVV-destruction
-  // triggers — the supplier charge attempt this authorization existed for
-  // is now over, one way or the other, so nothing should be able to reuse
-  // that CVV afterward. Idempotent: a no-op if no authorization was active.
-  destroyCvv(paymentMethod.id);
-
   await logActivity({
     bookingId: booking.id,
     leadId: booking.leadId,
@@ -237,8 +230,7 @@ const updateWorkflowStatusSchema = z.object({
 /**
  * Explicit status transitions an authorized agent sets directly — covers
  * the states confirmPaymentReceived() doesn't drive automatically:
- * AUTHORIZED (CVV entered, supplier charge attempted — see
- * cvv-authorization.ts) and CANCELLED (this payment method was voided,
+ * AUTHORIZED (the agent recorded that a supplier charge was attempted) and CANCELLED (this payment method was voided,
  * e.g. the customer wants to use a different card). PENDING/CONFIRMED/
  * FAILED can also be set here directly, but confirmPaymentReceived is the
  * normal path for CONFIRMED/FAILED since it also records the underlying

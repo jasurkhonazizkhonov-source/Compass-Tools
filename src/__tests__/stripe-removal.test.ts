@@ -122,90 +122,42 @@ describe("Stripe removal — repo-wide verification", () => {
     }
   });
 
-  it("the only non-test, non-comment code paths that ever touch a `cvv` value are ephemeral (input schema, local variable, form field, in-memory TTL cache) — never a Prisma write field", () => {
-    // Files legitimately allowed to mention CVV: the customer-facing
-    // collection form and its zod schema/local-variable handling (ephemeral,
-    // proven non-persisted by the schema-level checks above), the
-    // client-side format validator (a function name, not storage), the
-    // dedicated transient in-memory cache module (cvv-cache.ts — explicitly
-    // never a Prisma call, see its own file-level comment), the Start
-    // Supplier Payment authorization actions that read from that cache, the
-    // session-lifecycle modules that destroy cached CVV state on sign-out/
-    // expiry (dev-session.ts in both lib/ and server/actions/), and doc
-    // comments explaining the non-persistence guarantee elsewhere.
-    const allowed = new Set(
-      [
-        path.join("server", "actions", "booking.ts"),
-        path.join("components", "booking", "card-payment-section.tsx"),
-        path.join("components", "booking", "booking-flow.tsx"),
-        path.join("lib", "card-validation.ts"),
-        path.join("server", "actions", "payment-methods.ts"),
-        path.join("components", "crm", "payment-badge.tsx"),
-        path.join("components", "bookings", "payment-method-card.tsx"),
-        path.join("components", "contacts", "payment-methods-panel.tsx"),
-        path.join("server", "security", "cvv-authorization.ts"),
-        path.join("server", "security", "cvv-cache.ts"),
-        path.join("lib", "dev-session.ts"),
-        path.join("server", "actions", "dev-session.ts"),
-        // Only names the permission/workflow for the admin grant UI and its
-        // own doc comment — never handles or stores a value.
-        path.join("lib", "permissions.ts"),
-        // Both only explain, in a doc comment, why a Contact-page-added
-        // card deliberately has no CVV field at all (no signed-booking-form
-        // provenance) — neither ever collects, stores, or displays one.
-        path.join("components", "contacts", "payment-method-dialog.tsx"),
-        path.join("server", "actions", "contact-payment-methods.ts"),
-        // Only a doc comment on the booking-signed staff notification
-        // explaining that its payment summary omits the PAN, CVV, and
-        // expiration date — never collects, stores, or displays a CVV.
-        path.join("server", "email", "templates.ts"),
-        // Both only explain, in doc comments, that the signed-quote-details
-        // card (Part 13) and its underlying getQuoteDetail query
-        // deliberately show only safe payment display fields (last4/brand/
-        // expiry/cardholder name) and never the full card number or CVV —
-        // neither ever selects, stores, or displays one (see the explicit
-        // paymentMethods field allow-list in getQuoteDetail itself).
-        path.join("components", "quotes", "signed-booking-details-card.tsx"),
-        path.join("server", "queries", "quotes.ts"),
-        // CVV recollection follow-up — the PCI-compliant alternative to
-        // extending cvv-cache.ts's TTL: asks the customer to confirm their
-        // CVV again via a short-lived public link instead. All three
-        // ephemeral for the same reason as cvv-authorization.ts above —
-        // the actual value only ever flows into cacheCvv() (still the one
-        // and only write path into the in-memory cache); none of these
-        // three ever reaches a Prisma call with the value itself (the new
-        // CvvRecollectionRequest model, verified above and in the two
-        // tests before this one, stores only a token/expiry/attempt-count,
-        // never the CVV).
-        path.join("server", "actions", "cvv-recollection.ts"),
-        path.join("components", "customer", "cvv-recollection-form.tsx"),
-        path.join("app", "cvv-recollection", "[token]", "page.tsx"),
-        // IP vault feature (encrypts booking-signer IP addresses at rest)
-        // — mentions "CVV" exactly once, in a doc comment, only to explain
-        // by contrast why THIS module (unlike payment-vault.ts) doesn't
-        // need a "refuse to run in production" gate: an IP address isn't
-        // PCI DSS "sensitive authentication data" the way a CVV is. Never
-        // handles, stores, or even references an actual CVV value.
-        path.join("server", "security", "ip-encryption.ts"),
-        // Public sitemap/robots config: only names the "/cvv-recollection"
-        // route PREFIX (a string literal matching the app's own folder
-        // name, allowed above) so crawlers don't index it — never handles,
-        // stores, or references an actual CVV value.
-        path.join("app", "robots.ts"),
-      ].map((p) => path.join(ROOT, "src", p))
-    );
+  it("no CVV/CVC/security-code handling exists anywhere in executable source — Compass Tools never collects, caches or stores one", () => {
+    // Comments may still EXPLAIN the rule (several files do), but no
+    // executable line — identifier, string, JSX text, schema field — may
+    // mention a card security code. There is no allow-list of code files:
+    // the previous in-memory CVV cache and everything built on it was
+    // removed, so any new hit is a regression to investigate, not to
+    // allow-list.
+    // The ONE allowed exception: the System Health sanitizer lists the security-
+    // code words in its DEFENSIVE key deny-list (so such a key can never be
+    // stored in an incident). It handles no value; it only refuses to.
+    const DEFENSIVE_DENY_LIST = path.join("src", "server", "system", "health-events.ts");
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
-      if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
-      // Real-database integration tests (env-gated, see docs/DEPLOYMENT.md
-      // §8) are tests like any other: they submit a fake test card, and the
-      // CVV is only ever an input literal, never persisted.
       if (file.includes(`${path.sep}__integration__${path.sep}`)) continue;
-      if (allowed.has(file)) continue;
-      const content = readFileSync(file, "utf-8");
-      if (/\bcvv\b|\bcvc\b|security_?code/i.test(content)) offenders.push(file);
+      if (path.relative(ROOT, file) === DEFENSIVE_DENY_LIST) continue;
+      const code = readFileSync(file, "utf-8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .split("\n")
+        .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
+        .join("\n");
+      if (/cvv|\bcvc\b|security_?code|\bcid\b/i.test(code)) offenders.push(path.relative(ROOT, file));
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("the removed CVV modules, routes and email template no longer exist", () => {
+    const removed = [
+      ["src", "server", "security", "cvv-cache.ts"],
+      ["src", "server", "security", "cvv-authorization.ts"],
+      ["src", "server", "actions", "cvv-recollection.ts"],
+      ["src", "components", "customer", "cvv-recollection-form.tsx"],
+      ["src", "app", "cvv-recollection"],
+    ];
+    for (const parts of removed) {
+      expect(() => statSync(path.join(ROOT, ...parts))).toThrow();
+    }
   });
 });

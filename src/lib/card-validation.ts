@@ -1,4 +1,4 @@
-// Card-number/expiry/CVV formatting and validation. This module is shared
+// Card-number/expiry formatting and validation. This module is shared
 // by the client (for input formatting/UX feedback) and the server (for the
 // authoritative check) — but client-side use is UX only, never a security
 // control: submitBooking() independently re-validates everything
@@ -71,13 +71,6 @@ export function isValidExpiry(month: number, year: number): boolean {
   if (year === currentYear && month < currentMonth) return false;
   if (year > currentYear + 20) return false; // sanity ceiling, not a real card rule
   return true;
-}
-
-/** 3 digits for every brand except American Express, which uses 4. */
-export function isValidCvvFormat(cvv: string, brand: CardBrand): boolean {
-  const digits = digitsOnly(cvv);
-  const expectedLength = brand === "American Express" ? 4 : 3;
-  return digits.length === expectedLength;
 }
 
 export function lastFour(cardNumber: string): string {

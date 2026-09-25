@@ -17,7 +17,6 @@ import {
   buildBookingConfirmationEmail,
   buildCancellationScheduledEmail,
   buildCancellationConfirmedEmail,
-  buildCvvRecollectionEmail,
   type EmailSegment,
   type EmailPricing,
 } from "../templates";
@@ -199,18 +198,6 @@ describe("customer-facing emails never leak internal CRM information (Pass 14 §
       agentFullName: "Jane Doe",
       segments: [seg],
       cancelledSegmentIds: new Set(["cancel-me"]),
-      company: TEST_COMPANY,
-    });
-    expectNoLeak(subject, html);
-  });
-
-  it("buildCvvRecollectionEmail — never leaks internal terminology, and never contains the CVV itself (it doesn't even accept one as a param)", () => {
-    const { subject, html } = buildCvvRecollectionEmail({
-      customerFirstName: "Andrew",
-      agentFullName: "Jane Doe",
-      cardBrand: "Visa",
-      last4: "1111",
-      confirmUrl: "https://test.example.com/cvv-recollection/some-token",
       company: TEST_COMPANY,
     });
     expectNoLeak(subject, html);

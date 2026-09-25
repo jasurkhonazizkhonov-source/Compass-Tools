@@ -17,7 +17,15 @@
 //
 // So: `getClientIp` trusts NONE of these headers unless `TRUSTED_PROXY` is
 // explicitly set to describe the real infrastructure in front of the app:
-//   - "vercel"      — Vercel's edge network sets X-Forwarded-For itself.
+//   - "vercel"      — Vercel's edge network overwrites X-Forwarded-For (and sets
+//                      X-Real-IP / X-Vercel-Forwarded-For) itself and never
+//                      forwards a client-supplied value. It also does NOT
+//                      sanitize the RFC 7239 `Forwarded` header, so this mode
+//                      deliberately never reads it. When TRUSTED_PROXY is unset
+//                      AND the runtime is Vercel (VERCEL=1, which only the
+//                      platform sets on its own deployments) this mode is
+//                      selected automatically; an explicit TRUSTED_PROXY
+//                      (including "none") always wins.
 //   - "cloudflare"  — trust CF-Connecting-IP (Cloudflare's own edge header).
 //   - "nginx"       — a self-managed reverse proxy that has been configured
 //                      to set X-Forwarded-For/Forwarded from the real peer
@@ -84,10 +92,26 @@ export type TrustedProxyMode = "none" | "vercel" | "cloudflare" | "nginx" | "gen
 
 const VALID_MODES: ReadonlySet<string> = new Set(["vercel", "cloudflare", "nginx", "generic"]);
 
-/** Reads and validates TRUSTED_PROXY, defaulting to "none" (trust nothing). */
-export function trustedProxyMode(): TrustedProxyMode {
+export type TrustedProxyConfig = { mode: TrustedProxyMode; source: "explicit" | "platform" | "none" };
+
+/**
+ * Resolves the trusted-proxy mode. Order: (1) an explicit, valid
+ * TRUSTED_PROXY value (`none` included — an operator can always opt out);
+ * (2) the Vercel runtime identifying itself (VERCEL=1); (3) "none" — trust
+ * nothing. An unrecognised TRUSTED_PROXY value never trusts anything by
+ * itself: it falls through to (2)/(3) exactly as if unset.
+ */
+export function trustedProxyConfig(): TrustedProxyConfig {
   const raw = process.env.TRUSTED_PROXY?.trim().toLowerCase();
-  return raw && VALID_MODES.has(raw) ? (raw as TrustedProxyMode) : "none";
+  if (raw === "none") return { mode: "none", source: "explicit" };
+  if (raw && VALID_MODES.has(raw)) return { mode: raw as TrustedProxyMode, source: "explicit" };
+  if (process.env.VERCEL === "1") return { mode: "vercel", source: "platform" };
+  return { mode: "none", source: "none" };
+}
+
+/** The effective mode, defaulting to "none" (trust nothing). */
+export function trustedProxyMode(): TrustedProxyMode {
+  return trustedProxyConfig().mode;
 }
 
 /**
@@ -128,7 +152,6 @@ let warnedMissingTrustedProxyInProduction = false;
  * (leftover from a previous host, a misconfigured CI runner, etc.), so
  * this deliberately never becomes a trust decision on its own. */
 function detectLikelyPlatformHint(): TrustedProxyMode | undefined {
-  if (process.env.VERCEL) return "vercel";
   if (process.env.CF_PAGES) return "cloudflare";
   return undefined;
 }
@@ -204,33 +227,49 @@ export function getClientIp(headerList: Headers): string | undefined {
   warnIfTrustedProxyMissingInProduction(mode);
   if (mode === "none") return undefined;
 
-  let candidate: string | undefined;
-
-  if (mode === "cloudflare") {
-    candidate = headerList.get("cf-connecting-ip")?.trim();
+  for (const raw of candidateHeaderValues(mode, headerList)) {
+    const normalized = normalizeIp(raw);
+    if (!isValidIpAddress(normalized)) continue;
+    if (isPrivateOrReservedIp(normalized)) return undefined;
+    return normalized;
   }
+  return undefined;
+}
 
-  if (!candidate) {
+/**
+ * The raw candidate values a given trust mode may read, in priority order.
+ * Each mode reads ONLY headers its proxy is known to set/overwrite itself:
+ *   - vercel: x-vercel-forwarded-for, x-real-ip, x-forwarded-for — all set by
+ *     Vercel's edge. `Forwarded` and CF-Connecting-IP are never read: a
+ *     client can send either directly and Vercel passes them through.
+ *   - cloudflare: cf-connecting-ip only (Cloudflare's own edge header).
+ *   - nginx / generic: the operator has asserted their proxy overwrites the
+ *     standard headers (see the module comment), so `Forwarded`,
+ *     X-Forwarded-For (first hop) and X-Real-IP are read in that order.
+ * Header values are never logged.
+ */
+function candidateHeaderValues(mode: Exclude<TrustedProxyMode, "none">, headerList: Headers): string[] {
+  const out: string[] = [];
+  const push = (v: string | null | undefined) => {
+    const cleaned = stripForwardedPort((v ?? "").trim());
+    if (cleaned) out.push(cleaned);
+  };
+  const firstOf = (v: string | null) => v?.split(",")[0];
+
+  if (mode === "vercel") {
+    push(firstOf(headerList.get("x-vercel-forwarded-for")));
+    push(headerList.get("x-real-ip"));
+    push(firstOf(headerList.get("x-forwarded-for")));
+  } else if (mode === "cloudflare") {
+    push(headerList.get("cf-connecting-ip"));
+  } else {
     const forwarded = headerList.get("forwarded");
-    if (forwarded) candidate = parseForwardedHeader(forwarded);
+    if (forwarded) push(parseForwardedHeader(forwarded));
+    // stripForwardedPort (in push) tolerates a proxy that appends a port to
+    // the X-Forwarded-For value — a real-world quirk worth tolerating rather
+    // than silently discarding an otherwise-good IP.
+    push(firstOf(headerList.get("x-forwarded-for")));
+    push(headerList.get("x-real-ip"));
   }
-
-  if (!candidate) {
-    // stripForwardedPort defensively handles a misconfigured proxy that
-    // appends a port here too (e.g. "203.0.113.9:51820") — this header has
-    // no formal port syntax of its own (unlike RFC 7239 Forwarded), but a
-    // stray port is a real-world proxy quirk worth tolerating rather than
-    // silently discarding an otherwise-good IP.
-    candidate = stripForwardedPort(headerList.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "") || undefined;
-  }
-
-  if (!candidate) {
-    candidate = stripForwardedPort(headerList.get("x-real-ip")?.trim() ?? "") || undefined;
-  }
-
-  if (!candidate) return undefined;
-  const normalized = normalizeIp(candidate);
-  if (!isValidIpAddress(normalized)) return undefined;
-  if (isPrivateOrReservedIp(normalized)) return undefined;
-  return normalized;
+  return out;
 }

@@ -116,8 +116,7 @@ function fmtSignedMoney(symbol: string, n: number): string {
  * buildReassignmentEmail) — those keep their existing, unbranded subject
  * format untouched by design (only CRM staff ever see them).
  *
- * A subject that already names the company (e.g.
- * buildCvvRecollectionEmail's "... — {company.name}") is returned
+ * A subject that already names the company is returned
  * unchanged rather than double-appended.
  */
 function withCompanySuffix(subject: string, company: ResolvedCompanyBranding): string {
@@ -931,52 +930,6 @@ export function buildCancellationConfirmedEmail(params: {
 
     <p style="margin:16px 0 0; font-size:12px; color:#9ca3af; line-height:1.6; text-align:center;">
       Questions? Just reply and ${escapeHtml(params.agentFullName.split(" ")[0])} will help.
-    </p>
-  `, params.company, params.agent, { preheader });
-  return { subject, html };
-}
-
-/**
- * CVV recollection follow-up — sent when an authorized agent needs to
- * charge a card more than the existing ~24h post-booking window allows
- * (see src/server/security/cvv-cache.ts's own header for why that window
- * is deliberately not extended). Asks the customer to confirm their
- * security code again, once, via a short-lived link — the PCI-compliant
- * alternative to retaining the original CVV any longer. Deliberately
- * minimal: no itinerary, no pricing, nothing beyond "confirm your card's
- * security code" — the less this email contains, the less there is to
- * get wrong on a page whose entire purpose is collecting a CVV safely.
- */
-export function buildCvvRecollectionEmail(params: {
-  customerFirstName: string;
-  agentFullName: string;
-  agent?: EmailAgent;
-  cardBrand: string | null;
-  last4: string;
-  confirmUrl: string;
-  company: ResolvedCompanyBranding;
-}) {
-  const subject = withCompanySuffix(`Please confirm your card's security code — ${params.company.name}`, params.company);
-  const preheader = "One quick step to finish processing your payment.";
-
-  const html = customerWrapper(`
-    <p style="margin:0 0 4px; font-size:16px; color:#111827; font-weight:600;">${firstNameGreeting(params.customerFirstName)},</p>
-    <p style="margin:0 0 20px; font-size:14px; color:#4b5563; line-height:1.6;">
-      ${escapeHtml(params.agentFullName.split(" ")[0])} is ready to process your payment on the card ending in <strong>${escapeHtml(params.last4)}</strong>. For your security, we ask you to confirm the card's security code (CVV) again before we finish processing it.
-    </p>
-
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL_TOKENS.mutedBackground}; border-radius:10px; margin-bottom:8px;">
-      <tr>
-        <td style="padding:14px 18px;">
-          <p style="margin:0; font-size:13px; color:#111827;"><strong>${escapeHtml(params.cardBrand ?? "Card")} •••• ${escapeHtml(params.last4)}</strong></p>
-        </td>
-      </tr>
-    </table>
-
-    ${ctaButton(params.confirmUrl, "Confirm Security Code", params.company.brandColor)}
-
-    <p style="margin:16px 0 0; font-size:12px; color:#9ca3af; line-height:1.6; text-align:center;">
-      This link is unique to you, expires shortly, and can only be used once.<br />Didn't expect this? Just reply and ${escapeHtml(params.agentFullName.split(" ")[0])} will help.
     </p>
   `, params.company, params.agent, { preheader });
   return { subject, html };

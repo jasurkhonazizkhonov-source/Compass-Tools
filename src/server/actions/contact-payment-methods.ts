@@ -62,14 +62,8 @@ const addCardSchema = z.object({
 /**
  * "+ Add Another Credit Card" from the Contact page — a card added directly
  * by an authorized agent, independent of any specific booking form
- * submission. Deliberately collects NO CVV: unlike a customer's own signed
- * booking-form submission (which has clear provenance for the transient
- * supplier-authorization workflow — see cvv-authorization.ts), a card
- * entered here has no signed-form artifact behind it, so there is no
- * legitimate channel to even transiently cache a CVV for it. If this card
- * is later used for a supplier charge, the agent obtains the CVV directly
- * from the customer for that call, same as any other card-not-present
- * phone transaction — never something this CRM stores or reveals.
+ * submission. Compass Tools never collects, caches or stores a card security
+ * code (CVV/CVC) for any card — see docs/PAYMENT_ARCHITECTURE.md.
  */
 export async function addContactPaymentMethod(input: z.infer<typeof addCardSchema>) {
   const data = addCardSchema.parse(input);
@@ -129,9 +123,8 @@ const editCardSchema = z.object({
 
 /**
  * Edit a payment method's cardholder name/expiration, and optionally
- * replace the PAN via secure re-entry. Never touches CVV in any way — there
- * is no CVV to "keep" or "update"; editing a card must never surface a
- * historical CVV value merely because the record is being edited (§9).
+ * replace the PAN via secure re-entry. There is no security code anywhere in
+ * this app, so editing a card can never surface one.
  */
 export async function editPaymentMethod(input: z.infer<typeof editCardSchema>) {
   const data = editCardSchema.parse(input);

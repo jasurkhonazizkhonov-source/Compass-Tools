@@ -24,11 +24,6 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-const destroyCvvAuthorizationsForAccount = vi.fn();
-vi.mock("@/server/security/cvv-cache", () => ({
-  destroyCvvAuthorizationsForAccount: (...args: [string]) => destroyCvvAuthorizationsForAccount(...args),
-}));
-
 beforeEach(() => {
   accounts = new Map();
   cookieValue = undefined;
@@ -65,27 +60,6 @@ describe("getCurrentAccount — real session validation, no fallback-to-admin", 
     cookieValue = "tok-abc";
     const { getCurrentAccount } = await import("../dev-session");
     expect(await getCurrentAccount()).toBeNull();
-  });
-
-  it("destroys the account's active CVV authorization state the moment its expired session is lazily detected", async () => {
-    accounts.set("admin-1", {
-      id: "admin-1",
-      activeSessionId: "tok-abc",
-      sessionCreatedAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
-      status: "ACTIVE",
-    });
-    cookieValue = "tok-abc";
-    const { getCurrentAccount } = await import("../dev-session");
-    await getCurrentAccount();
-    expect(destroyCvvAuthorizationsForAccount).toHaveBeenCalledWith("admin-1");
-  });
-
-  it("does NOT destroy CVV authorization state for a session that is still valid", async () => {
-    accounts.set("admin-1", { id: "admin-1", activeSessionId: "tok-abc", sessionCreatedAt: new Date(), status: "ACTIVE" });
-    cookieValue = "tok-abc";
-    const { getCurrentAccount } = await import("../dev-session");
-    await getCurrentAccount();
-    expect(destroyCvvAuthorizationsForAccount).not.toHaveBeenCalled();
   });
 
   it("returns null for a token that was valid but has since been superseded by a newer login on another device", async () => {

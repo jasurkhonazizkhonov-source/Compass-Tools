@@ -1,7 +1,6 @@
 import { cache } from "react";
 import { cookies } from "next/headers";
 import { prisma } from "@/lib/prisma";
-import { destroyCvvAuthorizationsForAccount } from "@/server/security/cvv-cache";
 
 // Server-side session lifecycle for the real Google-authenticated login
 // (see src/app/login/page.tsx, src/server/actions/google-auth.ts, and
@@ -60,10 +59,7 @@ export function isSessionExpired(sessionCreatedAt: Date | null): boolean {
 // code path updates the account and then re-reads it expecting fresh data
 // within the same request (establishSession takes an explicit accountId
 // and never re-reads, signOut queries by token directly rather than
-// through this function, and heartbeat reads once before writing). The
-// expiry side effect below (destroyCvvAuthorizationsForAccount) is an
-// idempotent in-memory cleanup, so running it once per request instead of
-// once per call is equivalent.
+// through this function, and heartbeat reads once before writing).
 export const getCurrentAccount = cache(async () => {
   const cookieStore = await cookies();
   const token = cookieStore.get(DEV_ACCOUNT_COOKIE)?.value;
@@ -75,11 +71,8 @@ export const getCurrentAccount = cache(async () => {
     // Lazily-detected expiry — the same "next request notices it" model
     // proxy.ts already relies on for redirecting an expired session (there
     // is no background timer in this dev architecture). The moment any
-    // request surfaces an expired session for this account, destroy any
-    // supplier-payment CVV authorization it was actively holding, per the
-    // "invalidate privileged payment access / destroy temporary CVV state
-    // on expiry" requirement.
-    destroyCvvAuthorizationsForAccount(account.id);
+    // request surfaces an expired session for this account it is treated as
+    // signed out.
     return null;
   }
 

@@ -54,6 +54,7 @@
     "20260905000000_booking_terms_version",
     "20260905000100_exchange_proposal_versioning",
     "20260906000000_rate_limit_counter",
-    "20260925000000_inquiry_source"
+    "20260925000000_inquiry_source",
+    "20260925010000_quote_send_claim_and_health_events"
   ]
 }

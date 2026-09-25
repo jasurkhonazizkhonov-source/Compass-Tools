@@ -39,14 +39,53 @@ describe("GET /api/health", () => {
       const { resetHealthCacheForTests } = await import("@/lib/health-check");
       resetHealthCacheForTests();
       const { GET } = await import("../route");
-      expect((await (await GET()).json()).readiness).toEqual({ bookingCardStorage: "available", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
+      expect((await (await GET()).json()).readiness).toEqual({ bookingCardStorage: "available", paymentProvider: "not_configured", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
 
       process.env.APP_ENV = "production";
       delete process.env.TRUSTED_PROXY;
       resetHealthCacheForTests();
       const body = await (await GET()).json();
-      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", signerIpCapture: "disabled", schema: "current", pendingMigrations: 0 });
+      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", paymentProvider: "not_configured", signerIpCapture: "disabled", schema: "current", pendingMigrations: 0 });
       expect(JSON.stringify(body)).not.toContain("vercel");
+    } finally {
+      for (const [k, v] of Object.entries(original)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("APP_ENV cannot relabel a Vercel production deployment: card storage stays unavailable even with APP_ENV=staging", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const original = { APP_ENV: process.env.APP_ENV, VERCEL_ENV: process.env.VERCEL_ENV };
+    try {
+      process.env.APP_ENV = "staging";
+      process.env.VERCEL_ENV = "production";
+      const { resetHealthCacheForTests } = await import("@/lib/health-check");
+      resetHealthCacheForTests();
+      const { GET } = await import("../route");
+      expect((await (await GET()).json()).readiness.bookingCardStorage).toBe("unavailable");
+    } finally {
+      for (const [k, v] of Object.entries(original)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
+  it("on Vercel the signer-IP capture is reported enabled without any TRUSTED_PROXY setting; an explicit none turns it off", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const original = { TRUSTED_PROXY: process.env.TRUSTED_PROXY, VERCEL: process.env.VERCEL };
+    try {
+      delete process.env.TRUSTED_PROXY;
+      process.env.VERCEL = "1";
+      const { resetHealthCacheForTests } = await import("@/lib/health-check");
+      resetHealthCacheForTests();
+      const { GET } = await import("../route");
+      expect((await (await GET()).json()).readiness.signerIpCapture).toBe("enabled");
+      process.env.TRUSTED_PROXY = "none";
+      resetHealthCacheForTests();
+      expect((await (await GET()).json()).readiness.signerIpCapture).toBe("disabled");
     } finally {
       for (const [k, v] of Object.entries(original)) {
         if (v === undefined) delete process.env[k];

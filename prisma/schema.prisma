@@ -805,6 +805,7 @@ model Quote {
   // whoever sent the flight option, not whoever currently owns the lead.
   sentByAgentId String?
   sentByAgent   Account? @relation("QuoteSentBy", fields: [sentByAgentId], references: [id])
+  sendClaims    QuoteSendClaim[]
 
   status QuoteStatus @default(DRAFT)
   source QuoteSource @default(MANUAL)
@@ -2004,4 +2005,53 @@ model MarketingCampaignSend {
   @@unique([campaignId, subscriberId])
   @@index([campaignId])
   @@index([subscriberId])
+}
+
+// Server-side idempotency for sendQuote. One row per (quote, recipient
+// address); a send atomically "claims" its row and any identical send inside
+// the dedupe window (double click, retried request, two tabs) is refused
+// instead of emailing the customer twice. A LATER, deliberate resend simply
+// finds the claim expired and goes through. Sending to two DIFFERENT
+// addresses uses two rows, so a legitimate multi-recipient send is not
+// blocked. Holds no customer content — just ids, a lowercased address and a
+// timestamp. See src/server/actions/quotes.ts and src/lib/quote-send-rules.ts.
+model QuoteSendClaim {
+  quoteId        String
+  quote          Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  recipientEmail String
+  claimedAt      DateTime @default(now())
+
+  @@id([quoteId, recipientEmail])
+}
+
+enum HealthSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+// Structured System Health incident. One OPEN row per fingerprint (enforced
+// by a partial unique index created in the migration — Prisma cannot express
+// a partial index): repeats of the same problem bump lastSeenAt /
+// occurrenceCount instead of adding rows, and a recovery sets resolvedAt.
+// `metadata` is sanitized before it is stored (see
+// src/server/system/health-events.ts) — never card data, tokens, cookies,
+// connection strings or URLs. Resolved rows are pruned after a retention
+// window. Admin-only surface.
+model HealthEvent {
+  id              String         @id @default(cuid())
+  fingerprint     String
+  type            String
+  severity        HealthSeverity
+  category        String
+  message         String
+  firstSeenAt     DateTime       @default(now())
+  lastSeenAt      DateTime       @default(now())
+  occurrenceCount Int            @default(1)
+  resolvedAt      DateTime?
+  metadata        Json?
+
+  @@index([resolvedAt, severity, lastSeenAt])
+  @@index([fingerprint])
+  @@index([lastSeenAt])
 }

@@ -11,8 +11,8 @@ A **masked selector only**. `getPreviousPaymentMethodsForContact`
 (`src/server/queries/bookings.ts`) returns, per previously-used card:
 cardholder name, last 4 digits, card brand, expiry month/year. Selecting
 one autofills **only those fields** into the new card form. The customer
-must always manually re-type the full card number and CVV — neither is
-ever returned by this query, offered in the UI, or autofilled.
+must always manually re-type the full card number — it is
+never returned by this query, offered in the UI, or autofilled.
 
 ## Why the full card number is not autofilled
 
@@ -51,9 +51,8 @@ seam for it; no code in this pass narrows or works around that seam.
 ## What this feature does NOT do
 
 - Never returns, logs, or transmits a full card number for this purpose.
-- Never returns, stores, or offers a CVV for autofill (CVV is never
-  persisted anywhere in this app outside a short-lived in-memory cache
-  tied to the original charge — see `cvv-cache.ts`).
+- Never returns, stores, or offers a CVV for autofill. **Compass Tools never
+  collects or stores a CVV at all** — see `docs/PAYMENT_ARCHITECTURE.md`.
 - Never sends card data to customer emails, internal notifications, or
   analytics.
 - Only returns cards belonging to the requesting customer's own

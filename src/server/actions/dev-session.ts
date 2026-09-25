@@ -6,7 +6,6 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { DEV_ACCOUNT_COOKIE, SESSION_MAX_AGE_MS, getCurrentAccount } from "@/lib/dev-session";
-import { destroyCvvAuthorizationsForAccount } from "@/server/security/cvv-cache";
 
 const isProd = process.env.NODE_ENV === "production";
 
@@ -25,11 +24,6 @@ const isProd = process.env.NODE_ENV === "production";
  */
 export async function establishSession(accountId: string) {
   const token = randomBytes(32).toString("base64url");
-
-  // A fresh login is a fresh authentication boundary — any supplier-payment
-  // CVV authorization this account was holding from a previous session
-  // (this device or another) must not carry forward into the new one.
-  destroyCvvAuthorizationsForAccount(accountId);
 
   await prisma.account.update({
     where: { id: accountId },
@@ -60,15 +54,10 @@ export async function signOut() {
   const token = cookieStore.get(DEV_ACCOUNT_COOKIE)?.value;
 
   if (token) {
-    const account = await prisma.account.findUnique({ where: { activeSessionId: token }, select: { id: true } });
     await prisma.account.updateMany({
       where: { activeSessionId: token },
       data: { activeSessionId: null, sessionCreatedAt: null },
     });
-    // Terminate any active supplier-payment CVV authorization this account
-    // was holding — sign-out must clear temporary payment-authorization
-    // state, not just the login session itself.
-    if (account) destroyCvvAuthorizationsForAccount(account.id);
   }
 
   cookieStore.delete(DEV_ACCOUNT_COOKIE);

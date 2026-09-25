@@ -6,7 +6,6 @@ import {
   buildBookingConfirmationEmail,
   buildCancellationScheduledEmail,
   buildCancellationConfirmedEmail,
-  buildCvvRecollectionEmail,
   buildBookingSignedNotificationEmail,
   buildMarketingCampaignEmail,
   renderPricingHtml,
@@ -978,20 +977,6 @@ describe("customer email subjects append the actual configured company name", ()
       company: DYNAMIC_COMPANY,
     });
     expect(subject).toBe(`Cancellation Confirmed — 1 Flight Segment | ${DYNAMIC_COMPANY.name}`);
-  });
-
-  it("never double-appends when a subject already names the company (buildCvvRecollectionEmail's existing em-dash suffix)", () => {
-    const { subject } = buildCvvRecollectionEmail({
-      customerFirstName: "Jane",
-      agentFullName: "Agent Smith",
-      cardBrand: "Visa",
-      last4: "4242",
-      confirmUrl: "https://example.com/cvv",
-      company: DYNAMIC_COMPANY,
-    });
-    expect(subject).toBe(`Please confirm your card's security code — ${DYNAMIC_COMPANY.name}`);
-    // Exactly one occurrence of the company name — not duplicated.
-    expect(subject.split(DYNAMIC_COMPANY.name).length - 1).toBe(1);
   });
 
   it("internal notification subjects are never touched by the customer-subject suffix", () => {

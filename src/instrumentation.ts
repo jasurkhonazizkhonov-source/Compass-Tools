@@ -25,3 +25,13 @@ export async function register() {
     });
   }, POLL_INTERVAL_MS);
 }
+
+// Unhandled server errors (500s) become de-duplicated System Health incidents
+// — see src/server/system/server-errors.ts for exactly what is (and is not)
+// recorded. Node runtime only; awaited, as Next requires; never throws (the
+// recorder swallows its own failures).
+export async function onRequestError(err: unknown, _request: unknown, context: { routePath?: unknown; routeType?: unknown }) {
+  if (process.env.NEXT_RUNTIME === "edge") return;
+  const { recordServerError } = await import("@/server/system/server-errors");
+  await recordServerError(err, context);
+}

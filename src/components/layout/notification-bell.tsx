@@ -3,7 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { formatDistanceToNow } from "date-fns";
-import { Bell, CheckCheck, AlertTriangle, Clock, UserPlus, UserMinus, Eye, Mail, Inbox } from "lucide-react";
+import { Bell, CheckCheck, AlertTriangle, Clock, UserPlus, UserMinus, Eye, Mail, Inbox, HeartPulse } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -71,6 +71,8 @@ export function NotificationBell({ accountId }: { accountId: string | undefined 
       // NEW_SUBSCRIBER has no per-row detail page to link to — the
       // Subscriptions list itself is "the appropriate section".
       else if (n.type === "NEW_SUBSCRIBER") router.push("/subscriptions");
+      // A System Health alert (Admin-only) — the "Review System Health" action.
+      else if (n.type === "SYSTEM_HEALTH") router.push("/system-health");
     });
   }
 
@@ -136,6 +138,8 @@ export function NotificationBell({ accountId }: { accountId: string | undefined 
                 <Eye className="h-3.5 w-3.5 text-info shrink-0 mt-0.5" />
               ) : n.type === "NEW_INQUIRY" || n.type === "NEW_CRM_INQUIRY" ? (
                 <Inbox className="h-3.5 w-3.5 text-info shrink-0 mt-0.5" />
+              ) : n.type === "SYSTEM_HEALTH" ? (
+                <HeartPulse className="h-3.5 w-3.5 text-destructive shrink-0 mt-0.5" />
               ) : n.type === "NEW_SUBSCRIBER" ? (
                 <Mail className="h-3.5 w-3.5 text-success shrink-0 mt-0.5" />
               ) : (

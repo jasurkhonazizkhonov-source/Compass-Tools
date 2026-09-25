@@ -12,10 +12,10 @@ import { resolveExchangeRate, convertBookingPricing, convertAmount } from "@/lib
 import { type EmailPaymentMethod } from "@/server/email/templates";
 import { transitionQuoteStatus, notifyQuoteActivity } from "@/server/quote-status";
 import { getPaymentVault } from "@/server/security/payment-vault";
-import { isValidCardNumber, isValidExpiry, isValidCvvFormat, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
+import { recordHealthEvent } from "@/server/system/health-events";
+import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
 import { getClientIp } from "@/lib/request-ip";
 import { recordIpCapture } from "@/server/security/ip-capture";
-import { cacheCvv } from "@/server/security/cvv-cache";
 import { passengerSchema } from "@/server/actions/booking-schema";
 import { sendBookingSignedNotification } from "@/server/booking-notification";
 import { resolveBaseUrl } from "@/lib/company-config";
@@ -102,16 +102,16 @@ export async function trackBookingFormStarted(token: string) {
 }
 
 // One customer-entered card, as part of a (possibly multi-card) payment
-// split. cardNumber/cvv exist only transiently inside submitBooking()'s own
-// function body — see the loop below for exactly where each is used and
-// discarded; neither is ever written to a Prisma call, logged, or included
-// in any error message.
+// split. There is deliberately NO security-code field: Compass Tools never
+// asks for, receives, caches or stores a CVV/CVC. cardNumber exists only
+// transiently inside submitBooking()'s own function body and is never
+// logged or included in any error message. (An unknown extra key a stale
+// client still sends is dropped by zod's default object stripping.)
 const cardEntrySchema = z.object({
   cardholderName: z.string().min(1),
   cardNumber: z.string().min(12).max(23), // allows spaces; stripped before validation
   expiryMonth: z.number().int().min(1).max(12),
   expiryYear: z.number().int(),
-  cvv: z.string().min(3).max(4),
   amount: z.number().positive(),
 });
 
@@ -162,6 +162,14 @@ async function bestEffort(label: string, step: () => Promise<unknown>): Promise<
     await step();
   } catch (err) {
     console.error(`[booking] POST_COMMIT_STEP_FAILED step=${label} (${safeErrorTag(err)})`);
+    await recordHealthEvent({
+      type: "BOOKING_POST_COMMIT_STEP_FAILED",
+      category: "bookings",
+      severity: "WARNING",
+      discriminator: label,
+      message: `A follow-up step (${label}) failed after a booking was saved. The booking itself is intact.`,
+      metadata: { step: label, failure: safeErrorTag(err) },
+    });
   }
 }
 
@@ -229,14 +237,10 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
 
   // Server-side payment validation — the authoritative check, independent
   // of whatever the client already validated. Error messages are always
-  // generic; never echo any part of any submitted card number or CVV.
-  // preparedCards holds every field that is permanently retained (per the
-  // approved architecture). The CVV is deliberately kept in a SEPARATE
-  // array, cvvsByIndex, that never touches preparedCards, never reaches a
-  // Prisma call, and is only ever used once — to seed the transient
-  // authorization cache (cvv-cache.ts) after the commit below.
+  // generic; never echo any part of any submitted card number.
+  // preparedCards holds every field that is retained; no security code is
+  // ever part of it — see cardEntrySchema.
   const preparedCards: Array<{ id: string; cardholderName: string; encryptedPan: string; last4: string; cardBrand: string | undefined; expiryMonth: number; expiryYear: number; amount: number }> = [];
-  const cvvsByIndex: string[] = [];
   for (const card of parsed.paymentMethods) {
     const cardNumberDigits = digitsOnly(card.cardNumber);
     const cardBrand = detectCardBrand(cardNumberDigits);
@@ -244,9 +248,6 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
       return { ok: false, error: "Payment information could not be processed" };
     }
     if (!isValidExpiry(card.expiryMonth, card.expiryYear)) {
-      return { ok: false, error: "Payment information could not be processed" };
-    }
-    if (!isValidCvvFormat(card.cvv, cardBrand)) {
       return { ok: false, error: "Payment information could not be processed" };
     }
     let encryptedPan: string;
@@ -257,11 +258,15 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
       // missing CARD_ENCRYPTION_KEY. A configuration problem, not the
       // customer's mistake — nothing has been written yet.
       console.error(`[booking] CARD_VAULT_UNAVAILABLE (${safeErrorTag(err)})`);
+      await recordHealthEvent({
+        type: "BOOKING_PAYMENT_UNAVAILABLE",
+        category: "payment",
+        severity: "CRITICAL",
+        message: "A customer tried to finish a booking but card capture is unavailable (no payment provider is integrated). Nothing was charged or stored.",
+      });
       return { ok: false, error: "We couldn't securely process your payment details right now. Nothing was charged and no booking was recorded. Please try again shortly or contact your travel agent." };
     }
     preparedCards.push({
-      // Explicit id so the CVV cache can be keyed to exactly this row
-      // without a read-back — see the cvv seeding loop below.
       id: crypto.randomUUID(),
       cardholderName: card.cardholderName,
       encryptedPan,
@@ -271,7 +276,6 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
       expiryYear: card.expiryYear,
       amount: card.amount,
     });
-    cvvsByIndex.push(card.cvv);
   }
 
   // Server recomputes the total from the quote's own stored USD pricing —
@@ -448,6 +452,15 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
     // outcome is unknown): log the safe category, then check whether the
     // transaction actually committed before telling the customer anything.
     console.error(`[booking] SIGNING_TRANSACTION_FAILED (${safeErrorTag(err)})`);
+    await runAfterResponse(async () => {
+      await recordHealthEvent({
+        type: "BOOKING_SIGNING_FAILED",
+        category: "bookings",
+        severity: "CRITICAL",
+        message: "A customer's booking submission hit a database/transaction error. The outcome was re-checked before answering the customer.",
+        metadata: { failure: safeErrorTag(err) },
+      });
+    });
     let committed: Awaited<ReturnType<typeof findBookingForReplay>> = null;
     try {
       committed = await findBookingForReplay(quote.id, parsed);
@@ -459,14 +472,6 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
   }
 
   // ── Committed. Nothing below can fail the booking. ─────────────────────
-  // Seed each card's transient CVV authorization cache (in-memory only —
-  // cvv-cache.ts is the ONLY write of a CVV anywhere, and never a Prisma
-  // call). Keyed by the exact id used in the create above, from the same
-  // loop index, so a CVV can never be cached under another card's id.
-  for (let i = 0; i < preparedCards.length; i++) {
-    cacheCvv(preparedCards[i].id, cvvsByIndex[i]);
-  }
-
   // Correlation log for the signing event itself (never the raw IP — only
   // whether one was captured; see request-ip.ts / ip-encryption.ts).
   console.log(

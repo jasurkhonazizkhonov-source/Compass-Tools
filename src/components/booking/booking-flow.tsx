@@ -23,7 +23,7 @@ import { calculatePricing, GRATUITY_PRESETS } from "@/lib/pricing";
 import { buildPricingSnapshot, formatMoney, type SupportedCurrency } from "@/lib/currency";
 import { normalizePhoneNumber, type CountryCode } from "@/lib/phone";
 import { submitBooking } from "@/server/actions/booking";
-import { isValidCardNumber, isValidExpiry, isValidCvvFormat, detectCardBrand, lastFour } from "@/lib/card-validation";
+import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour } from "@/lib/card-validation";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import type { AirlineOption } from "@/server/queries/reference-data";
 
@@ -178,11 +178,11 @@ export function BookingFlow({
     billingCountry: string;
   }>;
   /** Pass 25 §3-6/§14-16 — masked-only selector: cardholder name + last4 +
-   * brand + expiry. NEVER a full card number or CVV — see
+   * brand + expiry. NEVER a full card number — and no CVV exists anywhere — see
    * docs/PAYMENT_AUTOFILL_SECURITY.md for exactly why the full number
    * isn't (and can't safely be) offered here. Selecting an option
    * autofills only the customer-safe fields already in this list; the
-   * card number and CVV always require manual entry. */
+   * card number always requires manual entry. */
   previousPaymentMethods?: Array<{
     id: string;
     cardholderName: string;
@@ -291,9 +291,7 @@ export function BookingFlow({
       const label = cards.length > 1 ? `Payment Method ${i + 1}: ` : "";
       if (!card.cardholderName.trim()) return `${label}Cardholder name is required`;
       if (!isValidCardNumber(card.cardNumber)) return `${label}Please enter a valid card number`;
-      const brand = detectCardBrand(card.cardNumber);
       if (!isValidExpiry(Number(card.expiryMonth), Number(card.expiryYear))) return `${label}Please enter a valid expiration date`;
-      if (!isValidCvvFormat(card.cvv, brand)) return `${label}Please enter a valid CVV`;
       if (amountFor(card) <= 0) return `${label}Please enter an amount to charge`;
     }
     if (Math.abs(remaining) > 0.01) {
@@ -321,9 +319,9 @@ export function BookingFlow({
 
   // Pass 25 §3-6/§14-16 — autofills ONLY the customer-safe fields already
   // in the selector list (cardholder name + expiry). The card number and
-  // CVV are never touched — never returned by the query, so there is
-  // nothing to autofill them WITH; the customer always types those in
-  // manually. See docs/PAYMENT_AUTOFILL_SECURITY.md.
+  // card number is never touched — never returned by the query, so there is
+  // nothing to autofill it WITH; the customer always types it in
+  // manually. (No CVV is collected at all.) See docs/PAYMENT_AUTOFILL_SECURITY.md.
   function applyPreviousPaymentMethod(index: number, option: NonNullable<typeof previousPaymentMethods>[number]) {
     setCards((prev) =>
       prev.map((c, i) =>
@@ -393,7 +391,6 @@ export function BookingFlow({
             cardNumber: c.cardNumber,
             expiryMonth: Number(c.expiryMonth),
             expiryYear: Number(c.expiryYear),
-            cvv: c.cvv,
             amount: amountFor(c),
           })),
           paymentConsent: true,
@@ -427,10 +424,10 @@ export function BookingFlow({
         return;
       }
 
-      // The CVV (and, defensively, the full card number) never need to
+      // The full card number never needs to
       // exist in this component's state again after a definitive result,
       // whether it succeeded or was rejected.
-      setCards((prev) => prev.map((c) => ({ ...c, cardNumber: "", cvv: "" })));
+      setCards((prev) => prev.map((c) => ({ ...c, cardNumber: "" })));
 
       if (result.ok) {
         router.push(`/quote/${token}/confirmation`);

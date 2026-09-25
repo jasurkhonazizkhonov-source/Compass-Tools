@@ -6,7 +6,7 @@ import { getContactDetail, contactRecordExists } from "@/server/queries/contacts
 import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canRevealPaymentMethod, canManageContactPaymentMethods, canAuthorizeSupplierPayment, canDeleteContact, canViewContacts } from "@/lib/permissions";
+import { canReassignLeads, canRevealPaymentMethod, canManageContactPaymentMethods, canDeleteContact, canViewContacts } from "@/lib/permissions";
 import { CustomerInfoCard } from "@/components/leads/customer-info-card";
 import { ReassignContactDialog } from "@/components/contacts/reassign-contact-dialog";
 import { PaymentMethodsPanel } from "@/components/contacts/payment-methods-panel";
@@ -207,7 +207,6 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
                   paymentMethods={contact.paymentMethods}
                   canReveal={canRevealPaymentMethod(currentAccount)}
                   canManage={canManageContactPaymentMethods(currentAccount)}
-                  canAuthorizeSupplierPayment={canAuthorizeSupplierPayment(currentAccount)}
                 />
               </TabsContent>
 
