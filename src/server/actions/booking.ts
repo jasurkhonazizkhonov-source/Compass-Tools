@@ -3,7 +3,6 @@
 import { z } from "zod";
 import { customAlphabet } from "nanoid";
 import { headers } from "next/headers";
-import { after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
@@ -24,6 +23,7 @@ import { LEGAL_CONTENT_VERSION } from "@/lib/legal-content";
 import { checkPublicRateLimitFromRequest, RATE_LIMITS } from "@/server/security/rate-limit";
 import { BOOKABLE_QUOTE_STATUSES, isQuoteBookable } from "@/lib/exchange-proposal";
 import { safeErrorTag } from "@/lib/safe-error-log";
+import { runAfterResponse } from "@/lib/run-after-response";
 
 const bookingRefAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 7);
 
@@ -153,17 +153,6 @@ class QuoteNoLongerBookableError extends Error {}
 
 const GENERIC_INCOMPLETE_MESSAGE =
   "We couldn't confirm your booking right now. Nothing has been lost — please wait a minute and reload this page. If your booking was received you'll be taken to your confirmation; otherwise you can safely try again.";
-
-/** Runs non-critical follow-up work after the response has been sent. Falls
- * back to running inline when there is no request scope (unit tests,
- * scripts) so the work is never silently dropped. */
-async function runAfterResponse(task: () => Promise<void>): Promise<void> {
-  try {
-    after(task);
-  } catch {
-    await task();
-  }
-}
 
 /** One follow-up step: its failure is logged with a safe tag (class name /
  * Prisma code only, never the message) and NEVER propagated — by the time

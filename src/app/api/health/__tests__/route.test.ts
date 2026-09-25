@@ -29,6 +29,31 @@ describe("GET /api/health", () => {
     expect(body.pool).toEqual({ max: 5, total: 2, idle: 1, waiting: 0 });
   });
 
+  it("reports configuration readiness for the booking flow (never values): card storage and signer-IP capture", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const original = { APP_ENV: process.env.APP_ENV, TRUSTED_PROXY: process.env.TRUSTED_PROXY };
+    try {
+      process.env.APP_ENV = "staging";
+      process.env.TRUSTED_PROXY = "vercel";
+      const { resetHealthCacheForTests } = await import("@/lib/health-check");
+      resetHealthCacheForTests();
+      const { GET } = await import("../route");
+      expect((await (await GET()).json()).readiness).toEqual({ bookingCardStorage: "available", signerIpCapture: "enabled" });
+
+      process.env.APP_ENV = "production";
+      delete process.env.TRUSTED_PROXY;
+      resetHealthCacheForTests();
+      const body = await (await GET()).json();
+      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", signerIpCapture: "disabled" });
+      expect(JSON.stringify(body)).not.toContain("vercel");
+    } finally {
+      for (const [k, v] of Object.entries(original)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+  });
+
   it("returns 503 with only a safe error category — never the message, which can embed connection detail", async () => {
     queryRaw.mockRejectedValue(new Error("connect ECONNREFUSED postgres://user:s3cret@db.internal:5432/app"));
     const { GET } = await import("../route");

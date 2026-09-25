@@ -22,6 +22,9 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 const TAG = `lq-${Date.now()}`;
 
+// getMyLeadOffer schedules its stranded-lead pickup via after(); with no
+// request scope in a test process runAfterResponse runs it inline.
+
 describe.skipIf(!enabled)("lead queue under real concurrency (PostgreSQL)", () => {
   let prisma: typeof import("@/lib/prisma").prisma;
   let queue: typeof import("../lead-queue");
@@ -182,6 +185,39 @@ describe.skipIf(!enabled)("lead queue under real concurrency (PostgreSQL)", () =
     const late = await queue.acceptLeadOffer(lead.id);
     expect(late.ok).toBe(false);
     expect((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).assignedAgentId).toBeNull();
+  });
+
+  it("a STRANDED website lead (nobody was accepting when it arrived) is picked up by an active agent's next offer poll — no re-join or cron needed", async () => {
+    const { resetPendingPickupThrottleForTests } = await import("../../lead-pickup-throttle");
+    resetPendingPickupThrottleForTests();
+    const { agents, makeLead } = await scenario(1, { pausedCount: 0 });
+    // The lead exists but was never offered (e.g. the inline distribution lost a race, or ran while agents were paused).
+    const lead = await makeLead();
+    expect(await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).toMatchObject({ offeredToId: null, assignedAgentId: null });
+
+    currentAccount = agents[0];
+    const firstPoll = await queue.getMyLeadOffer(); // nothing live yet -> triggers the pickup
+    expect(firstPoll).toBeNull();
+
+    expect((await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } })).offeredToId).toBe(agents[0].id);
+    const secondPoll = await queue.getMyLeadOffer();
+    expect(secondPoll?.leadId).toBe(lead.id);
+  });
+
+  it("a lead is never dropped when workers are only momentarily busy: a burst larger than the pool still ends with every lead offered or pending, none lost or double-offered", async () => {
+    const { agents, makeLead } = await scenario(4);
+    const leads = await Promise.all(Array.from({ length: 12 }, () => makeLead()));
+
+    const results = await Promise.all(leads.map((l) => queue.distributeNewWebsiteLead(l.id)));
+
+    // 4 agents can each hold one live offer; the rest must stay pending, not vanish.
+    const offered = await prisma.lead.findMany({ where: { id: { in: leads.map((l) => l.id) }, offeredToId: { not: null } } });
+    expect(offered).toHaveLength(4);
+    expect(new Set(offered.map((l) => l.offeredToId)).size).toBe(4); // one live offer per agent
+    expect(new Set(offered.map((l) => l.offeredToId))).toEqual(new Set(agents.map((a) => a.id)));
+    const pending = await prisma.lead.count({ where: { id: { in: leads.map((l) => l.id) }, offeredToId: null, assignedAgentId: null, queueDistributedAt: null } });
+    expect(pending).toBe(8);
+    expect(results.filter((r) => r.offered)).toHaveLength(4);
   });
 
   it("many concurrent polls of an expired offer (every open tab sweeping at once) advance it exactly once", async () => {

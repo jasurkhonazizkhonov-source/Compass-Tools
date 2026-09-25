@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { DEV_ACCOUNT_COOKIE, isSessionExpired } from "@/lib/dev-session";
+import { DEV_ACCOUNT_COOKIE, isPlausibleSessionToken, isSessionExpired } from "@/lib/dev-session";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 import {
   canViewDashboard,
@@ -61,7 +61,9 @@ const ROUTE_GUARDS: Array<{ prefix: string; allowed: (role: AccountRole | undefi
 export async function proxy(request: NextRequest) {
   const token = request.cookies.get(DEV_ACCOUNT_COOKIE)?.value;
 
-  if (token) {
+  // A cookie that cannot be a real session token skips the database lookup
+  // entirely and falls through to the plain /login redirect below.
+  if (isPlausibleSessionToken(token)) {
     // Real bug found and fixed: this lookup — gating every single protected
     // CRM route — used to have no error handling at all. It runs on every
     // navigation, before any page/layout renders and before any React error

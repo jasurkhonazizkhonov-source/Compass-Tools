@@ -198,7 +198,7 @@ const fakePrismaClient: any = {
       let matches = [...leads.values()].filter((l) => matchesWhere(l, where));
       if (orderBy) matches.sort((a, b) => (orderBy.createdAt === "asc" ? a.createdAt.getTime() - b.createdAt.getTime() : b.createdAt.getTime() - a.createdAt.getTime()));
       if (take) matches = matches.slice(0, take);
-      return matches.map((l) => ({ ...l }));
+      return matches.map((l) => ({ ...l, contact: { companyId: l.companyId ?? DEFAULT_COMPANY_ID } }));
     }),
   },
   // Pass 30 — the Contact-ownership claim acceptLeadOffer now performs (see
@@ -222,12 +222,27 @@ const fakePrismaClient: any = {
     }),
   },
   $transaction: vi.fn(async (fn: (tx: typeof fakePrismaClient) => unknown) => fn(fakePrismaClient)),
-  // Pass 22 fix — production's raw SQL now interpolates companyId first
-  // (`a."companyId" = ${companyId}`), then leadId, then now; this fake's
-  // parameter order mirrors that exactly.
-  $queryRaw: vi.fn(async (_strings: TemplateStringsArray, companyId: string, leadId: string, now: Date) => {
-    const picked = pickNextEligibleEntry(companyId, leadId, now);
-    return picked ? [{ id: picked.id, accountId: picked.accountId }] : [];
+  // offerLeadToNextWorker issues three raw queries (see its own comment on
+  // "lock FIRST, check AFTER"): the ordered candidate list, a per-candidate
+  // row lock, and a per-candidate "already holds a live offer?" check. The
+  // fake tells them apart by their SQL text and mirrors each one's rule.
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const sql = strings.join("?");
+    if (sql.includes("ORDER BY lqe")) {
+      const [companyId] = values as [string];
+      return effectiveActiveOrder(companyId).map((e) => ({ id: e.id, accountId: e.accountId }));
+    }
+    if (sql.includes("FOR UPDATE SKIP LOCKED")) {
+      const [entryId] = values as [string];
+      const entry = [...queueEntries.values()].find((e) => e.id === entryId);
+      return entry && entry.isActive ? [{ id: entry.id }] : [];
+    }
+    if (sql.includes('"offeredToId"')) {
+      const [accountId, leadId, now] = values as [string, string, Date];
+      const holder = [...leads.values()].find((l) => l.offeredToId === accountId && l.id !== leadId && l.offerExpiresAt && l.offerExpiresAt.getTime() > now.getTime());
+      return holder ? [{ id: holder.id }] : [];
+    }
+    throw new Error(`Unexpected raw query in fake: ${sql.slice(0, 80)}`);
   }),
 };
 
@@ -287,7 +302,7 @@ async function distributeAndAccept(leadId: string): Promise<DistributionResult> 
   return result;
 }
 
-type DistributionResult = { offered: true; accountId: string } | { offered: false; reason: "no_active_workers" | "already_assigned" | "not_a_website_lead" };
+type DistributionResult = { offered: true; accountId: string } | { offered: false; reason: "no_active_workers" | "already_assigned" | "not_a_website_lead" | "workers_busy" };
 
 describe("joinLeadQueue — role eligibility", () => {
   it("rejects TICKETING_AGENT server-side, even though nothing in the UI would normally call this", async () => {

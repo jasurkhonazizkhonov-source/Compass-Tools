@@ -19,6 +19,18 @@ import { destroyCvvAuthorizationsForAccount } from "@/server/security/cvv-cache"
 export const DEV_ACCOUNT_COOKIE = "compass_dev_account";
 export const SESSION_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
+// Session tokens are always randomBytes(32).toString("base64url") — 43
+// characters from [A-Za-z0-9_-] (see establishSession). A cookie that cannot
+// possibly be one (garbage, a NUL byte, megabytes of padding) is rejected
+// BEFORE any database lookup: it costs a bot nothing to send thousands of
+// those, and each one would otherwise be a wasted round trip (a NUL byte
+// even makes Postgres itself raise "invalid byte sequence"). The lower bound
+// is deliberately loose (4) — this is a shape filter, not a security check;
+// the database lookup remains the only authority on a token's validity.
+export function isPlausibleSessionToken(token: string | undefined): token is string {
+  return !!token && /^[A-Za-z0-9_-]{4,256}$/.test(token);
+}
+
 export function isSessionExpired(sessionCreatedAt: Date | null): boolean {
   if (!sessionCreatedAt) return true;
   return Date.now() - sessionCreatedAt.getTime() > SESSION_MAX_AGE_MS;
@@ -55,7 +67,7 @@ export function isSessionExpired(sessionCreatedAt: Date | null): boolean {
 export const getCurrentAccount = cache(async () => {
   const cookieStore = await cookies();
   const token = cookieStore.get(DEV_ACCOUNT_COOKIE)?.value;
-  if (!token) return null;
+  if (!isPlausibleSessionToken(token)) return null;
 
   const account = await prisma.account.findUnique({ where: { activeSessionId: token } });
   if (!account) return null; // token doesn't match any account's current session (never issued, signed out, or superseded by a newer login elsewhere)

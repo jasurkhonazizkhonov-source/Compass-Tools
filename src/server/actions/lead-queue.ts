@@ -6,6 +6,8 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
 import { isEligibleForAutoDistribution } from "@/lib/lead-distribution";
 import { getQueuePosition } from "@/server/queries/lead-queue";
+import { runAfterResponse } from "@/lib/run-after-response";
+import { shouldRunPendingPickup } from "@/server/lead-pickup-throttle";
 
 /** Worker opts into the lead-distribution queue. Idempotent — a worker can
  * only ever have one queue row (accountId is unique), reused across
@@ -77,7 +79,10 @@ export async function leaveLeadQueue() {
 
 type DistributionResult =
   | { offered: true; accountId: string }
-  | { offered: false; reason: "no_active_workers" | "already_assigned" | "not_a_website_lead" };
+  // "workers_busy": eligible workers exist but every one was locked by a
+  // sibling transaction for the whole retry window — the lead stays pending
+  // (never dropped) and is picked up by a later pass.
+  | { offered: false; reason: "no_active_workers" | "already_assigned" | "not_a_website_lead" | "workers_busy" };
 
 const OFFER_WINDOW_MS = 60_000;
 
@@ -124,8 +129,14 @@ const OFFER_WINDOW_MS = 60_000;
  * resolves the lead's own company (via its Contact) FIRST and filters the
  * candidate query to that company only.
  */
-const NO_WORKER_RETRY_ATTEMPTS = 5;
-const NO_WORKER_RETRY_DELAY_MS = 15;
+// Retried ONLY when eligible workers exist but are momentarily locked by
+// sibling transactions (a burst of leads). Each locked transaction spans a
+// few database round trips, so the wait is scaled to that (attempts x delay
+// grows to ~1.4s) rather than the old ~150ms, which gave up while workers
+// were merely busy. With no eligible worker at all there is nothing to wait
+// for and it returns immediately.
+const NO_WORKER_RETRY_ATTEMPTS = 8;
+const NO_WORKER_RETRY_DELAY_MS = 40;
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -155,26 +166,58 @@ async function offerLeadToNextWorker(leadId: string): Promise<DistributionResult
     // removed account's own LeadQueueEntry.isActive on removal (see
     // accounts.ts), but this is a second, independent check against the
     // Account row itself so a removed user can never receive a lead even
-    // if their queue row were ever left stale. The NOT EXISTS clause keeps
-    // a worker who's mid-countdown on a different lead from being offered
-    // a second one simultaneously — one live offer per worker at a time.
-    // a."companyId" = ${companyId} is the actual fix — see this function's
-    // doc comment for the vulnerability this closes.
-    const rows = await tx.$queryRaw<Array<{ id: string; accountId: string }>>`
+    // if their queue row were ever left stale. a."companyId" = ${companyId}
+    // is the actual cross-tenant fix — see this function's doc comment.
+    //
+    // ONE LIVE OFFER PER WORKER — lock FIRST, check AFTER. This used to be a
+    // single statement: candidate query + NOT EXISTS("worker already holds a
+    // live offer") + FOR UPDATE SKIP LOCKED. Postgres does not re-evaluate
+    // that NOT EXISTS subquery (a different table) after acquiring a row
+    // lock a sibling transaction has just released, so under a burst two
+    // transactions could both pick the same worker: the second passed the
+    // check against a snapshot taken BEFORE the first one's offer committed,
+    // then locked the row the moment the first released it — and the worker
+    // ended up with two live offers (reproduced with 6 simultaneous leads
+    // and 3 workers: 4-5 offers issued). Now: take the ordered candidate
+    // list, and for each, (1) lock its queue row with SKIP LOCKED, then
+    // (2) in a NEW statement, check for a live offer on another lead. Any
+    // transaction that offered this worker earlier committed BEFORE it
+    // released the lock we now hold, so the check is guaranteed to see it.
+    const candidates = await tx.$queryRaw<Array<{ id: string; accountId: string }>>`
       SELECT lqe."id", lqe."accountId" FROM "LeadQueueEntry" lqe
       JOIN "Account" a ON a."id" = lqe."accountId"
       WHERE lqe."isActive" = true AND a."status" = 'ACTIVE' AND a."companyId" = ${companyId}
         AND a."role" NOT IN ('TICKETING_AGENT', 'FLIGHT_EXPERT', 'MARKETING_AGENT')
-        AND NOT EXISTS (
-          SELECT 1 FROM "Lead" l
-          WHERE l."offeredToId" = lqe."accountId" AND l."id" != ${leadId} AND l."offerExpiresAt" > ${now}
-        )
       ORDER BY lqe."lastAssignedAt" ASC NULLS FIRST, lqe."joinedAt" ASC
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
+      LIMIT 25
     `;
-    const worker = rows[0];
-    if (!worker) return { offered: false as const, reason: "no_active_workers" as const };
+    let worker: { id: string; accountId: string } | undefined;
+    let sawLockedWorker = false;
+    for (const candidate of candidates) {
+      // Re-asserts isActive under the lock: a worker who paused after the
+      // candidate list was read is skipped, never offered a lead.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "LeadQueueEntry" WHERE "id" = ${candidate.id} AND "isActive" = true FOR UPDATE SKIP LOCKED
+      `;
+      if (locked.length === 0) {
+        sawLockedWorker = true; // held by a sibling transaction (or just paused)
+        continue;
+      }
+      const holdsLiveOffer = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "Lead"
+        WHERE "offeredToId" = ${candidate.accountId} AND "id" != ${leadId} AND "offerExpiresAt" > ${now}
+        LIMIT 1
+      `;
+      if (holdsLiveOffer.length > 0) continue; // legitimately mid-countdown on another lead
+      worker = candidate;
+      break;
+    }
+    if (!worker) {
+      // Nobody could be offered this lead just now. "workers_busy" only when
+      // some worker was merely locked by a sibling (worth retrying shortly);
+      // otherwise there is genuinely nobody available.
+      return { offered: false as const, reason: (sawLockedWorker ? "workers_busy" : "no_active_workers") as "workers_busy" | "no_active_workers" };
+    }
 
     const claimed = await tx.lead.updateMany({
       where: {
@@ -404,7 +447,22 @@ export async function getMyLeadOffer() {
     where: { offeredToId: account.id, assignedAgentId: null, offerExpiresAt: { gt: new Date() } },
     include: { contact: true, departureAirport: true, arrivalAirport: true },
   });
-  if (!lead) return null;
+  if (!lead) {
+    // Nothing live for this agent. A website lead may be stranded (created
+    // while everyone was busy or nobody was accepting) — nudge distribution,
+    // at most once per interval per instance, after the response so this
+    // poll stays as cheap as before. Best-effort: never affects this poll.
+    if (shouldRunPendingPickup()) {
+      await runAfterResponse(async () => {
+        try {
+          await distributePendingWebsiteLeads();
+        } catch (err) {
+          console.error(`[lead-queue] PENDING_PICKUP_FAILED (${err instanceof Error ? err.constructor.name : typeof err})`);
+        }
+      });
+    }
+    return null;
+  }
 
   return {
     leadId: lead.id,
@@ -428,7 +486,7 @@ export async function distributeNewWebsiteLead(leadId: string): Promise<Distribu
   let result: DistributionResult = { offered: false, reason: "no_active_workers" };
   for (let attempt = 0; attempt < NO_WORKER_RETRY_ATTEMPTS; attempt++) {
     result = await offerLeadToNextWorker(leadId);
-    if (result.offered || result.reason !== "no_active_workers") break;
+    if (result.offered || result.reason !== "workers_busy") break;
     if (attempt < NO_WORKER_RETRY_ATTEMPTS - 1) await sleep(NO_WORKER_RETRY_DELAY_MS * (attempt + 1));
   }
 
@@ -452,16 +510,24 @@ export async function distributePendingWebsiteLeads() {
     where: { source: "WEBSITE", assignedAgentId: null, queueDistributedAt: null, offeredToId: null },
     orderBy: { createdAt: "asc" },
     take: MAX_LEADS_PER_RUN,
-    select: { id: true },
+    select: { id: true, contact: { select: { companyId: true } } },
   });
 
   let distributed = 0;
+  // Workers are scoped per company, so "nobody to give this to right now" is
+  // a fact about ONE company: skip that company's remaining leads, but keep
+  // going for everyone else's. (This used to stop the whole scan at the
+  // first miss, letting one company's stranded lead block every lead behind
+  // it.)
+  const exhaustedCompanies = new Set<string>();
   for (const lead of pending) {
+    const companyId = lead.contact.companyId;
+    if (exhaustedCompanies.has(companyId)) continue;
     const result = await distributeNewWebsiteLead(lead.id);
     if (result.offered) {
       distributed++;
-    } else if (result.reason === "no_active_workers") {
-      break; // nobody to give the rest to right now either
+    } else if (result.reason === "no_active_workers" || result.reason === "workers_busy") {
+      exhaustedCompanies.add(companyId); // they stay pending
     }
   }
 

@@ -97,6 +97,29 @@ describe("proxy — CRM Inquiry (/get-in-touch) is Admin-only", () => {
   });
 });
 
+describe("proxy — implausible session cookies never reach the database", () => {
+  it.each([["garbage with spaces", "not a token!"], ["NUL byte", "abc%00defghijk"], ["oversized", "A".repeat(5000)], ["too short", "ab"]])(
+    "%s: redirects to /login without a database lookup",
+    async (_label, cookie) => {
+      const { proxy } = await import("../proxy");
+
+      const response = await proxy(makeRequest("/dashboard", cookie));
+
+      expect(response.headers.get("location")).toContain("/login");
+      expect(findUnique).not.toHaveBeenCalled();
+    }
+  );
+
+  it("a well-formed token (43-char base64url, as generated) is still looked up", async () => {
+    findUnique.mockResolvedValue(null);
+    const { proxy } = await import("../proxy");
+
+    await proxy(makeRequest("/dashboard", "A".repeat(43)));
+
+    expect(findUnique).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("proxy — matcher config", () => {
   it("does not list \"/\" — the public marketing homepage manages its own auth check and must not be redirected to /login", async () => {
     const { config } = await import("../proxy");
