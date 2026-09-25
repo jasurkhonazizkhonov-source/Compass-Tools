@@ -7,11 +7,12 @@ import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { deleteInquiry } from "@/server/actions/contact-inquiries";
+import type { InquirySource } from "@/generated/prisma/client";
 
 /** Part 3 — Admin-only, same ConfirmDialog pattern as SequenceDeleteButton.
  * Page-level admin gating already prevents any other role from ever
  * rendering this at all; the server action re-asserts admin independently. */
-export function InquiryDeleteButton({ inquiryId, name, redirectTo }: { inquiryId: string; name: string; redirectTo?: string }) {
+export function InquiryDeleteButton({ inquiryId, name, source, redirectTo }: { inquiryId: string; name: string; source: InquirySource; redirectTo?: string }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   return (
@@ -33,7 +34,7 @@ export function InquiryDeleteButton({ inquiryId, name, redirectTo }: { inquiryId
         confirmLabel="Delete Inquiry"
         onConfirm={async () => {
           try {
-            await deleteInquiry(inquiryId);
+            await deleteInquiry(inquiryId, source);
             toast.success("Inquiry deleted");
             if (redirectTo) router.push(redirectTo);
             else router.refresh();

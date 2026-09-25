@@ -136,6 +136,9 @@ export const RATE_LIMITS = {
   /** Pass 26 §35 — the public "Get in Touch" form. Same low-frequency
    * profile as lead capture. */
   CONTACT_INQUIRY: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
+  /** The CRM website's own contact form — its own counter, so the two
+   * inquiry systems never share (or exhaust) each other's allowance. */
+  CRM_INQUIRY: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
   /** Pass 26 §35 — the public newsletter signup form. Idempotent
    * (upsert), so a slightly higher ceiling than the others doesn't risk
    * duplicate side effects — still bounded against a scripted flood

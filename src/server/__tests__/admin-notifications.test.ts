@@ -51,7 +51,7 @@ beforeEach(() => {
 describe("notifyNewInquiry — Get in Touch admin notification", () => {
   it("notifies every ACTIVE Admin in the company (canViewGetInTouch is Admin-only)", async () => {
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler");
+    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
 
     const recipientIds = notificationsCreated.map((n) => n.accountId).sort();
     expect(recipientIds).toEqual(["admin-1", "admin-hidden-from-directory"].sort());
@@ -59,7 +59,7 @@ describe("notifyNewInquiry — Get in Touch admin notification", () => {
 
   it("never notifies a Manager, Travel Agent, or Marketing Agent — Get in Touch is Admin-only", async () => {
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler");
+    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
 
     const recipientIds = notificationsCreated.map((n) => n.accountId);
     expect(recipientIds).not.toContain("manager-1");
@@ -69,34 +69,48 @@ describe("notifyNewInquiry — Get in Touch admin notification", () => {
 
   it("never notifies an INACTIVE account", async () => {
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler");
+    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
     expect(notificationsCreated.map((n) => n.accountId)).not.toContain("admin-inactive");
   });
 
   it("never notifies an Admin in a DIFFERENT company — no cross-company leakage", async () => {
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler");
+    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
     expect(notificationsCreated.map((n) => n.accountId)).not.toContain("admin-other-company");
   });
 
   it("accountsVisible=false does NOT exclude an otherwise-eligible account from this internal notification", async () => {
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler");
+    await notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
     expect(notificationsCreated.map((n) => n.accountId)).toContain("admin-hidden-from-directory");
   });
 
   it("sets the correct notification type and deep-links to the specific inquiry", async () => {
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await notifyNewInquiry("company-1", "inquiry-42", "Jane Traveler");
+    await notifyNewInquiry("company-1", "inquiry-42", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
     expect(notificationsCreated.every((n) => n.type === "NEW_INQUIRY")).toBe(true);
     expect(notificationsCreated.every((n) => n.contactInquiryId === "inquiry-42")).toBe(true);
     expect(notificationsCreated[0].body).toContain("Jane Traveler");
   });
 
+  it("labels each notification with the system it came from: Business Flights Get In Touch vs CRM Inquiries never share a type or title", async () => {
+    const { notifyNewInquiry } = await import("../admin-notifications");
+    await notifyNewInquiry("company-1", "inquiry-bf", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
+    const bf = [...notificationsCreated];
+    notificationsCreated.length = 0;
+    await notifyNewInquiry("company-1", "inquiry-crm", "Jane Traveler", "CRM_WEBSITE");
+    const crm = [...notificationsCreated];
+
+    expect(bf.every((n) => n.type === "NEW_INQUIRY" && n.title === "New Business Flights Get In Touch Message" && n.contactInquiryId === "inquiry-bf")).toBe(true);
+    expect(crm.every((n) => n.type === "NEW_CRM_INQUIRY" && n.title === "New CRM Inquiry" && n.contactInquiryId === "inquiry-crm")).toBe(true);
+    expect(bf[0].body).toContain("Business Flights");
+    expect(crm[0].body).toContain("CRM Inquiries");
+  });
+
   it("is a silent no-op (never throws) when there are no eligible recipients", async () => {
     accounts = accounts.filter((a) => a.role !== "ADMIN");
     const { notifyNewInquiry } = await import("../admin-notifications");
-    await expect(notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler")).resolves.toBeUndefined();
+    await expect(notifyNewInquiry("company-1", "inquiry-1", "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE")).resolves.toBeUndefined();
     expect(notificationsCreated).toHaveLength(0);
   });
 });

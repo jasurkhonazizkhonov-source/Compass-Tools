@@ -135,7 +135,7 @@ describe("getContactInquiries — server-side pagination", () => {
     vi.doMock("@/lib/prisma", () => ({ prisma: { contactInquiry } }));
 
     const { getContactInquiries } = await import("../contact-inquiries");
-    const result = await getContactInquiries({ companyId: "company-1", page: 2 });
+    const result = await getContactInquiries({ companyId: "company-1", source: "BUSINESS_FLIGHTS_WEBSITE", page: 2 });
 
     expect(contactInquiry.findManyCalls[0].skip).toBe(25);
     expect(contactInquiry.findManyCalls[0].take).toBe(25);
@@ -149,9 +149,9 @@ describe("getContactInquiries — server-side pagination", () => {
     vi.doMock("@/lib/prisma", () => ({ prisma: { contactInquiry } }));
 
     const { getContactInquiries } = await import("../contact-inquiries");
-    await getContactInquiries({ companyId: "company-1", status: "NEW" as never });
+    await getContactInquiries({ companyId: "company-1", source: "CRM_WEBSITE", status: "NEW" as never });
 
-    expect(contactInquiry.findManyCalls[0].where).toMatchObject({ companyId: "company-1", status: "NEW" });
+    expect(contactInquiry.findManyCalls[0].where).toMatchObject({ companyId: "company-1", source: "CRM_WEBSITE", status: "NEW" });
     vi.doUnmock("@/lib/prisma");
   });
 });

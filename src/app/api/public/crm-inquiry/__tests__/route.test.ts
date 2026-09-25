@@ -44,7 +44,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 function makeRequest(body: unknown): Request {
-  return new Request("http://localhost/api/public/contact-inquiry", {
+  return new Request("http://localhost/api/public/crm-inquiry", {
     method: "POST",
     body: JSON.stringify(body),
     headers: { "content-type": "application/json" },
@@ -68,7 +68,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("POST /api/public/contact-inquiry", () => {
+describe("POST /api/public/crm-inquiry", () => {
   it("creates the inquiry and notifies on the happy path (unchanged behavior)", async () => {
     const { POST } = await import("../route");
     const res = await POST(makeRequest(BASE_BODY));
@@ -77,15 +77,15 @@ describe("POST /api/public/contact-inquiry", () => {
     expect(res.status).toBe(200);
     expect(json.ok).toBe(true);
     expect(inquiries).toHaveLength(1);
-    expect(notifyNewInquiry).toHaveBeenCalledWith("company-1", json.id, "Jane Traveler", "BUSINESS_FLIGHTS_WEBSITE");
-    // Tagged as a Business Flights Get In Touch inquiry — never CRM.
-    expect(inquiries[0].source).toBe("BUSINESS_FLIGHTS_WEBSITE");
+    expect(notifyNewInquiry).toHaveBeenCalledWith("company-1", json.id, "Jane Traveler", "CRM_WEBSITE");
+    // Tagged as a CRM Inquiry — never a Business Flights Get In Touch inquiry.
+    expect(inquiries[0].source).toBe("CRM_WEBSITE");
   });
 
   it("the source is fixed by the ROUTE — a forged `source` in the request body cannot move an inquiry into the other inbox", async () => {
     const { POST } = await import("../route");
-    await POST(makeRequest({ ...BASE_BODY, source: "CRM_WEBSITE" }));
-    expect(inquiries[0].source).toBe("BUSINESS_FLIGHTS_WEBSITE");
+    await POST(makeRequest({ ...BASE_BODY, source: "BUSINESS_FLIGHTS_WEBSITE" }));
+    expect(inquiries[0].source).toBe("CRM_WEBSITE");
   });
 
   it("a database failure during the contact lookup returns a clean, structured error instead of throwing", async () => {

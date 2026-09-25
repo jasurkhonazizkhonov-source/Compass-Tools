@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // pre-existing sendLeadEmail), Gmail connection gating, and EmailLog
 // traceability via the new contactInquiryId column.
 
-type FakeInquiry = { id: string; companyId: string; firstName: string; lastName: string; email: string };
+type FakeInquiry = { id: string; companyId: string; source: "BUSINESS_FLIGHTS_WEBSITE" | "CRM_WEBSITE"; firstName: string; lastName: string; email: string };
 
 let inquiries: Map<string, FakeInquiry>;
 let currentActor: { id: string; role: string; companyId: string; fullName: string; email: string; phone: string | null } | null;
@@ -18,9 +18,9 @@ let gmailConnected: Set<string>;
 
 const fakePrisma = {
   contactInquiry: {
-    findFirst: vi.fn(async ({ where }: { where: { id: string; companyId: string } }) => {
+    findFirst: vi.fn(async ({ where }: { where: { id: string; companyId: string; source: string } }) => {
       const inquiry = inquiries.get(where.id);
-      if (!inquiry || inquiry.companyId !== where.companyId) return null;
+      if (!inquiry || inquiry.companyId !== where.companyId || inquiry.source !== where.source) return null;
       return inquiry;
     }),
   },
@@ -53,8 +53,9 @@ vi.mock("@/server/email/service", () => ({
 
 beforeEach(() => {
   inquiries = new Map([
-    ["inquiry-1", { id: "inquiry-1", companyId: "company-1", firstName: "Jasur", lastName: "Azizxonov", email: "jasur@example.com" }],
-    ["inquiry-other-company", { id: "inquiry-other-company", companyId: "company-2", firstName: "Someone", lastName: "Else", email: "someone-else@example.com" }],
+    ["inquiry-1", { id: "inquiry-1", companyId: "company-1", source: "BUSINESS_FLIGHTS_WEBSITE", firstName: "Jasur", lastName: "Azizxonov", email: "jasur@example.com" }],
+    ["inquiry-crm", { id: "inquiry-crm", companyId: "company-1", source: "CRM_WEBSITE", firstName: "Crm", lastName: "Person", email: "crm@example.com" }],
+    ["inquiry-other-company", { id: "inquiry-other-company", companyId: "company-2", source: "BUSINESS_FLIGHTS_WEBSITE", firstName: "Someone", lastName: "Else", email: "someone-else@example.com" }],
   ]);
   currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1", fullName: "Dark Master", email: "admin@example.com", phone: null };
   emailLogs = [];
@@ -67,24 +68,34 @@ describe("sendInquiryEmail — authorization + recipient safety (Item 9)", () =>
   it("rejects a non-Admin role (e.g. Travel Agent) — Get in Touch is admin-only", async () => {
     currentActor = { id: "agent-1", role: "TRAVEL_AGENT", companyId: "company-1", fullName: "Andrew Kent", email: "andrew@example.com", phone: null };
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" })).rejects.toThrow(/Admins/i);
+    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/Admins/i);
   });
 
   it("rejects an unauthenticated caller", async () => {
     currentActor = null;
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" })).rejects.toThrow(/Admins/i);
+    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/Admins/i);
   });
 
   it("rejects a cross-company inquiry id as not-found (IDOR) — never leaks existence", async () => {
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("inquiry-other-company", { subject: "Hi", body: "Hello" })).rejects.toThrow(/not found/i);
+    await expect(sendInquiryEmail("inquiry-other-company", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/not found/i);
     expect(sendEmailCalls).toHaveLength(0);
+  });
+
+  it("rejects an inquiry that belongs to the OTHER inquiry system — a CRM inquiry cannot be emailed from the Get In Touch section (and never sends)", async () => {
+    const { sendInquiryEmail } = await import("../contact-inquiries");
+    await expect(sendInquiryEmail("inquiry-crm", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/not found/i);
+    expect(sendEmailCalls).toHaveLength(0);
+    // ...while from its OWN section it works.
+    await sendInquiryEmail("inquiry-crm", { subject: "Hi", body: "Hello" }, "CRM_WEBSITE");
+    expect(sendEmailCalls).toHaveLength(1);
+    expect(sendEmailCalls[0].to).toBe("crm@example.com");
   });
 
   it("rejects an unknown inquiry id", async () => {
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("no-such-inquiry", { subject: "Hi", body: "Hello" })).rejects.toThrow(/not found/i);
+    await expect(sendInquiryEmail("no-such-inquiry", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/not found/i);
   });
 
   it("the recipient is ALWAYS the inquiry's own email, re-derived server-side — there is no way to pass an arbitrary 'to' through this action's own input schema at all", async () => {
@@ -93,7 +104,7 @@ describe("sendInquiryEmail — authorization + recipient safety (Item 9)", () =>
     // exists on the schema, so there is structurally no client-supplied
     // recipient path, unlike sendLeadEmail's own (pre-existing, untouched)
     // `to` param.
-    await sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" });
+    await sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE");
     expect(sendEmailCalls).toHaveLength(1);
     expect(sendEmailCalls[0].to).toBe("jasur@example.com");
   });
@@ -101,13 +112,13 @@ describe("sendInquiryEmail — authorization + recipient safety (Item 9)", () =>
   it("rejects with a clear, actionable message when the admin's Gmail is not connected", async () => {
     gmailConnected = new Set();
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" })).rejects.toThrow(/connect your gmail/i);
+    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/connect your gmail/i);
     expect(sendEmailCalls).toHaveLength(0);
   });
 
   it("on success: sends via the admin's own connected Gmail, logs an EmailLog row of type INQUIRY_EMAIL with contactInquiryId set", async () => {
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    const result = await sendInquiryEmail("inquiry-1", { subject: "Following up", body: "Thanks for reaching out!" });
+    const result = await sendInquiryEmail("inquiry-1", { subject: "Following up", body: "Thanks for reaching out!" }, "BUSINESS_FLIGHTS_WEBSITE");
     expect(result).toEqual({ ok: true });
     expect(sendEmailCalls[0].accountId).toBe("admin-1");
     expect(emailLogs).toHaveLength(1);
@@ -124,15 +135,15 @@ describe("sendInquiryEmail — authorization + recipient safety (Item 9)", () =>
       return { ok: false, error: "Your Gmail authorization has expired or been revoked. Please reconnect Gmail." };
     });
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" })).rejects.toThrow(/expired or been revoked/i);
+    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow(/expired or been revoked/i);
     expect(emailLogs).toHaveLength(1);
     expect(emailLogs[0].status).toBe("FAILED");
   });
 
   it("rejects an empty subject or body via schema validation, before ever attempting to send", async () => {
     const { sendInquiryEmail } = await import("../contact-inquiries");
-    await expect(sendInquiryEmail("inquiry-1", { subject: "", body: "Hello" })).rejects.toThrow();
-    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "" })).rejects.toThrow();
+    await expect(sendInquiryEmail("inquiry-1", { subject: "", body: "Hello" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow();
+    await expect(sendInquiryEmail("inquiry-1", { subject: "Hi", body: "" }, "BUSINESS_FLIGHTS_WEBSITE")).rejects.toThrow();
     expect(sendEmailCalls).toHaveLength(0);
   });
 });

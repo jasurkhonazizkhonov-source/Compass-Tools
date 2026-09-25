@@ -11,10 +11,11 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
-// Public marketing-site contact form. Submits to the EXISTING, already
-// hardened /api/public/contact-inquiry route (Zod-validated server-side,
-// rate-limited, writes to the existing ContactInquiry model) rather than
-// introducing a second inquiry system — the client-side schema below
+// Public CRM marketing-site contact form. Submits to /api/public/crm-inquiry
+// — the CRM Inquiries system (rows tagged CRM_WEBSITE, shown only in the
+// Admin "CRM Inquiries" inbox), NOT the Business Flights "Get In Touch"
+// route. It reuses the shared hardened handler (Zod-validated server-side,
+// rate-limited) rather than introducing a second implementation — the client-side schema below
 // mirrors that route's own schema exactly so the same input is rejected
 // consistently at both layers, but the SERVER remains authoritative;
 // nothing here can bypass its own validation. companyId is a fixed,
@@ -60,7 +61,7 @@ export function ContactForm() {
   async function onSubmit(values: ContactFormValues) {
     setServerError(null);
     try {
-      const res = await fetch("/api/public/contact-inquiry", {
+      const res = await fetch("/api/public/crm-inquiry", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

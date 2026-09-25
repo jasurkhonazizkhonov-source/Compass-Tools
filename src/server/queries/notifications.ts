@@ -9,7 +9,7 @@ export async function getRecentNotifications(accountId: string, limit = 15) {
       task: { select: { id: true, title: true, status: true } },
       lead: { select: { id: true, contact: { select: { firstName: true, lastName: true } } } },
       quote: { select: { id: true, quoteNumber: true } },
-      contactInquiry: { select: { id: true } },
+      contactInquiry: { select: { id: true, source: true } },
     },
   });
 }

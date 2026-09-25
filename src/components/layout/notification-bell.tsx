@@ -17,6 +17,8 @@ import {
 import { fetchMyNotifications, markNotificationRead, markAllNotificationsRead } from "@/server/actions/notifications";
 import { cn } from "@/lib/utils";
 import { useSharedPoll } from "@/lib/use-shared-poll";
+import { inquiryDetailPath } from "@/lib/inquiry-source";
+import type { InquirySource } from "@/generated/prisma/client";
 
 type NotificationItem = {
   id: string;
@@ -28,7 +30,7 @@ type NotificationItem = {
   task: { id: string; title: string; status: string } | null;
   lead: { id: string; contact: { firstName: string; lastName: string } } | null;
   quote: { id: string; quoteNumber: string } | null;
-  contactInquiry: { id: string } | null;
+  contactInquiry: { id: string; source: InquirySource } | null;
 };
 
 const QUOTE_NOTIFICATION_TYPES = new Set(["QUOTE_READ", "QUOTE_VIEWED", "QUOTE_SIGNED"]);
@@ -63,7 +65,9 @@ export function NotificationBell({ accountId }: { accountId: string | undefined 
       if (n.task) router.push(`/tasks/${n.task.id}`);
       else if (n.quote) router.push(`/quotes/${n.quote.id}`);
       else if (n.lead) router.push(`/leads/${n.lead.id}`);
-      else if (n.contactInquiry) router.push(`/get-in-touch/${n.contactInquiry.id}`);
+      // Opens the inquiry in the section it BELONGS to (its own source), never
+      // assumed from the notification type alone.
+      else if (n.contactInquiry) router.push(inquiryDetailPath(n.contactInquiry.source, n.contactInquiry.id));
       // NEW_SUBSCRIBER has no per-row detail page to link to — the
       // Subscriptions list itself is "the appropriate section".
       else if (n.type === "NEW_SUBSCRIBER") router.push("/subscriptions");
@@ -130,7 +134,7 @@ export function NotificationBell({ accountId }: { accountId: string | undefined 
                 <UserMinus className="h-3.5 w-3.5 text-muted-foreground shrink-0 mt-0.5" />
               ) : QUOTE_NOTIFICATION_TYPES.has(n.type) ? (
                 <Eye className="h-3.5 w-3.5 text-info shrink-0 mt-0.5" />
-              ) : n.type === "NEW_INQUIRY" ? (
+              ) : n.type === "NEW_INQUIRY" || n.type === "NEW_CRM_INQUIRY" ? (
                 <Inbox className="h-3.5 w-3.5 text-info shrink-0 mt-0.5" />
               ) : n.type === "NEW_SUBSCRIBER" ? (
                 <Mail className="h-3.5 w-3.5 text-success shrink-0 mt-0.5" />

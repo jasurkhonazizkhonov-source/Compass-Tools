@@ -9,7 +9,8 @@ import { getGmailConnectionState } from "@/server/queries/gmail-connection";
 import { getCompanyForAccountId } from "@/server/queries/company";
 import { sendEmail } from "@/server/email/service";
 import { buildSequenceEmail } from "@/server/email/templates";
-import type { InquiryStatus } from "@/generated/prisma/client";
+import type { InquirySource, InquiryStatus } from "@/generated/prisma/client";
+import { INQUIRY_SOURCE_META } from "@/lib/inquiry-source";
 
 /** Admin-only, same assertAdmin() pattern as accounts.ts — Get in Touch is
  * explicitly admin-only per Part 9's spec (unlike most CRM resources, no
@@ -22,52 +23,62 @@ async function assertAdmin() {
   return current!;
 }
 
-async function assertInquiryAccess(companyId: string, inquiryId: string) {
-  const inquiry = await prisma.contactInquiry.findFirst({ where: { id: inquiryId, companyId }, select: { id: true } });
+const SOURCE_VALUES = ["BUSINESS_FLIGHTS_WEBSITE", "CRM_WEBSITE"] as const;
+
+// Every mutation names the inbox it is being performed FROM, and the target
+// row must belong to that inbox: an id from the other system is "not found",
+// so a status change, assignment, note, email or delete issued from one
+// section can never touch a record of the other.
+async function assertInquiryAccess(companyId: string, inquiryId: string, source: InquirySource) {
+  z.enum(SOURCE_VALUES).parse(source);
+  const inquiry = await prisma.contactInquiry.findFirst({ where: { id: inquiryId, companyId, source }, select: { id: true } });
   if (!inquiry) throw new Error("Inquiry not found");
 }
 
-export async function markInquiryRead(inquiryId: string) {
+function revalidateInquiry(source: InquirySource, inquiryId?: string) {
+  const base = INQUIRY_SOURCE_META[source].basePath;
+  revalidatePath(base);
+  if (inquiryId) revalidatePath(`${base}/${inquiryId}`);
+}
+
+export async function markInquiryRead(inquiryId: string, source: InquirySource) {
   const admin = await assertAdmin();
-  await assertInquiryAccess(admin.companyId, inquiryId);
+  await assertInquiryAccess(admin.companyId, inquiryId, source);
   await prisma.contactInquiry.updateMany({
-    where: { id: inquiryId, readAt: null },
+    where: { id: inquiryId, source, readAt: null },
     data: { readAt: new Date() },
   });
-  revalidatePath("/get-in-touch");
-  revalidatePath(`/get-in-touch/${inquiryId}`);
+  revalidateInquiry(source, inquiryId);
 }
 
 const STATUS_VALUES = ["NEW", "IN_PROGRESS", "REPLIED", "RESOLVED", "CLOSED"] as const;
 
-export async function updateInquiryStatus(inquiryId: string, status: InquiryStatus) {
+export async function updateInquiryStatus(inquiryId: string, status: InquiryStatus, source: InquirySource) {
   const admin = await assertAdmin();
   z.enum(STATUS_VALUES).parse(status);
-  await assertInquiryAccess(admin.companyId, inquiryId);
+  await assertInquiryAccess(admin.companyId, inquiryId, source);
   await prisma.contactInquiry.update({ where: { id: inquiryId }, data: { status } });
-  revalidatePath("/get-in-touch");
-  revalidatePath(`/get-in-touch/${inquiryId}`);
+  revalidateInquiry(source, inquiryId);
 }
 
-export async function assignInquiry(inquiryId: string, assignedAdminId: string | null) {
+export async function assignInquiry(inquiryId: string, assignedAdminId: string | null, source: InquirySource) {
   const admin = await assertAdmin();
-  await assertInquiryAccess(admin.companyId, inquiryId);
+  await assertInquiryAccess(admin.companyId, inquiryId, source);
   if (assignedAdminId) {
     const target = await prisma.account.findFirst({ where: { id: assignedAdminId, companyId: admin.companyId, role: "ADMIN", status: "ACTIVE" }, select: { id: true } });
     if (!target) throw new Error("Assignee must be an active Admin in your own company");
   }
   await prisma.contactInquiry.update({ where: { id: inquiryId }, data: { assignedAdminId } });
-  revalidatePath("/get-in-touch");
-  revalidatePath(`/get-in-touch/${inquiryId}`);
+  revalidateInquiry(source, inquiryId);
 }
 
-export async function addInquiryNote(inquiryId: string, body: string) {
+export async function addInquiryNote(inquiryId: string, body: string, source: InquirySource) {
   const admin = await assertAdmin();
   const trimmed = body.trim();
   if (!trimmed) throw new Error("Note cannot be empty");
-  await assertInquiryAccess(admin.companyId, inquiryId);
+  await assertInquiryAccess(admin.companyId, inquiryId, source);
   await prisma.inquiryNote.create({ data: { inquiryId, authorId: admin.id, body: trimmed } });
-  revalidatePath(`/get-in-touch/${inquiryId}`);
+  revalidateInquiry(source, inquiryId);
 }
 
 const inquiryEmailSchema = z.object({
@@ -95,12 +106,13 @@ const inquiryEmailSchema = z.object({
  * always re-read from the inquiry row itself — but both paths are equally
  * safe against sending to an attacker-controlled address today.
  */
-export async function sendInquiryEmail(inquiryId: string, input: z.infer<typeof inquiryEmailSchema>) {
+export async function sendInquiryEmail(inquiryId: string, input: z.infer<typeof inquiryEmailSchema>, source: InquirySource) {
   const admin = await assertAdmin();
   const data = inquiryEmailSchema.parse(input);
+  z.enum(SOURCE_VALUES).parse(source);
 
   const inquiry = await prisma.contactInquiry.findFirst({
-    where: { id: inquiryId, companyId: admin.companyId },
+    where: { id: inquiryId, companyId: admin.companyId, source },
     select: { id: true, firstName: true, lastName: true, email: true },
   });
   if (!inquiry) throw new Error("Inquiry not found");
@@ -147,7 +159,7 @@ export async function sendInquiryEmail(inquiryId: string, input: z.infer<typeof 
     throw new Error(result.error || "Failed to send email");
   }
 
-  revalidatePath(`/get-in-touch/${inquiryId}`);
+  revalidateInquiry(source, inquiryId);
   return { ok: true as const };
 }
 
@@ -155,9 +167,9 @@ export async function sendInquiryEmail(inquiryId: string, input: z.infer<typeof 
  * assertInquiryAccess() company-scoped guard as every other action in this
  * file. Cascades to the inquiry's own InquiryNote rows and any
  * Notification pointing at it (schema onDelete: Cascade). */
-export async function deleteInquiry(inquiryId: string) {
+export async function deleteInquiry(inquiryId: string, source: InquirySource) {
   const admin = await assertAdmin();
-  await assertInquiryAccess(admin.companyId, inquiryId);
+  await assertInquiryAccess(admin.companyId, inquiryId, source);
   await prisma.contactInquiry.delete({ where: { id: inquiryId } });
-  revalidatePath("/get-in-touch");
+  revalidateInquiry(source);
 }

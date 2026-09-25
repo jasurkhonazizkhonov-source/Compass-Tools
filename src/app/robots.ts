@@ -26,6 +26,7 @@ export default function robots(): MetadataRoute.Robots {
         "/tasks",
         "/users",
         "/get-in-touch",
+        "/crm-inquiries",
         // Customer-facing but token-gated (a unique, unguessable link per
         // quote/booking) — never something a crawler should index either.
         "/cvv-recollection",

@@ -21,9 +21,11 @@ import {
   UploadCloud,
   PanelLeftClose,
   PanelLeftOpen,
+  MessagesSquare,
 } from "lucide-react";
 import { CompassMark } from "@/components/brand/compass-mark";
 import { cn } from "@/lib/utils";
+import { INQUIRY_SOURCE_META } from "@/lib/inquiry-source";
 import {
   canManageAccounts,
   canBulkImportContacts,
@@ -75,7 +77,8 @@ const NAV_ITEMS: Array<{
   // Admin-only (canViewGetInTouch). Named for what it is to staff — the CRM's
   // inbound-inquiry inbox; the route keeps the /get-in-touch path of the
   // public form that feeds it.
-  { href: "/get-in-touch", label: "CRM Inquiries", icon: Inbox, visible: canViewGetInTouch },
+  { href: "/get-in-touch", label: INQUIRY_SOURCE_META.BUSINESS_FLIGHTS_WEBSITE.label, icon: Inbox, visible: canViewGetInTouch },
+  { href: "/crm-inquiries", label: INQUIRY_SOURCE_META.CRM_WEBSITE.label, icon: MessagesSquare, visible: canViewGetInTouch },
   { href: "/subscriptions", label: "Subscriptions", icon: Send, visible: canViewSubscriptions },
   // Admin-only user management — distinct from the general Accounts
   // directory above. Hiding this nav item is a UX nicety only; the actual

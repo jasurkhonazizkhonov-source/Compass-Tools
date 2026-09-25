@@ -31,7 +31,7 @@ import { Button } from "@/components/ui/button";
 // success state or hiding that a real error occurred.
 // Signed-in CRM areas (the ones a "Return to Dashboard" link makes sense
 // for). Customer pages (/quote/...) and the public site must NOT offer it.
-const CRM_PATH_PREFIXES = ["/dashboard", "/leads", "/contacts", "/quotes", "/bookings", "/sequences", "/tasks", "/subscriptions", "/get-in-touch", "/accounts", "/users", "/company", "/commissions", "/salesboard"];
+const CRM_PATH_PREFIXES = ["/dashboard", "/leads", "/contacts", "/quotes", "/bookings", "/sequences", "/tasks", "/subscriptions", "/get-in-touch", "/crm-inquiries", "/accounts", "/users", "/company", "/commissions", "/salesboard"];
 function isCrmPath(pathname: string | null): boolean {
   return !!pathname && CRM_PATH_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 }

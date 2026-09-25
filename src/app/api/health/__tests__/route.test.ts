@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const queryRaw = vi.fn();
+vi.mock("@/server/system/migration-status", () => ({ getMigrationStatus: vi.fn(async () => ({ state: "current", expected: 55, applied: 55, pending: [] })) }));
 vi.mock("@/lib/prisma", () => ({
   prisma: { $queryRaw: (...args: unknown[]) => queryRaw(...args) },
   getPrismaPoolStats: () => ({ total: 2, idle: 1, waiting: 0 }),
@@ -38,13 +39,13 @@ describe("GET /api/health", () => {
       const { resetHealthCacheForTests } = await import("@/lib/health-check");
       resetHealthCacheForTests();
       const { GET } = await import("../route");
-      expect((await (await GET()).json()).readiness).toEqual({ bookingCardStorage: "available", signerIpCapture: "enabled" });
+      expect((await (await GET()).json()).readiness).toEqual({ bookingCardStorage: "available", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
 
       process.env.APP_ENV = "production";
       delete process.env.TRUSTED_PROXY;
       resetHealthCacheForTests();
       const body = await (await GET()).json();
-      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", signerIpCapture: "disabled" });
+      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", signerIpCapture: "disabled", schema: "current", pendingMigrations: 0 });
       expect(JSON.stringify(body)).not.toContain("vercel");
     } finally {
       for (const [k, v] of Object.entries(original)) {

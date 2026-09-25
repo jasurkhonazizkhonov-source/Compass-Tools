@@ -16,6 +16,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { sendInquiryEmail } from "@/server/actions/contact-inquiries";
+import type { InquirySource } from "@/generated/prisma/client";
 
 /**
  * Item 9 — the Get in Touch detail page's Email button, replacing the old
@@ -30,10 +31,12 @@ import { sendInquiryEmail } from "@/server/actions/contact-inquiries";
  */
 export function InquiryEmailComposerButton({
   inquiryId,
+  source,
   email,
   contactName,
 }: {
   inquiryId: string;
+  source: InquirySource;
   email: string;
   contactName: string;
 }) {
@@ -54,7 +57,7 @@ export function InquiryEmailComposerButton({
     }
     startTransition(async () => {
       try {
-        await sendInquiryEmail(inquiryId, { subject: subject.trim(), body: body.trim() });
+        await sendInquiryEmail(inquiryId, { subject: subject.trim(), body: body.trim() }, source);
         toast.success("Email sent");
         setOpen(false);
         reset();

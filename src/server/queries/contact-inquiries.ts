@@ -1,14 +1,24 @@
 import { prisma } from "@/lib/prisma";
-import type { InquiryStatus } from "@/generated/prisma/client";
+import type { InquirySource, InquiryStatus } from "@/generated/prisma/client";
 import { resolvePageSize } from "@/lib/pagination";
 
 // Pass 7 §17/§18/§28 — database-paginated at 25/page like every other CRM
-// list; "Get in Touch remains separate from Leads" is unaffected (still its
-// own model/query, never merged with getLeads).
-export async function getContactInquiries(params: { companyId: string; status?: InquiryStatus; page?: number; pageSize?: number }) {
+// list; inquiries remain separate from Leads (still their own model/query,
+// never merged with getLeads).
+//
+// `source` is REQUIRED on every query here: the Business Flights "Get In
+// Touch" inbox and the "CRM Inquiries" inbox share one table but are
+// different systems, and must never see each other's rows.
+export async function getContactInquiries(params: {
+  companyId: string;
+  source: InquirySource;
+  status?: InquiryStatus;
+  page?: number;
+  pageSize?: number;
+}) {
   const page = Math.max(1, Math.trunc(params.page ?? 1) || 1);
   const pageSize = resolvePageSize(params.pageSize); // Pass 12 §28/§30 — 25/50/75/100 allow-list
-  const where = { companyId: params.companyId, ...(params.status ? { status: params.status } : {}) };
+  const where = { companyId: params.companyId, source: params.source, ...(params.status ? { status: params.status } : {}) };
 
   const [inquiries, total] = await Promise.all([
     prisma.contactInquiry.findMany({
@@ -28,9 +38,10 @@ export async function getContactInquiries(params: { companyId: string; status?: 
   return { inquiries, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }
 
-export async function getContactInquiryDetail(inquiryId: string, companyId: string) {
+export async function getContactInquiryDetail(inquiryId: string, companyId: string, source: InquirySource) {
   return prisma.contactInquiry.findFirst({
-    where: { id: inquiryId, companyId },
+    // An id that belongs to the OTHER inbox is simply "not found" here.
+    where: { id: inquiryId, companyId, source },
     include: {
       assignedAdmin: { select: { id: true, fullName: true } },
       // Item 10 — surface the matched contact's most recent Lead (a Contact
@@ -53,6 +64,6 @@ export async function getContactInquiryDetail(inquiryId: string, companyId: stri
   });
 }
 
-export async function getUnreadInquiryCount(companyId: string) {
-  return prisma.contactInquiry.count({ where: { companyId, readAt: null } });
+export async function getUnreadInquiryCount(companyId: string, source: InquirySource) {
+  return prisma.contactInquiry.count({ where: { companyId, source, readAt: null } });
 }

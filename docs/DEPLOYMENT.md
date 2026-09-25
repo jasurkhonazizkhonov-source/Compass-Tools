@@ -353,6 +353,22 @@ before going live):
 openssl rand -base64 32
 ```
 
+## 5d. The two inquiry inboxes (Business Flights Get In Touch vs CRM Inquiries)
+
+Two different public forms feed the CRM, and the Admin sees them as two
+separate sections. Both are stored in the one `ContactInquiry` table (the only
+inquiry table); each row's `source` column records where it came from and every
+list, detail page, action and notification is scoped by it:
+
+| Admin section | Route | Fed by | `source` |
+|---|---|---|---|
+| **Business Flights — Get In Touch** | `/get-in-touch` | The Business Flights Travel website's own "Get In Touch" form (a separate app that inserts into the table directly), and `POST /api/public/contact-inquiry` | `BUSINESS_FLIGHTS_WEBSITE` (the column default — so that app needs no change) |
+| **CRM Inquiries** | `/crm-inquiries` | The Compass Tools CRM website's contact form via `POST /api/public/crm-inquiry` | `CRM_WEBSITE` |
+
+The source is fixed by *which route was called*, never by the request body. The
+Business Flights app cannot create Admin notifications, so the CRM adds them
+itself (throttled, idempotent) the next time an Admin's bell polls.
+
 ## 5c. Enabling customer bookings in production (a deliberate decision)
 
 The customer booking form collects card details, and this CRM stores them

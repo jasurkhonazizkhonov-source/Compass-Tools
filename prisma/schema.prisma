@@ -1829,6 +1829,21 @@ enum InquiryStatus {
   CLOSED
 }
 
+// WHICH public form an inquiry came from. Both forms feed this one table
+// (it is the only inquiry table that exists), so the origin is recorded on
+// the row and every Admin list/detail/mutation/notification is scoped by it:
+//   BUSINESS_FLIGHTS_WEBSITE — the Business Flights Travel website's "Get In
+//     Touch" form. That separate app writes rows straight into this table
+//     without knowing about this column, so it is the DEFAULT — every
+//     pre-existing row and every row that app ever inserts is classified
+//     correctly with no change to that app.
+//   CRM_WEBSITE — the Compass Tools (CRM product) website's own contact form,
+//     via /api/public/crm-inquiry.
+enum InquirySource {
+  BUSINESS_FLIGHTS_WEBSITE
+  CRM_WEBSITE
+}
+
 model ContactInquiry {
   id        String  @id @default(cuid())
   companyId String
@@ -1842,6 +1857,7 @@ model ContactInquiry {
   message   String         @db.Text
 
   status         InquiryStatus @default(NEW)
+  source         InquirySource @default(BUSINESS_FLIGHTS_WEBSITE)
   assignedAdminId String?
   assignedAdmin   Account?     @relation("InquiryAssignedAdmin", fields: [assignedAdminId], references: [id])
   readAt         DateTime?
@@ -1867,6 +1883,7 @@ model ContactInquiry {
   @@index([companyId])
   @@index([status])
   @@index([matchedContactId])
+  @@index([companyId, source, createdAt])
 }
 
 model InquiryNote {

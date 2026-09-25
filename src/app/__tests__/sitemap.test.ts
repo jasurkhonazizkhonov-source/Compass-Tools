@@ -19,6 +19,7 @@ const PRIVATE_CRM_PREFIXES = [
   "/users",
   "/company",
   "/get-in-touch",
+  "/crm-inquiries",
   "/subscriptions",
   "/commissions",
   "/salesboard",

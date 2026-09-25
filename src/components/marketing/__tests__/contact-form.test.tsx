@@ -44,7 +44,7 @@ describe("ContactForm", () => {
 
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     const [url, init] = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(url).toBe("/api/public/contact-inquiry");
+    expect(url).toBe("/api/public/crm-inquiry");
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.companyId).toBe("default-company");
     expect(body.firstName).toBe("Jane");

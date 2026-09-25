@@ -2,6 +2,7 @@ import { prisma, getPrismaPoolStats, getPoolSettings } from "@/lib/prisma";
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { isProductionEnvironment } from "@/lib/env";
 import { trustedProxyMode } from "@/lib/request-ip";
+import { getMigrationStatus } from "@/server/system/migration-status";
 
 // Database liveness/latency probe behind /api/health. Exposes numbers and a
 // safe error category only — never a hostname, credential, connection
@@ -27,6 +28,9 @@ export type HealthBody = {
     bookingCardStorage: "available" | "unavailable";
     /** "disabled" = the signer's IP address is not recorded (TRUSTED_PROXY unset — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
+    /** "pending" = this build expects a database migration the database has not applied (count only; names are Admin-only). */
+    schema: "current" | "pending" | "unknown";
+    pendingMigrations: number;
   };
 };
 type HealthResult = { body: HealthBody; status: number };
@@ -34,10 +38,12 @@ type HealthResult = { body: HealthBody; status: number };
 let cached: { at: number; result: HealthResult } | null = null;
 let inflight: Promise<HealthResult> | null = null;
 
-function readiness(): HealthBody["readiness"] {
+function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null): HealthBody["readiness"] {
   return {
     bookingCardStorage: isProductionEnvironment() ? "unavailable" : "available",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
+    schema: schema?.state ?? "unknown",
+    pendingMigrations: schema && schema.state !== "unknown" ? schema.pending.length : 0,
   };
 }
 
@@ -53,6 +59,7 @@ async function runCheck(): Promise<HealthResult> {
     const t1 = performance.now();
     await prisma.$queryRaw`SELECT 1`;
     const t2 = performance.now();
+    const schema = await getMigrationStatus();
     return {
       status: 200,
       body: {
@@ -62,14 +69,14 @@ async function runCheck(): Promise<HealthResult> {
         // is the steady-state round trip to the database.
         database: { ok: true, firstQueryMs: Math.round(t1 - t0), secondQueryMs: Math.round(t2 - t1) },
         pool: poolSnapshot(),
-        readiness: readiness(),
+        readiness: readiness(schema),
       },
     };
   } catch (err) {
     console.error(`[health] DATABASE_CHECK_FAILED (${safeErrorTag(err)})`);
     return {
       status: 503,
-      body: { status: "down", checkedAt: new Date().toISOString(), database: { ok: false, error: safeErrorTag(err) }, pool: poolSnapshot(), readiness: readiness() },
+      body: { status: "down", checkedAt: new Date().toISOString(), database: { ok: false, error: safeErrorTag(err) }, pool: poolSnapshot(), readiness: readiness(null) },
     };
   }
 }

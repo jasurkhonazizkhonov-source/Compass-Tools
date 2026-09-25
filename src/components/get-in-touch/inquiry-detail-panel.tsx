@@ -19,12 +19,13 @@ import { ChevronDown, Check } from "lucide-react";
 import { INQUIRY_STATUS_META, INQUIRY_STATUS_ORDER } from "@/lib/status-meta";
 import { markInquiryRead, updateInquiryStatus, addInquiryNote } from "@/server/actions/contact-inquiries";
 import { cn } from "@/lib/utils";
-import type { InquiryStatus } from "@/generated/prisma/client";
+import type { InquirySource, InquiryStatus } from "@/generated/prisma/client";
 
 type InquiryNoteRow = { id: string; body: string; createdAt: Date; author: { fullName: string } | null };
 
 export function InquiryDetailPanel({
   inquiryId,
+  source,
   status,
   readAt,
   email,
@@ -33,6 +34,7 @@ export function InquiryDetailPanel({
   contactName,
 }: {
   inquiryId: string;
+  source: InquirySource;
   status: InquiryStatus;
   readAt: Date | null;
   email: string;
@@ -50,15 +52,15 @@ export function InquiryDetailPanel({
   useEffect(() => {
     if (readAt || markedRef.current) return;
     markedRef.current = true;
-    markInquiryRead(inquiryId).catch(() => undefined);
-  }, [inquiryId, readAt]);
+    markInquiryRead(inquiryId, source).catch(() => undefined);
+  }, [inquiryId, readAt, source]);
 
   function handleStatusChange(next: InquiryStatus) {
     if (next === currentStatus) return;
     setCurrentStatus(next);
     startTransition(async () => {
       try {
-        await updateInquiryStatus(inquiryId, next);
+        await updateInquiryStatus(inquiryId, next, source);
         toast.success(`Status updated to ${INQUIRY_STATUS_META[next].label}`);
       } catch {
         toast.error("Failed to update status");
@@ -70,7 +72,7 @@ export function InquiryDetailPanel({
     if (!draft.trim()) return;
     startTransition(async () => {
       try {
-        await addInquiryNote(inquiryId, draft.trim());
+        await addInquiryNote(inquiryId, draft.trim(), source);
         setDraft("");
       } catch {
         toast.error("Failed to add note");
@@ -88,7 +90,7 @@ export function InquiryDetailPanel({
             <Phone className="h-3.5 w-3.5" /> Call
           </a>
         </Button>
-        <InquiryEmailComposerButton inquiryId={inquiryId} email={email} contactName={contactName} />
+        <InquiryEmailComposerButton inquiryId={inquiryId} source={source} email={email} contactName={contactName} />
         {phone && (
           <Button variant="outline" size="sm" asChild className="gap-1.5">
             <a href={`sms:${phone.replace(/[^+\d]/g, "")}`}>
