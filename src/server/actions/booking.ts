@@ -270,6 +270,15 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
         });
         return { ok: false, error: "We couldn't verify your payment method right now. Nothing was charged and no booking was recorded. Please try again in a moment." };
       }
+      if (verified.reason === "already_used") {
+        // A concurrent identical submission (double click, retry) already
+        // committed this very capture. If that booking is the SAME signer's,
+        // this request is a replay of it — answer with the original booking,
+        // never an error for something that in fact succeeded.
+        const winner = await findBookingForReplay(quote.id, parsed);
+        if (winner) return { ok: true, bookingReference: winner.bookingReference, bookingId: winner.id, alreadyCompleted: true };
+        return { ok: false, error: "Payment information could not be processed" };
+      }
       if (verified.reason === "not_completed") {
         return { ok: false, error: "Your card details were not completed. Please re-enter your card and try again. Nothing was charged." };
       }

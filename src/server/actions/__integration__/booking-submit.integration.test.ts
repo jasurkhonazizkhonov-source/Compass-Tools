@@ -389,6 +389,48 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
       expect(await prisma.booking.count({ where: { quoteId: b.quote.id } })).toBe(0);
     });
 
+    it("a concurrent identical submission that loses the race (its read predates the commit) is answered with the ORIGINAL booking, not a 'payment' error", async () => {
+      const { quote } = await makeQuote();
+      const body = input(quote.secureToken);
+      const first = await submitBooking(body);
+      await flushDeferred();
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      // The second request read the quote BEFORE the first one committed: it sees no booking...
+      const original = prisma.quote.findUnique.bind(prisma.quote);
+      const spy = vi.spyOn(prisma.quote, "findUnique").mockImplementationOnce((async (args: never) => {
+        const row = await original(args);
+        return row ? { ...row, booking: null, status: "SENT" } : row;
+      }) as never);
+      try {
+        // ...and by the time it verifies the capture, that capture is already attached to the winner's booking.
+        const second = await submitBooking(body);
+        expect(second).toMatchObject({ ok: true, bookingId: first.bookingId, alreadyCompleted: true });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
+    });
+
+    it("but a DIFFERENT signer presenting the same capture is refused (it is not theirs)", async () => {
+      const { quote } = await makeQuote();
+      const body = input(quote.secureToken);
+      await submitBooking(body);
+      await flushDeferred();
+      const original = prisma.quote.findUnique.bind(prisma.quote);
+      const spy = vi.spyOn(prisma.quote, "findUnique").mockImplementationOnce((async (args: never) => {
+        const row = await original(args);
+        return row ? { ...row, booking: null, status: "SENT" } : row;
+      }) as never);
+      try {
+        const other = await submitBooking({ ...body, signedName: "Someone Else", contactEmail: "other@example.test" });
+        expect(other.ok).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
+    });
+
     it("the same capture listed twice in one request is refused", async () => {
       const { quote } = await makeQuote();
       const body = input(quote.secureToken, {}, 570);
