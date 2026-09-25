@@ -53,6 +53,46 @@ describe("safeErrorTag", () => {
   });
 });
 
+function prismaError(code: string, meta: Record<string, unknown> | undefined, message = "boom") {
+  return new Prisma.PrismaClientKnownRequestError(message, { code, clientVersion: "test", meta });
+}
+
+// Prisma wraps EVERY raw-driver failure in the same generic P2010, so a
+// production report of "P2010" could not distinguish a database that refused
+// a connection ("too many clients") from a bad query. The tag now carries the
+// driver adapter's fixed-vocabulary `kind` and the Postgres SQLSTATE — never
+// free text.
+describe("safeErrorTag — driver detail", () => {
+  it("adds the driver kind and SQLSTATE that distinguish 'too many clients' from a bad query", () => {
+    const tooMany = prismaError("P2010", { driverAdapterError: { cause: { kind: "TooManyConnections", originalCode: "53300" } } });
+    expect(safeErrorTag(tooMany)).toBe("PrismaClientKnownRequestError(P2010/TooManyConnections/53300)");
+
+    const unreachable = prismaError("P2010", { driverAdapterError: { cause: { kind: "DatabaseNotReachable", host: "db.internal", port: 5432 } } });
+    expect(safeErrorTag(unreachable)).toBe("PrismaClientKnownRequestError(P2010/DatabaseNotReachable)");
+  });
+
+  it("NEVER includes free text: messages, hosts and users are ignored even when present on the error", () => {
+    const err = prismaError(
+      "P2010",
+      { driverAdapterError: { cause: { kind: "postgres", code: "28P01", originalMessage: 'password authentication failed for user "avnadmin"', host: "db.internal" } } },
+      "postgres://avnadmin:s3cret@db.internal/app"
+    );
+    const tag = safeErrorTag(err);
+    expect(tag).toBe("PrismaClientKnownRequestError(P2010/postgres/28P01)");
+    for (const secret of ["avnadmin", "s3cret", "db.internal", "password"]) expect(tag).not.toContain(secret);
+  });
+
+  it("rejects values that do not match the safe vocabulary", () => {
+    const err = prismaError("P2010", { driverAdapterError: { cause: { kind: "has spaces and secret=abc", originalCode: "not-a-sqlstate" } } });
+    expect(safeErrorTag(err)).toBe("PrismaClientKnownRequestError(P2010)");
+  });
+
+  it("includes fixed Node/system error codes and never the message", () => {
+    const e = Object.assign(new Error("connect ECONNRESET postgres://u:p@h/db"), { code: "ECONNRESET" });
+    expect(safeErrorTag(e)).toBe("Error(ECONNRESET)");
+  });
+});
+
 describe("describeDatabaseTarget", () => {
   let originalDatabaseUrl: string | undefined;
 

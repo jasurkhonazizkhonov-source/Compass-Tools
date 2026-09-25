@@ -31,11 +31,41 @@ import { Prisma } from "@/generated/prisma/client";
 // precedent for exactly this failure class existing in this deployment
 // ecosystem, so this app gets the same category of safe diagnostic
 // up front rather than only after a second incident forces it.
+//
+// Prisma wraps EVERY raw-driver failure — an unreachable server, a refused
+// connection, "too many clients", a missing table — in the same generic
+// P2010, which made production reports say nothing useful ("P2010" for both
+// a bad query and a database that refused a connection). The driver adapter
+// error underneath carries two values that are safe to expose because they
+// are short, fixed vocabularies and never free text: a `kind` (e.g.
+// "DatabaseNotReachable", "TooManyConnections", "TableDoesNotExist") and the
+// Postgres SQLSTATE (e.g. "53300"). Both are validated against a strict
+// pattern before being included; the free-text message is still never used.
+const SAFE_KIND = /^[A-Za-z]{1,40}$/;
+const SAFE_SQLSTATE = /^[0-9A-Z]{5}$/;
+const SAFE_NODE_CODE = /^[A-Z][A-Z0-9_]{2,30}$/;
+
+function driverDetail(err: Prisma.PrismaClientKnownRequestError): string {
+  const cause = (err.meta as { driverAdapterError?: { cause?: { kind?: unknown; originalCode?: unknown; code?: unknown } } } | undefined)
+    ?.driverAdapterError?.cause;
+  if (!cause) return "";
+  const parts: string[] = [];
+  if (typeof cause.kind === "string" && SAFE_KIND.test(cause.kind)) parts.push(cause.kind);
+  const sqlstate = typeof cause.originalCode === "string" ? cause.originalCode : typeof cause.code === "string" ? cause.code : undefined;
+  if (sqlstate && SAFE_SQLSTATE.test(sqlstate)) parts.push(sqlstate);
+  return parts.length ? `/${parts.join("/")}` : "";
+}
+
 export function safeErrorTag(err: unknown): string {
   if (err instanceof Prisma.PrismaClientKnownRequestError) {
-    return `PrismaClientKnownRequestError(${err.code})`;
+    return `PrismaClientKnownRequestError(${err.code}${driverDetail(err)})`;
   }
-  if (err instanceof Error) return err.constructor.name || "Error";
+  if (err instanceof Error) {
+    const name = err.constructor.name || "Error";
+    // Node/system error codes (ECONNRESET, ETIMEDOUT...) are fixed constants.
+    const code = (err as { code?: unknown }).code;
+    return typeof code === "string" && SAFE_NODE_CODE.test(code) ? `${name}(${code})` : name;
+  }
   return typeof err;
 }
 
