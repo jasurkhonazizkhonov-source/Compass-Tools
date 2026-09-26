@@ -1,3 +1,4 @@
+import { rejectUnauthorizedCron } from "@/server/security/cron-auth";
 import { NextRequest, NextResponse } from "next/server";
 import { processDueTaskNotifications } from "@/server/actions/tasks";
 import { cleanupExpiredRateLimitCounters } from "@/server/security/rate-limit";
@@ -15,10 +16,8 @@ import { runScheduledCardRetention } from "@/server/security/card-retention-sche
 // the route stays open so `curl`/the instrumentation poller can reach it
 // without extra configuration.
 export async function GET(request: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  if (secret && request.headers.get("authorization") !== `Bearer ${secret}`) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const denied = rejectUnauthorizedCron(request);
+  if (denied) return denied;
   const result = await processDueTaskNotifications();
   // Pass 28 §30 — best-effort, never lets a cleanup failure fail the
   // actual task-notification cron run this route exists for.

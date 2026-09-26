@@ -99,6 +99,21 @@ describe("GET /api/health", () => {
     });
   });
 
+  it("THE PRODUCTION CONFIGURATION (APP_ENV=production + the existing CARD_ENCRYPTION_KEY + CARD_VAULT_MODE, no ring, no key id) reports the available, risk-accepted vault on key v1", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    await withEnv({ APP_ENV: "production", NODE_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY, CARD_VAULT_MODE: "application-encryption-risk-accepted" }, async (get) => {
+      const body = await get();
+      expect(body.readiness).toMatchObject({ environment: "production", cardVaultState: "available_risk_accepted", bookingCardStorage: "available", cardVaultKey: "configured", cardVaultKeyVersion: "v1", cardVaultEnabled: true });
+      const text = JSON.stringify(body);
+      expect(text).not.toContain(GOOD_KEY);
+      expect(text).not.toMatch(/CARD_ENCRYPTION_KEYS?|CRON_SECRET|DATABASE_URL|postgres/i);
+    });
+    // and without CARD_VAULT_MODE it fails closed with a distinct, non-secret state
+    await withEnv({ APP_ENV: "production", NODE_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY }, async (get) => {
+      expect((await get()).readiness).toMatchObject({ cardVaultState: "disabled", bookingCardStorage: "unavailable" });
+    });
+  });
+
   it("exposes the current key VERSION label only — never key material — and a ring's newest id", async () => {
     queryRaw.mockResolvedValue([{}]);
     const K2 = Buffer.alloc(32, 4).toString("base64");
