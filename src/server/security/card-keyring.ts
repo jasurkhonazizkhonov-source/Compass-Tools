@@ -64,7 +64,11 @@ function parse(env: NodeJS.ProcessEnv): Parsed {
         continue;
       }
       if (raw.has(id)) {
-        problems.push(`Key id "${id}" is defined more than once`);
+        // The SAME key listed again under the SAME id (e.g. "v1" in the ring while
+        // CARD_ENCRYPTION_KEY still holds it) is harmless and makes migrating the
+        // legacy variable into the ring safe. A DIFFERENT key under an id that is
+        // already taken would silently change what existing cards decrypt with.
+        if (raw.get(id) !== value) problems.push(`Key id "${id}" is defined twice with different keys`);
         continue;
       }
       if (!isBase64Key(value)) {

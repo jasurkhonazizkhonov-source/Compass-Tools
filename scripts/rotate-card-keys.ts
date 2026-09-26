@@ -9,6 +9,7 @@
 //
 // It prints ids and counts only — never a card number, key or ciphertext.
 import pg from "pg";
+import { resolveDatabaseSsl } from "../src/lib/db-tls";
 import { rotateCardKeys } from "../src/server/security/card-key-rotation";
 
 async function main() {
@@ -20,7 +21,7 @@ async function main() {
   const apply = process.argv.includes("--apply");
   const u = new URL(raw);
   u.searchParams.delete("sslmode");
-  const client = new pg.Client({ connectionString: u.toString(), ssl: { rejectUnauthorized: false } });
+  const client = new pg.Client({ connectionString: u.toString(), ssl: resolveDatabaseSsl() });
   await client.connect();
   try {
     const summary = await rotateCardKeys(client, { apply });

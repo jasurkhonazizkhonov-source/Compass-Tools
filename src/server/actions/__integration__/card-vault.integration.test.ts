@@ -218,6 +218,27 @@ describe.skipIf(!enabled)("card vault storage guarantees — real PostgreSQL", (
     });
   });
 
+  describe("scheduled retention (cron) uses the same purge through Prisma", () => {
+    it("destroys cards older than CARD_RETENTION_DAYS and removed cards; leaves recent ones; runs only when configured", async () => {
+      await prisma.paymentMethod.deleteMany({ where: { contactId } });
+      ring({ CARD_ENCRYPTION_KEY: K1 });
+      const { runScheduledCardRetention } = await import("@/server/security/card-retention-schedule");
+      const oldId = await makeRow(enc.encryptPan("4242424242424242", "tmp"));
+      const freshId = await makeRow(enc.encryptPan("4242424242424242", "tmp"));
+      await client.query(`UPDATE "PaymentMethod" SET "createdAt" = now() - interval '4000 days' WHERE "id" = $1`, [oldId]);
+      const freshBefore = await readRef(freshId);
+
+      expect(await runScheduledCardRetention({} as NodeJS.ProcessEnv)).toEqual({ status: "disabled" });
+      expect(await readRef(oldId)).toMatch(/^cv2./); // disabled => nothing touched
+
+      const res = await runScheduledCardRetention({ CARD_RETENTION_DAYS: "3650" } as unknown as NodeJS.ProcessEnv);
+      expect(res).toMatchObject({ status: "ran", apply: true });
+      expect(await readRef(oldId)).toBe(enc.PURGED_REFERENCE);
+      expect(await readRef(freshId)).toBe(freshBefore);
+      expect(await prisma.auditLog.count({ where: { action: "PAYMENT_METHOD_PURGED", entityId: oldId } })).toBe(1);
+    });
+  });
+
   describe("retention purge (npm run cards:purge)", () => {
     it("requires an explicit selector; dry run matches without changing; apply destroys the ciphertext irreversibly and audits each card", async () => {
       await prisma.paymentMethod.deleteMany({ where: { contactId } });

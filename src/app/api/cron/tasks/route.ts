@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { processDueTaskNotifications } from "@/server/actions/tasks";
 import { cleanupExpiredRateLimitCounters } from "@/server/security/rate-limit";
+import { runScheduledCardRetention } from "@/server/security/card-retention-schedule";
 
 // Entry point for a real scheduler (Vercel Cron, GitHub Actions schedule,
 // an external queue worker, etc.) to trigger task-due notifications. In
@@ -22,5 +23,8 @@ export async function GET(request: NextRequest) {
   // Pass 28 §30 — best-effort, never lets a cleanup failure fail the
   // actual task-notification cron run this route exists for.
   const rateLimitCleanup = await cleanupExpiredRateLimitCounters().catch(() => ({ deleted: 0 }));
-  return NextResponse.json({ ...result, rateLimitCountersDeleted: rateLimitCleanup.deleted });
+  // Opt-in card retention purge (CARD_RETENTION_DAYS; disabled unless set, and only
+  // ever run by an AUTHENTICATED cron in production). Never fails the cron run.
+  const cardRetention = await runScheduledCardRetention().catch(() => ({ status: "failed" as const }));
+  return NextResponse.json({ ...result, rateLimitCountersDeleted: rateLimitCleanup.deleted, cardRetention });
 }

@@ -3,6 +3,7 @@ import { safeErrorTag } from "@/lib/safe-error-log";
 import { trustedProxyMode } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
 import { getCardVaultStatus } from "@/server/security/card-vault-status";
+import { getDatabaseTlsMode } from "@/lib/db-tls";
 
 // Database liveness/latency probe behind /api/health. Exposes numbers and a
 // safe error category only — never a hostname, credential, connection
@@ -28,12 +29,16 @@ export type HealthBody = {
     bookingCardStorage: "available" | "unavailable";
     /** Whether the card key ring is usable. A category only — never a key or any part of one. */
     cardVaultKey: "configured" | "missing" | "invalid";
+    /** disabled | misconfigured | available | available_risk_accepted — see card-vault-status.ts. */
+    cardVaultState: "disabled" | "misconfigured" | "available" | "available_risk_accepted";
     /** Id (an opaque label, never key material) of the key new cards are encrypted under; null when no usable key. */
     cardVaultKeyVersion: string | null;
     /** In a production-class environment: the owner explicitly enabled the vault (CARD_VAULT_MODE). Always true elsewhere. */
     cardVaultEnabled: boolean;
     /** What this process treats itself as — a production deployment is always identifiable as one. */
     environment: "production" | "preview" | "development" | "test";
+    /** Whether the database connection verifies the server's certificate and host name (DATABASE_SSL_CA / DATABASE_SSL_VERIFY=system) or is only encrypted. */
+    databaseTls: "verified" | "unverified";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
     /** "pending" = this build expects a database migration the database has not applied (count only; names are Admin-only). */
@@ -51,9 +56,11 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
   return {
     bookingCardStorage: vault.storageAvailable ? "available" : "unavailable",
     cardVaultKey: vault.key,
+    cardVaultState: vault.state,
     cardVaultKeyVersion: vault.keyVersion,
     cardVaultEnabled: !vault.productionClass || vault.modeAccepted,
     environment: vault.environment,
+    databaseTls: getDatabaseTlsMode() === "unverified" ? "unverified" : "verified",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     schema: schema?.state ?? "unknown",
     pendingMigrations: schema && schema.state !== "unknown" ? schema.pending.length : 0,

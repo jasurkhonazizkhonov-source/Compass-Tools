@@ -25,6 +25,18 @@ export type CardVaultKeyStatus = KeyringState;
 
 export type CardVaultBlockedBy = "vault_not_enabled" | "key_missing" | "key_invalid";
 
+/**
+ * One label for the vault's configured state:
+ *   disabled                  production-class and CARD_VAULT_MODE not set to the acceptance phrase
+ *   misconfigured             the key ring is missing or invalid
+ *   available                 non-production (local/test) with a valid ring
+ *   available_risk_accepted   production-class, explicitly enabled, valid ring — application-managed
+ *                             encryption is in use and its risk has been accepted by the owner
+ * (A runtime failure while storing a card — e.g. a database fault — is not a
+ * configuration state; it surfaces as a recorded System Health incident.)
+ */
+export type CardVaultState = "disabled" | "misconfigured" | "available" | "available_risk_accepted";
+
 export type CardVaultStatus = {
   /** true when a card can be stored / revealed right now. */
   storageAvailable: boolean;
@@ -33,6 +45,7 @@ export type CardVaultStatus = {
   productionClass: boolean;
   /** CARD_VAULT_MODE holds the exact acceptance phrase. */
   modeAccepted: boolean;
+  state: CardVaultState;
   key: KeyringState;
   /** Id (a label, never key material) new cards are encrypted under. */
   keyVersion: string | null;
@@ -45,11 +58,14 @@ export type CardVaultStatus = {
 export function getCardVaultStatus(): CardVaultStatus {
   const ring = getKeyringStatus();
   const productionClass = isProductionEnvironment();
-  const modeAccepted = process.env.CARD_VAULT_MODE === CARD_VAULT_MODE_ACCEPTED;
+  const modeAccepted = process.env.CARD_VAULT_MODE?.trim() === CARD_VAULT_MODE_ACCEPTED; // trimmed: a pasted trailing newline must not silently keep the vault closed
   const blockedBy: CardVaultBlockedBy | null =
     productionClass && !modeAccepted ? "vault_not_enabled" : ring.state === "missing" ? "key_missing" : ring.state === "invalid" ? "key_invalid" : null;
+  const state: CardVaultState =
+    blockedBy === "vault_not_enabled" ? "disabled" : blockedBy !== null ? "misconfigured" : productionClass ? "available_risk_accepted" : "available";
   return {
     storageAvailable: blockedBy === null,
+    state,
     environment: getAppEnvironment(),
     productionClass,
     modeAccepted,

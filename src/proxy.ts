@@ -20,6 +20,7 @@ import {
   defaultRouteForRole,
 } from "@/lib/permissions";
 import type { AccountRole } from "@/generated/prisma/client";
+import { buildNonceCsp, newNonce } from "@/lib/csp";
 
 // Route-prefix -> role-visibility predicate, checked in matcher order below.
 // Kept data-driven so proxy.ts and sidebar.tsx stay easy to keep in sync —
@@ -61,7 +62,26 @@ const ROUTE_GUARDS: Array<{ prefix: string; allowed: (role: AccountRole | undefi
 //
 // Next.js 16 renamed middleware.ts -> proxy.ts (export `proxy`, not
 // `middleware`) — this file must keep that exact name/export.
+// Continue to the page with a strict, per-request-nonce Content-Security-Policy.
+// Next.js reads the nonce from the request's CSP header while server-rendering
+// and stamps it on its own scripts; the same policy goes back on the response.
+// Used only for dynamically rendered routes that show or accept card data.
+function nextWithNonceCsp(request: NextRequest) {
+  const nonce = newNonce();
+  const csp = buildNonceCsp(nonce, process.env.NODE_ENV === "development");
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set("x-nonce", nonce);
+  requestHeaders.set("Content-Security-Policy", csp);
+  const response = NextResponse.next({ request: { headers: requestHeaders } });
+  response.headers.set("Content-Security-Policy", csp);
+  return response;
+}
+
 export async function proxy(request: NextRequest) {
+  // The customer's card-entry / confirmation pages are public (a secure token is
+  // the credential): no session gate, but they get the strict nonce policy.
+  if (request.nextUrl.pathname.startsWith("/quote/")) return nextWithNonceCsp(request);
+
   const token = request.cookies.get(DEV_ACCOUNT_COOKIE)?.value;
 
   // A cookie that cannot be a real session token skips the database lookup
@@ -148,7 +168,7 @@ export async function proxy(request: NextRequest) {
           return NextResponse.redirect(new URL(defaultRouteForRole(account.role), request.url));
         }
       }
-      return NextResponse.next();
+      return nextWithNonceCsp(request);
     }
   }
 
@@ -163,6 +183,7 @@ export const config = {
     // already uses (also absent from this matcher) — redirecting a
     // signed-in visitor to /dashboard while rendering the public page for
     // everyone else. /dashboard itself remains fully gated below.
+    "/quote/:path*",
     "/dashboard",
     "/dashboard/:path*",
     "/leads/:path*",

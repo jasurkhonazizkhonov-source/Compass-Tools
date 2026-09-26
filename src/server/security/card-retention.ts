@@ -21,7 +21,7 @@ export async function purgeCardData(db: Queryable, options: { apply: boolean; ar
   if (options.olderThanDays !== undefined) {
     if (!Number.isInteger(options.olderThanDays) || options.olderThanDays < 1) throw new Error("olderThanDays must be a positive whole number");
     params.push(options.olderThanDays);
-    clauses.push(`"createdAt" < now() - ($${params.length} || ' days')::interval`);
+    clauses.push(`"createdAt" < now() - make_interval(days => $${params.length}::int)`);
   }
   if (clauses.length === 0) throw new Error("Choose at least one selector: archived and/or olderThanDays");
 

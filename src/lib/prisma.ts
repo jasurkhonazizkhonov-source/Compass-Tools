@@ -2,6 +2,7 @@ import { after } from "next/server";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 import { wrapPoolWithConnectRetry, type ConnectablePool } from "@/lib/db-connection-retry";
+import { resolveDatabaseSsl } from "@/lib/db-tls";
 
 // The client type INCLUDING the global omit config (see createPrismaClient), so
 // query result types correctly exclude PaymentMethod.encryptedPan.
@@ -130,9 +131,11 @@ function createPrismaClient() {
   const adapter = new ResilientPrismaPg(
     {
       connectionString: connectionStringWithoutSslMode(databaseUrl),
-      // Aiven's managed Postgres uses a CA not in Node's default trust store.
-      // Encrypted-but-unverified is an accepted tradeoff for this dev/test DB.
-      ssl: { rejectUnauthorized: false },
+      // TLS: verified when DATABASE_SSL_CA (or DATABASE_SSL_VERIFY=system) is set;
+      // otherwise encrypted-but-unverified — Aiven's CA is not in Node's default
+      // trust store, so verification needs the project CA certificate. See
+      // src/lib/db-tls.ts and docs/CARD_VAULT_SECURITY.md.
+      ssl: resolveDatabaseSsl(),
       max: settings.max,
       connectionTimeoutMillis: settings.connectionTimeoutMillis,
       idleTimeoutMillis: settings.idleTimeoutMillis,

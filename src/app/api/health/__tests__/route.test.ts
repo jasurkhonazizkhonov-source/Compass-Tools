@@ -58,9 +58,11 @@ describe("GET /api/health", () => {
       expect((await get()).readiness).toEqual({
         bookingCardStorage: "available",
         cardVaultKey: "configured",
+        cardVaultState: "available",
         cardVaultKeyVersion: "v1",
         cardVaultEnabled: true,
         environment: "test",
+        databaseTls: "unverified",
         signerIpCapture: "enabled",
         schema: "current",
         pendingMigrations: 0,
@@ -71,9 +73,11 @@ describe("GET /api/health", () => {
       expect(body.readiness).toEqual({
         bookingCardStorage: "unavailable",
         cardVaultKey: "configured",
+        cardVaultState: "disabled",
         cardVaultKeyVersion: "v1",
         cardVaultEnabled: false,
         environment: "production",
+        databaseTls: "unverified",
         signerIpCapture: "disabled",
         schema: "current",
         pendingMigrations: 0,
@@ -91,7 +95,7 @@ describe("GET /api/health", () => {
       expect((await get()).readiness).toMatchObject({ cardVaultEnabled: false, bookingCardStorage: "unavailable" });
     });
     await withEnv({ NODE_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY, CARD_VAULT_MODE: "application-encryption-risk-accepted" }, async (get) => {
-      expect((await get()).readiness).toMatchObject({ environment: "production", cardVaultEnabled: true, bookingCardStorage: "available", cardVaultKeyVersion: "v1" });
+      expect((await get()).readiness).toMatchObject({ environment: "production", cardVaultEnabled: true, cardVaultState: "available_risk_accepted", bookingCardStorage: "available", cardVaultKeyVersion: "v1" });
     });
   });
 

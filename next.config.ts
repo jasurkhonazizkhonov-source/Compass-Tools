@@ -1,4 +1,5 @@
 import type { NextConfig } from "next";
+import { buildBaseCsp } from "./src/lib/csp";
 
 // Content-Security-Policy is intentionally pragmatic, not maximal: this app
 // (a) relies on Next.js App Router's own inline hydration/theme-init
@@ -11,23 +12,10 @@ import type { NextConfig } from "next";
 // as verified to still work. Re-verify this policy (via the browser tools,
 // checking read_console_messages for CSP violations) after any change to
 // which third-party origins the app loads from.
-const CSP = [
-  "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://accounts.google.com",
-  // https://accounts.google.com is required here too: Google's Sign-In
-  // button loads its own stylesheet (accounts.google.com/gsi/style) — a
-  // real CSP violation caught by testing this in production, not just the
-  // script origin already allowed above.
-  "style-src 'self' 'unsafe-inline' https://accounts.google.com",
-  "img-src 'self' data: https:",
-  "font-src 'self' data:",
-  "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
-  "frame-src https://accounts.google.com",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "object-src 'none'",
-].join("; ");
+// Built in src/lib/csp.ts. This is the BASE policy for every route; the routes that
+// show or accept card data get the stricter per-request-nonce policy from
+// src/proxy.ts instead (see that file and docs/CARD_VAULT_SECURITY.md).
+const CSP = buildBaseCsp();
 
 const SECURITY_HEADERS = [
   { key: "Content-Security-Policy", value: CSP },

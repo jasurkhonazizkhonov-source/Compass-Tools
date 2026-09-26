@@ -95,6 +95,14 @@ number in URLs or browser storage.
 | `CARD_ENCRYPTION_KEY_ID` | The id new cards are encrypted under. **Required when `CARD_ENCRYPTION_KEYS` is set** — never a silent default. Defaults to `v1` when only `CARD_ENCRYPTION_KEY` is used. |
 | `CARD_VAULT_MODE` | Explicit enablement in production-class environments (see §5). |
 
+**Format (verified against `card-keyring.ts`):** `CARD_ENCRYPTION_KEYS` is
+plain comma-separated text `id:base64key,id:base64key` — not JSON. An id is 1–12
+letters/digits (not secret; chosen by you; never generated). Each key is base64 of
+exactly 32 bytes. The same id listed twice with the **same** key is accepted; with
+a **different** key it is rejected. A bare key without `id:` is invalid.
+`CARD_ENCRYPTION_KEY` is **not obsolete**: it is key id `v1`, the only key that
+can decrypt cards stored before envelopes existed.
+
 Generate a key: `openssl rand -base64 32`. **The application never generates a
 key.** A key regenerated per deployment would make every stored card
 undecryptable, so keys only ever come from the owner.
@@ -274,6 +282,15 @@ row **and destroys the encrypted number** — `encryptedPan` becomes the tombsto
 **Retention purge (implemented, opt-in):** `npm run cards:purge -- --archived`
 and/or `--older-than-days N` (dry run unless `--apply`; audited per card).
 
+**Scheduled purge (implemented, opt-in, OFF by default):** set
+`CARD_RETENTION_DAYS` (whole number, 1–3650) and the daily cron
+(`/api/cron/tasks`) destroys every stored card number created more than that many
+days ago, plus any removed card not yet purged. It never runs unless configured,
+and in production only when the cron is authenticated (`CRON_SECRET` set — an open
+cron endpoint must never be able to trigger an irreversible purge). **This code
+invents no retention period**; choosing one — and what event starts the clock
+(the card's creation date is what is implemented) — is a business/legal decision.
+
 **Recommended policy (a business decision — not enforced automatically):** keep a
 full card number only as long as a supplier charge may still need it. Suggested:
 purge the PAN once the booking's tickets are issued and payments confirmed, and
@@ -306,8 +323,18 @@ secret, and card-shaped numbers.
   compromised: generate new values, re-link Gmail connections (token key), and
   accept that previously captured IP ciphertext is decryptable with the old key
   (re-encrypt or purge it). Never reuse a value that appears in a test file.
+- **The GitHub repository is PUBLIC** (verified via the GitHub API), so those
+  committed constants — and everything else in Git history — are readable by anyone.
+  If any production secret equals a value that ever appeared in the repository, it
+  is compromised today, not hypothetically.
 - Test fixtures: a repository test rejects any card-shaped number that is not an
   official test number.
+- Re-audited (values never printed): `DATABASE_URL`, `GOOGLE_CLIENT_SECRET`,
+  `APP_BASE_URL` and `CARD_ENCRYPTION_KEY` (local values) appear **nowhere** in
+  history; only the three keys above do. `.gitignore` ignores `.env*` except
+  `.env.example`; no `.env` file is tracked; there is no CI configuration in the
+  repository; `vercel.json` contains only the cron schedule. `CRON_SECRET` is not
+  in the local `.env` and (per the configured variables) not in Vercel — see §5a.
 
 ## 12. Monitoring and health
 
@@ -332,15 +359,25 @@ Open, not fixed by this work:
   penetration testing, quarterly scans, formal change control, access reviews,
   centralized log retention/monitoring (PCI DSS 1, 2, 6, 10, 11, 12).
 - **No app-managed MFA** for administrative access (PCI DSS 8.4): only Google's.
-- **CSP allows `'unsafe-inline'` scripts** (required by Next.js hydration, no
-  nonce plumbing): an XSS bug could read a card as it is typed. The CSP still
-  blocks framing, plugins, foreign form targets and unexpected origins.
+- **CSP:** the card-entry page and every signed-in CRM page now use a strict
+  per-request **nonce** policy (`script-src 'self' 'nonce-…' 'strict-dynamic'`) —
+  injected inline script and inline event handlers are refused (verified in a real
+  browser). **Still open:** `style-src` keeps `'unsafe-inline'` (inline style
+  attributes from the UI libraries cannot carry a nonce); the public marketing and
+  login pages keep the older policy with `'unsafe-inline'` scripts because
+  statically generated pages cannot carry a per-request nonce; and a CSP does not
+  stop an already-trusted script or dependency from misbehaving.
 - **Audit log** append-only enforcement is at the application role/trigger level,
   not a write-once external store.
 - **Backups**: encryption, retention and access are unverified from code.
 - **JavaScript memory**: plaintext PAN strings cannot be zeroed.
-- **Database TLS**: the pool connects with `rejectUnauthorized: false` (managed
-  DB CA not in Node's trust store) — encrypted but not identity-verified.
+- **Database TLS:** verification is now **available** (`DATABASE_SSL_CA` = the
+  provider's CA certificate PEM, or `DATABASE_SSL_VERIFY=system`) but **off by
+  default** because Aiven's CA is not in Node's trust store and enabling it without
+  the certificate would break the connection. Until you set it, the connection is
+  encrypted but the server's identity is not verified (System Health and
+  `/api/health` `databaseTls` say so). The build-time migration step
+  (`scripts/vercel-build.mjs`) still connects unverified.
 - **Shared git-history test constants** (§11) may equal production keys.
 - Staff who hold `payments.reveal` can read full numbers by design.
 
@@ -364,3 +401,117 @@ Open, not fixed by this work:
    Reveal it as a granted, recently-signed-in Admin; confirm the audit entries.
 9. Agree the retention policy (§10) and schedule the purge.
 10. Rehearse a key rotation on a copy before you need it.
+
+## 15. Migrating an existing deployment (only `CARD_ENCRYPTION_KEY` in Vercel)
+
+**Verified against the source and proven by `card-vault-production-profile.test.ts`:**
+
+- `CARD_ENCRYPTION_KEY` is read by `card-keyring.ts` only. It **is** the legacy key,
+  with the fixed key id **`v1`**. It decrypts (a) every card stored in the original
+  format and (b) every `cv2.v1.…` envelope.
+- With only that variable set, `v1` is automatically the *current* key. **No key
+  ring, no key id and no re-encryption are needed** for the vault to work and for
+  every existing card to stay readable. Nothing is generated, renamed or moved.
+- `CARD_ENCRYPTION_KEY_ID` and `CARD_ENCRYPTION_KEYS` exist for **future rotation**.
+  They are optional until you rotate.
+
+The minimum change to take bookings is therefore **one new variable**:
+`CARD_VAULT_MODE=application-encryption-risk-accepted` (the only accepted value;
+surrounding whitespace is ignored, any other spelling — `true`, `staging`, wrong
+case — leaves the vault closed).
+
+### Exact Vercel table (production)
+
+| Variable | Now | Action | Value | Why |
+|---|---|---|---|---|
+| `APP_ENV` | `production` | **KEEP** | `production` | Correct. Only `production` has any effect; never use `staging` to open the vault. |
+| `CARD_ENCRYPTION_KEY` | set | **KEEP — DO NOT TOUCH** | (unchanged, secret) | It is key `v1` and may protect real cards. Removing or replacing it strands them. |
+| `CARD_VAULT_MODE` | absent | **ADD** | `application-encryption-risk-accepted` | The explicit, deliberate opt-in (only accepted value). |
+| `CARD_ENCRYPTION_KEYS` | absent | **DO NOT ADD YET** | — | Only needed at the first rotation (§6). Not a rename of `CARD_ENCRYPTION_KEY`. |
+| `CARD_ENCRYPTION_KEY_ID` | absent | **DO NOT ADD YET** | — | Defaults to `v1` (the existing key). Only required together with `CARD_ENCRYPTION_KEYS`. |
+| `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `GMAIL_TOKEN_ENCRYPTION_KEY` | set | **KEEP — DO NOT TOUCH** (but see §11) | (unchanged) | Changing them breaks stored IP history / Gmail connections. If production equals a value found in Git, rotate deliberately — a separate task per key. |
+| `GOOGLE_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `DATABASE_URL`, `APP_BASE_URL`, `INITIAL_ADMIN_EMAIL` | set | **KEEP — DO NOT TOUCH** | — | Unrelated to the vault. |
+| `CRON_SECRET` | absent | **ADD (recommended)** | a fresh random secret (`openssl rand -base64 32`) | Without it the cron endpoint is open; required before any scheduled purge will run in production. |
+| `DATABASE_SSL_CA` | absent | **ADD (recommended)** | the Aiven project CA certificate (PEM) | Turns on database TLS **verification** (§13). Test on a preview first. |
+| `CARD_RETENTION_DAYS` | absent | **ADD only after a business decision** | whole number of days | Enables the daily card purge. Off = nothing is purged automatically. |
+
+Optional, equivalent form (only if you want the key visible in the ring now):
+`CARD_ENCRYPTION_KEYS=v1:<the same existing key>` + `CARD_ENCRYPTION_KEY_ID=v1`.
+The id **must be `v1`**: a ring that lists the existing key under any other id and
+drops `CARD_ENCRYPTION_KEY` makes every existing card undecryptable (`KEY_UNKNOWN`
+— proven in the tests). `CARD_ENCRYPTION_KEY` may be removed later **only** if the
+ring holds that key as `v1`. There is no reason to do either now.
+
+**Sequence:** add `CARD_VAULT_MODE` → redeploy → check `/api/health`
+(`environment: production`, `cardVaultState: available_risk_accepted`,
+`bookingCardStorage: available`, `cardVaultKeyVersion: v1`) → open System Health
+("Card vault & booking readiness": stored cards, "on an older key" should be 0
+or explained) → grant `payments.reveal` to the people who need it.
+
+**Rollback:** delete `CARD_VAULT_MODE` and redeploy. The vault closes (customers'
+Finish Booking is refused cleanly, nothing is stored); no data is touched and
+existing cards stay encrypted. Never roll back by changing or deleting
+`CARD_ENCRYPTION_KEY`.
+
+## 16. Rotation, step by step (unchanged mechanism, restated)
+
+1. **Add a key:** `CARD_ENCRYPTION_KEYS=k2:<new key>` (append: `k2:<new>,k1:<older>`).
+   **Keep** `CARD_ENCRYPTION_KEY` (`v1`) and every older key.
+2. **Make it current:** `CARD_ENCRYPTION_KEY_ID=k2` (required whenever a ring is used).
+   Redeploy. New cards use `k2`; old cards still decrypt.
+3. **Rotate cards:** run from a trusted machine with the same variables and
+   `DATABASE_URL`: `npm run cards:rotate` (dry run — prints counts per key id, writes
+   nothing), then `npm run cards:rotate -- --apply`. Verified properties:
+   - *dry-run default*; *idempotent* (a second run rotates 0 rows);
+   - *interruption-safe*: each row is its own compare-and-swap write, so an
+     interrupted run leaves every row either fully old or fully new; re-run to finish;
+   - each row is decrypted under its own key, re-encrypted, **re-decrypted and
+     compared** before it is written; a failing row is left untouched and reported by
+     id + fixed code;
+   - an audit row `CARD_KEYS_ROTATED` (counts only) is written on \`--apply\`.
+4. **Verify:** System Health shows "cards on an older key: 0" (or re-run the dry run:
+   \`toRotate\` empty, \`failed\` empty).
+5. **How long old keys stay:** until (a) 0 stored cards use them **and** (b) every
+   database backup/snapshot taken while they were in use has expired or been
+   destroyed (§10). Then, and only then, retire one key at a time and re-check
+   System Health. When in doubt, keep the key (offline).
+6. Never rotate automatically; never delete `CARD_ENCRYPTION_KEY` merely because it
+   is old.
+
+## 17. Step-up authentication for Reveal — evaluation
+
+**Today (implemented):** a sign-in within the last 15 minutes (session creation
+time), applied in every production-class environment however the vault was enabled
+(`APP_ENV` cannot bypass it). It is real but limited: it proves a recent Google
+sign-in, not possession of a second factor at the moment of Reveal, and a stolen
+*fresh* session could Reveal within the window (bounded by the per-account rate
+limit and audited).
+
+**Options, and why none is faked here:**
+
+| Option | Strength | What it needs |
+|---|---|---|
+| **WebAuthn / passkeys / security keys** (recommended) | Phishing-resistant; per-Reveal user-presence | A WebAuthn server library (new dependency), a credential table, registration + assertion flows, origin/RP-ID configuration, credential recovery/reset procedure with dual approval. |
+| **TOTP (RFC 6238)** (acceptable fallback) | Second factor, phishable | An enrolment UI, TOTP secrets encrypted at rest (own key), verification with replay protection and attempt limits, recovery codes, an audited admin reset. |
+
+Both need **business decisions** (who must enrol, what happens when a device is
+lost, who may reset) and new persisted secrets, so they were not bolted on without
+that agreement — a half-built MFA that can be bypassed by an unenrolled account or
+a reset path is worse than an honest "not implemented". Recommended next step:
+WebAuthn for every account holding `payments.reveal`, verified per Reveal with a
+5-minute window, in addition to (not instead of) the current checks.
+
+## 18. Health states
+
+`/api/health` `readiness.cardVaultState` and System Health "Vault state":
+
+| State | Meaning | System Health severity |
+|---|---|---|
+| `disabled` | Production-class and `CARD_VAULT_MODE` not set to the phrase (customers cannot book — accurate, deliberate default) | CRITICAL |
+| `misconfigured` | Key ring missing/invalid (names only, never values) | CRITICAL in production, else WARNING |
+| `available` | Local/test with a valid ring | HEALTHY |
+| `available_risk_accepted` | Production, explicitly enabled, valid ring — application-managed encryption in use | **WARNING** (compliance/security notice, not a customer-blocking incident) |
+
+A runtime failure while storing a card (for example a database fault) is not a
+configuration state; it raises the `BOOKING_PAYMENT_UNAVAILABLE` health incident
+and the customer is told nothing was charged and no booking was recorded.

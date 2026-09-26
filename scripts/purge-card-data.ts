@@ -7,6 +7,7 @@
 //
 // Prints counts only — never a card number or ciphertext.
 import pg from "pg";
+import { resolveDatabaseSsl } from "../src/lib/db-tls";
 import { purgeCardData } from "../src/server/security/card-retention";
 
 async function main() {
@@ -22,7 +23,7 @@ async function main() {
   const apply = args.includes("--apply");
   const u = new URL(raw);
   u.searchParams.delete("sslmode");
-  const client = new pg.Client({ connectionString: u.toString(), ssl: { rejectUnauthorized: false } });
+  const client = new pg.Client({ connectionString: u.toString(), ssl: resolveDatabaseSsl() });
   await client.connect();
   try {
     const summary = await purgeCardData(client, { apply, archived, olderThanDays });

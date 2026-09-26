@@ -19,6 +19,8 @@ import { trustedProxyConfig } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
 import { getCardVaultStatus, CARD_VAULT_MODE_ACCEPTED } from "@/server/security/card-vault-status";
 import { getKeyringStatus } from "@/server/security/card-keyring";
+import { getDatabaseTlsMode } from "@/lib/db-tls";
+import { getCardRetentionDays } from "@/server/security/card-retention-schedule";
 
 export type HealthState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type HealthGroup = "critical" | "warning" | "informational";
@@ -184,12 +186,15 @@ async function checkCardVault(): Promise<HealthCheckResult> {
     const vault = getCardVaultStatus();
     const facts: Array<{ label: string; value: string }> = [
       { label: "Application environment", value: vault.environment },
+      { label: "Vault state", value: vault.state.replace(/_/g, " ") },
       { label: "Vault explicitly enabled (CARD_VAULT_MODE)", value: vault.productionClass ? (vault.modeAccepted ? "Yes" : "No") : "Not required outside production" },
       { label: "Key ring", value: vault.key === "configured" ? "Valid" : vault.key === "missing" ? "Missing" : "Invalid" },
       { label: "Current key version", value: vault.keyVersion ?? "None" },
       { label: "Keys in ring", value: String(vault.keyIds.length) },
       { label: "Card storage", value: vault.storageAvailable ? "Available" : "Unavailable" },
       { label: "Card security code", value: "Never collected or stored" },
+      { label: "Scheduled card retention purge", value: getCardRetentionDays() === null ? "Disabled (CARD_RETENTION_DAYS not set — a business decision)" : `Enabled: cards older than ${getCardRetentionDays()} days are destroyed daily` },
+      { label: "Database TLS", value: getDatabaseTlsMode() === "unverified" ? "Encrypted, server identity NOT verified (set DATABASE_SSL_CA)" : "Encrypted and verified" },
     ];
     if (vault.problems.length > 0) facts.push({ label: "Key ring problems", value: vault.problems.join("; ") });
 
@@ -225,6 +230,10 @@ async function checkCardVault(): Promise<HealthCheckResult> {
     if (vault.productionClass) {
       summary.push("Customers can complete bookings using the CRM's application-level card vault on a production deployment. Cards are encrypted with an application-managed key (AES-256-GCM) — this is NOT PCI DSS-grade key management and the deployment remains in PCI DSS scope.");
       actions.push("Keep Reveal limited to explicitly granted staff, protect the key ring, rotate keys per docs/CARD_VAULT_SECURITY.md, and treat the remaining PCI DSS gaps listed there as open risks.");
+    }
+    if (vault.productionClass && getDatabaseTlsMode() === "unverified") {
+      summary.push("The database connection is encrypted but the server's identity is not verified, so a network attacker could impersonate the database.");
+      actions.push("Set DATABASE_SSL_CA to your database provider's CA certificate (Aiven: the project CA certificate) and redeploy — see docs/CARD_VAULT_SECURITY.md.");
     }
     if (olderKey > 0) {
       summary.push(`${olderKey} stored card(s) are not encrypted under the current key version.`);
