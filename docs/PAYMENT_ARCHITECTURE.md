@@ -36,19 +36,19 @@ describes engineering boundaries only.
    last4 + expiry only. Logs carry a safe error category, never a message that
    could embed a value. A free-text payment note that looks like a card number is
    rejected.
-3. **The full card number leaves the database only through Reveal**, which is
-   permission-gated (`canRevealPaymentMethod`), IDOR-checked (the card must belong
-   to a booking/contact the actor may access), requires recent re-authentication
-   and writes an audit-log entry. Every other query omits the ciphertext column.
-4. **The vault fails closed in production.** `getPaymentVault()`
-   (`src/server/security/payment-vault.ts`) refuses to store or reveal a card when
-   `isProductionEnvironment()` is true (`src/lib/env.ts`: `APP_ENV` if set, else
-   `NODE_ENV`). The owner enables it on a real deployment **deliberately** by
-   setting `APP_ENV` to a non-production value (e.g. `staging`) **and** a valid
-   `CARD_ENCRYPTION_KEY` — see `docs/DEPLOYMENT.md` §5c. Until then a customer's
-   "Finish Booking" is refused with "nothing was charged and no booking was
-   recorded", and Admins see it in the readiness banner, System Health and
-   `GET /api/health`.
+3. **The full card number leaves the database only through Reveal**, which
+   requires an **explicit `payments.reveal` grant (Admin included)**, is
+   IDOR-checked, per-account rate limited, requires a **sign-in within the last 15
+   minutes** in production, and writes an audit entry. Every other query omits the
+   ciphertext column (Prisma global `omit`).
+4. **The vault fails closed.** `getPaymentVault()` opens only with a valid key ring
+   and, in any production-class environment (production or a Vercel preview),
+   only when the owner has set `CARD_VAULT_MODE` to the exact acceptance phrase.
+   `APP_ENV=staging` (or any label) cannot open it — `APP_ENV` can only tighten.
+   Until then a customer's "Finish Booking" is refused with "nothing was charged
+   and no booking was recorded", and Admins see why in the readiness banner,
+   System Health and `GET /api/health`. Full model, key management and rotation:
+   **`docs/CARD_VAULT_SECURITY.md`**; enablement steps: `docs/DEPLOYMENT.md` §5c.
 5. **No real charges are made by the application.** "Confirm payment" only
    *records* that staff took a payment through their own supplier/merchant
    process. Tests and fixtures use only the card networks' published test numbers
@@ -60,7 +60,9 @@ describes engineering boundaries only.
 |---|---|
 | Customer card entry (cardholder, number, expiry, amount; split across several cards) | `src/components/booking/card-payment-section.tsx`, `booking-flow.tsx` |
 | Atomic booking submit incl. card storage | `src/server/actions/booking.ts` (`submitBooking`) |
-| Encrypted vault | `src/server/security/payment-vault.ts`, `card-encryption.ts` (`PaymentMethod.encryptedPan`) |
+| Encrypted vault (versioned envelope, row-bound) | `src/server/security/payment-vault.ts`, `card-encryption.ts` (`PaymentMethod.encryptedPan`) |
+| Key ring, rotation, retention purge | `card-keyring.ts`, `card-key-rotation.ts`, `card-retention.ts`, `npm run cards:rotate`, `npm run cards:purge` |
+| Card audit events | `src/server/security/card-audit.ts` |
 | Vault readiness (pure env check, no secrets) | `src/server/security/card-vault-status.ts` |
 | Contact-level payment methods (add / edit / remove) | `src/server/actions/contact-payment-methods.ts` |
 | Masked display + Admin Reveal | `src/components/bookings/payment-method-card.tsx`, `revealPaymentMethod` in `src/server/actions/payment-methods.ts` |

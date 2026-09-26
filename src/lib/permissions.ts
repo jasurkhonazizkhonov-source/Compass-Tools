@@ -299,14 +299,12 @@ export const REVEAL_ELIGIBLE_ROLES: AccountRole[] = ["ADMIN", "MANAGER", "TICKET
 
 /** Full-PAN reveal requires BOTH an eligible role AND the explicit
  * payments.reveal (or payments.manual_supplier_payment) grant — neither a
- * role alone nor a permission on an ineligible role is ever sufficient. */
+ * role alone nor a permission on an ineligible role is ever sufficient.
+ * Unlike the other payment actions below, this applies to ADMIN too: default is
+ * NO card-number access, and an Admin must be explicitly granted Reveal (by an
+ * Admin, audited) before they can decrypt anything. */
 export function canRevealPaymentMethod(account: PaymentAccount): boolean {
   if (!account) return false;
-  // Every Admin has identical effective permissions — role alone is
-  // sufficient, never gated by that specific account's grant array. See
-  // the same bypass on canConfirmPayment/
-  // canManageContactPaymentMethods/canRevealBookingIp below.
-  if (account.role === "ADMIN") return true;
   if (!REVEAL_ELIGIBLE_ROLES.includes(account.role)) return false;
   return hasPaymentPermission(account, "payments.reveal") || hasPaymentPermission(account, "payments.manual_supplier_payment");
 }

@@ -5,6 +5,7 @@ import { Prisma } from "@/generated/prisma/client";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
+import { auditCardEvent } from "@/server/security/card-audit";
 import {
   canManageAccounts,
   isPaymentPermission,
@@ -256,9 +257,23 @@ export async function updatePaymentPermissions(accountId: string, permissions: s
   // Deliberately not returning the updated row — see createAccount's
   // comment on why a raw Account (Decimal fields included) must never be
   // handed back to the "use client" caller.
+  const before = await prisma.account.findUnique({ where: { id: accountId }, select: { paymentPermissions: true } });
   await prisma.account.update({
     where: { id: accountId },
     data: { paymentPermissions: requested },
+  });
+  // Administrator changes to who may touch card data are security events.
+  await auditCardEvent({
+    actorId: current!.id,
+    action: "PAYMENT_PERMISSIONS_CHANGED",
+    entityType: "Account",
+    entityId: accountId,
+    success: true,
+    details: {
+      targetRole: target.role,
+      granted: requested.filter((p) => !before?.paymentPermissions.includes(p)),
+      revoked: (before?.paymentPermissions ?? []).filter((p) => !requested.includes(p)),
+    },
   });
   revalidatePath("/users");
 }

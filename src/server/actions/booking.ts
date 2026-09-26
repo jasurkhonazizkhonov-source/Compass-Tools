@@ -13,6 +13,8 @@ import { type EmailPaymentMethod } from "@/server/email/templates";
 import { transitionQuoteStatus, notifyQuoteActivity } from "@/server/quote-status";
 import { getPaymentVault } from "@/server/security/payment-vault";
 import { recordHealthEvent } from "@/server/system/health-events";
+import { auditCardEvent } from "@/server/security/card-audit";
+import { CardVaultError } from "@/server/security/card-encryption";
 import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
 import { getClientIp } from "@/lib/request-ip";
 import { recordIpCapture } from "@/server/security/ip-capture";
@@ -250,14 +252,28 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
     if (!isValidExpiry(card.expiryMonth, card.expiryYear)) {
       return { ok: false, error: "Payment information could not be processed" };
     }
+    // The row id is chosen first so it is bound into the ciphertext (AAD): the
+    // encrypted number only decrypts as THIS payment-method row.
+    const paymentMethodId = crypto.randomUUID();
     let encryptedPan: string;
     try {
-      encryptedPan = await getPaymentVault().store(cardNumberDigits);
+      encryptedPan = await getPaymentVault().store(cardNumberDigits, paymentMethodId);
     } catch (err) {
       // e.g. the production fail-closed vault (see payment-vault.ts) or a
       // missing CARD_ENCRYPTION_KEY. A configuration problem, not the
       // customer's mistake — nothing has been written yet.
       console.error(`[booking] CARD_VAULT_UNAVAILABLE (${safeErrorTag(err)})`);
+      // A tamper-evident security record too (fixed code only, no card data);
+      // best-effort — it must never turn a safe refusal into a crash.
+      await auditCardEvent({
+        actorId: null,
+        action: "CARD_ENCRYPTION_FAILED",
+        entityId: quote.id,
+        entityType: "Quote",
+        success: false,
+        reason: err instanceof CardVaultError ? err.code : "UNKNOWN",
+        details: { source: "booking_submit" },
+      }).catch(() => {});
       await recordHealthEvent({
         type: "BOOKING_PAYMENT_UNAVAILABLE",
         category: "payment",
@@ -267,7 +283,7 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
       return { ok: false, error: "We couldn't securely process your payment details right now. Nothing was charged and no booking was recorded. Please try again shortly or contact your travel agent." };
     }
     preparedCards.push({
-      id: crypto.randomUUID(),
+      id: paymentMethodId,
       cardholderName: card.cardholderName,
       encryptedPan,
       last4: lastFour(cardNumberDigits),
@@ -276,6 +292,9 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
       expiryYear: card.expiryYear,
       amount: card.amount,
     });
+    // Drop the plaintext number from the parsed input as soon as it has been
+    // encrypted (JS cannot zero a string, but this removes our reference).
+    (card as { cardNumber: string }).cardNumber = "";
   }
 
   // Server recomputes the total from the quote's own stored USD pricing —

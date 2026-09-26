@@ -27,6 +27,30 @@ export function requireRecentAuthentication(): StepUpAuthResult {
   return { ok: true, note: "NOT_AVAILABLE_IN_DEVELOPMENT" };
 }
 
+/** How recently the account must have signed in to Reveal a full card number. */
+export const RECENT_LOGIN_WINDOW_MS = 15 * 60 * 1000;
+
+export type RecentLoginResult = { ok: true; note?: "NOT_AVAILABLE_IN_DEVELOPMENT" } | { ok: false; reason: "RECENT_LOGIN_REQUIRED" };
+
+/**
+ * Real step-up for full-card Reveal, built on what this app genuinely has: the
+ * session is issued by a fresh Google sign-in and `sessionCreatedAt` is that
+ * sign-in time (it is never refreshed by activity). Reveal therefore requires
+ * the account to have signed in within RECENT_LOGIN_WINDOW_MS — an idle or
+ * stolen older session cannot decrypt a card, and the user must complete a new
+ * Google sign-in (with whatever MFA their Google account enforces) first.
+ *
+ * This is NOT app-managed MFA and does not claim to be. It applies in every
+ * production-class environment regardless of how the card vault was enabled.
+ * Local development/tests (no real sign-in) pass through explicitly.
+ */
+export function requireRecentLogin(sessionCreatedAt: Date | null | undefined, now: number = Date.now()): RecentLoginResult {
+  if (!isProductionEnvironment()) return { ok: true, note: "NOT_AVAILABLE_IN_DEVELOPMENT" };
+  if (!sessionCreatedAt) return { ok: false, reason: "RECENT_LOGIN_REQUIRED" };
+  const age = now - sessionCreatedAt.getTime();
+  return age >= 0 && age <= RECENT_LOGIN_WINDOW_MS ? { ok: true } : { ok: false, reason: "RECENT_LOGIN_REQUIRED" };
+}
+
 /** Alias — today both checks resolve to the same "no real system yet"
  * outcome, but are named separately so a real implementation can
  * distinguish "signed in recently" from "completed an MFA challenge". */

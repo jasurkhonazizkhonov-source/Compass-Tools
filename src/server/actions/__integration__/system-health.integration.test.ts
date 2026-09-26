@@ -269,33 +269,40 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
         }
       };
 
-      it("guard open + valid key => storage Available and HEALTHY", async () => {
-        await withEnv({ APP_ENV: "test", CARD_ENCRYPTION_KEY: GOOD, VERCEL_ENV: undefined }, async () => {
+      // NODE_ENV under vitest is "test"; a production deployment is simulated with APP_ENV=production
+      // (the only APP_ENV value that has any effect) or VERCEL_ENV.
+      it("local/non-production + valid ring => storage Available and HEALTHY (no explicit mode needed locally)", async () => {
+        await withEnv({ APP_ENV: undefined, CARD_ENCRYPTION_KEY: GOOD, VERCEL_ENV: undefined, CARD_VAULT_MODE: undefined }, async () => {
           const r = byId(await checks.runHealthChecks(), "payment.vault");
-          expect(r.state).toBe("HEALTHY");
+          // The scratch database is shared with other test files, whose cards use other keys: the only acceptable
+          // non-HEALTHY outcome here is the "rotation needed" warning, never a blocked vault.
+          if (r.state !== "HEALTHY") expect(r.summary).toMatch(/not encrypted under the current key version/i);
+          expect(r.state).not.toBe("CRITICAL");
           expect(JSON.stringify(r.facts)).toContain("Available");
           expect(JSON.stringify(r.facts)).toContain("Never collected or stored");
+          expect(JSON.stringify(r.facts)).toContain("Current key version");
         });
       });
 
-      it("production guard closed => CRITICAL, says customers cannot complete bookings, and names the deliberate opt-in (APP_ENV) rather than hiding it", async () => {
-        await withEnv({ APP_ENV: "production", CARD_ENCRYPTION_KEY: GOOD }, async () => {
+      it("production without the explicit vault mode => CRITICAL, says customers cannot complete bookings, and names CARD_VAULT_MODE — not APP_ENV", async () => {
+        await withEnv({ APP_ENV: "production", CARD_ENCRYPTION_KEY: GOOD, CARD_VAULT_MODE: undefined }, async () => {
           const r = byId(await checks.runHealthChecks(), "payment.vault");
           expect(r.state).toBe("CRITICAL");
           expect(r.summary).toMatch(/customers cannot complete bookings/i);
-          expect(r.action ?? "").toMatch(/APP_ENV/);
+          expect(r.action ?? "").toMatch(/CARD_VAULT_MODE/);
+          expect(r.action ?? "").toMatch(/APP_ENV=staging does NOT enable it/i);
           expect(r.action ?? "").toMatch(/NOT PCI DSS-grade/i);
         });
       });
 
-      it("a missing / invalid CARD_ENCRYPTION_KEY blocks bookings and is reported by name only — never the value", async () => {
-        await withEnv({ APP_ENV: "test", CARD_ENCRYPTION_KEY: undefined }, async () => {
+      it("a missing / invalid key ring blocks bookings and is reported by name only — never the value", async () => {
+        await withEnv({ APP_ENV: undefined, CARD_ENCRYPTION_KEY: undefined, CARD_VAULT_MODE: undefined }, async () => {
           const r = byId(await checks.runHealthChecks(), "payment.vault");
           expect(r.state).toBe("WARNING");
-          expect(r.summary).toMatch(/not set/i);
+          expect(r.summary).toMatch(/not configured/i);
           expect(JSON.stringify(r.facts)).toContain("Missing");
         });
-        await withEnv({ APP_ENV: "test", CARD_ENCRYPTION_KEY: "definitely-not-a-key-zzzzzz" }, async () => {
+        await withEnv({ APP_ENV: undefined, CARD_ENCRYPTION_KEY: "definitely-not-a-key-zzzzzz", CARD_VAULT_MODE: undefined }, async () => {
           const r = byId(await checks.runHealthChecks(), "payment.vault");
           expect(r.state).toBe("WARNING");
           expect(JSON.stringify(r)).toContain("Invalid");
@@ -303,16 +310,37 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
         });
       });
 
-      it("the application vault ACTIVE on a real production deployment is an honest WARNING (development-grade, not PCI DSS-grade), never a silent HEALTHY", async () => {
-        await withEnv({ APP_ENV: "staging", CARD_ENCRYPTION_KEY: GOOD, VERCEL_ENV: "production" }, async () => {
+      it("explicitly enabled on a production deployment is an honest WARNING (application-level, not PCI DSS-grade), never a silent HEALTHY", async () => {
+        await withEnv({ APP_ENV: "production", CARD_ENCRYPTION_KEY: GOOD, CARD_VAULT_MODE: "application-encryption-risk-accepted" }, async () => {
           const r = byId(await checks.runHealthChecks(), "payment.vault");
           expect(r.state).toBe("WARNING");
           expect(r.summary).toMatch(/not PCI DSS-grade/i);
+          expect(r.summary).toMatch(/PCI DSS scope/i);
         });
       });
 
+      it("reports stored cards that are not on the current key version (rotation needed) using ciphertext METADATA only", async () => {
+        const contact = await prisma.contact.create({ data: { firstName: "Rot", lastName: TAG, primaryEmail: `rot-${TAG}@example.test`, companyId: "default-company" } });
+        contactIds.push(contact.id);
+        const legacyRow = await prisma.paymentMethod.create({
+          data: { contactId: contact.id, cardholderName: "Legacy Row", encryptedPan: Buffer.alloc(60, 7).toString("base64"), last4: "4242", expiryMonth: 12, expiryYear: 2099 },
+          select: { id: true },
+        });
+        try {
+          await withEnv({ APP_ENV: undefined, CARD_ENCRYPTION_KEY: GOOD, CARD_VAULT_MODE: undefined }, async () => {
+            const r = byId(await checks.runHealthChecks(), "payment.vault");
+            expect(r.state).toBe("WARNING");
+            expect(r.summary).toMatch(/not encrypted under the current key version/i);
+            expect(r.action ?? "").toMatch(/cards:rotate/);
+            expect(JSON.stringify(r)).not.toContain(Buffer.alloc(60, 7).toString("base64"));
+          });
+        } finally {
+          await prisma.paymentMethod.delete({ where: { id: legacyRow.id } });
+        }
+      });
+
       it("NEVER contains the key value", async () => {
-        await withEnv({ APP_ENV: "test", CARD_ENCRYPTION_KEY: GOOD }, async () => {
+        await withEnv({ APP_ENV: undefined, CARD_ENCRYPTION_KEY: GOOD }, async () => {
           expect(JSON.stringify(await checks.runHealthChecks())).not.toContain(GOOD);
         });
       });

@@ -10,7 +10,7 @@ import { SystemReadinessBanner } from "../system-readiness-banner";
 // signer IPs are not recorded. The message mirrors exactly what "Finish
 // Booking" will do, and disappears only when storage really is available.
 
-const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "VERCEL"];
+const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "CARD_ENCRYPTION_KEYS", "CARD_ENCRYPTION_KEY_ID", "CARD_VAULT_MODE", "VERCEL", "VERCEL_ENV"];
 const original = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
 const GOOD_KEY = Buffer.alloc(32, 7).toString("base64");
 afterEach(() => {
@@ -28,7 +28,8 @@ describe("SystemReadinessBanner", () => {
     process.env.CARD_ENCRYPTION_KEY = GOOD_KEY;
     render(<SystemReadinessBanner role="ADMIN" />);
     expect(screen.getByText(/customers cannot complete bookings/i)).toBeInTheDocument();
-    expect(screen.getByText(/production environment and the card vault refuses/i)).toBeInTheDocument();
+    expect(screen.getByText(/production-class environment and the card vault has not been explicitly enabled/i)).toBeInTheDocument();
+    expect(screen.getByText(/APP_ENV=staging does not enable it/i)).toBeInTheDocument();
     expect(screen.getByText(/signer ip addresses are not being recorded/i)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
@@ -38,11 +39,11 @@ describe("SystemReadinessBanner", () => {
     process.env.APP_ENV = "staging";
     process.env.TRUSTED_PROXY = "vercel";
     const { unmount } = render(<SystemReadinessBanner role="ADMIN" />);
-    expect(screen.getByText(/CARD_ENCRYPTION_KEY is not set/i)).toBeInTheDocument();
+    expect(screen.getByText(/card key ring is not configured/i)).toBeInTheDocument();
     unmount();
     process.env.CARD_ENCRYPTION_KEY = "not-a-valid-key-zzzz";
     render(<SystemReadinessBanner role="ADMIN" />);
-    expect(screen.getByText(/not a valid base64-encoded 32-byte key/i)).toBeInTheDocument();
+    expect(screen.getByText(/not valid \(each key must be a base64-encoded 32-byte key\)/i)).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("not-a-valid-key-zzzz");
   });
 

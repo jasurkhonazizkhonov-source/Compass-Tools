@@ -15,6 +15,8 @@
     "generate:reference-json": "tsx prisma/seed-data/generate-json.ts",
     "migrations:manifest": "node scripts/write-migration-manifest.mjs",
     "db:find-incomplete-bookings": "tsx scripts/find-incomplete-bookings.ts",
+    "cards:rotate": "tsx scripts/rotate-card-keys.ts",
+    "cards:purge": "tsx scripts/purge-card-data.ts",
     "test:fresh-db": "tsx scripts/fresh-database-check.ts",
     "migration:safety-check": "tsx scripts/migration-safety-check.ts"
   },

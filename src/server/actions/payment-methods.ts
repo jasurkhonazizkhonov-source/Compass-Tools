@@ -1,16 +1,17 @@
 "use server";
 
 import { z } from "zod";
-import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
 import { canRevealPaymentMethod, canConfirmPayment } from "@/lib/permissions";
 import { getPaymentVault } from "@/server/security/payment-vault";
-import { requireRecentAuthentication } from "@/server/security/privileged-access";
+import { CardVaultError, PURGED_REFERENCE } from "@/server/security/card-encryption";
+import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
+import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
+import { auditCardEvent } from "@/server/security/card-audit";
 import { isChargeAmountAllowed } from "@/lib/payment-limits";
-import { getClientIp } from "@/lib/request-ip";
 import { canAccessPaymentMethod } from "@/server/payment-method-access";
 import { bookingVisibilityWhere } from "@/server/visibility";
 import { formatMoney, isSupportedCurrency } from "@/lib/currency";
@@ -23,61 +24,71 @@ async function auditPaymentMethodAccess(params: {
   success: boolean;
   reason?: string;
 }) {
-  let ip: string | undefined;
-  try {
-    ip = getClientIp(await headers());
-  } catch {
-    // headers() can throw outside a request context (e.g. a test harness) — audit logging must never block on it.
-  }
-  await prisma.auditLog.create({
-    data: {
-      actorId: params.actorId,
-      action: params.success ? "PAYMENT_METHOD_REVEALED" : "PAYMENT_METHOD_REVEAL_DENIED",
-      entityType: "PaymentMethod",
-      entityId: params.paymentMethodId,
-      // Deliberately never includes the PAN or CVV — only the last four
-      // digits (already-masked data), never the full card number.
-      metadata: {
-        bookingId: params.bookingId ?? null,
-        last4: params.last4 ?? null,
-        result: params.success ? "SUCCESS" : "DENIED",
-        reason: params.reason ?? null,
-        ip: ip ?? null,
-      },
-    },
+  await auditCardEvent({
+    actorId: params.actorId,
+    action: params.success ? "PAYMENT_METHOD_REVEALED" : "PAYMENT_METHOD_REVEAL_DENIED",
+    entityId: params.paymentMethodId,
+    success: params.success,
+    reason: params.reason,
+    // Deliberately never includes the PAN or CVV — only the last four
+    // digits (already-masked data), never the full card number.
+    details: { bookingId: params.bookingId ?? null, last4: params.last4 ?? null },
   });
 }
 
 const GENERIC_DENIAL = "You are not authorized to reveal this payment method";
 
 /**
- * The privileged reveal workflow — every step below corresponds directly
- * to the numbered steps in the spec this was built against:
- *   1-3: authenticated session, active account, role + explicit
- *        payments.reveal permission (canRevealPaymentMethod checks both).
- *   4:   this specific booking's payment method, not just "any" — reuses
- *        the exact same bookingVisibilityWhere() every other booking-detail
- *        access goes through, so a restricted agent can't reveal a card on
- *        a booking outside their own scope even with payments.reveal.
- *   5-6: recent authentication / MFA — see requireRecentAuthentication in
- *        privileged-access.ts. Fails closed in production (no real MFA
- *        system exists yet); development explicitly reports
- *        NOT_AVAILABLE_IN_DEVELOPMENT and allows the action through.
- *   7:   audit event recorded for both success and denial.
- *   8-9: decrypt server-side via the PaymentVault abstraction, return only
- *        to this call's caller.
- *   10-11: auto-hide timeout + Hide button — implemented client-side in
- *        the component that calls this action, never here.
- *   12:  this is the only export in the codebase that ever reads
- *        encryptedPan — no other query/action touches that column.
+ * A refusal the user can act on (sign in again, wait, ...) is RETURNED, not
+ * thrown: Next.js replaces the message of any error thrown from a Server
+ * Action with an opaque digest in production, so a thrown "please sign in
+ * again" would reach the user as gibberish. Authorization failures (no
+ * session / no grant / not found / not accessible) still throw the generic
+ * denial — they must not explain themselves.
  */
-export async function revealPaymentMethod(paymentMethodId: string) {
+export type RevealResult =
+  | { cardholderName: string; pan: string; cardBrand: string | null; expiryMonth: number; expiryYear: number }
+  | { error: string };
+
+/**
+ * The privileged reveal workflow. Every step fails closed and is audited:
+ *   1. Authenticated, ACTIVE session.
+ *   2. Per-account rate limit (CARD_REVEAL) — counts every attempt, so a
+ *      stolen session or a script cannot harvest cards; hitting it is audited.
+ *   3. Explicit `payments.reveal` grant on an eligible role. No role — Admin
+ *      included — has Reveal by role alone.
+ *   4. This specific record is one the account may see (IDOR/BOLA) — the same
+ *      row-level visibility every other booking/contact read uses.
+ *   5. Recent sign-in (privileged-access.ts requireRecentLogin) in every
+ *      production-class environment, however the vault was enabled.
+ *   6. Decrypt through the PaymentVault (row id is bound into the ciphertext).
+ *      A decrypt failure is audited with a fixed error code, never a message.
+ *   7. Audit the success (actor, record, IP, user agent, correlation id).
+ *   The PAN is returned only to this call's caller; the UI shows it briefly,
+ *   never persists it, and hides it on a timer / tab change.
+ * This is the only export in the codebase that reads encryptedPan.
+ */
+export async function revealPaymentMethod(paymentMethodId: string): Promise<RevealResult> {
   const actor = await getCurrentAccount();
 
   if (!actor || actor.status !== "ACTIVE") {
     await auditPaymentMethodAccess({ actorId: actor?.id, paymentMethodId, bookingId: undefined, last4: undefined, success: false, reason: "NO_ACTIVE_SESSION" });
     throw new Error(GENERIC_DENIAL);
   }
+
+  const limit = await checkAccountRateLimit(actor.id, "CARD_REVEAL", RATE_LIMITS.CARD_REVEAL);
+  if (!limit.allowed) {
+    await auditCardEvent({
+      actorId: actor.id,
+      action: "PAYMENT_METHOD_REVEAL_RATE_LIMITED",
+      entityId: paymentMethodId,
+      success: false,
+      reason: "RATE_LIMITED",
+      details: { retryAfterSeconds: limit.retryAfterSeconds },
+    });
+    return { error: `Too many Reveal attempts. Please wait ${Math.max(1, Math.ceil(limit.retryAfterSeconds / 60))} minute(s) and try again.` };
+  }
+
   if (!canRevealPaymentMethod(actor)) {
     await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: undefined, last4: undefined, success: false, reason: "MISSING_PERMISSION" });
     throw new Error(GENERIC_DENIAL);
@@ -85,7 +96,7 @@ export async function revealPaymentMethod(paymentMethodId: string) {
 
   const paymentMethod = await prisma.paymentMethod.findUnique({
     where: { id: paymentMethodId },
-    select: { id: true, encryptedPan: true, cardholderName: true, cardBrand: true, expiryMonth: true, expiryYear: true, last4: true, bookingId: true, contactId: true },
+    select: { id: true, encryptedPan: true, status: true, cardholderName: true, cardBrand: true, expiryMonth: true, expiryYear: true, last4: true, bookingId: true, contactId: true },
   });
   if (!paymentMethod) {
     await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: undefined, last4: undefined, success: false, reason: "NOT_FOUND" });
@@ -101,13 +112,32 @@ export async function revealPaymentMethod(paymentMethodId: string) {
     throw new Error(GENERIC_DENIAL);
   }
 
-  const stepUp = requireRecentAuthentication();
-  if (!stepUp.ok) {
-    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: false, reason: stepUp.reason });
-    throw new Error(GENERIC_DENIAL);
+  if (paymentMethod.status === "ARCHIVED" || paymentMethod.encryptedPan === PURGED_REFERENCE) {
+    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: false, reason: "CARD_REMOVED" });
+    return { error: "This card has been removed and can no longer be revealed" };
   }
 
-  const pan = await getPaymentVault().reveal(paymentMethod.encryptedPan);
+  const stepUp = requireRecentLogin(actor.sessionCreatedAt);
+  if (!stepUp.ok) {
+    await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: false, reason: stepUp.reason });
+    return { error: `For security, Reveal requires a sign-in within the last ${RECENT_LOGIN_WINDOW_MS / 60000} minutes. Sign out, sign back in, then try again.` };
+  }
+
+  let pan: string;
+  try {
+    pan = await getPaymentVault().reveal(paymentMethod.encryptedPan, paymentMethod.id);
+  } catch (err) {
+    const code = err instanceof CardVaultError ? err.code : "UNKNOWN";
+    await auditCardEvent({
+      actorId: actor.id,
+      action: "CARD_DECRYPTION_FAILED",
+      entityId: paymentMethod.id,
+      success: false,
+      reason: code,
+      details: { bookingId: paymentMethod.bookingId, last4: paymentMethod.last4 },
+    });
+    return { error: "This card could not be decrypted. Please contact an administrator." };
+  }
   await auditPaymentMethodAccess({ actorId: actor.id, paymentMethodId, bookingId: paymentMethod.bookingId, last4: paymentMethod.last4, success: true });
 
   return {

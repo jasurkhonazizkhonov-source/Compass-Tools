@@ -35,7 +35,26 @@ const SECURITY_HEADERS = [
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "X-Frame-Options", value: "DENY" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+  // Vercel already sends this on custom domains; stated here so the policy does
+  // not depend on the platform. Deliberately no includeSubDomains/preload: this
+  // app does not control every subdomain of its parent domain.
+  { key: "Strict-Transport-Security", value: "max-age=63072000" },
 ];
+
+// Pages and endpoints that show or accept customer/payment data must never be
+// stored by a CDN, proxy or the browser cache. Next already marks dynamic
+// pages private/no-store; this makes it an explicit, tested guarantee (and
+// keeps it true if a page were ever made static by mistake). Static assets
+// under /_next are intentionally NOT listed — they stay cacheable.
+const NO_STORE_SOURCES = [
+  "/quote/:path*",
+  "/bookings/:path*",
+  "/contacts/:path*",
+  "/users/:path*",
+  "/system-health/:path*",
+  "/api/:path*",
+];
+const NO_STORE = [{ key: "Cache-Control", value: "private, no-cache, no-store, max-age=0, must-revalidate" }];
 
 const nextConfig: NextConfig = {
   async headers() {
@@ -44,6 +63,7 @@ const nextConfig: NextConfig = {
         source: "/:path*",
         headers: SECURITY_HEADERS,
       },
+      ...NO_STORE_SOURCES.map((source) => ({ source, headers: NO_STORE })),
     ];
   },
   experimental: {

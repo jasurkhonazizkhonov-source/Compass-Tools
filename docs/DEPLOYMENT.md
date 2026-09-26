@@ -37,7 +37,9 @@ Project → Settings → Environment Variables) for a real deployment:
 | `IP_ENCRYPTION_KEY` / `IP_HASH_KEY` | Yes | Two SEPARATE fresh values per deployment: `openssl rand -base64 32` (run it twice). See `src/server/security/ip-encryption.ts`'s file comment — one key reversibly encrypts a captured IP, the other produces a one-way search index; never reuse either across deployments or with each other. |
 | `TRUSTED_PROXY` | Automatic on Vercel; explicit elsewhere | On Vercel it is detected automatically (`VERCEL=1`); set it explicitly for any other proxy, or to `none` to opt out. See §5 below. |
 | `CRON_SECRET` | Recommended in production | See §5a below. |
-| `APP_ENV` | **Required for customer bookings on a real deployment** | The card vault refuses to store cards while the environment counts as production (`APP_ENV`, else `NODE_ENV`). Setting `APP_ENV` to a non-production value (e.g. `staging`) is the owner's deliberate opt-in to the CRM's application-level card vault (not PCI DSS-grade — see `docs/PAYMENT_ARCHITECTURE.md`). Leave it unset and customers' "Finish Booking" is refused (fail closed). See §5c. |
+| `CARD_VAULT_MODE` | **Required for customer bookings on a real deployment** | The owner's explicit opt-in to the CRM's application-level card vault (not PCI DSS-grade). Must be exactly `application-encryption-risk-accepted`; any other value (`true`, `staging`, …) leaves the vault closed. See §5c and `docs/CARD_VAULT_SECURITY.md`. |
+| `CARD_ENCRYPTION_KEYS` / `CARD_ENCRYPTION_KEY_ID` | Optional (key rotation) | A versioned key ring (`id:base64key,…`) and the id new cards are encrypted under. Keep every older key until no card or backup needs it. See `docs/CARD_VAULT_SECURITY.md` §6. |
+| `APP_ENV` | Optional | Only `APP_ENV=production` has any effect (it forces production rules). Every other value is ignored — it can **not** relax a production build or a Vercel deployment and can no longer be used to open the card vault. |
 | `BOOKING_IP_RETENTION_DAYS` | Deprecated — do not set | Pass 33: booking submission IP data is retained indefinitely by design; this variable is no longer read anywhere. Setting it does nothing. See `docs/ip-vault-compliance.md`. |
 
 ## 2a. Configure the Google OAuth client for THIS deployment's domain
@@ -390,25 +392,37 @@ payment provider**. This is application-level encryption, **not PCI DSS-grade**
 key management — running it is the owner's decision and responsibility. The card
 security code (CVV/CVC) is **never** collected or stored.
 
-So that it is never used by accident, the vault **fails closed** while the
-environment counts as production: every customer's "Finish Booking" is refused
-with a message that nothing was charged and no booking was recorded. For
-customers to complete bookings on a real deployment, **all** of these must be set
-in the host's environment (Vercel → Project → Settings → Environment Variables):
+So that it is never used by accident, the vault **fails closed** in every
+production-class environment (production and Vercel previews) until the owner
+opens it explicitly: every customer's "Finish Booking" is refused with a message
+that nothing was charged and no booking was recorded. **A generic label such as
+`APP_ENV=staging` does not open it** — a production deployment stays
+identifiable as production. For customers to complete bookings on a real
+deployment, **all** of these must be set in the host's environment (Vercel →
+Project → Settings → Environment Variables, marked *Sensitive*):
 
-1. `CARD_ENCRYPTION_KEY` — a valid base64 32-byte key (`openssl rand -base64 32`).
-2. `APP_ENV` — a **non-production** value such as `staging` (the deliberate opt-in
-   described in the table above).
+1. `CARD_ENCRYPTION_KEY` — a valid base64 32-byte key (`openssl rand -base64 32`)
+   (or `CARD_ENCRYPTION_KEYS` + `CARD_ENCRYPTION_KEY_ID` for a rotated ring). Freshly
+   generated; never a value that appears in Git or in a test file.
+2. `CARD_VAULT_MODE=application-encryption-risk-accepted` — the explicit,
+   deliberately non-boolean acceptance of application-level key management.
 3. `IP_ENCRYPTION_KEY` and `IP_HASH_KEY` — for the signer IP vault (booking still
    works without them; the IP entry is then skipped and reported).
 4. `TRUSTED_PROXY` — automatic on Vercel.
 
+Then grant `payments.reveal` explicitly to the few staff who need it (Users
+page) — no role, Admin included, can Reveal a card number without that grant, and
+Reveal additionally requires a sign-in within the last 15 minutes.
+
 Check the state without any secret: `GET /api/health` →
+`readiness.environment`, `readiness.cardVaultEnabled`,
 `readiness.bookingCardStorage` (`available` / `unavailable`),
 `readiness.cardVaultKey` (`configured` / `missing` / `invalid`),
-`readiness.signerIpCapture`. Admins also see a banner and System Health
-("Card vault & booking readiness") naming the exact reason. Never paste a key
-value into a ticket, log or chat.
+`readiness.cardVaultKeyVersion`, `readiness.signerIpCapture`. Admins also see a
+banner and System Health ("Card vault & booking readiness") naming the exact
+reason. Never paste a key value into a ticket, log or chat. Key rotation,
+retention, backups, the audit model and the full production checklist are in
+`docs/CARD_VAULT_SECURITY.md`.
 
 Signer IP capture is separate and automatic on Vercel (section 5); System
 Health reports it under "Signer IP capture".

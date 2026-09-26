@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 type FakeAccount = { id: string; role: string; status: string; paymentPermissions: string[] };
 type FakeContact = { id: string; ownerId?: string };
@@ -13,6 +13,7 @@ type FakePaymentMethod = {
   expiryYear: number;
   last4: string;
   status: string;
+  panPurgedAt?: Date | null;
 };
 
 let currentActor: FakeAccount | null;
@@ -37,11 +38,19 @@ vi.mock("@/server/activity-log", () => ({
   logActivity: vi.fn(async () => {}),
 }));
 
-vi.mock("@/server/security/card-encryption", () => ({
-  // store() is exercised via getPaymentVault().store — deterministic stand-in
-  // matching the convention in payment-methods.test.ts.
-  encryptPan: vi.fn((digits: string) => `ENC:${digits}`),
-  decryptPan: vi.fn((encoded: string) => encoded.replace(/^ENC:/, "")),
+// store() is exercised via getPaymentVault().store — a deterministic stand-in
+// (records the row id the ciphertext is bound to) with injectable failure. The
+// real CardVaultError / tombstone constant are kept.
+let encryptImpl: (digits: string, recordId: string) => string;
+vi.mock("@/server/security/card-encryption", async (orig) => ({
+  ...(await orig<typeof import("@/server/security/card-encryption")>()),
+  encryptPan: vi.fn((digits: string, recordId: string) => encryptImpl(digits, recordId)),
+}));
+
+let rateLimitAllowed = true;
+vi.mock("@/server/security/rate-limit", () => ({
+  RATE_LIMITS: { CARD_REVEAL: { windowMs: 1, maxAttempts: 1 }, CARD_MUTATION: { windowMs: 1, maxAttempts: 1 } },
+  checkAccountRateLimit: vi.fn(async () => (rateLimitAllowed ? { allowed: true } : { allowed: false, retryAfterSeconds: 600 })),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -74,7 +83,7 @@ vi.mock("@/lib/prisma", () => ({
           expiryYear: 0,
           last4: "",
           ...data,
-        };
+        } as FakePaymentMethod;
         paymentMethods.set(pm.id, pm);
         return pm;
       }),
@@ -95,7 +104,15 @@ beforeEach(() => {
   auditLogs = [];
   nextId = 1;
   currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: ["payments.collect"] };
+  encryptImpl = (digits, recordId) => `ENC:${recordId}:${digits}`;
+  rateLimitAllowed = true;
+  vi.stubEnv("CARD_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("base64"));
+  vi.stubEnv("APP_ENV", "");
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 const VALID_CARD = { cardNumber: "4111 1111 1111 1111", expiryMonth: 8, expiryYear: new Date().getFullYear() + 3 };
@@ -249,13 +266,17 @@ describe("editPaymentMethod", () => {
 });
 
 describe("removePaymentMethod", () => {
-  it("soft-deletes via status=ARCHIVED — never a hard delete", async () => {
+  it("archives the row (never a hard delete) AND destroys the encrypted card number, so it can never be decrypted again", async () => {
     seedContactCard();
     const { removePaymentMethod } = await import("../contact-payment-methods");
     await removePaymentMethod("pm-1");
     const row = paymentMethods.get("pm-1")!;
     expect(row.status).toBe("ARCHIVED");
-    expect(paymentMethods.has("pm-1")).toBe(true); // row still exists
+    expect(paymentMethods.has("pm-1")).toBe(true); // row (last4, history) still exists
+    expect(row.encryptedPan).toBe("cv2.purged");
+    expect(row.panPurgedAt).toBeInstanceOf(Date);
+    expect(row.last4).toBe("1111"); // masked display data is kept
+    expect(auditLogs.map((a) => a.action)).toEqual(expect.arrayContaining(["PAYMENT_METHOD_REMOVED", "PAYMENT_METHOD_PURGED"]));
   });
 
   it("denies removal for an unauthorized role", async () => {
@@ -289,6 +310,7 @@ describe("removePaymentMethod", () => {
     const { removePaymentMethod } = await import("../contact-payment-methods");
     await removePaymentMethod("pm-1");
     expect(paymentMethods.get("pm-1")!.status).toBe("ARCHIVED");
+    expect(paymentMethods.get("pm-1")!.encryptedPan).toBe("cv2.purged");
   });
 
   it("denies removal for a non-existent payment method", async () => {
@@ -303,5 +325,76 @@ describe("removePaymentMethod", () => {
     const entry = auditLogs.find((a) => a.action === "PAYMENT_METHOD_REMOVED");
     expect(entry).toBeTruthy();
     expect(JSON.stringify(entry)).not.toContain("4111111111111111");
+  });
+});
+
+describe("card vault hardening — row-bound encryption, throttling and audited failures", () => {
+  it("encrypts under the id the row is created with (the ciphertext is bound to that row)", async () => {
+    contacts.set("contact-1", { id: "contact-1" });
+    const { addContactPaymentMethod } = await import("../contact-payment-methods");
+    const result = await addContactPaymentMethod({ contactId: "contact-1", cardholderName: "Jane Traveler", ...VALID_CARD });
+    const stored = paymentMethods.get(result.id)!;
+    expect(stored.encryptedPan.startsWith(`ENC:${result.id}:`)).toBe(true);
+  });
+
+  it("re-encrypts a replacement number under the SAME row id", async () => {
+    seedContactCard();
+    const { editPaymentMethod } = await import("../contact-payment-methods");
+    await editPaymentMethod({ paymentMethodId: "pm-1", cardholderName: "Jane Traveler", expiryMonth: 8, expiryYear: 2029, cardNumber: "5555 5555 5555 4444" });
+    expect(paymentMethods.get("pm-1")!.encryptedPan.startsWith("ENC:pm-1:")).toBe(true);
+  });
+
+  it("a vault failure saves NOTHING, is audited with a fixed code only, and returns a safe message", async () => {
+    contacts.set("contact-1", { id: "contact-1" });
+    const { CardVaultError } = await import("@/server/security/card-encryption");
+    encryptImpl = () => {
+      throw new CardVaultError("NOT_CONFIGURED");
+    };
+    const { addContactPaymentMethod } = await import("../contact-payment-methods");
+    await expect(addContactPaymentMethod({ contactId: "contact-1", cardholderName: "Jane Traveler", ...VALID_CARD })).rejects.toThrow("We couldn't securely store this card right now. Nothing was saved.");
+    expect(paymentMethods.size).toBe(0);
+    const entry = auditLogs.find((a) => a.action === "CARD_ENCRYPTION_FAILED")!;
+    expect(entry.metadata.reason).toBe("NOT_CONFIGURED");
+    expect(JSON.stringify(auditLogs)).not.toMatch(/4111/);
+  });
+
+  it("with the vault closed (production-class environment, not explicitly enabled) nothing is stored", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("APP_ENV", "staging"); // must NOT open it
+    contacts.set("contact-1", { id: "contact-1" });
+    const { addContactPaymentMethod } = await import("../contact-payment-methods");
+    await expect(addContactPaymentMethod({ contactId: "contact-1", cardholderName: "Jane Traveler", ...VALID_CARD })).rejects.toThrow(/Nothing was saved/);
+    expect(paymentMethods.size).toBe(0);
+    expect(auditLogs.find((a) => a.action === "CARD_ENCRYPTION_FAILED")!.metadata.reason).toBe("VAULT_UNAVAILABLE");
+  });
+
+  it("add / edit / remove are throttled per account; an over-limit attempt changes nothing and is audited", async () => {
+    seedContactCard();
+    rateLimitAllowed = false;
+    const { addContactPaymentMethod, editPaymentMethod, removePaymentMethod } = await import("../contact-payment-methods");
+    await expect(addContactPaymentMethod({ contactId: "contact-1", cardholderName: "Jane Traveler", ...VALID_CARD })).rejects.toThrow(/too many card changes/i);
+    await expect(editPaymentMethod({ paymentMethodId: "pm-1", cardholderName: "X", expiryMonth: 8, expiryYear: 2029 })).rejects.toThrow(/too many card changes/i);
+    await expect(removePaymentMethod("pm-1")).rejects.toThrow(/too many card changes/i);
+    expect(paymentMethods.size).toBe(1);
+    expect(paymentMethods.get("pm-1")!.status).toBe("ACTIVE");
+    expect(auditLogs.filter((a) => a.action === "PAYMENT_METHOD_MUTATION_RATE_LIMITED")).toHaveLength(3);
+  });
+
+  it("a removed card cannot be edited or have its number replaced", async () => {
+    seedContactCard({ status: "ARCHIVED", encryptedPan: "cv2.purged" });
+    const { editPaymentMethod } = await import("../contact-payment-methods");
+    await expect(editPaymentMethod({ paymentMethodId: "pm-1", cardholderName: "Jane", expiryMonth: 8, expiryYear: 2029, cardNumber: "5555 5555 5555 4444" })).rejects.toThrow(/removed/i);
+    expect(paymentMethods.get("pm-1")!.encryptedPan).toBe("cv2.purged");
+  });
+
+  it("every card audit entry carries request context fields and never a card number", async () => {
+    contacts.set("contact-1", { id: "contact-1" });
+    const { addContactPaymentMethod } = await import("../contact-payment-methods");
+    await addContactPaymentMethod({ contactId: "contact-1", cardholderName: "Jane Traveler", ...VALID_CARD });
+    const entry = auditLogs.find((a) => a.action === "PAYMENT_METHOD_CREATED")!;
+    expect(entry.metadata).toHaveProperty("correlationId");
+    expect(entry.metadata).toHaveProperty("ip");
+    expect(entry.metadata).toHaveProperty("userAgent");
+    expect(JSON.stringify(entry)).not.toMatch(/4111|411111/);
   });
 });

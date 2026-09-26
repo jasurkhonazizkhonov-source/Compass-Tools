@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
+import { safeActionMessage } from "@/lib/safe-action-message";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
@@ -97,7 +98,7 @@ export function PaymentMethodDialog({
         setOpen(false);
         reset();
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Unable to save payment method");
+        toast.error(safeActionMessage(err, "Unable to save this payment method. Nothing was changed."));
       }
     });
   }

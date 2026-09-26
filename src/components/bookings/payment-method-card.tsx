@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { toast } from "sonner";
 import { Eye, EyeOff, Loader2, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -8,10 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { CardBrandLogo } from "@/components/ui/card-brand-logo";
 import { revealPaymentMethod, updatePaymentMethodWorkflowStatus } from "@/server/actions/payment-methods";
 import { formatMoney, type SupportedCurrency } from "@/lib/currency";
+import { safeActionMessage } from "@/lib/safe-action-message";
+import { useTimedReveal } from "./use-timed-reveal";
 import type { CardBrand } from "@/lib/card-validation";
 import type { PaymentMethodStatus, PaymentWorkflowStatus } from "@/generated/prisma/client";
-
-const REVEAL_TIMEOUT_SECONDS = 60;
 
 const WORKFLOW_STATUS_LABELS: Record<PaymentWorkflowStatus, string> = {
   PENDING: "Pending",
@@ -43,9 +43,11 @@ type PaymentMethodSummary = {
 
 /**
  * A permission-gated privileged view on the card: Reveal is masked by
- * default, auto-hides after 60s and shows the retained PAN/cardholder/
- * expiration/brand (development vault only — the production vault is
- * fail-closed, see payment-vault.ts). There is no security code (CVV/CVC)
+ * default, auto-hides after 30s — and immediately when the tab
+ * is hidden, the window loses focus or the component unmounts — and shows the
+ * retained PAN/cardholder/expiration/brand. The number is not selectable and
+ * copy/cut are blocked, so it is never put on the clipboard by default (staff
+ * read it and key it into the supplier's system by hand). There is no security code (CVV/CVC)
  * anywhere in this app: it is never collected, cached or displayed. The
  * revealed data lives only in this component's local state and is cleared
  * on unmount.
@@ -67,56 +69,20 @@ export function PaymentMethodCard({
    * customer payment amount (see lib/currency.ts's formatMoney). */
   currency: SupportedCurrency;
 }) {
-  const [revealed, setRevealed] = useState<RevealedCard | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(REVEAL_TIMEOUT_SECONDS);
+  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<RevealedCard>();
   const [isPending, setIsPending] = useState(false);
-  // Two independent timers, deliberately not one: `revealTickRef` only ever
-  // decrements the displayed countdown (a plain functional setState update,
-  // nothing else). `revealExpiryRef` is a single one-shot setTimeout,
-  // scheduled once when Reveal is clicked, whose callback is the ONLY place
-  // that ever calls hide(). Nothing calls hide() from inside
-  // setSecondsLeft's updater (calling setState-triggering code from an
-  // updater is what produced a "Cannot update a component (Router) while
-  // rendering a different component" error in this app before).
-  const revealTickRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const revealExpiryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  function clearRevealTimers() {
-    if (revealTickRef.current) {
-      clearInterval(revealTickRef.current);
-      revealTickRef.current = null;
-    }
-    if (revealExpiryRef.current) {
-      clearTimeout(revealExpiryRef.current);
-      revealExpiryRef.current = null;
-    }
-  }
-
-  function hide() {
-    clearRevealTimers();
-    setRevealed(null);
-  }
-
-  useEffect(
-    () => () => {
-      clearRevealTimers();
-    },
-    [paymentMethod.id]
-  );
 
   async function reveal() {
     setIsPending(true);
     try {
       const result = await revealPaymentMethod(paymentMethod.id);
-      setRevealed(result);
-      setSecondsLeft(REVEAL_TIMEOUT_SECONDS);
-      clearRevealTimers();
-      revealTickRef.current = setInterval(() => {
-        setSecondsLeft((s) => Math.max(0, s - 1));
-      }, 1000);
-      revealExpiryRef.current = setTimeout(hide, REVEAL_TIMEOUT_SECONDS * 1000);
+      if ("error" in result) {
+        toast.error(result.error, { duration: 8000 });
+        return;
+      }
+      show(result);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to reveal payment method");
+      toast.error(safeActionMessage(err, "Unable to reveal this card. You may not have permission."));
     } finally {
       setIsPending(false);
     }
@@ -169,7 +135,12 @@ export function PaymentMethodCard({
       {canReveal && (
         <div>
           {revealed ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-3 space-y-3">
+            <div
+              className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-3 space-y-3 select-none"
+              onCopy={(e) => e.preventDefault()}
+              onCut={(e) => e.preventDefault()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
               <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
                 <ShieldAlert className="h-3.5 w-3.5" />
                 Privileged view — auto-hides in {secondsLeft}s

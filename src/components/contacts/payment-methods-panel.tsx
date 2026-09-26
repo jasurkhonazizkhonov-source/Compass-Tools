@@ -10,6 +10,8 @@ import { PaymentMethodDialog } from "./payment-method-dialog";
 import { revealPaymentMethod } from "@/server/actions/payment-methods";
 import { removePaymentMethod } from "@/server/actions/contact-payment-methods";
 import type { CardBrand } from "@/lib/card-validation";
+import { safeActionMessage } from "@/lib/safe-action-message";
+import { useTimedReveal } from "@/components/bookings/use-timed-reveal";
 
 type ContactPaymentMethod = {
   id: string;
@@ -20,8 +22,6 @@ type ContactPaymentMethod = {
   expiryYear: number;
   bookingId: string | null;
 };
-
-const REVEAL_TIMEOUT_SECONDS = 60;
 
 /**
  * "Payment Methods" section on the Contact detail page — every card on
@@ -83,8 +83,7 @@ function PaymentMethodRow({
   canReveal: boolean;
   canManage: boolean;
 }) {
-  const [revealed, setRevealed] = useState<{ cardholderName: string; pan: string; expiryMonth: number; expiryYear: number } | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(REVEAL_TIMEOUT_SECONDS);
+  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ pan: string }>();
   const [isPending, setIsPending] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
 
@@ -92,28 +91,26 @@ function PaymentMethodRow({
     setIsPending(true);
     try {
       const result = await revealPaymentMethod(paymentMethod.id);
-      setRevealed(result);
-      setSecondsLeft(REVEAL_TIMEOUT_SECONDS);
-      const tick = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
-      setTimeout(() => {
-        clearInterval(tick);
-        setRevealed(null);
-      }, REVEAL_TIMEOUT_SECONDS * 1000);
+      if ("error" in result) {
+        toast.error(result.error, { duration: 8000 });
+        return;
+      }
+      show({ pan: result.pan });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to reveal payment method");
+      toast.error(safeActionMessage(err, "Unable to reveal this card. You may not have permission."));
     } finally {
       setIsPending(false);
     }
   }
 
   async function remove() {
-    if (!window.confirm(`Remove ${paymentMethod.cardBrand ?? "card"} ending ${paymentMethod.last4}? This can't be used for future charges once removed.`)) return;
+    if (!window.confirm(`Remove ${paymentMethod.cardBrand ?? "card"} ending ${paymentMethod.last4}? Its stored card number will be permanently destroyed and can't be used for future charges.`)) return;
     setIsRemoving(true);
     try {
       await removePaymentMethod(paymentMethod.id);
       toast.success("Payment method removed");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to remove payment method");
+      toast.error(safeActionMessage(err, "Unable to remove this payment method."));
     } finally {
       setIsRemoving(false);
     }
@@ -154,13 +151,18 @@ function PaymentMethodRow({
       {canReveal && (
         <div>
           {revealed ? (
-            <div className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-3 space-y-2">
+            <div
+              className="rounded-md border border-amber-300 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-800 px-3 py-3 space-y-2 select-none"
+              onCopy={(e) => e.preventDefault()}
+              onCut={(e) => e.preventDefault()}
+              onContextMenu={(e) => e.preventDefault()}
+            >
               <div className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
                 <ShieldAlert className="h-3.5 w-3.5" />
                 Privileged view — auto-hides in {secondsLeft}s
               </div>
               <p className="text-sm font-mono font-medium">{revealed.pan.replace(/(.{4})/g, "$1 ").trim()}</p>
-              <Button size="sm" variant="outline" onClick={() => setRevealed(null)} className="gap-1.5">
+              <Button size="sm" variant="outline" onClick={hide} className="gap-1.5">
                 <EyeOff className="h-3.5 w-3.5" /> Hide
               </Button>
             </div>

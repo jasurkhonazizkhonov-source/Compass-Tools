@@ -1,40 +1,62 @@
-// Whether the CRM's own card vault can accept a card right now — a pure
-// environment check (no database, no secret ever returned). It mirrors exactly
-// what getPaymentVault() (payment-vault.ts) will do when a customer presses
-// "Finish Booking", so readiness reporting can never disagree with reality:
+// Whether the CRM's own card vault can accept or reveal a card right now — a
+// pure environment check (no database, no secret ever returned). It is the
+// single source of truth used by getPaymentVault() (payment-vault.ts) AND by
+// every readiness report (banner, System Health, /api/health), so what is
+// reported can never disagree with what "Finish Booking" will actually do.
 //
-//   - PRODUCTION guard: in a production environment the vault refuses to store
-//     a card (see payment-vault.ts) unless the deployment has deliberately been
-//     told it is not production (APP_ENV — docs/DEPLOYMENT.md §5c). The vault is
-//     application-level AES encryption, NOT PCI DSS-grade key management.
-//   - KEY: CARD_ENCRYPTION_KEY must be a base64-encoded 32-byte key.
+// The vault opens only when ALL of these hold:
+//   1. The key ring is valid (card-keyring.ts): a usable current key exists.
+//   2. In a production-class environment (production or a Vercel preview),
+//      the owner has explicitly accepted application-level encryption by
+//      setting CARD_VAULT_MODE to the exact phrase below. This is deliberately
+//      NOT a boolean and NOT tied to the environment label: APP_ENV="staging",
+//      "true", "1" or any other generic value opens nothing. Local development
+//      and tests do not need the phrase.
 //
 // The card security code (CVV/CVC) is never stored either way.
-import { isProductionEnvironment } from "@/lib/env";
+import { getAppEnvironment, isProductionEnvironment, type AppEnvironment } from "@/lib/env";
+import { getKeyringStatus, type KeyringState } from "./card-keyring";
 
-export type CardVaultKeyStatus = "configured" | "missing" | "invalid";
+/** The one value of CARD_VAULT_MODE that opens the vault in a production-class environment. */
+export const CARD_VAULT_MODE_ACCEPTED = "application-encryption-risk-accepted";
 
-/** Presence/validity of CARD_ENCRYPTION_KEY without ever exposing it. */
-export function cardVaultKeyStatus(raw: string | undefined = process.env.CARD_ENCRYPTION_KEY): CardVaultKeyStatus {
-  const value = raw?.trim();
-  if (!value) return "missing";
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return "invalid";
-  return Buffer.from(value, "base64").length === 32 ? "configured" : "invalid";
-}
+/** @deprecated kept for callers that only need key presence; use getKeyringStatus(). */
+export type CardVaultKeyStatus = KeyringState;
+
+export type CardVaultBlockedBy = "vault_not_enabled" | "key_missing" | "key_invalid";
 
 export type CardVaultStatus = {
-  /** true when a customer's "Finish Booking" can store its card right now. */
+  /** true when a card can be stored / revealed right now. */
   storageAvailable: boolean;
-  key: CardVaultKeyStatus;
-  /** true when the environment is treated as production, where the vault fails closed. */
-  productionGuard: boolean;
-  /** Why storage is unavailable, when it is. */
-  blockedBy: "production_guard" | "key_missing" | "key_invalid" | null;
+  environment: AppEnvironment;
+  /** Production or preview — where the explicit CARD_VAULT_MODE is required. */
+  productionClass: boolean;
+  /** CARD_VAULT_MODE holds the exact acceptance phrase. */
+  modeAccepted: boolean;
+  key: KeyringState;
+  /** Id (a label, never key material) new cards are encrypted under. */
+  keyVersion: string | null;
+  keyIds: string[];
+  /** Variable names / key ids only — never a value. */
+  problems: string[];
+  blockedBy: CardVaultBlockedBy | null;
 };
 
 export function getCardVaultStatus(): CardVaultStatus {
-  const key = cardVaultKeyStatus();
-  const productionGuard = isProductionEnvironment();
-  const blockedBy = productionGuard ? "production_guard" : key === "missing" ? "key_missing" : key === "invalid" ? "key_invalid" : null;
-  return { storageAvailable: blockedBy === null, key, productionGuard, blockedBy };
+  const ring = getKeyringStatus();
+  const productionClass = isProductionEnvironment();
+  const modeAccepted = process.env.CARD_VAULT_MODE === CARD_VAULT_MODE_ACCEPTED;
+  const blockedBy: CardVaultBlockedBy | null =
+    productionClass && !modeAccepted ? "vault_not_enabled" : ring.state === "missing" ? "key_missing" : ring.state === "invalid" ? "key_invalid" : null;
+  return {
+    storageAvailable: blockedBy === null,
+    environment: getAppEnvironment(),
+    productionClass,
+    modeAccepted,
+    key: ring.state,
+    keyVersion: ring.currentKeyId,
+    keyIds: ring.keyIds,
+    problems: ring.problems,
+    blockedBy,
+  };
 }

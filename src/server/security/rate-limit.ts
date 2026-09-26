@@ -80,6 +80,31 @@ export async function checkPublicRateLimit(headers: Headers, endpoint: string, c
 }
 
 /**
+ * Fixed-window limiter keyed by AUTHENTICATED ACCOUNT (not IP), for sensitive
+ * staff actions — full-card Reveal and card add/edit/remove. Same atomic
+ * single-statement upsert as checkPublicRateLimit, same table, a distinct key
+ * namespace ("acct:"). Unlike the public limiter it never fails open: an
+ * account id always exists here, and if the counter cannot be written the
+ * error propagates so the sensitive action does not proceed unthrottled.
+ */
+export async function checkAccountRateLimit(accountId: string, endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
+  const windowBucket = Math.floor(Date.now() / config.windowMs);
+  const key = `acct:${accountId}|${endpoint}|${windowBucket}`;
+  const expiresAt = new Date((windowBucket + 1) * config.windowMs);
+  const rows = await prisma.$queryRaw<{ count: number }[]>`
+    INSERT INTO "RateLimitCounter" ("id", "key", "count", "expiresAt", "createdAt", "updatedAt")
+    VALUES (${crypto.randomUUID()}, ${key}, 1, ${expiresAt}, now(), now())
+    ON CONFLICT ("key") DO UPDATE SET "count" = "RateLimitCounter"."count" + 1, "updatedAt" = now()
+    RETURNING "count"
+  `;
+  const count = rows[0]?.count ?? 1;
+  if (count > config.maxAttempts) {
+    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1000)) };
+  }
+  return { allowed: true };
+}
+
+/**
  * Pass 28 §30 — best-effort cleanup for the fixed-window counter table
  * above. Every window that's ever been hit leaves exactly one row behind
  * forever unless something prunes it — cheap individually, but unbounded
@@ -152,4 +177,8 @@ export const RATE_LIMITS = {
    * consequence (opts someone OUT, never in) — so this limit exists to
    * blunt token-enumeration scanning, not to gate ordinary use. */
   UNSUBSCRIBE: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
+  /** Full-card Reveal, per staff account. A legitimate manual charge reveals a handful of cards; this blocks scripted or stolen-session harvesting. */
+  CARD_REVEAL: { windowMs: 10 * 60 * 1000, maxAttempts: 15 } satisfies RateLimitConfig,
+  /** Card add / edit / remove from a contact, per staff account. */
+  CARD_MUTATION: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
 } as const;

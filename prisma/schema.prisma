@@ -1500,13 +1500,17 @@ model PaymentMethod {
   contactId      String?
   contact        Contact?            @relation(fields: [contactId], references: [id], onDelete: Cascade)
   cardholderName String
-  // AES-256-GCM ciphertext (iv + authTag + ciphertext, base64-encoded) —
-  // see card-encryption.ts. The encryption key itself is never stored here
-  // or anywhere else in the database. Only ever selected/decrypted inside
-  // the dedicated revealPaymentMethod() server action — every other query
-  // touching PaymentMethod must omit this column. See this model's header
-  // comment above for what is intentionally absent from here.
+  // Versioned AES-256-GCM envelope "cv2.<keyId>.<payload>" (or a legacy
+  // unversioned blob, or the "cv2.purged" tombstone) — see card-encryption.ts.
+  // The key is never stored here or anywhere in the database. The column is
+  // OMITTED from every Prisma read by default (src/lib/prisma.ts global omit);
+  // only revealPaymentMethod() and the rotation module opt in. A database CHECK
+  // (PaymentMethod_encryptedPan_not_plaintext) rejects a plaintext-looking
+  // value. Deliberately, no card security-code column exists.
   encryptedPan   String
+  // Set when the encrypted number was destroyed (card removed / retention
+  // purge). encryptedPan is then the tombstone and can never be decrypted.
+  panPurgedAt    DateTime?
   last4          String
   cardBrand      String?
   expiryMonth    Int

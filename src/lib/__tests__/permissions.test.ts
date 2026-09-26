@@ -194,10 +194,14 @@ describe("admin permission uniformity — role alone bypasses the grant array", 
   const ADMIN_WITH_NO_GRANTS = { role: "ADMIN" as const, paymentPermissions: [], bookingPermissions: [] };
   const MANAGER_WITH_NO_GRANTS = { role: "MANAGER" as const, paymentPermissions: [], bookingPermissions: [] };
 
-  it("canRevealPaymentMethod: Admin is always true regardless of grants; Manager still requires the explicit grant", () => {
-    expect(canRevealPaymentMethod(ADMIN_WITH_NO_GRANTS)).toBe(true);
+  it("canRevealPaymentMethod: NO role — Admin included — can reveal a card number without the explicit grant (default is no access)", () => {
+    expect(canRevealPaymentMethod(ADMIN_WITH_NO_GRANTS)).toBe(false);
     expect(canRevealPaymentMethod(MANAGER_WITH_NO_GRANTS)).toBe(false);
+    expect(canRevealPaymentMethod({ role: "ADMIN", paymentPermissions: ["payments.reveal"] })).toBe(true);
     expect(canRevealPaymentMethod({ role: "MANAGER", paymentPermissions: ["payments.reveal"] })).toBe(true);
+    // A grant on an ineligible role is still ignored, and other payment grants do not imply Reveal.
+    expect(canRevealPaymentMethod({ role: "TRAVEL_AGENT", paymentPermissions: ["payments.reveal"] })).toBe(false);
+    expect(canRevealPaymentMethod({ role: "ADMIN", paymentPermissions: ["payments.charge", "payments.collect", "payments.view", "payments.manage"] })).toBe(false);
   });
 
   it("canConfirmPayment: Admin is always true regardless of grants", () => {

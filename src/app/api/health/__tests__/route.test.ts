@@ -30,10 +30,11 @@ describe("GET /api/health", () => {
     expect(body.pool).toEqual({ max: 5, total: 2, idle: 1, waiting: 0 });
   });
 
-  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "VERCEL", "VERCEL_ENV"];
+  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "CARD_ENCRYPTION_KEYS", "CARD_ENCRYPTION_KEY_ID", "CARD_VAULT_MODE", "VERCEL", "VERCEL_ENV", "NODE_ENV"];
   async function withEnv(vars: Record<string, string | undefined>, fn: (get: () => Promise<{ readiness: Record<string, unknown> }>) => Promise<void>) {
     const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
     for (const k of KEYS) delete process.env[k];
+    (process.env as Record<string, string | undefined>).NODE_ENV = "test";
     for (const [k, v] of Object.entries(vars)) if (v !== undefined) process.env[k] = v;
     try {
       const { resetHealthCacheForTests } = await import("@/lib/health-check");
@@ -51,22 +52,64 @@ describe("GET /api/health", () => {
   }
   const GOOD_KEY = Buffer.alloc(32, 9).toString("base64");
 
-  it("reports whether a customer's Finish Booking can store a card RIGHT NOW (categories only): the production guard, and the vault key", async () => {
+  it("reports whether a customer's Finish Booking can store a card RIGHT NOW (categories only): explicit vault enablement, environment and the key ring", async () => {
     queryRaw.mockResolvedValue([{}]);
     await withEnv({ APP_ENV: "staging", TRUSTED_PROXY: "vercel", CARD_ENCRYPTION_KEY: GOOD_KEY }, async (get) => {
-      expect((await get()).readiness).toEqual({ bookingCardStorage: "available", cardVaultKey: "configured", signerIpCapture: "enabled", schema: "current", pendingMigrations: 0 });
+      expect((await get()).readiness).toEqual({
+        bookingCardStorage: "available",
+        cardVaultKey: "configured",
+        cardVaultKeyVersion: "v1",
+        cardVaultEnabled: true,
+        environment: "test",
+        signerIpCapture: "enabled",
+        schema: "current",
+        pendingMigrations: 0,
+      });
     });
     await withEnv({ APP_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY }, async (get) => {
       const body = await get();
-      expect(body.readiness).toEqual({ bookingCardStorage: "unavailable", cardVaultKey: "configured", signerIpCapture: "disabled", schema: "current", pendingMigrations: 0 });
+      expect(body.readiness).toEqual({
+        bookingCardStorage: "unavailable",
+        cardVaultKey: "configured",
+        cardVaultKeyVersion: "v1",
+        cardVaultEnabled: false,
+        environment: "production",
+        signerIpCapture: "disabled",
+        schema: "current",
+        pendingMigrations: 0,
+      });
       expect(JSON.stringify(body)).not.toContain(GOOD_KEY);
     });
   });
 
-  it("a missing or malformed CARD_ENCRYPTION_KEY makes card storage unavailable and is reported as a category, never a value", async () => {
+  it("a production deployment is reported as production and only opens with the explicit vault mode — APP_ENV=staging changes nothing", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    await withEnv({ NODE_ENV: "production", APP_ENV: "staging", CARD_ENCRYPTION_KEY: GOOD_KEY }, async (get) => {
+      expect((await get()).readiness).toMatchObject({ environment: "production", cardVaultEnabled: false, bookingCardStorage: "unavailable" });
+    });
+    await withEnv({ NODE_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY, CARD_VAULT_MODE: "true" }, async (get) => {
+      expect((await get()).readiness).toMatchObject({ cardVaultEnabled: false, bookingCardStorage: "unavailable" });
+    });
+    await withEnv({ NODE_ENV: "production", CARD_ENCRYPTION_KEY: GOOD_KEY, CARD_VAULT_MODE: "application-encryption-risk-accepted" }, async (get) => {
+      expect((await get()).readiness).toMatchObject({ environment: "production", cardVaultEnabled: true, bookingCardStorage: "available", cardVaultKeyVersion: "v1" });
+    });
+  });
+
+  it("exposes the current key VERSION label only — never key material — and a ring's newest id", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const K2 = Buffer.alloc(32, 4).toString("base64");
+    await withEnv({ CARD_ENCRYPTION_KEY: GOOD_KEY, CARD_ENCRYPTION_KEYS: `k2:${K2}`, CARD_ENCRYPTION_KEY_ID: "k2" }, async (get) => {
+      const body = await get();
+      expect(body.readiness).toMatchObject({ cardVaultKey: "configured", cardVaultKeyVersion: "k2" });
+      expect(JSON.stringify(body)).not.toContain(GOOD_KEY);
+      expect(JSON.stringify(body)).not.toContain(K2);
+    });
+  });
+
+  it("a missing or malformed key ring makes card storage unavailable and is reported as a category, never a value", async () => {
     queryRaw.mockResolvedValue([{}]);
     await withEnv({ APP_ENV: "staging" }, async (get) => {
-      expect((await get()).readiness).toMatchObject({ bookingCardStorage: "unavailable", cardVaultKey: "missing" });
+      expect((await get()).readiness).toMatchObject({ bookingCardStorage: "unavailable", cardVaultKey: "missing", cardVaultKeyVersion: null });
     });
     await withEnv({ APP_ENV: "staging", CARD_ENCRYPTION_KEY: "short-and-wrong-value" }, async (get) => {
       const body = await get();

@@ -810,23 +810,22 @@ export function AccountPaymentPermissionsEditor({
     });
   }
 
-  // Every Admin has full access regardless of this grant array (see
-  // canRevealPaymentMethod et al. in permissions.ts) — showing live,
-  // individually-toggleable checkboxes here would be misleading, since
-  // toggling them off would have no actual effect for an Admin.
-  if (role === "ADMIN") {
-    return (
-      <Badge variant="outline" className="text-[10px] font-normal">
-        Full access (Admin)
-      </Badge>
-    );
-  }
+  // Every Admin has full access to the other payment actions regardless of this
+  // grant array (see permissions.ts), so those checkboxes would be misleading
+  // for an Admin. Full-card Reveal is the exception: it needs an explicit grant
+  // for every role, Admin included, so that ONE toggle is shown.
+  const isAdmin = role === "ADMIN";
+  const visiblePermissions: readonly PaymentPermission[] = isAdmin ? ["payments.reveal"] : PAYMENT_PERMISSIONS;
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" className="flex flex-wrap items-center gap-1 max-w-[220px] text-left">
-          {current.length === 0 ? (
+          {isAdmin ? (
+            <Badge variant="outline" className="text-[10px] font-normal">
+              Full access (Admin){current.includes("payments.reveal") ? " · Reveal granted" : " · Reveal not granted"}
+            </Badge>
+          ) : current.length === 0 ? (
             <span className="text-sm text-muted-foreground">None</span>
           ) : (
             current.map((p) => (
@@ -843,7 +842,7 @@ export function AccountPaymentPermissionsEditor({
           Explicit, default-deny grants. Role alone never enables a payment-sensitive action.
         </p>
         <div className="space-y-2">
-          {PAYMENT_PERMISSIONS.map((permission) => {
+          {visiblePermissions.map((permission) => {
             const grantable = isPaymentPermissionGrantableForRole(permission, role);
             return (
               <label

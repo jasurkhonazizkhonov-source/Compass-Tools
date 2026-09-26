@@ -26,8 +26,14 @@ export type HealthBody = {
   readiness: {
     /** "unavailable" = card details cannot be stored right now, so the customer's "Finish Booking" is refused (production guard or vault key — see payment-vault.ts / card-vault-status.ts). */
     bookingCardStorage: "available" | "unavailable";
-    /** Whether CARD_ENCRYPTION_KEY is usable. A category only — never the key or any part of it. */
+    /** Whether the card key ring is usable. A category only — never a key or any part of one. */
     cardVaultKey: "configured" | "missing" | "invalid";
+    /** Id (an opaque label, never key material) of the key new cards are encrypted under; null when no usable key. */
+    cardVaultKeyVersion: string | null;
+    /** In a production-class environment: the owner explicitly enabled the vault (CARD_VAULT_MODE). Always true elsewhere. */
+    cardVaultEnabled: boolean;
+    /** What this process treats itself as — a production deployment is always identifiable as one. */
+    environment: "production" | "preview" | "development" | "test";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
     /** "pending" = this build expects a database migration the database has not applied (count only; names are Admin-only). */
@@ -45,6 +51,9 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
   return {
     bookingCardStorage: vault.storageAvailable ? "available" : "unavailable",
     cardVaultKey: vault.key,
+    cardVaultKeyVersion: vault.keyVersion,
+    cardVaultEnabled: !vault.productionClass || vault.modeAccepted,
+    environment: vault.environment,
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     schema: schema?.state ?? "unknown",
     pendingMigrations: schema && schema.state !== "unknown" ? schema.pending.length : 0,

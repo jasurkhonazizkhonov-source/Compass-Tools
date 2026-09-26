@@ -20,11 +20,11 @@ export function SystemReadinessBanner({ role }: { role: string | undefined }) {
   const vault = getCardVaultStatus();
   if (!vault.storageAvailable) {
     const why =
-      vault.blockedBy === "production_guard"
-        ? "This is a production environment and the card vault refuses to store cards there unless the deployment has deliberately been told otherwise (APP_ENV — docs/DEPLOYMENT.md §5c)."
+      vault.blockedBy === "vault_not_enabled"
+        ? "This is a production-class environment and the card vault has not been explicitly enabled (CARD_VAULT_MODE — docs/DEPLOYMENT.md §5c). A generic setting such as APP_ENV=staging does not enable it."
         : vault.blockedBy === "key_missing"
-          ? "CARD_ENCRYPTION_KEY is not set, so a card cannot be encrypted for storage."
-          : "CARD_ENCRYPTION_KEY is set but is not a valid base64-encoded 32-byte key, so a card cannot be encrypted for storage.";
+          ? "The card key ring is not configured (CARD_ENCRYPTION_KEY), so a card cannot be encrypted for storage."
+          : "The card key ring is set but is not valid (each key must be a base64-encoded 32-byte key), so a card cannot be encrypted for storage.";
     issues.push({
       title: "Customers cannot complete bookings right now",
       detail: `${why} Every customer's "Finish Booking" is refused with a message that nothing was charged and no booking was recorded.`,

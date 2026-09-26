@@ -203,7 +203,15 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(booking.signature?.userAgent).toBe("IntegrationTest/1.0");
     expect(booking.paymentMethods).toHaveLength(1);
     expect(booking.paymentMethods[0]).toMatchObject({ last4: "1111", contactId: contact.id });
-    expect(booking.paymentMethods[0].encryptedPan).not.toContain("4111111111111111");
+    // Generic reads never carry the ciphertext (Prisma global omit)…
+    expect(booking.paymentMethods[0]).not.toHaveProperty("encryptedPan");
+    // …only an explicit opt-in does, and what is stored is a versioned envelope bound to THIS row.
+    const stored = await prisma.paymentMethod.findUniqueOrThrow({ where: { id: booking.paymentMethods[0].id }, select: { encryptedPan: true } });
+    expect(stored.encryptedPan).toMatch(/^cv2\.[A-Za-z0-9]+\.[A-Za-z0-9_-]+$/);
+    expect(stored.encryptedPan).not.toContain("4111111111111111");
+    const { decryptPan } = await import("@/server/security/card-encryption");
+    expect(decryptPan(stored.encryptedPan, booking.paymentMethods[0].id)).toBe("4111111111111111");
+    expect(() => decryptPan(stored.encryptedPan, "some-other-row")).toThrow();
     expect(booking.statusHistory).toHaveLength(1);
 
     const q = await prisma.quote.findUniqueOrThrow({ where: { id: quote.id }, include: { statusHistory: true } });
@@ -501,6 +509,17 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
       expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
       expect(await prisma.paymentMethod.count({ where: { booking: { quoteId: quote.id } } })).toBe(1);
     });
+  });
+
+  it("the plaintext PAN never reaches the database: no PaymentMethod (or AuditLog / HealthEvent) column contains it", async () => {
+    const { quote } = await makeQuote();
+    const result = await submitBooking(input(quote.secureToken));
+    await flushDeferred();
+    expect(result.ok).toBe(true);
+    for (const table of ["PaymentMethod", "AuditLog", "HealthEvent", "Activity", "Booking", "Signature"]) {
+      const rows = await prisma.$queryRawUnsafe<Array<{ hit: boolean }>>(`SELECT (t::text LIKE '%4111111111111111%' OR t::text LIKE '%4111 1111 1111 1111%') AS hit FROM "${table}" t`);
+      expect(rows.some((r) => r.hit), table).toBe(false);
+    }
   });
 
   it("never writes a card number to console output during a successful booking", async () => {

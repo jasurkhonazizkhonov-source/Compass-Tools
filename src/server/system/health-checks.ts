@@ -17,7 +17,8 @@ import { safeErrorTag } from "@/lib/safe-error-log";
 import { isProductionEnvironment } from "@/lib/env";
 import { trustedProxyConfig } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
-import { getCardVaultStatus } from "@/server/security/card-vault-status";
+import { getCardVaultStatus, CARD_VAULT_MODE_ACCEPTED } from "@/server/security/card-vault-status";
+import { getKeyringStatus } from "@/server/security/card-keyring";
 
 export type HealthState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type HealthGroup = "critical" | "warning" | "informational";
@@ -181,38 +182,56 @@ async function checkGmail(): Promise<HealthCheckResult> {
 async function checkCardVault(): Promise<HealthCheckResult> {
   return guarded("payment.vault", "payment", "Card vault & booking readiness", async () => {
     const vault = getCardVaultStatus();
-    const onVercelProduction = process.env.VERCEL_ENV === "production";
-    const facts = [
-      { label: "Environment treated as", value: vault.productionGuard ? "production (vault guard closed)" : "non-production (vault guard open)" },
-      { label: "CARD_ENCRYPTION_KEY", value: vault.key === "configured" ? "Configured" : vault.key === "missing" ? "Missing" : "Invalid" },
+    const facts: Array<{ label: string; value: string }> = [
+      { label: "Application environment", value: vault.environment },
+      { label: "Vault explicitly enabled (CARD_VAULT_MODE)", value: vault.productionClass ? (vault.modeAccepted ? "Yes" : "No") : "Not required outside production" },
+      { label: "Key ring", value: vault.key === "configured" ? "Valid" : vault.key === "missing" ? "Missing" : "Invalid" },
+      { label: "Current key version", value: vault.keyVersion ?? "None" },
+      { label: "Keys in ring", value: String(vault.keyIds.length) },
       { label: "Card storage", value: vault.storageAvailable ? "Available" : "Unavailable" },
       { label: "Card security code", value: "Never collected or stored" },
     ];
-    if (vault.blockedBy === "production_guard") {
+    if (vault.problems.length > 0) facts.push({ label: "Key ring problems", value: vault.problems.join("; ") });
+
+    if (vault.blockedBy === "vault_not_enabled") {
       return {
         state: "CRITICAL",
-        summary: "Customers cannot complete bookings: this is treated as a production environment, where the card vault refuses to store cards (nothing is charged, no booking is recorded).",
-        action: "Enabling the CRM's own application-level card vault on this deployment is a deliberate decision: set APP_ENV to any value other than \"production\" (and a valid CARD_ENCRYPTION_KEY) in Vercel, then redeploy. See docs/DEPLOYMENT.md §5c — the vault uses application-managed encryption keys and is NOT PCI DSS-grade.",
+        summary: "Customers cannot complete bookings: this is a production-class environment and the card vault has not been explicitly enabled (nothing is charged, no booking is recorded).",
+        action: `Enabling the CRM's own application-level card vault is a deliberate decision: set CARD_VAULT_MODE to exactly "${CARD_VAULT_MODE_ACCEPTED}" (and a valid key ring) in Vercel, then redeploy. A generic setting such as APP_ENV=staging does NOT enable it. The vault uses application-managed keys and is NOT PCI DSS-grade — see docs/CARD_VAULT_SECURITY.md.`,
         facts,
       };
     }
     if (vault.blockedBy === "key_missing" || vault.blockedBy === "key_invalid") {
       return {
-        state: vault.productionGuard ? "CRITICAL" : "WARNING",
-        summary: `Customers cannot complete bookings: CARD_ENCRYPTION_KEY is ${vault.blockedBy === "key_missing" ? "not set" : "not a valid key"}, so a card cannot be encrypted for storage.`,
-        action: "Set CARD_ENCRYPTION_KEY to a base64-encoded 32-byte key (openssl rand -base64 32) in the environment, then redeploy. Cards already stored need the ORIGINAL key to be revealed — never replace a key that has data under it.",
+        state: vault.productionClass ? "CRITICAL" : "WARNING",
+        summary: `Customers cannot complete bookings: the card key ring is ${vault.blockedBy === "key_missing" ? "not configured" : "invalid"}, so a card cannot be encrypted for storage.`,
+        action: "Set CARD_ENCRYPTION_KEY (or CARD_ENCRYPTION_KEYS + CARD_ENCRYPTION_KEY_ID) to base64-encoded 32-byte keys (openssl rand -base64 32), then redeploy. Cards already stored need their ORIGINAL key — never replace a key that has data under it; add the new key to the ring instead.",
         facts,
       };
     }
-    if (onVercelProduction) {
-      return {
-        state: "WARNING",
-        summary: "Customers can complete bookings, using the CRM's application-level card vault on a production deployment. It encrypts cards with an application-managed key (AES-256-GCM) — development-grade, not PCI DSS-grade key management.",
-        action: "Keep Reveal limited to authorized Admins, protect CARD_ENCRYPTION_KEY, and consider a PCI-compliant vault before holding real cards at scale.",
-        facts,
-      };
+
+    // Ciphertext metadata only (counts by key id) — the encrypted value is never returned.
+    const [counts] = await prisma.$queryRaw<Array<{ total: number; purged: number; current: number }>>`
+      SELECT COUNT(*)::int AS total,
+             COUNT(*) FILTER (WHERE "encryptedPan" = 'cv2.purged')::int AS purged,
+             COUNT(*) FILTER (WHERE "encryptedPan" LIKE 'cv2.%' AND "encryptedPan" <> 'cv2.purged' AND split_part("encryptedPan", '.', 2) = ${vault.keyVersion ?? ""})::int AS current
+      FROM "PaymentMethod"
+    `;
+    const olderKey = Math.max(0, (counts?.total ?? 0) - (counts?.purged ?? 0) - (counts?.current ?? 0));
+    facts.push({ label: "Stored cards", value: String((counts?.total ?? 0) - (counts?.purged ?? 0)) }, { label: "Cards on an older key / legacy format", value: String(olderKey) });
+
+    const summary: string[] = [];
+    const actions: string[] = [];
+    if (vault.productionClass) {
+      summary.push("Customers can complete bookings using the CRM's application-level card vault on a production deployment. Cards are encrypted with an application-managed key (AES-256-GCM) — this is NOT PCI DSS-grade key management and the deployment remains in PCI DSS scope.");
+      actions.push("Keep Reveal limited to explicitly granted staff, protect the key ring, rotate keys per docs/CARD_VAULT_SECURITY.md, and treat the remaining PCI DSS gaps listed there as open risks.");
     }
-    return { state: "HEALTHY", summary: "Card storage is available: the vault key is valid and the environment guard is open.", facts };
+    if (olderKey > 0) {
+      summary.push(`${olderKey} stored card(s) are not encrypted under the current key version.`);
+      actions.push("Run the rotation script (npm run cards:rotate, then with --apply) as described in docs/CARD_VAULT_SECURITY.md. Keep every older key in the ring until it reports 0.");
+    }
+    if (summary.length > 0) return { state: "WARNING", summary: summary.join(" "), action: actions.join(" "), facts };
+    return { state: "HEALTHY", summary: "Card storage is available: the key ring is valid (local/non-production).", facts };
   });
 }
 
@@ -243,13 +262,14 @@ async function checkEncryptionKeys(): Promise<HealthCheckResult> {
     const ipEnc = base64KeyStatus(process.env.IP_ENCRYPTION_KEY, 32);
     const ipHash = base64KeyStatus(process.env.IP_HASH_KEY, { min: 16 });
     const gmail = base64KeyStatus(process.env.GMAIL_TOKEN_ENCRYPTION_KEY, 32);
+    const cardRing = getKeyringStatus();
     const facts = [
       { label: "IP vault encryption key", value: ipEnc },
       { label: "IP vault search key", value: ipHash },
       { label: "Gmail token key", value: gmail },
-      { label: "Card vault key", value: base64KeyStatus(process.env.CARD_ENCRYPTION_KEY, 32) },
+      { label: "Card vault key ring", value: cardRing.state === "configured" ? "Configured" : cardRing.state === "missing" ? "Missing" : "Invalid" },
     ];
-    if (ipEnc === "Invalid" || ipHash === "Invalid" || gmail === "Invalid") {
+    if (ipEnc === "Invalid" || ipHash === "Invalid" || gmail === "Invalid" || cardRing.state === "invalid") {
       return { state: "CRITICAL", summary: "An encryption key is set but not a valid key; anything it protects cannot be read or written.", facts, action: "Regenerate it as a base64-encoded 32-byte key and update the environment." };
     }
     if (ipEnc !== "Configured" || ipHash !== "Configured") {

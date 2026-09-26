@@ -3,8 +3,12 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@/generated/prisma/client";
 import { wrapPoolWithConnectRetry, type ConnectablePool } from "@/lib/db-connection-retry";
 
+// The client type INCLUDING the global omit config (see createPrismaClient), so
+// query result types correctly exclude PaymentMethod.encryptedPan.
+type AppPrismaClient = ReturnType<typeof createPrismaClient>;
+
 declare global {
-  var __prisma: PrismaClient | undefined;
+  var __prisma: AppPrismaClient | undefined;
 }
 
 function connectionStringWithoutSslMode(url: string): string {
@@ -141,7 +145,15 @@ function createPrismaClient() {
       onPoolError: (err) => console.error(`[db] idle pool client error (${err.constructor.name})`),
     }
   );
-  return new PrismaClient({ adapter });
+  return new PrismaClient({
+    adapter,
+    // Defence in depth for the card vault: the encrypted card number is left
+    // out of EVERY read unless a query opts in explicitly (`select: {
+    // encryptedPan: true }` — only revealPaymentMethod and the key-rotation
+    // module do). A forgotten `select`, a generic `findMany`, or an object
+    // passed to a client component can therefore never carry ciphertext.
+    omit: { paymentMethod: { encryptedPan: true } },
+  });
 }
 
 // Pass 35 — real bug found and fixed: this module used to construct the
@@ -165,9 +177,9 @@ function createPrismaClient() {
 // of client construction moves from "on import" to "on first real use".
 // Functions are bound to the real client (not the Proxy) so internal `this`
 // usage inside Prisma's own methods still resolves correctly.
-let cachedClient: PrismaClient | undefined;
+let cachedClient: AppPrismaClient | undefined;
 
-function getPrismaClient(): PrismaClient {
+function getPrismaClient(): AppPrismaClient {
   if (globalThis.__prisma) return globalThis.__prisma;
   if (cachedClient) return cachedClient;
   const client = createPrismaClient();
@@ -178,7 +190,7 @@ function getPrismaClient(): PrismaClient {
   return client;
 }
 
-export const prisma = new Proxy({} as PrismaClient, {
+export const prisma = new Proxy({} as AppPrismaClient, {
   get(_target, prop) {
     const client = getPrismaClient();
     const value = Reflect.get(client as object, prop, client);

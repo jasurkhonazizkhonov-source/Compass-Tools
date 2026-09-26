@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // shape that function produces, so the IDOR/BOLA tests below exercise the
 // real authorization logic rather than a re-implementation of it.
 
-type FakeAccount = { id: string; role: string; status: string; paymentPermissions: string[] };
+type FakeAccount = { id: string; role: string; status: string; paymentPermissions: string[]; sessionCreatedAt?: Date | null };
 type FakeBooking = { id: string; quoteAgentId?: string; leadAssignedAgentId?: string; contactOwnerId?: string };
 type FakePaymentMethod = {
   id: string;
@@ -38,10 +38,20 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-vi.mock("@/server/security/card-encryption", () => ({
-  // Deterministic stand-in: reverses the "encrypted" marker so tests can
-  // assert the decrypted value without depending on the real AES key/env.
-  decryptPan: vi.fn((encoded: string) => encoded.replace(/^ENC:/, "")),
+// Deterministic stand-in for decryption (reverses the "ENC:" marker) so tests
+// need not depend on real AES output; failures can be injected per test. The
+// real CardVaultError / tombstone constant are kept.
+let decryptImpl: (encoded: string, recordId: string) => string;
+vi.mock("@/server/security/card-encryption", async (orig) => ({
+  ...(await orig<typeof import("@/server/security/card-encryption")>()),
+  decryptPan: vi.fn((encoded: string, recordId: string) => decryptImpl(encoded, recordId)),
+}));
+
+// The per-account limiter needs a real database; here it is a switch.
+let rateLimitAllowed = true;
+vi.mock("@/server/security/rate-limit", () => ({
+  RATE_LIMITS: { CARD_REVEAL: { windowMs: 1, maxAttempts: 1 }, CARD_MUTATION: { windowMs: 1, maxAttempts: 1 } },
+  checkAccountRateLimit: vi.fn(async () => (rateLimitAllowed ? { allowed: true } : { allowed: false, retryAfterSeconds: 240 })),
 }));
 
 
@@ -109,7 +119,16 @@ beforeEach(() => {
   auditLogs = [];
   paymentCharges = [];
   currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: ["payments.reveal", "payments.charge"] };
+  decryptImpl = (encoded) => encoded.replace(/^ENC:/, "");
+  rateLimitAllowed = true;
+  // The vault is only "open" with a valid key ring; the environment under test is NODE_ENV=test.
+  vi.stubEnv("CARD_ENCRYPTION_KEY", Buffer.alloc(32, 3).toString("base64"));
+  vi.stubEnv("APP_ENV", "");
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 function seedBookingAndCard(overrides: Partial<FakeBooking> = {}) {
@@ -143,23 +162,19 @@ describe("revealPaymentMethod — role x permission matrix", () => {
       const { revealPaymentMethod } = await import("../payment-methods");
       if (eligible) {
         const result = await revealPaymentMethod("pm-1");
-        expect(result.pan).toBe("4111111111111111");
-        expect(result.cardholderName).toBe("Jane Traveler");
+        expect(result).toMatchObject({ pan: "4111111111111111" });
+        expect(result).toMatchObject({ cardholderName: "Jane Traveler" });
       } else {
         await expect(revealPaymentMethod("pm-1")).rejects.toThrow(/not authorized/i);
       }
     });
 
-    it(`${role} WITHOUT payments.reveal -> ${role === "ADMIN" ? "still allowed (Admin bypasses the grant array — every Admin has identical permissions)" : "always denied, even though role alone might be eligible"}`, async () => {
+    it(`${role} WITHOUT payments.reveal -> always denied (default is no card access — Admin included), even though the role alone might be eligible`, async () => {
       seedBookingAndCard();
       currentActor = { id: "actor-1", role, status: "ACTIVE", paymentPermissions: [] };
       const { revealPaymentMethod } = await import("../payment-methods");
-      if (role === "ADMIN") {
-        const result = await revealPaymentMethod("pm-1");
-        expect(result.pan).toBe("4111111111111111");
-      } else {
-        await expect(revealPaymentMethod("pm-1")).rejects.toThrow(/not authorized/i);
-      }
+      await expect(revealPaymentMethod("pm-1")).rejects.toThrow(/not authorized/i);
+      expect(auditLogs[auditLogs.length - 1].metadata.reason).toBe("MISSING_PERMISSION");
     });
   }
 
@@ -214,7 +229,7 @@ describe("revealPaymentMethod — IDOR/BOLA protection", () => {
     // above where ownership genuinely gates access.
     const { revealPaymentMethod } = await import("../payment-methods");
     const result = await revealPaymentMethod("pm-1");
-    expect(result.pan).toBe("4111111111111111");
+    expect(result).toMatchObject({ pan: "4111111111111111" });
   });
 });
 
@@ -392,18 +407,126 @@ describe("updatePaymentMethodWorkflowStatus — permission gate + IDOR/BOLA prot
   });
 });
 
-describe("revealPaymentMethod — production fails closed (no real MFA/step-up system)", () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
+describe("revealPaymentMethod — step-up, vault enablement and abuse controls", () => {
+  const GRANTED_ADMIN = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000);
+  function asRealDeployment(extra: Record<string, string> = {}) {
+    vi.stubEnv("NODE_ENV", "production");
+    for (const [k, v] of Object.entries(extra)) vi.stubEnv(k, v);
+  }
+
+  it("in production, an idle/older session (signed in > 15 min ago) cannot reveal — and is told to sign in again", async () => {
+    asRealDeployment({ CARD_VAULT_MODE: "application-encryption-risk-accepted" });
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN, sessionCreatedAt: minutesAgo(120) };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: expect.stringMatching(/sign-in within the last 15 minutes/i) });
+    expect(auditLogs[auditLogs.length - 1].action).toBe("PAYMENT_METHOD_REVEAL_DENIED");
+    expect(auditLogs[auditLogs.length - 1].metadata.reason).toBe("RECENT_LOGIN_REQUIRED");
   });
 
-  it("denies reveal in production even for a fully-permissioned admin on their own accessible booking", async () => {
-    vi.stubEnv("APP_ENV", "production");
+  it("in production, a session with no sign-in time cannot reveal", async () => {
+    asRealDeployment({ CARD_VAULT_MODE: "application-encryption-risk-accepted" });
     seedBookingAndCard();
-    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
+    currentActor = { ...GRANTED_ADMIN, sessionCreatedAt: null };
     const { revealPaymentMethod } = await import("../payment-methods");
-    await expect(revealPaymentMethod("pm-1")).rejects.toThrow(/not authorized/i);
-    expect(auditLogs[auditLogs.length - 1].action).toBe("PAYMENT_METHOD_REVEAL_DENIED");
-    expect(auditLogs[auditLogs.length - 1].metadata.reason).toBe("MFA_REQUIRED_NOT_CONFIGURED");
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: expect.stringMatching(/sign-in within the last 15 minutes/i) });
+  });
+
+  it("in production, a granted Admin who signed in recently CAN reveal once the vault is explicitly enabled", async () => {
+    asRealDeployment({ CARD_VAULT_MODE: "application-encryption-risk-accepted" });
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN, sessionCreatedAt: minutesAgo(3) };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    const result = await revealPaymentMethod("pm-1");
+    expect(result).toMatchObject({ pan: "4111111111111111" });
+    expect(auditLogs[auditLogs.length - 1].action).toBe("PAYMENT_METHOD_REVEALED");
+  });
+
+  it("APP_ENV=staging on a production build does NOT open the vault or relax step-up: reveal is refused and the failure is audited", async () => {
+    asRealDeployment({ APP_ENV: "staging" });
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN, sessionCreatedAt: minutesAgo(1) };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: expect.stringMatching(/could not be decrypted/i) });
+    const last = auditLogs[auditLogs.length - 1];
+    expect(last.action).toBe("CARD_DECRYPTION_FAILED");
+    expect(last.metadata.reason).toBe("VAULT_UNAVAILABLE");
+    // and an idle session is still refused first, regardless of APP_ENV
+    currentActor = { ...GRANTED_ADMIN, sessionCreatedAt: minutesAgo(600) };
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: expect.stringMatching(/sign-in within the last 15 minutes/i) });
+  });
+
+  it("a decryption failure (tampered / wrong-key / wrong-row ciphertext) is audited with a fixed code, returns a generic error and leaks nothing", async () => {
+    const { CardVaultError } = await import("@/server/security/card-encryption");
+    decryptImpl = () => {
+      throw new CardVaultError("AUTH_FAILED");
+    };
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: "This card could not be decrypted. Please contact an administrator." });
+    const last = auditLogs[auditLogs.length - 1];
+    expect(last.action).toBe("CARD_DECRYPTION_FAILED");
+    expect(last.metadata.reason).toBe("AUTH_FAILED");
+    expect(JSON.stringify(last)).not.toContain("4111111111111111");
+  });
+
+  it("is rate limited per account: an over-limit attempt is refused BEFORE any lookup or decryption, and the abuse is audited", async () => {
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN };
+    rateLimitAllowed = false;
+    const { revealPaymentMethod } = await import("../payment-methods");
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: expect.stringMatching(/too many reveal attempts/i) });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe("PAYMENT_METHOD_REVEAL_RATE_LIMITED");
+    expect(auditLogs[0].metadata.reason).toBe("RATE_LIMITED");
+  });
+
+  it("refuses a removed (archived) or purged card, and audits it", async () => {
+    seedBookingAndCard();
+    paymentMethods.get("pm-1")!.encryptedPan = "cv2.purged";
+    currentActor = { ...GRANTED_ADMIN };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    expect(await revealPaymentMethod("pm-1")).toEqual({ error: expect.stringMatching(/removed/i) });
+    expect(auditLogs[auditLogs.length - 1].metadata.reason).toBe("CARD_REMOVED");
+  });
+
+  it("actionable refusals are RETURNED as { error } (Next masks thrown Server Action messages in production), and never contain card data", async () => {
+    const { CardVaultError } = await import("@/server/security/card-encryption");
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    rateLimitAllowed = false;
+    const limited = await revealPaymentMethod("pm-1");
+    rateLimitAllowed = true;
+    decryptImpl = () => {
+      throw new CardVaultError("AUTH_FAILED");
+    };
+    const failed = await revealPaymentMethod("pm-1");
+    for (const r of [limited, failed]) {
+      expect(Object.keys(r)).toEqual(["error"]);
+      expect(JSON.stringify(r)).not.toMatch(/4111|AUTH_FAILED|cv2\./);
+    }
+  });
+
+  it("authorization failures (no session / no grant / not found / not accessible) still THROW one generic denial and explain nothing", async () => {
+    seedBookingAndCard();
+    const { revealPaymentMethod } = await import("../payment-methods");
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: [] };
+    await expect(revealPaymentMethod("pm-1")).rejects.toThrow("You are not authorized to reveal this payment method");
+    currentActor = { ...GRANTED_ADMIN };
+    await expect(revealPaymentMethod("nope")).rejects.toThrow("You are not authorized to reveal this payment method");
+  });
+
+  it("every audit entry carries a correlation id, and never the PAN", async () => {
+    seedBookingAndCard();
+    currentActor = { ...GRANTED_ADMIN };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    await revealPaymentMethod("pm-1");
+    const meta = auditLogs[auditLogs.length - 1].metadata;
+    expect(typeof meta.correlationId).toBe("string");
+    expect(String(meta.correlationId).length).toBeGreaterThan(8);
+    expect(JSON.stringify(auditLogs)).not.toContain("4111111111111111");
   });
 });

@@ -1,18 +1,39 @@
 /**
- * Production/development environment detection used by security-sensitive
- * code paths (card vault selection, privileged step-up authentication).
+ * Which environment this process is running in, decided so that a production
+ * deployment can always be recognised as production and can never be
+ * relabelled as something else by a generic environment variable.
  *
- * `APP_ENV` takes precedence when set — an explicit escape hatch for a
- * deployment that runs a production-mode build (NODE_ENV=production, set
- * automatically by `next build`/`next start`) but should still be treated
- * as non-production for these guards. It is how an owner DELIBERATELY accepts
- * the application-level card vault on a real deployment (docs/DEPLOYMENT.md
- * §5c). When `APP_ENV` is unset, this falls back to `NODE_ENV`, so a real
- * production deploy is caught automatically even if nobody remembers to set
- * `APP_ENV` — fail closed by default, not fail open.
+ * Precedence (first match wins):
+ *   1. `APP_ENV=production`  → production. APP_ENV may only make the process
+ *      STRICTER; every other APP_ENV value ("staging", "development", "test", …)
+ *      is ignored here and cannot relax anything.
+ *   2. `VERCEL_ENV` (set by Vercel itself, not by the project) →
+ *      "production" | "preview". Both are treated as production-class: a preview
+ *      deployment can run against real data, so it gets production rules.
+ *   3. `NODE_ENV=production` → production (a `next build`/`next start` process).
+ *   4. `NODE_ENV=test` → test.
+ *   5. Otherwise → development.
+ *
+ * Consequence: setting `APP_ENV=staging` on a real deployment does NOTHING.
+ * Whether the card vault may run in production-class environments is decided
+ * by its own explicit configuration (see card-vault-status.ts), never by this
+ * label.
  */
+export type AppEnvironment = "production" | "preview" | "development" | "test";
+
+export function getAppEnvironment(): AppEnvironment {
+  if (process.env.APP_ENV?.trim().toLowerCase() === "production") return "production";
+  const vercelEnv = process.env.VERCEL_ENV;
+  if (vercelEnv === "production") return "production";
+  if (vercelEnv === "preview") return "preview";
+  if (process.env.NODE_ENV === "production") return "production";
+  if (process.env.NODE_ENV === "test") return "test";
+  return "development";
+}
+
+/** Production-class: a real production build, a Vercel production deployment
+ *  or a Vercel preview deployment. Security guards fail closed here. */
 export function isProductionEnvironment(): boolean {
-  const appEnv = process.env.APP_ENV;
-  if (appEnv) return appEnv === "production";
-  return process.env.NODE_ENV === "production";
+  const env = getAppEnvironment();
+  return env === "production" || env === "preview";
 }
