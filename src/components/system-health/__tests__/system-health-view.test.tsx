@@ -102,4 +102,67 @@ describe("SystemHealthView", () => {
     render(<SystemHealthView results={[check({ id: "a", state: "HEALTHY" })]} open={[]} recentlyResolved={[]} checkedAt="2026-09-25T12:00:00Z" />);
     expect(screen.getByRole("link", { name: /re-run checks/i })).toHaveAttribute("href", "/system-health");
   });
+
+  // A standing security/compliance advisory (the card vault's "application-managed,
+  // not PCI DSS-grade" WARNING) must read differently from an ordinary operational
+  // WARNING like connection headroom — conflating the two is exactly what the real
+  // production incident showed. classification distinguishes them.
+  describe("classification badge — distinguishing WHAT KIND of Warning this is", () => {
+    it("shows 'Security advisory' for a standing architectural risk, not a plain ordinary Warning", () => {
+      render(
+        <SystemHealthView
+          results={[check({ id: "payment.vault", state: "WARNING", classification: "security_advisory", summary: "Not PCI DSS-grade." })]}
+          open={[]}
+          recentlyResolved={[]}
+          checkedAt="2026-09-25T12:00:00Z"
+        />
+      );
+      const card = screen.getByTestId("check-payment.vault");
+      expect(within(card).getByText("Security advisory")).toBeInTheDocument();
+      expect(within(card).getByText("Warning")).toBeInTheDocument(); // the ordinary state badge is still shown alongside it
+    });
+
+    it("shows 'Manual action required' when an operator, not the code, must fix it", () => {
+      render(
+        <SystemHealthView
+          results={[check({ id: "database.tls", state: "WARNING", classification: "manual_action", summary: "Set DATABASE_SSL_CA." })]}
+          open={[]}
+          recentlyResolved={[]}
+          checkedAt="2026-09-25T12:00:00Z"
+        />
+      );
+      expect(within(screen.getByTestId("check-database.tls")).getByText("Manual action required")).toBeInTheDocument();
+    });
+
+    it("shows 'Blocking' for a CRITICAL that stops a core flow (e.g. bookings)", () => {
+      render(
+        <SystemHealthView
+          results={[check({ id: "payment.vault", state: "CRITICAL", classification: "blocking", summary: "Customers cannot complete bookings." })]}
+          open={[]}
+          recentlyResolved={[]}
+          checkedAt="2026-09-25T12:00:00Z"
+        />
+      );
+      expect(within(screen.getByTestId("check-payment.vault")).getByText("Blocking")).toBeInTheDocument();
+    });
+
+    it("an ordinary Warning with no explicit classification defaults to 'Action recommended' (paired with the Warning state badge)", () => {
+      render(<SystemHealthView results={[check({ id: "database.connections", state: "WARNING" })]} open={[]} recentlyResolved={[]} checkedAt="2026-09-25T12:00:00Z" />);
+      const card = screen.getByTestId("check-database.connections");
+      expect(within(card).getByText("Action recommended")).toBeInTheDocument();
+      expect(within(card).getByText("Warning")).toBeInTheDocument();
+    });
+
+    it("a plain CRITICAL with no explicit classification defaults to 'Blocking' (paired with the Critical state badge)", () => {
+      render(<SystemHealthView results={[check({ id: "auth.google", state: "CRITICAL" })]} open={[]} recentlyResolved={[]} checkedAt="2026-09-25T12:00:00Z" />);
+      expect(within(screen.getByTestId("check-auth.google")).getByText("Blocking")).toBeInTheDocument();
+    });
+
+    it("a HEALTHY check shows no classification badge — 'Healthy' alone already says enough", () => {
+      render(<SystemHealthView results={[check({ id: "auth.google", state: "HEALTHY" })]} open={[]} recentlyResolved={[]} checkedAt="2026-09-25T12:00:00Z" />);
+      const card = screen.getByTestId("check-auth.google");
+      expect(within(card).queryByText("Informational")).not.toBeInTheDocument();
+      expect(within(card).getByText("Healthy")).toBeInTheDocument();
+    });
+  });
 });

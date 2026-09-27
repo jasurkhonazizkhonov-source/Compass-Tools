@@ -21,6 +21,8 @@ vi.mock("@/lib/prisma", () => ({
 import { sanitizeMessage, sanitizeMetadata, healthFingerprint, recordHealthEvent, resetHealthEventThrottleForTests } from "../health-events";
 import { base64KeyStatus, groupForState, overallState } from "../health-checks";
 import { classifyServerError, recordServerError } from "../server-errors";
+import { ExpectedActionError } from "@/lib/expected-action-error";
+import { recordCheckResults } from "../health-monitor";
 
 beforeEach(() => {
   queryRaw.mockReset();
@@ -197,5 +199,46 @@ describe("server error recorder", () => {
   it("collapses a suspicious route value to a fixed placeholder", async () => {
     await recordServerError(new Error("x"), { routePath: "/quote/AbCdEfGh 1234;DROP TABLE", routeType: "route" });
     expect(JSON.stringify(queryRaw.mock.calls[0].slice(1))).toContain("in route unknown");
+  });
+
+  // Real, observed false positive: a Server Action's own deliberate, already-
+  // handled rejection ("Quote not found", "This quote can no longer be
+  // canceled directly...") reached Next's onRequestError like any other throw
+  // and was recorded as a "server error" — an application bug that does not
+  // exist. ExpectedActionError lets the action keep throwing normally (the
+  // client still sees the exact same message) while telling this recorder
+  // "this one was already handled, it is not a defect."
+  it("never records an ExpectedActionError as a server-error incident, however it is thrown", async () => {
+    await recordServerError(new ExpectedActionError("Quote not found"), { routePath: "/quotes/[id]", routeType: "action" });
+    await recordServerError(Object.assign(new Error("This quote can no longer be canceled directly."), { name: "ExpectedActionError" }), { routePath: "/quotes/[id]", routeType: "action" });
+    expect(queryRaw).not.toHaveBeenCalled();
+  });
+
+  it("still records a genuine unhandled error from the very same route", async () => {
+    await recordServerError(new TypeError("cannot read properties of undefined"), { routePath: "/quotes/[id]", routeType: "action" });
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(queryRaw.mock.calls[0].slice(1))).toContain("SERVER_ERROR");
+  });
+});
+
+describe("recordCheckResults — a live check's severity must track its CURRENT state, not the worst it ever reached", () => {
+  const result = (state: "CRITICAL" | "WARNING" | "HEALTHY", summary: string) => [{ id: "payment.vault", category: "payment", title: "Card vault & booking readiness", state, summary } as const];
+
+  it("passes resyncSeverity so an incident that improved from CRITICAL to WARNING is shown as WARNING, not stuck at CRITICAL", async () => {
+    await recordCheckResults(result("CRITICAL", "Customers cannot complete bookings: production guard closed."));
+    expect(queryRaw.mock.calls[0][0].join("")).not.toContain('severity" = CASE'); // the resync branch, not the escalate-only one
+    queryRaw.mockClear();
+    resetHealthEventThrottleForTests(); // simulate a later evaluation, not a retry inside the same 10s write-throttle window
+    await recordCheckResults(result("WARNING", "Not PCI DSS-grade key management; the deployment remains in PCI DSS scope."));
+    const call = JSON.stringify(queryRaw.mock.calls[0].slice(1));
+    expect(call).toContain("WARNING");
+    expect(call).not.toContain('"CRITICAL"');
+  });
+
+  it("a HEALTHY result resolves the incident instead of recording one", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    await recordCheckResults(result("HEALTHY", "All good."));
+    expect(queryRaw).not.toHaveBeenCalled();
+    expect(prisma.healthEvent.updateMany).toHaveBeenCalled();
   });
 });

@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 
+// Deliberately synthetic and obviously so (a repeating fill byte) — never a
+// value that could pass for a real secret if it were ever compared against one.
+const SYNTHETIC_KEY = Buffer.alloc(32, 0x11).toString("base64");
+
 const ORIGINAL_ENV = { ...process.env };
 
 beforeEach(() => {
@@ -12,7 +16,7 @@ afterEach(() => {
 
 describe("encryptRefreshToken / decryptRefreshToken — real AES-256-GCM round trip", () => {
   it("round-trips a refresh token through encryption and decryption unchanged", async () => {
-    process.env.GMAIL_TOKEN_ENCRYPTION_KEY = "yC0m9NX6JVQYBRGiDGySigB5L6WXpA38PceXOZUXAP8=";
+    process.env.GMAIL_TOKEN_ENCRYPTION_KEY = SYNTHETIC_KEY;
     const { encryptRefreshToken, decryptRefreshToken } = await import("../gmail-token-encryption");
 
     const token = "1//0abcDEFghijKLMNOP-fake-refresh-token";
@@ -22,7 +26,7 @@ describe("encryptRefreshToken / decryptRefreshToken — real AES-256-GCM round t
   });
 
   it("two encryptions of the identical token produce different ciphertext (random IV per call)", async () => {
-    process.env.GMAIL_TOKEN_ENCRYPTION_KEY = "yC0m9NX6JVQYBRGiDGySigB5L6WXpA38PceXOZUXAP8=";
+    process.env.GMAIL_TOKEN_ENCRYPTION_KEY = SYNTHETIC_KEY;
     const { encryptRefreshToken } = await import("../gmail-token-encryption");
 
     const a = encryptRefreshToken("same-token");
@@ -43,7 +47,7 @@ describe("encryptRefreshToken / decryptRefreshToken — real AES-256-GCM round t
   });
 
   it("decryption fails closed (throws) on tampered ciphertext rather than returning garbage", async () => {
-    process.env.GMAIL_TOKEN_ENCRYPTION_KEY = "yC0m9NX6JVQYBRGiDGySigB5L6WXpA38PceXOZUXAP8=";
+    process.env.GMAIL_TOKEN_ENCRYPTION_KEY = SYNTHETIC_KEY;
     const { encryptRefreshToken, decryptRefreshToken } = await import("../gmail-token-encryption");
 
     const encrypted = encryptRefreshToken("a-real-token");

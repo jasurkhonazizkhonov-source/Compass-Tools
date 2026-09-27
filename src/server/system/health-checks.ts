@@ -25,6 +25,33 @@ import { getCardRetentionDays } from "@/server/security/card-retention-schedule"
 export type HealthState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type HealthGroup = "critical" | "warning" | "informational";
 
+/**
+ * What KIND of non-healthy condition this is — distinct from `state`, which is
+ * only "how bad." Two WARNINGs can mean very different things: "connections
+ * are briefly high" (recommended) is not "this deployment uses an
+ * application-managed card vault, which stays in PCI DSS scope" (a standing
+ * security advisory, true for as long as the vault is enabled — improving it
+ * needs a different architecture, not an admin action) — conflating the two
+ * as one undifferentiated "Warning" is exactly the misclassification a real
+ * production incident showed (a security advisory rendered, and worse once
+ * escalated by a since-fixed bug, as an operational CRITICAL outage).
+ *   blocking           a core flow (e.g. bookings) is broken right now
+ *   recommended         degraded / worth fixing soon, no standing risk
+ *   security_advisory   a known, standing security/compliance limitation of a
+ *                        deliberate architectural choice — not a malfunction
+ *   manual_action        needs an operator to configure something outside the
+ *                        code (an env var, a certificate, a Vercel setting)
+ *   informational       healthy, or intentionally not in use
+ */
+export type HealthClassification = "blocking" | "recommended" | "security_advisory" | "manual_action" | "informational";
+
+/** The classification implied by `state` alone, for a check that doesn't need to say more. */
+export function classificationForState(state: HealthState): HealthClassification {
+  if (state === "CRITICAL") return "blocking";
+  if (state === "HEALTHY") return "informational";
+  return "recommended"; // WARNING or UNKNOWN
+}
+
 export type HealthCheckResult = {
   id: string;
   category: string;
@@ -35,6 +62,8 @@ export type HealthCheckResult = {
   action?: string;
   /** Short, non-sensitive facts (counts, milliseconds, Configured/Missing). */
   facts?: Array<{ label: string; value: string }>;
+  /** Overrides classificationForState(state) when the state alone would mislabel this condition. */
+  classification?: HealthClassification;
 };
 
 export type ConfigStatus = "Configured" | "Missing" | "Invalid";
@@ -201,6 +230,7 @@ async function checkCardVault(): Promise<HealthCheckResult> {
     if (vault.blockedBy === "vault_not_enabled") {
       return {
         state: "CRITICAL",
+        classification: "blocking",
         summary: "Customers cannot complete bookings: this is a production-class environment and the card vault has not been explicitly enabled (nothing is charged, no booking is recorded).",
         action: `Enabling the CRM's own application-level card vault is a deliberate decision: set CARD_VAULT_MODE to exactly "${CARD_VAULT_MODE_ACCEPTED}" (and a valid key ring) in Vercel, then redeploy. A generic setting such as APP_ENV=staging does NOT enable it. The vault uses application-managed keys and is NOT PCI DSS-grade — see docs/CARD_VAULT_SECURITY.md.`,
         facts,
@@ -209,6 +239,7 @@ async function checkCardVault(): Promise<HealthCheckResult> {
     if (vault.blockedBy === "key_missing" || vault.blockedBy === "key_invalid") {
       return {
         state: vault.productionClass ? "CRITICAL" : "WARNING",
+        classification: vault.productionClass ? "blocking" : "manual_action",
         summary: `Customers cannot complete bookings: the card key ring is ${vault.blockedBy === "key_missing" ? "not configured" : "invalid"}, so a card cannot be encrypted for storage.`,
         action: "Set CARD_ENCRYPTION_KEY (or CARD_ENCRYPTION_KEYS + CARD_ENCRYPTION_KEY_ID) to base64-encoded 32-byte keys (openssl rand -base64 32), then redeploy. Cards already stored need their ORIGINAL key — never replace a key that has data under it; add the new key to the ring instead.",
         facts,
@@ -227,20 +258,26 @@ async function checkCardVault(): Promise<HealthCheckResult> {
 
     const summary: string[] = [];
     const actions: string[] = [];
+    // Most-actionable-first: if more than one condition applies, the check's
+    // overall classification is the one requiring the most active attention —
+    // never the baseline advisory, and never silent about a required manual step.
+    let classification: HealthClassification = "security_advisory";
     if (vault.productionClass) {
       summary.push("Customers can complete bookings using the CRM's application-level card vault on a production deployment. Cards are encrypted with an application-managed key (AES-256-GCM) — this is NOT PCI DSS-grade key management and the deployment remains in PCI DSS scope.");
       actions.push("Keep Reveal limited to explicitly granted staff, protect the key ring, rotate keys per docs/CARD_VAULT_SECURITY.md, and treat the remaining PCI DSS gaps listed there as open risks.");
     }
-    if (vault.productionClass && getDatabaseTlsMode() === "unverified") {
-      summary.push("The database connection is encrypted but the server's identity is not verified, so a network attacker could impersonate the database.");
-      actions.push("Set DATABASE_SSL_CA to your database provider's CA certificate (Aiven: the project CA certificate) and redeploy — see docs/CARD_VAULT_SECURITY.md.");
-    }
     if (olderKey > 0) {
       summary.push(`${olderKey} stored card(s) are not encrypted under the current key version.`);
       actions.push("Run the rotation script (npm run cards:rotate, then with --apply) as described in docs/CARD_VAULT_SECURITY.md. Keep every older key in the ring until it reports 0.");
+      classification = "recommended";
     }
-    if (summary.length > 0) return { state: "WARNING", summary: summary.join(" "), action: actions.join(" "), facts };
-    return { state: "HEALTHY", summary: "Card storage is available: the key ring is valid (local/non-production).", facts };
+    if (vault.productionClass && getDatabaseTlsMode() === "unverified") {
+      summary.push("The database connection is encrypted but the server's identity is not verified, so a network attacker could impersonate the database.");
+      actions.push("Set DATABASE_SSL_CA to your database provider's CA certificate (Aiven: the project CA certificate) and redeploy — see docs/CARD_VAULT_SECURITY.md.");
+      classification = "manual_action";
+    }
+    if (summary.length > 0) return { state: "WARNING", classification, summary: summary.join(" "), action: actions.join(" "), facts };
+    return { state: "HEALTHY", classification: "informational", summary: "Card storage is available: the key ring is valid (local/non-production).", facts };
   });
 }
 

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const ENCRYPTION_KEY = "YgfNgrkVYRowXtQi3KJgD2vQOgze0r12K6kTBWUQTQI=";
-const HASH_KEY = "oYQZyGTNHuPCyHRql2/SVOgH3IJHTeGSchk4rLRMjzg=";
+const ENCRYPTION_KEY = Buffer.alloc(32, 0x22).toString("base64"); // deliberately synthetic (repeating fill byte)
+const HASH_KEY = Buffer.alloc(32, 0x33).toString("base64"); // deliberately synthetic (repeating fill byte)
 
 type FakeCapture = {
   id: string;

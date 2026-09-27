@@ -8,6 +8,7 @@
 // type, a short safe error category and Next's opaque digest.
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { recordHealthEvent } from "@/server/system/health-events";
+import { isExpectedActionError } from "@/lib/expected-action-error";
 
 export type ServerErrorContext = { routePath?: unknown; routeType?: unknown };
 
@@ -29,6 +30,11 @@ function safeRoute(value: unknown): string {
 }
 
 export async function recordServerError(err: unknown, context: ServerErrorContext): Promise<void> {
+  // A Server Action that deliberately rejected an already-handled condition
+  // (not found, unauthorized, a business-rule precondition) — see
+  // expected-action-error.ts. Next reports every action throw here
+  // regardless; this one is not an application defect, so no incident.
+  if (isExpectedActionError(err)) return;
   const { tag, databaseOutage } = classifyServerError(err);
   const route = safeRoute(context.routePath);
   const routeType = typeof context.routeType === "string" ? context.routeType.slice(0, 20) : "unknown";

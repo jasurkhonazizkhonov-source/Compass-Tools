@@ -4,7 +4,7 @@ import { CheckCircle2, AlertTriangle, XCircle, HelpCircle, RefreshCw } from "luc
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { StatusBadge } from "@/components/crm/status-badge";
-import { groupForState, overallState, type HealthCheckResult, type HealthGroup, type HealthState } from "@/server/system/health-checks";
+import { groupForState, overallState, classificationForState, type HealthCheckResult, type HealthClassification, type HealthGroup, type HealthState } from "@/server/system/health-checks";
 import type { HealthEventView } from "@/server/system/health-events";
 import type { StatusTone } from "@/lib/status-meta";
 import type { HealthSeverity } from "@/generated/prisma/client";
@@ -17,6 +17,19 @@ const STATE_META: Record<HealthState, { label: string; tone: StatusTone; icon: t
 };
 
 const SEVERITY_TONE: Record<HealthSeverity, StatusTone> = { CRITICAL: "destructive", WARNING: "warning", INFO: "neutral" };
+
+// Secondary badge next to the Healthy/Warning/Critical one — WHAT KIND of
+// condition this is, distinct from how bad it is. See classificationForState's
+// doc comment: two Warnings can mean very different things ("connections are
+// briefly high" vs. "this deployment uses an application-managed card vault,
+// which stays in PCI DSS scope" — a standing advisory, not a malfunction).
+const CLASSIFICATION_META: Record<HealthClassification, { label: string; tone: StatusTone }> = {
+  blocking: { label: "Blocking", tone: "destructive" },
+  recommended: { label: "Action recommended", tone: "warning" },
+  security_advisory: { label: "Security advisory", tone: "warning" },
+  manual_action: { label: "Manual action required", tone: "warning" },
+  informational: { label: "Informational", tone: "neutral" },
+};
 
 const GROUPS: Array<{ key: HealthGroup; title: string; blurb: string }> = [
   { key: "critical", title: "Critical", blurb: "A core flow is broken or blocked. Act on these first." },
@@ -95,6 +108,11 @@ export function SystemHealthView({
 function CheckCard({ result }: { result: HealthCheckResult }) {
   const meta = STATE_META[result.state];
   const Icon = meta.icon;
+  // Paired with the state badge (CRITICAL/Blocking, WARNING/Action recommended,
+  // Security advisory, Manual action required) for anything not-yet-healthy —
+  // "Healthy" alone already says everything an informational badge would add.
+  const classification = result.classification ?? classificationForState(result.state);
+  const classificationMeta = result.state === "HEALTHY" ? null : CLASSIFICATION_META[classification];
   return (
     <Card className="shadow-none" data-testid={`check-${result.id}`}>
       <CardHeader className="pb-2">
@@ -103,7 +121,10 @@ function CheckCard({ result }: { result: HealthCheckResult }) {
             <Icon className="h-4 w-4" aria-hidden />
             {result.title}
           </span>
-          <StatusBadge label={meta.label} tone={meta.tone} />
+          <span className="flex items-center gap-1.5">
+            {classificationMeta && <Badge variant="outline" className="text-[10px] font-normal">{classificationMeta.label}</Badge>}
+            <StatusBadge label={meta.label} tone={meta.tone} />
+          </span>
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2 text-sm">

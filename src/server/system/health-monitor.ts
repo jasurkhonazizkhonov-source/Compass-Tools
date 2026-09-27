@@ -31,6 +31,11 @@ export async function recordCheckResults(results: readonly HealthCheckResult[]):
         category: r.category,
         severity: r.state === "CRITICAL" ? "CRITICAL" : "WARNING",
         message: `${r.title}: ${r.summary}`,
+        // This check recomputes the CURRENT truth every run — an incident
+        // that has genuinely improved from CRITICAL to WARNING (without
+        // reaching exactly HEALTHY, so it never resolves outright) must show
+        // that current severity, not the worst it ever reached.
+        resyncSeverity: true,
       });
     } else if (r.state === "HEALTHY") {
       await resolveHealthEvents(type, r.category);

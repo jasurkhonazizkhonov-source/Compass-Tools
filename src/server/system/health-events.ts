@@ -95,6 +95,26 @@ export type RecordHealthEventInput = {
   metadata?: Record<string, unknown>;
   /** Notify Admins when this opens a NEW incident. Defaults to true for CRITICAL only. */
   notify?: boolean;
+  /**
+   * When true, an existing OPEN incident's severity is set to EXACTLY this
+   * call's severity (it can go down as well as up). Default false keeps the
+   * original escalate-only behavior (severity only ever ratchets upward while
+   * open), which is correct for a discrete, already-past EVENT — the worst
+   * thing that actually happened should stay visible even if a later retry of
+   * the same code path succeeds at a lower severity.
+   *
+   * Pass true for a LIVE, periodically-recomputed CHECK (see
+   * health-monitor.ts's recordCheckResults): such a check reports the CURRENT
+   * true state on every run, so its incident's severity must track that
+   * current state, never freeze at the worst value it ever saw. Without this,
+   * a check whose condition genuinely improved from CRITICAL to WARNING (but
+   * never reaches exactly HEALTHY, so the incident is never resolved) keeps
+   * showing CRITICAL forever even though the displayed message has already
+   * moved on to the WARNING text — a real, observed misclassification (the
+   * card vault's "not PCI DSS-grade" advisory stuck at CRITICAL after the
+   * earlier "production guard closed" CRITICAL condition was fixed).
+   */
+  resyncSeverity?: boolean;
 };
 
 const lastRecordedAt = new Map<string, number>();
@@ -119,18 +139,35 @@ export async function recordHealthEvent(input: RecordHealthEventInput, now: numb
 
     const message = sanitizeMessage(input.message);
     const metadata = JSON.stringify(sanitizeMetadata(input.metadata));
-    const rows = await prisma.$queryRaw<Array<{ inserted: boolean }>>`
-      INSERT INTO "HealthEvent" ("id", "fingerprint", "type", "severity", "category", "message", "metadata", "firstSeenAt", "lastSeenAt", "occurrenceCount")
-      VALUES (${randomUUID()}, ${fingerprint}, ${input.type.slice(0, 80)}, ${input.severity}::"HealthSeverity", ${input.category.slice(0, 40)}, ${message}, ${metadata}::jsonb,
-              (now() AT TIME ZONE 'UTC'), (now() AT TIME ZONE 'UTC'), 1)
-      ON CONFLICT ("fingerprint") WHERE "resolvedAt" IS NULL
-      DO UPDATE SET "lastSeenAt" = (now() AT TIME ZONE 'UTC'),
-                    "occurrenceCount" = "HealthEvent"."occurrenceCount" + 1,
-                    "message" = EXCLUDED."message",
-                    "metadata" = EXCLUDED."metadata",
-                    "severity" = CASE WHEN EXCLUDED."severity" > "HealthEvent"."severity" THEN EXCLUDED."severity" ELSE "HealthEvent"."severity" END
-      RETURNING (xmax = 0) AS "inserted"
-    `;
+    // Two otherwise-identical statements (a raw template can't conditionally
+    // splice SQL) — the only difference is whether an existing OPEN row's
+    // severity is fully resynced or only ever escalated. See resyncSeverity's
+    // doc comment above.
+    const rows = input.resyncSeverity
+      ? await prisma.$queryRaw<Array<{ inserted: boolean }>>`
+          INSERT INTO "HealthEvent" ("id", "fingerprint", "type", "severity", "category", "message", "metadata", "firstSeenAt", "lastSeenAt", "occurrenceCount")
+          VALUES (${randomUUID()}, ${fingerprint}, ${input.type.slice(0, 80)}, ${input.severity}::"HealthSeverity", ${input.category.slice(0, 40)}, ${message}, ${metadata}::jsonb,
+                  (now() AT TIME ZONE 'UTC'), (now() AT TIME ZONE 'UTC'), 1)
+          ON CONFLICT ("fingerprint") WHERE "resolvedAt" IS NULL
+          DO UPDATE SET "lastSeenAt" = (now() AT TIME ZONE 'UTC'),
+                        "occurrenceCount" = "HealthEvent"."occurrenceCount" + 1,
+                        "message" = EXCLUDED."message",
+                        "metadata" = EXCLUDED."metadata",
+                        "severity" = EXCLUDED."severity"
+          RETURNING (xmax = 0) AS "inserted"
+        `
+      : await prisma.$queryRaw<Array<{ inserted: boolean }>>`
+          INSERT INTO "HealthEvent" ("id", "fingerprint", "type", "severity", "category", "message", "metadata", "firstSeenAt", "lastSeenAt", "occurrenceCount")
+          VALUES (${randomUUID()}, ${fingerprint}, ${input.type.slice(0, 80)}, ${input.severity}::"HealthSeverity", ${input.category.slice(0, 40)}, ${message}, ${metadata}::jsonb,
+                  (now() AT TIME ZONE 'UTC'), (now() AT TIME ZONE 'UTC'), 1)
+          ON CONFLICT ("fingerprint") WHERE "resolvedAt" IS NULL
+          DO UPDATE SET "lastSeenAt" = (now() AT TIME ZONE 'UTC'),
+                        "occurrenceCount" = "HealthEvent"."occurrenceCount" + 1,
+                        "message" = EXCLUDED."message",
+                        "metadata" = EXCLUDED."metadata",
+                        "severity" = CASE WHEN EXCLUDED."severity" > "HealthEvent"."severity" THEN EXCLUDED."severity" ELSE "HealthEvent"."severity" END
+          RETURNING (xmax = 0) AS "inserted"
+        `;
     const isNew = rows[0]?.inserted === true;
     if (isNew && (input.notify ?? input.severity === "CRITICAL")) {
       await notifyAdminsOfNewIncident({ fingerprint, severity: input.severity, message }, now).catch((err) => {

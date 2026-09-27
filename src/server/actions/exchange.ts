@@ -1,5 +1,6 @@
 "use server";
 
+import { ExpectedActionError } from "@/lib/expected-action-error";
 import { z } from "zod";
 import { nanoid, customAlphabet } from "nanoid";
 import { revalidatePath } from "next/cache";
@@ -96,13 +97,13 @@ export type SendExchangeForApprovalInput = z.infer<typeof exchangeSchema>;
 export async function sendExchangeForApproval(input: SendExchangeForApprovalInput) {
   const parsed = exchangeSchema.parse(input);
   const actor = await getCurrentAccount();
-  if (!actor) throw new Error("Not signed in");
+  if (!actor) throw new ExpectedActionError("Not signed in");
 
   const original = await prisma.quote.findFirst({
     where: { id: parsed.originalQuoteId, ...quoteVisibilityWhere(actor) },
     select: { id: true, status: true, leadId: true, contactId: true },
   });
-  if (!original) throw new Error("Quote not found");
+  if (!original) throw new ExpectedActionError("Quote not found");
 
   // Pass 26 — two distinct, mutually-exclusive preconditions depending on
   // whether this call is proposing the FIRST exchange against a charged
@@ -117,20 +118,20 @@ export async function sendExchangeForApproval(input: SendExchangeForApprovalInpu
       where: { id: parsed.supersedesQuoteId, originalQuoteId: original.id, ...quoteVisibilityWhere(actor) },
       select: { id: true, status: true, quoteNumber: true, isCurrentExchangeProposal: true },
     });
-    if (!candidate) throw new Error("The exchange proposal being revised was not found.");
+    if (!candidate) throw new ExpectedActionError("The exchange proposal being revised was not found.");
     if (!candidate.isCurrentExchangeProposal || !REVISABLE_EXCHANGE_STATUSES.has(candidate.status)) {
       // Covers every reason revision is no longer possible: already
       // superseded by someone else, already disapproved, or already signed
       // (a real Booking now exists for it) — one honest message for all of
       // them rather than guessing which applies from a stale snapshot.
-      throw new Error("This proposal is no longer active — it may have already been revised, signed, or reviewed. Please refresh and try again.");
+      throw new ExpectedActionError("This proposal is no longer active — it may have already been revised, signed, or reviewed. Please refresh and try again.");
     }
     supersedes = candidate;
   } else if (original.status !== "CHARGED") {
     // Server-side re-enforcement of "Exchange is only available for charged
     // quotes" — the button being hidden client-side for any other status is
     // a UX nicety, never the actual authorization boundary.
-    throw new Error("Only a charged quote can be exchanged.");
+    throw new ExpectedActionError("Only a charged quote can be exchanged.");
   }
 
   const pricing = calculatePricing(parsed);
@@ -150,7 +151,7 @@ export async function sendExchangeForApproval(input: SendExchangeForApprovalInpu
     const rate = resolveExchangeRate(parsed.currency, parsed.currency === "USD" ? null : (parsed.exchangeRate ?? null));
     const expectedTotalUsd = convertToUsd(customerTotal, rate);
     if (Math.abs(expectedTotalUsd - pricing.total) > 0.01) {
-      throw new Error("The submitted total does not match Customer Exchange Fee + Customer Fare Difference — please re-check the values.");
+      throw new ExpectedActionError("The submitted total does not match Customer Exchange Fee + Customer Fare Difference — please re-check the values.");
     }
   }
 
@@ -253,7 +254,7 @@ export async function sendExchangeForApproval(input: SendExchangeForApprovalInpu
         data: { isCurrentExchangeProposal: null, status: "EXCHANGE_SUPERSEDED", supersededByQuoteId: exchangeQuote.id, lastActivityAt: new Date() },
       });
       if (claim.count !== 1) {
-        throw new Error("This proposal was just changed by someone else — please refresh and try again.");
+        throw new ExpectedActionError("This proposal was just changed by someone else — please refresh and try again.");
       }
       await tx.quoteStatusHistory.create({
         data: { quoteId: supersedes.id, fromStatus: supersedes.status, toStatus: "EXCHANGE_SUPERSEDED", changedById: actor.id, note: `Superseded by revised proposal ${quoteNumber}` },
@@ -333,17 +334,17 @@ export async function sendExchangeForApproval(input: SendExchangeForApprovalInpu
 export async function approveExchange(exchangeQuoteId: string) {
   const actor = await getCurrentAccount();
   if (!actor || !canApproveExchangeOrCancellation(actor.role)) {
-    throw new Error("Only an Admin or Manager can approve an exchange.");
+    throw new ExpectedActionError("Only an Admin or Manager can approve an exchange.");
   }
 
   const exchangeQuote = await prisma.quote.findFirst({
     where: { id: exchangeQuoteId, ...quoteVisibilityWhere(actor) },
     select: { id: true, status: true, leadId: true, contactId: true, originalQuoteId: true, quoteNumber: true, agentId: true },
   });
-  if (!exchangeQuote) throw new Error("Exchange quote not found");
-  if (!exchangeQuote.originalQuoteId) throw new Error("This quote is not an exchange request.");
+  if (!exchangeQuote) throw new ExpectedActionError("Exchange quote not found");
+  if (!exchangeQuote.originalQuoteId) throw new ExpectedActionError("This quote is not an exchange request.");
   if (exchangeQuote.status !== "PENDING_EXCHANGE_APPROVAL") {
-    throw new Error("This exchange has already been reviewed.");
+    throw new ExpectedActionError("This exchange has already been reviewed.");
   }
 
   // Pass 26 §50-53 — an interactive transaction with a conditional
@@ -361,7 +362,7 @@ export async function approveExchange(exchangeQuoteId: string) {
       data: { status: "EXCHANGE_APPROVED", reviewedById: actor.id, reviewedAt: new Date(), lastActivityAt: new Date() },
     });
     if (claim.count !== 1) {
-      throw new Error("This exchange has already been reviewed.");
+      throw new ExpectedActionError("This exchange has already been reviewed.");
     }
     await tx.quoteStatusHistory.create({
       data: { quoteId: exchangeQuoteId, fromStatus: "PENDING_EXCHANGE_APPROVAL", toStatus: "EXCHANGE_APPROVED", changedById: actor.id },
@@ -407,17 +408,17 @@ export async function approveExchange(exchangeQuoteId: string) {
 export async function disapproveExchange(exchangeQuoteId: string) {
   const actor = await getCurrentAccount();
   if (!actor || !canApproveExchangeOrCancellation(actor.role)) {
-    throw new Error("Only an Admin or Manager can reject an exchange.");
+    throw new ExpectedActionError("Only an Admin or Manager can reject an exchange.");
   }
 
   const exchangeQuote = await prisma.quote.findFirst({
     where: { id: exchangeQuoteId, ...quoteVisibilityWhere(actor) },
     select: { id: true, status: true, leadId: true, contactId: true, originalQuoteId: true, quoteNumber: true, agentId: true },
   });
-  if (!exchangeQuote) throw new Error("Exchange quote not found");
-  if (!exchangeQuote.originalQuoteId) throw new Error("This quote is not an exchange request.");
+  if (!exchangeQuote) throw new ExpectedActionError("Exchange quote not found");
+  if (!exchangeQuote.originalQuoteId) throw new ExpectedActionError("This quote is not an exchange request.");
   if (exchangeQuote.status !== "PENDING_EXCHANGE_APPROVAL") {
-    throw new Error("This exchange has already been reviewed.");
+    throw new ExpectedActionError("This exchange has already been reviewed.");
   }
 
   // Pass 26 §50-53 — same conditional-claim race protection as
@@ -441,7 +442,7 @@ export async function disapproveExchange(exchangeQuoteId: string) {
       },
     });
     if (claim.count !== 1) {
-      throw new Error("This exchange has already been reviewed.");
+      throw new ExpectedActionError("This exchange has already been reviewed.");
     }
     await tx.quoteStatusHistory.create({
       data: { quoteId: exchangeQuoteId, fromStatus: "PENDING_EXCHANGE_APPROVAL", toStatus: "EXCHANGE_DISAPPROVED", changedById: actor.id },

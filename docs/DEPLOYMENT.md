@@ -480,6 +480,49 @@ number is the Next.js error digest. Search the deployment's Runtime Logs for
 that exact number: the server logs the underlying error next to it, plus a
 `[crm-layout]` / `[proxy]` / `[booking]` line with a safe error category.
 
+## 5e. If GMAIL_TOKEN_ENCRYPTION_KEY / IP_ENCRYPTION_KEY / IP_HASH_KEY may equal a value once committed to this repository
+
+A security audit found that the *local development* values of these three keys
+were byte-identical to constants committed in test files in commit `355016f`
+(`gmail-token-encryption.test.ts`, `ip-vault.test.ts`, `ip-capture.test.ts`,
+`ip-encryption.test.ts`) — this repository is public, so those exact values are
+readable by anyone. Those test files now use obviously-synthetic fixtures
+(`Buffer.alloc(32, N)`, a repeating fill byte) instead, so no *new* copy of a
+real key can be committed there again — but this does **not** retroactively
+protect a real key that may already have been reused for one of these three
+Vercel variables. **Confirm directly in Vercel** whether any of the three
+matches a value that ever appeared in this repository's history; if so, treat
+it as compromised. Nothing here is rotated automatically — do not run this plan
+without a confirmed need.
+
+**Neither key has a rotation mechanism today** (unlike the card vault's key
+ring, §15 above) — each is a single static key, so a new value makes
+everything it previously protected unreadable. Rotating is a genuine data
+migration, not just an env var change:
+
+- **`GMAIL_TOKEN_ENCRYPTION_KEY`** (`src/server/security/gmail-token-encryption.ts`)
+  protects every connected mailbox's stored OAuth refresh token
+  (`GmailConnection.encryptedRefreshToken`). Rotating: generate a new key
+  (`openssl rand -base64 32`), set it in Vercel, then every currently-connected
+  mailbox will fail to decrypt on its next use (System Health → "Gmail sending"
+  will show it) and must be reconnected by its owner (Settings → Gmail →
+  Reconnect) — there is no way to re-encrypt an existing token under the new
+  key without the old one, and no destructive step is required (the row is
+  simply overwritten the next time that user reconnects).
+- **`IP_ENCRYPTION_KEY` / `IP_HASH_KEY`** (`src/server/security/ip-encryption.ts`)
+  protect the `IpCapture` fraud-investigation vault (see
+  `docs/ip-vault-compliance.md`) — reversible encryption and a search index,
+  respectively. Rotating either makes every existing `IpCapture` row's address
+  unreadable and unsearchable under the new key(s); the rows themselves are
+  **not deleted** (this app never deletes IP history — see that doc), they
+  simply stop being decryptable/searchable going forward under a new key.
+  There is no partial migration path today (no key-ring); building one, if the
+  fraud-investigation history must remain searchable across a rotation, is a
+  separate feature change, not a same-day operational step.
+- Rotate all three together only if a genuine compromise is confirmed;
+  otherwise treat this as a documented, ready-to-execute plan, not a
+  standing task.
+
 ## 6. First login and branding setup
 
 Once deployed, the person whose email was passed to

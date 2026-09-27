@@ -12,8 +12,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // getBookingIpMaskedPreview — the subset ip-vault.ts still exports for the
 // per-booking "Submission IP" UI (BookingIpReveal).
 
-const ENCRYPTION_KEY = "YgfNgrkVYRowXtQi3KJgD2vQOgze0r12K6kTBWUQTQI=";
-const HASH_KEY = "oYQZyGTNHuPCyHRql2/SVOgH3IJHTeGSchk4rLRMjzg=";
+const ENCRYPTION_KEY = Buffer.alloc(32, 0x22).toString("base64"); // deliberately synthetic (repeating fill byte)
+const HASH_KEY = Buffer.alloc(32, 0x33).toString("base64"); // deliberately synthetic (repeating fill byte)
 
 type FakeAccount = { id: string; role: string; status: string; companyId: string; bookingPermissions: string[] };
 type FakeBooking = { id: string; companyId: string; quoteAgentId?: string; leadAssignedAgentId?: string; contactOwnerId?: string };

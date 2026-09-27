@@ -3,8 +3,8 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // Fresh 32-byte dev keys, distinct from any real .env value — generated
 // once for this test file only, matching card-encryption.test.ts's own
 // convention (never assert against the real .env-configured key).
-const ENCRYPTION_KEY = "YgfNgrkVYRowXtQi3KJgD2vQOgze0r12K6kTBWUQTQI=";
-const HASH_KEY = "oYQZyGTNHuPCyHRql2/SVOgH3IJHTeGSchk4rLRMjzg=";
+const ENCRYPTION_KEY = Buffer.alloc(32, 0x22).toString("base64"); // deliberately synthetic (repeating fill byte)
+const HASH_KEY = Buffer.alloc(32, 0x33).toString("base64"); // deliberately synthetic (repeating fill byte)
 
 beforeEach(() => {
   vi.stubEnv("IP_ENCRYPTION_KEY", ENCRYPTION_KEY);

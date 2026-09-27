@@ -221,6 +221,24 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
       for (const r of results) expect(["HEALTHY", "WARNING", "CRITICAL", "UNKNOWN"]).toContain(r.state);
     });
 
+    // Regression test for a real production incident: "PrismaClientKnownRequestError
+    // (P2022/ColumnNotFound/42703)" from /system-health. A check becomes UNKNOWN only
+    // when its own query throws (guarded()'s catch path) — the most likely cause being
+    // application code (Prisma Client, generated from schema.prisma) referencing a
+    // column the ACTUAL migrated database does not have. Running every check against
+    // this suite's real, freshly-migrated database is exactly the schema-compatibility
+    // proof: if a query here ever drifts from the applied migrations again, this fails
+    // with the same P2022/42703 signature instead of silently passing.
+    it("every database-backed check succeeds against the real, fully-migrated schema — none is UNKNOWN (would mean a query no longer matches the applied migrations)", async () => {
+      const results = await checks.runHealthChecks();
+      const dbBacked = ["database.connectivity", "database.migrations", "database.connections", "payment.vault", "signer.ip", "bookings.integrity", "leads.queue", "incidents.open"];
+      for (const id of dbBacked) {
+        const r = byId(results, id);
+        expect(r.state, `${id}: ${r.summary}`).not.toBe("UNKNOWN");
+        expect(r.summary).not.toMatch(/P2022|42703|ColumnNotFound|does not exist/i);
+      }
+    });
+
     it("NEVER leaks a secret, key, connection string or environment value in any result", async () => {
       const serialized = JSON.stringify(await checks.runHealthChecks());
       for (const secret of [SECRETS.GOOGLE_CLIENT_SECRET, SECRETS.GMAIL_TOKEN_ENCRYPTION_KEY, SECRETS.IP_ENCRYPTION_KEY, SECRETS.IP_HASH_KEY, URL_UNDER_TEST!, "postgres:postgres", "localhost:54329", process.env.GOOGLE_CLIENT_ID!]) {

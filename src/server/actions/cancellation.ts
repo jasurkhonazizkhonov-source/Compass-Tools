@@ -1,5 +1,6 @@
 "use server";
 
+import { ExpectedActionError } from "@/lib/expected-action-error";
 import { z } from "zod";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
@@ -48,7 +49,7 @@ export type RequestCancellationInput = z.infer<typeof requestCancellationSchema>
 export async function sendCancellationForApproval(input: RequestCancellationInput) {
   const parsed = requestCancellationSchema.parse(input);
   const actor = await getCurrentAccount();
-  if (!actor) throw new Error("Not signed in");
+  if (!actor) throw new ExpectedActionError("Not signed in");
 
   const quote = await prisma.quote.findFirst({
     where: { id: parsed.quoteId, ...quoteVisibilityWhere(actor) },
@@ -61,9 +62,9 @@ export async function sendCancellationForApproval(input: RequestCancellationInpu
       itinerary: { select: { segments: { select: { id: true } } } },
     },
   });
-  if (!quote) throw new Error("Quote not found");
+  if (!quote) throw new ExpectedActionError("Quote not found");
   if (quote.status !== "CHARGED") {
-    throw new Error("Only a charged quote can have a cancellation requested.");
+    throw new ExpectedActionError("Only a charged quote can have a cancellation requested.");
   }
 
   // Every proposed segment id must genuinely belong to THIS quote's own
@@ -74,7 +75,7 @@ export async function sendCancellationForApproval(input: RequestCancellationInpu
   const requestedSegmentIds = [...new Set(parsed.segmentIds)];
   const invalid = requestedSegmentIds.filter((id) => !validSegmentIds.has(id));
   if (invalid.length > 0) {
-    throw new Error("One or more selected flight segments do not belong to this quote.");
+    throw new ExpectedActionError("One or more selected flight segments do not belong to this quote.");
   }
 
   await prisma.$transaction([
@@ -141,13 +142,13 @@ async function getPendingCancellationRequest(cancellationRequestId: string, acto
       },
     },
   });
-  if (!request) throw new Error("Cancellation request not found");
+  if (!request) throw new ExpectedActionError("Cancellation request not found");
   // quoteVisibilityWhere isn't directly usable against a
   // QuoteCancellationRequest row, so the same company/ownership scoping is
   // re-checked by hand here against the request's own parent quote.
   const visible = await prisma.quote.findFirst({ where: { id: request.quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true } });
-  if (!visible) throw new Error("Cancellation request not found");
-  if (request.status !== "PENDING") throw new Error("This cancellation request has already been reviewed.");
+  if (!visible) throw new ExpectedActionError("Cancellation request not found");
+  if (request.status !== "PENDING") throw new ExpectedActionError("This cancellation request has already been reviewed.");
   return request;
 }
 
@@ -164,7 +165,7 @@ async function getPendingCancellationRequest(cancellationRequestId: string, acto
 export async function confirmCancellation(cancellationRequestId: string) {
   const actor = await getCurrentAccount();
   if (!actor || !canApproveExchangeOrCancellation(actor.role)) {
-    throw new Error("Only an Admin or Manager can approve a cancellation.");
+    throw new ExpectedActionError("Only an Admin or Manager can approve a cancellation.");
   }
   const request = await getPendingCancellationRequest(cancellationRequestId, actor);
   const quote = request.quote;
@@ -210,9 +211,9 @@ async function getApprovedCancellationRequest(cancellationRequestId: string, act
       },
     },
   });
-  if (!request) throw new Error("Cancellation request not found");
+  if (!request) throw new ExpectedActionError("Cancellation request not found");
   const visible = await prisma.quote.findFirst({ where: { id: request.quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true } });
-  if (!visible) throw new Error("Cancellation request not found");
+  if (!visible) throw new ExpectedActionError("Cancellation request not found");
   // A resend requires the form to have ALREADY been sent at least once
   // (CANCELLATION_FORM_SENT) — it is never a substitute for the first send
   // (still CANCELLATION_APPROVED, handled by the non-resend branch only).
@@ -220,7 +221,7 @@ async function getApprovedCancellationRequest(cancellationRequestId: string, act
     ? request.quote.status === "CANCELLATION_FORM_SENT"
     : request.quote.status === "CANCELLATION_APPROVED";
   if (request.status !== "CONFIRMED" || !statusOk) {
-    throw new Error(
+    throw new ExpectedActionError(
       allowResend
         ? "This cancellation form can only be resent once it has already been sent at least once (and the customer hasn't confirmed yet)."
         : "This cancellation must be approved (and not already sent) before the form can be sent."
@@ -243,11 +244,11 @@ async function getApprovedCancellationRequest(cancellationRequestId: string, act
 async function buildAndSendCancellationFormEmail(request: Awaited<ReturnType<typeof getApprovedCancellationRequest>>) {
   const quote = request.quote;
   if (!quote.agent || !quote.contact) {
-    throw new Error("This quote has no agent or contact on file — cannot send the cancellation form.");
+    throw new ExpectedActionError("This quote has no agent or contact on file — cannot send the cancellation form.");
   }
   const knownEmails = quote.contact.emails.length > 0 ? quote.contact.emails.map((e) => e.email) : quote.contact.primaryEmail ? [quote.contact.primaryEmail] : [];
   if (knownEmails.length === 0) {
-    throw new Error("This customer has no email address on file — cannot send the cancellation form.");
+    throw new ExpectedActionError("This customer has no email address on file — cannot send the cancellation form.");
   }
 
   const company = await getCompanyForAccountId(quote.agent.id);
@@ -291,7 +292,7 @@ async function buildAndSendCancellationFormEmail(request: Awaited<ReturnType<typ
   });
 
   if (!result.ok) {
-    throw new Error(result.error || "Could not send the cancellation form — please try again.");
+    throw new ExpectedActionError(result.error || "Could not send the cancellation form — please try again.");
   }
   return { quote };
 }
@@ -334,11 +335,11 @@ function canSendCancellationForm(actor: { id: string; role: AccountRole }, quote
 export async function sendCancellationForm(cancellationRequestId: string) {
   const actor = await getCurrentAccount();
   if (!actor) {
-    throw new Error("Only an Admin, Manager, or the quote's responsible agent can send the cancellation form.");
+    throw new ExpectedActionError("Only an Admin, Manager, or the quote's responsible agent can send the cancellation form.");
   }
   const request = await getApprovedCancellationRequest(cancellationRequestId, actor, false);
   if (!canSendCancellationForm(actor, request.quote)) {
-    throw new Error("Only an Admin, Manager, or the quote's responsible agent can send the cancellation form.");
+    throw new ExpectedActionError("Only an Admin, Manager, or the quote's responsible agent can send the cancellation form.");
   }
   const quote = request.quote;
 
@@ -364,7 +365,7 @@ export async function sendCancellationForm(cancellationRequestId: string) {
     data: { status: "CANCELLATION_FORM_SENT", lastActivityAt: new Date() },
   });
   if (claim.count === 0) {
-    throw new Error("This cancellation form has already been sent.");
+    throw new ExpectedActionError("This cancellation form has already been sent.");
   }
 
   // The claim above already committed the status transition — if the send
@@ -409,11 +410,11 @@ export async function sendCancellationForm(cancellationRequestId: string) {
 export async function resendCancellationForm(cancellationRequestId: string) {
   const actor = await getCurrentAccount();
   if (!actor) {
-    throw new Error("Only an Admin, Manager, or the quote's responsible agent can resend the cancellation form.");
+    throw new ExpectedActionError("Only an Admin, Manager, or the quote's responsible agent can resend the cancellation form.");
   }
   const request = await getApprovedCancellationRequest(cancellationRequestId, actor, true);
   if (!canSendCancellationForm(actor, request.quote)) {
-    throw new Error("Only an Admin, Manager, or the quote's responsible agent can resend the cancellation form.");
+    throw new ExpectedActionError("Only an Admin, Manager, or the quote's responsible agent can resend the cancellation form.");
   }
 
   const { quote } = await buildAndSendCancellationFormEmail(request);
@@ -461,7 +462,7 @@ export async function confirmCancellationByCustomer(token: string, passengers?: 
   // IP is available — see rate-limit.ts's own doc comment.
   const rateLimitCheck = await checkPublicRateLimitFromRequest("CANCELLATION_SUBMIT", RATE_LIMITS.CANCELLATION_SUBMIT);
   if (!rateLimitCheck.allowed) {
-    throw new Error("Too many attempts from this connection. Please wait a few minutes and try again.");
+    throw new ExpectedActionError("Too many attempts from this connection. Please wait a few minutes and try again.");
   }
 
   const quote = await prisma.quote.findUnique({
@@ -476,13 +477,13 @@ export async function confirmCancellationByCustomer(token: string, passengers?: 
       contact: { select: { firstName: true, lastName: true, primaryEmail: true, companyId: true } },
     },
   });
-  if (!quote) throw new Error("This link is no longer valid.");
+  if (!quote) throw new ExpectedActionError("This link is no longer valid.");
 
   if (quote.status === "CANCELLATION_SUBMITTED" || quote.status === "CANCELLATION_CONFIRMED") {
     return { alreadyConfirmed: true };
   }
   if (quote.status !== "CANCELLATION_FORM_SENT") {
-    throw new Error("This cancellation isn't ready to be confirmed yet.");
+    throw new ExpectedActionError("This cancellation isn't ready to be confirmed yet.");
   }
 
   // Pass 13 §33/§34/§37 — the customer may have edited their prefilled
@@ -497,13 +498,13 @@ export async function confirmCancellationByCustomer(token: string, passengers?: 
   // time).
   const parsedPassengers = passengers ? passengers.map((p) => cancellationPassengerUpdateSchema.parse(p)) : [];
   if (parsedPassengers.length > 0) {
-    if (!quote.booking) throw new Error("This cancellation isn't ready to be confirmed yet.");
+    if (!quote.booking) throw new ExpectedActionError("This cancellation isn't ready to be confirmed yet.");
     const ownedPassengerIds = new Set(
       (await prisma.passenger.findMany({ where: { bookingId: quote.booking.id }, select: { id: true } })).map((p) => p.id)
     );
     for (const p of parsedPassengers) {
       if (!ownedPassengerIds.has(p.id)) {
-        throw new Error("This cancellation isn't ready to be confirmed yet.");
+        throw new ExpectedActionError("This cancellation isn't ready to be confirmed yet.");
       }
     }
   }
@@ -605,15 +606,15 @@ export async function confirmCancellationByCustomer(token: string, passengers?: 
 export async function disregardCancellation(cancellationRequestId: string) {
   const actor = await getCurrentAccount();
   if (!actor || !canApproveExchangeOrCancellation(actor.role)) {
-    throw new Error("Only an Admin or Manager can disregard a cancellation.");
+    throw new ExpectedActionError("Only an Admin or Manager can disregard a cancellation.");
   }
   const request = await prisma.quoteCancellationRequest.findUnique({
     where: { id: cancellationRequestId },
     include: { quote: { select: { id: true, status: true, leadId: true, contactId: true, quoteNumber: true } } },
   });
-  if (!request) throw new Error("Cancellation request not found");
+  if (!request) throw new ExpectedActionError("Cancellation request not found");
   const visible = await prisma.quote.findFirst({ where: { id: request.quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true } });
-  if (!visible) throw new Error("Cancellation request not found");
+  if (!visible) throw new ExpectedActionError("Cancellation request not found");
   // Two valid entry points, matching the quote's own two pre-form-sent
   // stages: still PENDING (never reviewed) or already CONFIRMED/approved
   // but the form hasn't been sent yet (an Admin/Manager changing their
@@ -622,7 +623,7 @@ export async function disregardCancellation(cancellationRequestId: string) {
   const requestDisregardable = request.status === "PENDING" || request.status === "CONFIRMED";
   const quoteDisregardable = request.quote.status === "PENDING_CANCELLATION_APPROVAL" || request.quote.status === "CANCELLATION_APPROVED";
   if (!requestDisregardable || !quoteDisregardable) {
-    throw new Error(
+    throw new ExpectedActionError(
       request.status === "DISREGARDED"
         ? "This cancellation request has already been reviewed."
         : "This cancellation can no longer be disregarded — the form has already been sent to the customer."

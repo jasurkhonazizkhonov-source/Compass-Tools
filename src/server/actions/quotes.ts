@@ -1,5 +1,6 @@
 "use server";
 
+import { ExpectedActionError } from "@/lib/expected-action-error";
 import { z } from "zod";
 import { nanoid, customAlphabet } from "nanoid";
 import { revalidatePath } from "next/cache";
@@ -63,7 +64,7 @@ export async function createQuote(input: CreateQuoteInput) {
   const actor = await getCurrentAccount();
 
   const lead = await prisma.lead.findFirst({ where: { id: parsed.leadId, ...leadAccessForQuoting(actor) } });
-  if (!lead) throw new Error("Lead not found");
+  if (!lead) throw new ExpectedActionError("Lead not found");
   const pricing = calculatePricing(parsed);
 
   const quoteNumber = `Q-${quoteNumberAlphabet()}`;
@@ -180,9 +181,9 @@ export async function updateQuotePricing(quoteId: string, patch: UpdateQuotePric
   const { expectedUpdatedAt, ...fields } = updatePricingSchema.parse(patch);
   const actor = await getCurrentAccount();
   const existing = await prisma.quote.findFirst({ where: { id: quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true, status: true } });
-  if (!existing) throw new Error("Quote not found");
+  if (!existing) throw new ExpectedActionError("Quote not found");
   if (!isQuotePricingEditable(existing.status)) {
-    throw new Error("This quote has already been sent, so its pricing can no longer be changed. Create a new quote or use the Exchange workflow.");
+    throw new ExpectedActionError("This quote has already been sent, so its pricing can no longer be changed. Create a new quote or use the Exchange workflow.");
   }
 
   const pricing = calculatePricing(fields);
@@ -209,7 +210,7 @@ export async function updateQuotePricing(quoteId: string, patch: UpdateQuotePric
     },
   });
   if (result.count !== 1) {
-    throw new Error("This quote changed while you were editing it (it may have just been sent, or edited elsewhere). Reload it and try again.");
+    throw new ExpectedActionError("This quote changed while you were editing it (it may have just been sent, or edited elsewhere). Reload it and try again.");
   }
   revalidatePath(`/quotes/${quoteId}`);
   // Plain, serializable summary — Prisma's Decimal fields can't cross the
@@ -227,7 +228,7 @@ export async function updateQuotePricing(quoteId: string, patch: UpdateQuotePric
 export async function updateQuoteInternalNotes(quoteId: string, patch: { internalNotes?: string | null; netTicketCost?: number | null }) {
   const actor = await getCurrentAccount();
   const existing = await prisma.quote.findFirst({ where: { id: quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true } });
-  if (!existing) throw new Error("Quote not found");
+  if (!existing) throw new ExpectedActionError("Quote not found");
 
   await prisma.quote.update({
     where: { id: quoteId },
@@ -274,7 +275,7 @@ export async function sendQuote(quoteId: string, recipientEmail?: string) {
       },
     },
   });
-  if (!quote) throw new Error("Quote not found");
+  if (!quote) throw new ExpectedActionError("Quote not found");
   if (!isQuoteSendable(quote.status)) {
     return { ok: false as const, error: "This quote can no longer be sent — the customer has already acted on it, or it was canceled." };
   }
@@ -530,9 +531,9 @@ async function releaseQuoteSend(quoteId: string, recipientEmail: string): Promis
 export async function cancelQuote(quoteId: string) {
   const actor = await getCurrentAccount();
   const existing = await prisma.quote.findFirst({ where: { id: quoteId, ...quoteVisibilityWhere(actor) }, select: { id: true, status: true } });
-  if (!existing) throw new Error("Quote not found");
+  if (!existing) throw new ExpectedActionError("Quote not found");
   if (!isQuoteCancelable(existing.status)) {
-    throw new Error("This quote can no longer be canceled directly — use the Exchange/Cancellation workflow once it has been booked or charged.");
+    throw new ExpectedActionError("This quote can no longer be canceled directly — use the Exchange/Cancellation workflow once it has been booked or charged.");
   }
 
   await transitionQuoteStatus(quoteId, "CANCELED");
@@ -543,8 +544,8 @@ export async function cancelQuote(quoteId: string) {
 export async function deleteDraftQuote(quoteId: string) {
   const actor = await getCurrentAccount();
   const quote = await prisma.quote.findFirst({ where: { id: quoteId, ...quoteVisibilityWhere(actor) } });
-  if (!quote) throw new Error("Quote not found");
-  if (quote.status !== "DRAFT") throw new Error("Only draft quotes can be deleted");
+  if (!quote) throw new ExpectedActionError("Quote not found");
+  if (quote.status !== "DRAFT") throw new ExpectedActionError("Only draft quotes can be deleted");
   const leadId = quote.leadId;
   await prisma.quote.delete({ where: { id: quoteId } });
   revalidatePath(`/leads/${leadId}`);
@@ -566,7 +567,7 @@ export async function deleteQuote(quoteId: string) {
     await prisma.auditLog.create({
       data: { actorId: actor?.id, action: "QUOTE_DELETE_DENIED", entityType: "Quote", entityId: quoteId, metadata: { reason: "MISSING_PERMISSION" } },
     });
-    throw new Error(DELETE_QUOTE_DENIAL);
+    throw new ExpectedActionError(DELETE_QUOTE_DENIAL);
   }
 
   const quote = await prisma.quote.findFirst({
@@ -577,7 +578,7 @@ export async function deleteQuote(quoteId: string) {
     await prisma.auditLog.create({
       data: { actorId: actor.id, action: "QUOTE_DELETE_DENIED", entityType: "Quote", entityId: quoteId, metadata: { reason: "NOT_ACCESSIBLE" } },
     });
-    throw new Error(DELETE_QUOTE_DENIAL);
+    throw new ExpectedActionError(DELETE_QUOTE_DENIAL);
   }
 
   await prisma.quote.delete({ where: { id: quote.id } });
