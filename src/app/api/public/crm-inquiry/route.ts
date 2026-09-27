@@ -11,5 +11,13 @@ export async function POST(req: Request) {
     source: "CRM_WEBSITE",
     rateLimitEndpoint: "CRM_INQUIRY",
     rateLimit: RATE_LIMITS.CRM_INQUIRY,
+    // This route's own form (src/components/marketing/contact-form.tsx)
+    // collects a real, country-validated phone number and a honeypot field,
+    // and shows a submitting/duplicate-safe UI — so, unlike
+    // /api/public/contact-inquiry (a separate application this repo does not
+    // control), it can safely opt into the stricter checks below.
+    requirePhone: true,
+    honeypot: true,
+    duplicateWindowMs: 60_000,
   });
 }

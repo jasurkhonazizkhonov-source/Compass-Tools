@@ -20,7 +20,9 @@ async function fillRequiredFields(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText(/first name/i), "Jane");
   await user.type(screen.getByLabelText(/last name/i), "Doe");
   await user.type(screen.getByLabelText(/email/i), "jane@example.com");
-  await user.type(screen.getByLabelText(/message/i), "I have a question about an upcoming trip.");
+  // Default country is already US — no need to open the country selector.
+  await user.type(screen.getByPlaceholderText(/phone number/i), "4155550123");
+  await user.type(screen.getByLabelText(/message|how can we help/i), "I have a question about an upcoming trip.");
 }
 
 describe("ContactForm", () => {
@@ -69,7 +71,7 @@ describe("ContactForm", () => {
     await user.type(screen.getByLabelText(/first name/i), "Jane");
     await user.type(screen.getByLabelText(/last name/i), "Doe");
     await user.type(screen.getByLabelText(/email/i), "not-an-email");
-    await user.type(screen.getByLabelText(/message/i), "Hello there");
+    await user.type(screen.getByLabelText(/how can we help/i), "Hello there, I have a question.");
 
     await user.click(screen.getByRole("button", { name: /send message/i }));
 
@@ -88,7 +90,44 @@ describe("ContactForm", () => {
 
     await user.click(screen.getByRole("button", { name: /send message/i }));
 
-    expect(await screen.findByText(/something went wrong/i)).toBeInTheDocument();
+    expect(await screen.findByText(/something went wrong|couldn.t submit/i)).toBeInTheDocument();
     expect(screen.queryByText(/prisma|database|stack|econn/i)).not.toBeInTheDocument();
+  });
+
+  it("blocks submission client-side when the phone number does not validate for the selected (default US) country", async () => {
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    await user.type(screen.getByLabelText(/first name/i), "Jane");
+    await user.type(screen.getByLabelText(/last name/i), "Doe");
+    await user.type(screen.getByLabelText(/email/i), "jane@example.com");
+    await user.type(screen.getByPlaceholderText(/phone number/i), "123");
+    await user.type(screen.getByLabelText(/how can we help/i), "I have a question about an upcoming trip.");
+
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    expect(await screen.findByText(/check the phone number/i)).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("includes a honeypot field that is hidden from sighted users and removed from the accessibility tree", () => {
+    render(<ContactForm />);
+    const honeypot = document.getElementById("companyWebsite") as HTMLInputElement;
+    expect(honeypot).toBeInTheDocument();
+    expect(honeypot).toHaveAttribute("tabindex", "-1");
+    expect(honeypot.closest('[aria-hidden="true"]')).not.toBeNull();
+    expect(honeypot).not.toBeRequired();
+  });
+
+  it("sends an empty honeypot value on a normal submission", async () => {
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    const body = JSON.parse((fetch as unknown as ReturnType<typeof vi.fn>).mock.calls[0][1].body as string);
+    expect(body.companyWebsite).toBeUndefined();
+    expect(body.phone).toBe("4155550123");
+    expect(body.phoneCountry).toBe("US");
   });
 });

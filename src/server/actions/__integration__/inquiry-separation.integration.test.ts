@@ -71,7 +71,8 @@ describe.skipIf(!enabled)("Business Flights Get In Touch vs CRM Inquiries — re
     firstName: label,
     lastName: "Sample",
     email: `${label.toLowerCase()}-${++n}@example.test`,
-    phone: "+15550100",
+    phone: "4155550100",
+    phoneCountry: "US",
     subject: "GENERAL_INQUIRY",
     message: `Message from ${label}`,
   });
