@@ -18,7 +18,7 @@ vi.mock("@/lib/prisma", () => ({
   getPoolSettings: () => ({ max: 2 }),
 }));
 
-import { sanitizeMessage, sanitizeMetadata, healthFingerprint, recordHealthEvent, resetHealthEventThrottleForTests } from "../health-events";
+import { sanitizeMessage, sanitizeMetadata, healthFingerprint, recordHealthEvent, resolveOrphanedCheckIncidents, resetHealthEventThrottleForTests } from "../health-events";
 import { base64KeyStatus, groupForState, overallState } from "../health-checks";
 import { classifyServerError, recordServerError } from "../server-errors";
 import { ExpectedActionError } from "@/lib/expected-action-error";
@@ -240,5 +240,45 @@ describe("recordCheckResults — a live check's severity must track its CURRENT 
     await recordCheckResults(result("HEALTHY", "All good."));
     expect(queryRaw).not.toHaveBeenCalled();
     expect(prisma.healthEvent.updateMany).toHaveBeenCalled();
+  });
+});
+
+describe("resolveOrphanedCheckIncidents — a CHECK_* incident whose check was removed outright must not stay Open forever", () => {
+  // Real, confirmed production case: checkPaymentProvider (id "payment.provider")
+  // was deleted when the Stripe/provider architecture was removed, replaced by a
+  // DIFFERENT id (checkCardVault, "payment.vault") — so CHECK_PAYMENT_PROVIDER's
+  // incident could never resolve through the normal "this check now reports
+  // HEALTHY" path, and CHECK_* types are deliberately excluded from the
+  // time-based stale-resolve (a check that only alerts occasionally must not
+  // have a real, still-open incident time out). It stayed "Open" indefinitely.
+
+  it("resolves an incident whose type is not among the currently-running checks", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    (prisma.healthEvent.updateMany as ReturnType<typeof vi.fn>).mockClear();
+    await resolveOrphanedCheckIncidents(["CHECK_PAYMENT_VAULT", "CHECK_DATABASE_CONNECTIVITY"]);
+    expect(prisma.healthEvent.updateMany).toHaveBeenCalledWith({
+      where: { resolvedAt: null, AND: [{ type: { startsWith: "CHECK_" } }, { type: { notIn: ["CHECK_PAYMENT_VAULT", "CHECK_DATABASE_CONNECTIVITY"] } }] },
+      data: { resolvedAt: expect.any(Date) },
+    });
+  });
+
+  it("never touches anything when the catalogue itself failed to produce any ids — an empty list must not be read as 'nothing currently exists'", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    (prisma.healthEvent.updateMany as ReturnType<typeof vi.fn>).mockClear();
+    const count = await resolveOrphanedCheckIncidents([]);
+    expect(count).toBe(0);
+    expect(prisma.healthEvent.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("recordCheckResults calls it with every check that ran this evaluation, including an UNKNOWN one (still exists — only a REMOVED check is an orphan)", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    (prisma.healthEvent.updateMany as ReturnType<typeof vi.fn>).mockClear();
+    await recordCheckResults([
+      { id: "payment.vault", category: "payment", title: "t", state: "HEALTHY", summary: "s" },
+      { id: "email.gmail", category: "email", title: "t", state: "UNKNOWN", summary: "s" },
+      { id: "incidents.open", category: "meta", title: "t", state: "HEALTHY", summary: "s" }, // deliberately never recorded/tracked as its own incident
+    ]);
+    const lastCall = (prisma.healthEvent.updateMany as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0];
+    expect(lastCall.where.AND[1].type.notIn.sort()).toEqual(["CHECK_EMAIL_GMAIL", "CHECK_PAYMENT_VAULT"]);
   });
 });

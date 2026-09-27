@@ -195,6 +195,44 @@ export async function resolveHealthEvents(type: string, category: string, discri
   }
 }
 
+/**
+ * Resolves an OPEN check-driven ("CHECK_*") incident whose check no longer
+ * exists at all — as opposed to one whose check still runs and currently
+ * reports HEALTHY, which `resolveHealthEvents` above already handles on every
+ * evaluation. A CHECK_* incident is deliberately excluded from
+ * `resolveStaleHealthEvents`'s time-based auto-resolve (a check that only
+ * alerts occasionally, e.g. hourly, must not have its still-real incident
+ * time out just because it hasn't recurred in 24h) — but that same exclusion
+ * orphans an incident FOREVER once the check that could ever resolve it is
+ * deleted outright (removed, not merely fixed to report HEALTHY): nothing
+ * ever calls `resolveHealthEvents` for a type no check produces anymore.
+ *
+ * Real, confirmed case: `checkPaymentProvider` (id `payment.provider`) was
+ * removed when the Stripe/provider architecture was removed — replaced by
+ * `checkCardVault` (id `payment.vault`), a different id — so its incident
+ * (`CHECK_PAYMENT_PROVIDER`) could never resolve on its own and stayed "Open"
+ * indefinitely despite the condition it reported no longer being possible to
+ * even evaluate. Never throws; never touches a type that still has a running
+ * check, however that check currently scores.
+ */
+export async function resolveOrphanedCheckIncidents(currentCheckTypes: readonly string[]): Promise<number> {
+  // An empty list must never be read as "nothing currently exists" (Prisma's
+  // `notIn: []` matches everything, which would resolve every CHECK_* incident
+  // at once) — it can only mean the catalogue itself failed to run, in which
+  // case doing nothing is the safe choice.
+  if (currentCheckTypes.length === 0) return 0;
+  try {
+    const result = await prisma.healthEvent.updateMany({
+      where: { resolvedAt: null, AND: [{ type: { startsWith: "CHECK_" } }, { type: { notIn: [...currentCheckTypes] } }] },
+      data: { resolvedAt: new Date() },
+    });
+    return result.count;
+  } catch (err) {
+    console.error(`[health] RESOLVE_ORPHANED_FAILED (${safeErrorTag(err)})`);
+    return 0;
+  }
+}
+
 async function notifyAdminsOfNewIncident(event: { fingerprint: string; severity: HealthSeverity; message: string }, now: number) {
   // Flap guard: this fingerprint was resolved recently => it is the same
   // story, not news. (The just-inserted OPEN row is excluded by resolvedAt.)

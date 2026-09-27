@@ -6,7 +6,7 @@
 // Both are safe to call concurrently from many instances: the incident write
 // is one atomic upsert per fingerprint (see health-events.ts).
 import { runHealthChecks, type HealthCheckResult } from "@/server/system/health-checks";
-import { recordHealthEvent, resolveHealthEvents, resolveStaleHealthEvents, pruneHealthEvents } from "@/server/system/health-events";
+import { recordHealthEvent, resolveHealthEvents, resolveStaleHealthEvents, resolveOrphanedCheckIncidents, pruneHealthEvents } from "@/server/system/health-events";
 import { safeErrorTag } from "@/lib/safe-error-log";
 
 const THROTTLE_MS = 5 * 60_000;
@@ -43,6 +43,12 @@ export async function recordCheckResults(results: readonly HealthCheckResult[]):
     // UNKNOWN records nothing: "could not verify" is not an incident, and it
     // also must not resolve one.
   }
+  // Every check that ran this evaluation, HEALTHY/WARNING/CRITICAL/UNKNOWN
+  // alike (an UNKNOWN check still EXISTS — only a check removed outright is
+  // an orphan) — anything still open under a CHECK_* type not in this list
+  // belongs to a check that no longer exists at all and can never resolve on
+  // its own otherwise. See resolveOrphanedCheckIncidents's doc comment.
+  await resolveOrphanedCheckIncidents(results.filter((r) => !NOT_RECORDED.has(r.id)).map((r) => checkEventType(r.id)));
 }
 
 export async function evaluateHealth(now: number = Date.now()): Promise<HealthCheckResult[]> {

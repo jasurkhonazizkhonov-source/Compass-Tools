@@ -400,6 +400,44 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
       await expect(monitor.evaluateHealthThrottled()).resolves.toBeUndefined();
       await expect(monitor.evaluateHealthThrottled()).resolves.toBeUndefined();
     });
+
+    // Real, confirmed production case: the "payment.provider" check (Stripe/
+    // provider readiness) was removed outright and replaced by a different id
+    // ("payment.vault"), leaving its OPEN incident (CHECK_PAYMENT_PROVIDER)
+    // with no check left to ever report it HEALTHY again — and CHECK_* types
+    // are deliberately excluded from the time-based stale-resolve. It was
+    // still showing "Open" days later despite the condition being impossible
+    // to even evaluate anymore. Reproduced here without needing the removed
+    // code: a real OPEN row for a type no current check id maps to.
+    it("a CHECK_* incident whose check no longer exists at all is resolved on the next evaluation — a still-current check's OPEN incident is left untouched", async () => {
+      const orphanFingerprint = events.healthFingerprint("CHECK_PAYMENT_PROVIDER", "payment");
+      await prisma.healthEvent.create({
+        data: {
+          fingerprint: orphanFingerprint,
+          type: "CHECK_PAYMENT_PROVIDER",
+          severity: "CRITICAL",
+          category: "payment",
+          message: "Payment provider & booking readiness: the payment provider is not configured.",
+          firstSeenAt: new Date(Date.now() - 3600_000),
+          lastSeenAt: new Date(Date.now() - 3600_000), // recent — a stale-timeout would not explain a resolve here
+          occurrenceCount: 105,
+        },
+      });
+      const googleId = process.env.GOOGLE_CLIENT_ID;
+      delete process.env.GOOGLE_CLIENT_ID; // also open a CRITICAL incident for a check that DOES still exist
+      try {
+        await monitor.evaluateHealth();
+        const orphan = await prisma.healthEvent.findFirst({ where: { fingerprint: orphanFingerprint } });
+        expect(orphan?.resolvedAt).not.toBeNull();
+        expect(orphan?.occurrenceCount).toBe(105); // the historical count is preserved, not reset or deleted
+        const stillCurrent = await prisma.healthEvent.findFirst({ where: { type: "CHECK_AUTH_GOOGLE", resolvedAt: null } });
+        expect(stillCurrent).not.toBeNull(); // a real, currently-open incident for a check that still runs is NOT collaterally resolved
+      } finally {
+        process.env.GOOGLE_CLIENT_ID = googleId;
+        events.resetHealthEventThrottleForTests();
+        await monitor.evaluateHealth();
+      }
+    });
   });
 
   describe("page authorization (server-side)", () => {

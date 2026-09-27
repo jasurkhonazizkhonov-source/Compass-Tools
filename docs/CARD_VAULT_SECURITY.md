@@ -349,6 +349,44 @@ secret, and card-shaped numbers.
   application-level and not PCI DSS-grade.
 - Admin banner on every page while customers cannot book.
 
+## 12a. Obtaining the official Aiven CA certificate (manual — cannot be done from this repository or this session)
+
+`databaseTls: unverified` means the connection is encrypted but the server's
+certificate is not checked against a trusted authority, so a network attacker
+who could intercept the connection could impersonate the database. Fixing this
+needs **Aiven's own CA certificate for this specific project's PostgreSQL
+service** — a value that only exists in your Aiven account. Nothing in this
+codebase contains it, there is no project id or service name recorded anywhere
+in the repository to derive it from, and this session has no Aiven
+credentials, API token, or browser access to your account. **I did not obtain
+or verify this certificate, and did not set `DATABASE_SSL_CA`.** Do not accept
+a certificate from anywhere other than your own Aiven console/CLI/API for
+this project — a CA certificate copied from a website, a different Aiven
+project, or an example in documentation would not match this database's
+server and TLS verification would simply fail (or, worse, silently validate
+against the wrong authority if something else on the connection also matched).
+
+**To obtain it yourself:**
+
+- **Aiven console:** sign in → open your project → open the PostgreSQL
+  service this app's `DATABASE_URL` points at → its **Overview** page's
+  "Connection information" panel has a **CA Certificate** (sometimes labelled
+  "SSL Certificate") download/copy control. Aiven has changed console layouts
+  before, so if it is not there, check the service's **Overview**, **Connection
+  information**, or **Security** section — copy this project's document
+  (`ca.pem`), not a generic Aiven CA you find elsewhere.
+- **Aiven CLI**, if you have it set up: `avn service get <service-name> --project <project-name> --format '{ca_cert}'` writes the same certificate.
+- **Aiven API**, if you use it directly: the service-details endpoint returns a `ca_cert` field.
+
+Once you have the PEM certificate, paste it (the full `-----BEGIN
+CERTIFICATE-----`…`-----END CERTIFICATE-----` block) into Vercel's
+`DATABASE_SSL_CA` for this project, marked *Sensitive* isn't required (a CA
+certificate is public information, not a secret, but treat the variable
+normally), redeploy, and confirm `/api/health` → `databaseTls: "verified"` and
+that the app still connects. Test on a preview deployment first — a wrong or
+mismatched certificate makes every database connection fail closed rather than
+silently staying unverified.
+
 ## 13. Remaining risks and PCI DSS gaps
 
 Open, not fixed by this work:
@@ -432,7 +470,7 @@ case — leaves the vault closed).
 | `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `GMAIL_TOKEN_ENCRYPTION_KEY` | set | **KEEP — DO NOT TOUCH** (but see §11) | (unchanged) | Changing them breaks stored IP history / Gmail connections. If production equals a value found in Git, rotate deliberately — a separate task per key. |
 | `GOOGLE_CLIENT_SECRET`, `GOOGLE_CLIENT_ID`, `DATABASE_URL`, `APP_BASE_URL`, `INITIAL_ADMIN_EMAIL` | set | **KEEP — DO NOT TOUCH** | — | Unrelated to the vault. |
 | `CRON_SECRET` | absent | **ADD (recommended)** | a fresh random secret (`openssl rand -base64 32`) | Without it the cron endpoint is open; required before any scheduled purge will run in production. |
-| `DATABASE_SSL_CA` | absent | **ADD (recommended)** | the Aiven project CA certificate (PEM) | Turns on database TLS **verification** (§13). Test on a preview first. |
+| `DATABASE_SSL_CA` | absent | **ADD (recommended) — manual, from Aiven** | the Aiven project CA certificate (PEM) — **obtain this yourself; nothing in this repository or session can produce or verify it** (see §12a) | Turns on database TLS **verification**. Test on a preview first. |
 | `CARD_RETENTION_DAYS` | absent | **ADD only after a business decision** | whole number of days | Enables the daily card purge. Off = nothing is purged automatically. |
 
 Optional, equivalent form (only if you want the key visible in the ring now):
@@ -477,6 +515,46 @@ existing cards stay encrypted. Never roll back by changing or deleting
    System Health. When in doubt, keep the key (offline).
 6. Never rotate automatically; never delete `CARD_ENCRYPTION_KEY` merely because it
    is old.
+
+## 16a. Converting a legacy-format card to the current v1 envelope (no new key)
+
+This is a **different, smaller operation than §16** — it does not add a key,
+does not touch `CARD_ENCRYPTION_KEY`, and does not change which key protects
+anything. A card stored before the versioned envelope existed
+(`base64(iv‖tag‖ciphertext)`, no key id, no row-binding) is re-wrapped as
+`cv2.v1.…` **under the exact same `CARD_ENCRYPTION_KEY`**, gaining the current
+format's row-binding (the ciphertext can no longer be copied into a different
+row and decrypt there) with nothing else changing. `npm run cards:rotate`
+handles this automatically: when only `CARD_ENCRYPTION_KEY` is configured (no
+`CARD_ENCRYPTION_KEYS`/`CARD_ENCRYPTION_KEY_ID`), the ring's one key is id
+`v1`, so "rotate to the current key" and "convert to the current format" are
+the same run.
+
+**Procedure (operator-run — this tool has no production database
+credentials):**
+
+```
+DATABASE_URL=<production DATABASE_URL> CARD_ENCRYPTION_KEY=<production key> npm run cards:rotate
+```
+
+Confirm the dry-run output before doing anything else: `currentKeyId: "v1"`,
+`toRotate: { "legacy": N }` (no `k2` or other id — only `CARD_ENCRYPTION_KEY` is
+set), `failed: []`. Then re-run with `-- --apply`. Verify with
+`npm run cards:rotate` again (dry run): `alreadyCurrent` now covers those rows,
+`toRotate: {}`. System Health → "Card vault & booking readiness" should show
+"Cards on an older key / legacy format: 0" on the next load.
+
+**Rehearsed and verified in this repository's own disposable local database**
+(never against production, which this session cannot reach) before recommending
+this: seeded one card in the exact legacy format, ran the dry run (correctly
+reported `toRotate: {"legacy":1}`, wrote nothing), ran `--apply` (`rotated: 1`,
+`failed: []`), then confirmed directly — the row now reads `cv2.v1.…`, still
+decrypts to the original value under the same key, no plaintext PAN appears
+anywhere in the row, an audit row (`CARD_KEYS_ROTATED`, counts only) was
+written, and a second dry run reports the row `alreadyCurrent` with nothing
+left `toRotate`. This proves the mechanism is safe for exactly the production
+scenario (one legacy card, only `CARD_ENCRYPTION_KEY` configured); it is not a
+substitute for running it against production, which only the operator can do.
 
 ## 17. Step-up authentication for Reveal — evaluation
 
