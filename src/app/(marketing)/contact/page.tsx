@@ -6,7 +6,7 @@ import { ContactForm } from "@/components/marketing/contact-form";
 export const metadata: Metadata = {
   title: `Contact Us — ${PRODUCT_NAME}`,
   description:
-    "Contact Business Flights Travel about a flight booking, quote request, existing reservation, or corporate travel program. We typically reply within one business day.",
+    "Contact Business Flights Travel about a flight booking, quote request, existing reservation, or corporate travel program. Send us a message and our team will get back to you.",
   alternates: { canonical: "/contact" },
   openGraph: {
     title: `Contact Us — ${PRODUCT_NAME}`,

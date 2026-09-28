@@ -19,5 +19,6 @@ export async function POST(req: Request) {
     requirePhone: true,
     honeypot: true,
     duplicateWindowMs: 60_000,
+    rejectDisposableEmail: true,
   });
 }

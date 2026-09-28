@@ -21,8 +21,8 @@ vi.mock("@/server/admin-notifications", () => ({
   notifyNewInquiry: (...args: unknown[]) => notifyNewInquiry(...args),
 }));
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  const prisma: Record<string, unknown> = {
     company: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => companies.get(where.id) ?? null),
     },
@@ -45,8 +45,13 @@ vi.mock("@/lib/prisma", () => ({
         return inquiry;
       }),
     },
-  },
-}));
+    // The duplicate guard runs findFirst+create inside an advisory-locked
+    // transaction; the scratch store needs no real locking.
+    $executeRaw: vi.fn(async () => 0),
+  };
+  prisma.$transaction = async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma);
+  return { prisma };
+});
 
 function makeRequest(body: unknown): Request {
   return new Request("http://localhost/api/public/crm-inquiry", {
@@ -145,6 +150,24 @@ describe("POST /api/public/crm-inquiry", () => {
       const res = await POST(makeRequest({ ...BASE_BODY, phone: "7911123456", phoneCountry: "GB" }));
       expect(res.status).toBe(200);
       expect(inquiries[0].phone).toBe("+447911123456");
+    });
+  });
+
+  describe("disposable-email screening (this route only)", () => {
+    it("rejects a known throwaway-inbox address with a generic invalid-email message", async () => {
+      const { POST } = await import("../route");
+      const res = await POST(makeRequest({ ...BASE_BODY, email: "Bot@Mailinator.com" }));
+      const json = await res.json();
+      expect(res.status).toBe(400);
+      expect(json).toEqual({ ok: false, error: "Please enter a valid email address." });
+      expect(inquiries).toHaveLength(0);
+      expect(notifyNewInquiry).not.toHaveBeenCalled();
+    });
+
+    it("accepts ordinary consumer and business addresses", async () => {
+      const { POST } = await import("../route");
+      expect((await POST(makeRequest({ ...BASE_BODY, email: "jane@gmail.com" }))).status).toBe(200);
+      expect((await POST(makeRequest({ ...BASE_BODY, email: "jane@acme-travel.co.uk", message: "Another question here." }))).status).toBe(200);
     });
   });
 

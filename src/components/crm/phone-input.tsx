@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type Ref } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,6 +31,11 @@ export function PhoneInput({
   onNationalNumberChange,
   onBlur,
   placeholder = "Phone number",
+  id,
+  inputRef,
+  invalid,
+  describedBy,
+  large,
 }: {
   country: CountryCode;
   onCountryChange: (country: CountryCode) => void;
@@ -38,21 +43,34 @@ export function PhoneInput({
   onNationalNumberChange: (value: string) => void;
   onBlur?: () => void;
   placeholder?: string;
+  /** Optional accessibility/touch-target hooks (unset = unchanged behavior). */
+  id?: string;
+  inputRef?: Ref<HTMLInputElement>;
+  invalid?: boolean;
+  describedBy?: string;
+  large?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const tall = large ? "h-11 md:h-9" : undefined;
 
   return (
     <div className="flex gap-1.5">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
-          <Button variant="outline" role="combobox" aria-expanded={open} className="w-[110px] shrink-0 justify-between font-normal px-2.5">
+          <Button
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            aria-label={`Country calling code, currently ${countryDisplayLabel(country)}`}
+            className={cn("w-[110px] shrink-0 justify-between font-normal px-2.5", large && "w-[92px] md:w-[110px]", tall)}
+          >
             <span className="truncate">+{getCountryCallingCode(country)}</span>
             <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-[280px] p-0" align="start">
           <Command>
-            <CommandInput placeholder="Search country..." />
+            <CommandInput placeholder="Search country..." aria-label="Search countries" />
             <CommandList>
               <CommandEmpty>No country found.</CommandEmpty>
               <CommandGroup>
@@ -75,13 +93,17 @@ export function PhoneInput({
         </PopoverContent>
       </Popover>
       <Input
+        id={id}
+        ref={inputRef}
+        aria-invalid={invalid || undefined}
+        aria-describedby={describedBy}
         value={nationalNumber}
         onChange={(e) => onNationalNumberChange(e.target.value)}
         onBlur={onBlur}
         placeholder={placeholder}
         type="tel"
         autoComplete="tel-national"
-        className="flex-1"
+        className={cn("flex-1", tall)}
       />
     </div>
   );

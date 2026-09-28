@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Controller, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PhoneInput, DEFAULT_PHONE_COUNTRY } from "@/components/crm/phone-input";
+import { INVALID_EMAIL_MESSAGE, isDisposableEmail } from "@/lib/email-quality";
 import { isValidPhoneInput, type CountryCode } from "@/lib/phone";
 
 // Public CRM marketing-site contact form. Submits to /api/public/crm-inquiry
@@ -42,7 +43,7 @@ const SUBJECT_OPTIONS = [
 const contactFormSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required").max(200),
   lastName: z.string().trim().min(1, "Last name is required").max(200),
-  email: z.string().trim().min(1, "Email is required").email("Enter a valid email address"),
+  email: z.string().trim().min(1, "Email is required").email(INVALID_EMAIL_MESSAGE),
   phoneCountry: z.custom<CountryCode>((v) => typeof v === "string" && v.length > 0),
   phone: z.string().trim().min(1, "Phone number is required"),
   subject: z.enum(["GENERAL_INQUIRY", "FLIGHT_REQUEST_HELP", "EXISTING_BOOKING", "CORPORATE_TRAVEL", "OTHER"], { message: "Please select an inquiry topic" }),
@@ -52,6 +53,9 @@ const contactFormSchema = z.object({
   // automated; the server silently accepts without creating anything.
   companyWebsite: z.string().max(200).optional(),
 }).superRefine((values, ctx) => {
+  if (values.email && isDisposableEmail(values.email)) {
+    ctx.addIssue({ code: "custom", path: ["email"], message: INVALID_EMAIL_MESSAGE });
+  }
   if (!isValidPhoneInput(values.phone, values.phoneCountry)) {
     ctx.addIssue({ code: "custom", path: ["phone"], message: "Please check the phone number and country code." });
   }
@@ -65,6 +69,13 @@ export function ContactForm() {
   const [submitted, setSubmitted] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const messageHintId = useId();
+  const successRef = useRef<HTMLHeadingElement>(null);
+  // Blocks a second request from a rapid double-click/tap before React has
+  // re-rendered the button as disabled (the server also de-duplicates).
+  const inFlightRef = useRef(false);
+  useEffect(() => {
+    if (submitted) successRef.current?.focus();
+  }, [submitted]);
 
   const {
     register,
@@ -77,6 +88,8 @@ export function ContactForm() {
   });
 
   async function onSubmit(values: ContactFormValues) {
+    if (inFlightRef.current) return;
+    inFlightRef.current = true;
     setServerError(null);
     try {
       const res = await fetch("/api/public/crm-inquiry", {
@@ -106,14 +119,16 @@ export function ContactForm() {
       setSubmitted(true);
     } catch {
       setServerError("Could not reach the server. Please check your connection and try again.");
+    } finally {
+      inFlightRef.current = false;
     }
   }
 
   if (submitted) {
     return (
-      <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300 flex flex-col items-center rounded-2xl border bg-background p-10 text-center shadow-sm">
+      <div role="status" className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300 flex flex-col items-center rounded-2xl border bg-background p-10 text-center shadow-sm">
         <CheckCircle2 className="h-10 w-10 text-emerald-600 dark:text-emerald-400" aria-hidden />
-        <h2 className="mt-4 text-lg font-semibold text-foreground">Thank you — your inquiry has been received</h2>
+        <h2 ref={successRef} tabIndex={-1} className="mt-4 text-lg font-semibold text-foreground outline-none">Thank you — your inquiry has been received</h2>
         <p className="mt-2 max-w-sm text-sm text-muted-foreground">
           Your request was submitted successfully and our team will review it. Expect a response through the phone number or
           email address you provided.
@@ -124,22 +139,24 @@ export function ContactForm() {
 
   return (
     <form
-      onSubmit={handleSubmit(onSubmit)}
+      onSubmit={(e) => handleSubmit(onSubmit)(e)}
       noValidate
       className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300 space-y-5 rounded-2xl border bg-background p-6 shadow-sm sm:p-8"
     >
       {/* Honeypot — visually hidden AND removed from the accessibility tree
           (aria-hidden on the wrapper), so a screen reader never announces or
           treats it as a required field, and it never enters the tab order. */}
-      <div aria-hidden="true" className="absolute left-[-9999px] top-auto h-px w-px overflow-hidden">
+      <div aria-hidden="true" inert className="absolute left-[-9999px] top-auto h-px w-px overflow-hidden">
         <label htmlFor="companyWebsite">Company website</label>
         <input id="companyWebsite" type="text" tabIndex={-1} autoComplete="off" {...register("companyWebsite")} />
       </div>
 
+      <p className="text-xs text-muted-foreground">All fields are required.</p>
+
       <div className="grid gap-5 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label htmlFor="firstName">First name</Label>
-          <Input id="firstName" autoComplete="given-name" placeholder="e.g. Jordan" aria-invalid={!!errors.firstName} aria-describedby={errors.firstName ? "firstName-error" : undefined} {...register("firstName")} />
+          <Input id="firstName" className="h-11 md:h-8" aria-required="true" autoComplete="given-name" placeholder="e.g. Jordan" aria-invalid={!!errors.firstName} aria-describedby={errors.firstName ? "firstName-error" : undefined} {...register("firstName")} />
           {errors.firstName && (
             <p id="firstName-error" className="text-xs text-destructive" role="alert">
               {errors.firstName.message}
@@ -148,7 +165,7 @@ export function ContactForm() {
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="lastName">Last name</Label>
-          <Input id="lastName" autoComplete="family-name" placeholder="e.g. Rivera" aria-invalid={!!errors.lastName} aria-describedby={errors.lastName ? "lastName-error" : undefined} {...register("lastName")} />
+          <Input id="lastName" className="h-11 md:h-8" aria-required="true" autoComplete="family-name" placeholder="e.g. Rivera" aria-invalid={!!errors.lastName} aria-describedby={errors.lastName ? "lastName-error" : undefined} {...register("lastName")} />
           {errors.lastName && (
             <p id="lastName-error" className="text-xs text-destructive" role="alert">
               {errors.lastName.message}
@@ -162,6 +179,8 @@ export function ContactForm() {
           <Label htmlFor="email">Email address</Label>
           <Input
             id="email"
+            className="h-11 md:h-8"
+            aria-required="true"
             type="email"
             autoComplete="email"
             placeholder="e.g. jordan@example.com"
@@ -186,6 +205,11 @@ export function ContactForm() {
                 name="phone"
                 render={({ field: phoneField }) => (
                   <PhoneInput
+                    id="phone"
+                    large
+                    inputRef={phoneField.ref}
+                    invalid={!!errors.phone}
+                    describedBy={`phone-hint${errors.phone ? " phone-error" : ""}`}
                     country={countryField.value}
                     onCountryChange={countryField.onChange}
                     nationalNumber={phoneField.value}
@@ -212,7 +236,7 @@ export function ContactForm() {
           name="subject"
           render={({ field }) => (
             <Select value={field.value} onValueChange={field.onChange}>
-              <SelectTrigger id="subject" className="w-full" aria-describedby={errors.subject ? "subject-error" : undefined}>
+              <SelectTrigger id="subject" className="w-full data-[size=default]:h-11 md:data-[size=default]:h-8" aria-describedby={errors.subject ? "subject-error" : undefined}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -236,6 +260,7 @@ export function ContactForm() {
         <Label htmlFor="message">How can we help?</Label>
         <Textarea
           id="message"
+          aria-required="true"
           rows={5}
           placeholder="Tell us what you need help with, including your travel dates, destinations, or booking reference if applicable."
           aria-invalid={!!errors.message}
@@ -258,7 +283,7 @@ export function ContactForm() {
         </p>
       )}
 
-      <Button type="submit" size="lg" className="w-full gap-2" disabled={isSubmitting}>
+      <Button type="submit" size="lg" className="h-11 w-full gap-2" disabled={isSubmitting}>
         {isSubmitting && <Loader2 className="h-4 w-4 animate-spin" aria-hidden />}
         {isSubmitting ? "Sending…" : "Send message"}
       </Button>

@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import type { InquirySource } from "@/generated/prisma/client";
 import { duplicateContactWhere } from "@/lib/contact-matching";
+import { INVALID_EMAIL_MESSAGE, isDisposableEmail } from "@/lib/email-quality";
 import { normalizePhoneNumber, isSupportedCountry, type CountryCode } from "@/lib/phone";
 import { notifyNewInquiry } from "@/server/admin-notifications";
 import { checkPublicRateLimit, type RateLimitConfig } from "@/server/security/rate-limit";
@@ -62,6 +64,10 @@ export type HandlePublicInquiryOptions = {
    * creating a second one — covers a double-click, a repeated tap, or a
    * browser/network retry. Off (undefined) by default. */
   duplicateWindowMs?: number;
+  /** Reject addresses at known throwaway-inbox services with a generic
+   * "invalid email" message (the screening rule is never described to the
+   * visitor). Off by default. */
+  rejectDisposableEmail?: boolean;
 };
 
 const GENERIC_PHONE_ERROR = "Please check the phone number and country code.";
@@ -89,6 +95,10 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
     return NextResponse.json({ ok: false, error: "Invalid submission" }, { status: 400 });
   }
   const data = parsed.data;
+
+  if (options.rejectDisposableEmail && isDisposableEmail(data.email)) {
+    return NextResponse.json({ ok: false, error: INVALID_EMAIL_MESSAGE }, { status: 400 });
+  }
 
   // Honeypot: a real visitor's browser never populates this field (it is
   // hidden from sighted users and removed from the tab order and the
@@ -120,49 +130,62 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
   let inquiryId = "";
   let isDuplicate = false;
   try {
+    // Matches an existing Contact by normalized phone/email — purely
+    // informational, never overwrites the matched contact's own data.
+    const orConditions = duplicateContactWhere(phoneToStore ?? undefined, data.email);
+    const matchedContact =
+      orConditions.length > 0
+        ? await prisma.contact.findFirst({ where: { companyId: data.companyId, OR: orConditions }, select: { id: true } })
+        : null;
+
+    const createData = {
+      companyId: data.companyId,
+      source: options.source,
+      firstName: data.firstName,
+      lastName: data.lastName,
+      email: data.email,
+      phone: phoneToStore || undefined,
+      subject: data.subject,
+      message: data.message,
+      matchedContactId: matchedContact?.id,
+    };
+
     if (options.duplicateWindowMs) {
-      const recent = await prisma.contactInquiry.findFirst({
-        where: {
-          companyId: data.companyId,
-          source: options.source,
-          email: { equals: data.email.trim(), mode: "insensitive" },
-          message: data.message,
-          createdAt: { gte: new Date(Date.now() - options.duplicateWindowMs) },
-        },
-        select: { id: true },
-        orderBy: { createdAt: "desc" },
+      const windowMs = options.duplicateWindowMs;
+      // A double-click fires two requests within milliseconds, so a plain
+      // "look for a recent copy, else insert" races. A transaction-scoped
+      // advisory lock keyed on the submission's identity makes the second
+      // request wait for the first to commit, then see its row.
+      const lockKey = createHash("sha256")
+        .update(JSON.stringify([data.companyId, options.source, data.email.trim().toLowerCase(), data.message]))
+        .digest("hex");
+      const result = await prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+        const recent = await tx.contactInquiry.findFirst({
+          where: {
+            companyId: data.companyId,
+            source: options.source,
+            email: { equals: data.email.trim(), mode: "insensitive" },
+            message: data.message,
+            createdAt: { gte: new Date(Date.now() - windowMs) },
+          },
+          select: { id: true },
+          orderBy: { createdAt: "desc" },
+        });
+        if (recent) return { id: recent.id, duplicate: true };
+        const created = await tx.contactInquiry.create({ data: createData });
+        return { id: created.id, duplicate: false };
       });
-      if (recent) {
-        inquiryId = recent.id;
-        isDuplicate = true;
-      }
+      inquiryId = result.id;
+      isDuplicate = result.duplicate;
+    } else {
+      inquiryId = (await prisma.contactInquiry.create({ data: createData })).id;
     }
-
-    if (!isDuplicate) {
-      // Matches an existing Contact by normalized phone/email — purely
-      // informational, never overwrites the matched contact's own data.
-      const orConditions = duplicateContactWhere(phoneToStore ?? undefined, data.email);
-      const matchedContact =
-        orConditions.length > 0
-          ? await prisma.contact.findFirst({ where: { companyId: data.companyId, OR: orConditions }, select: { id: true } })
-          : null;
-
-      const inquiry = await prisma.contactInquiry.create({
-        data: {
-          companyId: data.companyId,
-          source: options.source,
-          firstName: data.firstName,
-          lastName: data.lastName,
-          email: data.email,
-          phone: phoneToStore || undefined,
-          subject: data.subject,
-          message: data.message,
-          matchedContactId: matchedContact?.id,
-        },
-      });
-      inquiryId = inquiry.id;
-    }
-  } catch {
+  } catch (e) {
+    // Server log only (error class + Prisma code — never the submission's
+    // contents); the visitor still gets the generic message below.
+    const code = typeof e === "object" && e && "code" in e ? String((e as { code: unknown }).code) : "";
+    console.error(`[public-inquiry] ${options.source} submission failed: ${e instanceof Error ? e.name : "unknown"} ${code}`.trim());
     return NextResponse.json({ ok: false, error: "Could not submit your request. Please try again or contact us directly." }, { status: 500 });
   }
 

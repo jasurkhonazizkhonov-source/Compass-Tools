@@ -109,6 +109,63 @@ describe("ContactForm", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("blocks a known throwaway-inbox email client-side with the generic invalid-email message", async () => {
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    await user.type(screen.getByLabelText(/first name/i), "Jane");
+    await user.type(screen.getByLabelText(/last name/i), "Doe");
+    await user.type(screen.getByLabelText(/email/i), "bot@mailinator.com");
+    await user.type(screen.getByPlaceholderText(/phone number/i), "4155550123");
+    await user.type(screen.getByLabelText(/how can we help/i), "I have a question about an upcoming trip.");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    expect(await screen.findByText("Please enter a valid email address.")).toBeInTheDocument();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("associates every field with its label and links errors via aria-describedby / aria-invalid", async () => {
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    expect(screen.getByLabelText(/phone number/i)).toHaveAttribute("id", "phone");
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+
+    const email = screen.getByLabelText(/email/i);
+    await waitFor(() => expect(email).toHaveAttribute("aria-invalid", "true"));
+    expect(email).toHaveAttribute("aria-describedby", "email-error");
+    const phone = screen.getByLabelText(/phone number/i);
+    expect(phone).toHaveAttribute("aria-invalid", "true");
+    expect(phone.getAttribute("aria-describedby")).toContain("phone-error");
+    expect(document.getElementById("phone-error")).toBeInTheDocument();
+    // Focus moves to the first invalid field.
+    expect(screen.getByLabelText(/first name/i)).toHaveFocus();
+  });
+
+  it("sends only ONE request when the submit button is activated twice in quick succession", async () => {
+    let release: () => void = () => {};
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise((resolve) => { release = () => resolve({ ok: true, json: async () => ({ ok: true }) }); }))
+    );
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    await fillRequiredFields(user);
+    const button = screen.getByRole("button", { name: /send message/i });
+    button.click();
+    button.click();
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    release();
+    expect(await screen.findByText(/thank you/i)).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("moves focus to the confirmation heading after a successful submission", async () => {
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    await fillRequiredFields(user);
+    await user.click(screen.getByRole("button", { name: /send message/i }));
+    expect(await screen.findByRole("heading", { name: /thank you/i })).toHaveFocus();
+  });
+
   it("includes a honeypot field that is hidden from sighted users and removed from the accessibility tree", () => {
     render(<ContactForm />);
     const honeypot = document.getElementById("companyWebsite") as HTMLInputElement;
