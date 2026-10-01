@@ -98,9 +98,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
         <p className="relative text-xs text-white/50">{PRODUCT_NAME} · Internal CRM</p>
       </div>
 
-      {/* Sign-in panel */}
+      {/* Sign-in panel. Entrance motion is a single short fade/slide on the
+          whole card (motion-safe only) — it never delays interaction: the
+          Google button underneath is already fully rendered and clickable
+          throughout the transition, which animates opacity/transform only. */}
       <div className="flex items-center justify-center bg-muted/30 px-4 py-16 sm:px-6">
-        <div className="w-full max-w-sm space-y-8">
+        <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300 w-full max-w-sm space-y-8">
           <div className="flex flex-col items-center text-center lg:hidden">
             <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-white/95 shadow-sm">
               <CompassMark className="h-11 w-11" />

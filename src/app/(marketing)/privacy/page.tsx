@@ -11,13 +11,15 @@ export const metadata: Metadata = {
 export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 sm:py-20">
-      <h1 className="text-4xl font-semibold tracking-tight text-foreground">Privacy Policy</h1>
-      <p className="mt-3 text-sm text-muted-foreground">Last updated: {new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })}</p>
-      <p className="mt-6 text-sm leading-relaxed text-muted-foreground">
-        {PRODUCT_NAME} is a customer-relationship-management (CRM) platform built for travel agencies. This policy
-        covers two separate things: (1) this public website, and (2) the {PRODUCT_NAME} application itself, used by
-        the staff of the travel agencies (&quot;customers&quot;) that run their business on it.
-      </p>
+      <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500">
+        <h1 className="text-4xl font-semibold tracking-tight text-foreground">Privacy Policy</h1>
+        <p className="mt-3 text-sm text-muted-foreground">Last updated: {new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })}</p>
+        <p className="mt-6 text-sm leading-relaxed text-pretty text-muted-foreground">
+          {PRODUCT_NAME} is a customer-relationship-management (CRM) platform built for travel agencies. This policy
+          covers two separate things: (1) this public website, and (2) the {PRODUCT_NAME} application itself, used by
+          the staff of the travel agencies (&quot;customers&quot;) that run their business on it.
+        </p>
+      </div>
 
       <div className="prose-sm mt-10 space-y-8 text-sm leading-relaxed text-muted-foreground [&_h2]:mb-2 [&_h2]:mt-0 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground">
         <section>
@@ -111,7 +113,7 @@ export default function PrivacyPage() {
           <h2>Contact</h2>
           <p>
             Questions about this policy, or a request regarding your information, can be sent through our{" "}
-            <a href="/contact" className="underline underline-offset-4 hover:text-foreground">
+            <a href="/contact" className="underline underline-offset-4 transition-colors hover:text-foreground">
               Contact
             </a>{" "}
             page.

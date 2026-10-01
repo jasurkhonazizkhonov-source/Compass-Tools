@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { ShieldCheck, Lock, KeyRound, Server } from "lucide-react";
 import { PRODUCT_NAME } from "@/lib/company-config";
+import { Reveal } from "@/components/marketing/reveal";
 
 export const metadata: Metadata = {
   title: `Security — ${PRODUCT_NAME}`,
@@ -40,24 +41,34 @@ const PRACTICES = [
 export default function SecurityPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 sm:py-20">
-      <h1 className="text-4xl font-semibold tracking-tight text-foreground">Security</h1>
-      <p className="mt-4 text-muted-foreground">
-        A practical summary of how {PRODUCT_NAME} protects account access and customer information. This page
-        describes how the system is actually built — it does not claim any third-party certification.
-      </p>
+      <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500">
+        <h1 className="text-4xl font-semibold tracking-tight text-foreground">Security</h1>
+        <p className="mt-4 max-w-2xl text-pretty text-muted-foreground">
+          A practical summary of how {PRODUCT_NAME} protects account access and customer information. This page
+          describes how the system is actually built — it does not claim any third-party certification.
+        </p>
+      </div>
 
       <div className="mt-12 grid gap-6 sm:grid-cols-2">
-        {PRACTICES.map(({ icon: Icon, title, body }) => (
-          <div key={title} className="rounded-xl border bg-background p-6 shadow-sm">
-            <Icon className="h-5 w-5 text-[#1c3a5e] dark:text-[#d4a24e]" aria-hidden />
-            <h2 className="mt-3 text-sm font-semibold text-foreground">{title}</h2>
-            <p className="mt-2 text-sm text-muted-foreground">{body}</p>
-          </div>
+        {PRACTICES.map(({ icon: Icon, title, body }, i) => (
+          <Reveal key={title} delayMs={Math.min(i * 60, 180)}>
+            <div className="h-full rounded-xl border bg-background p-6 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-foreground/15 hover:shadow-md">
+              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1c3a5e]/10 dark:bg-[#d4a24e]/10">
+                <Icon className="h-5 w-5 text-[#1c3a5e] dark:text-[#d4a24e]" aria-hidden />
+              </div>
+              <h2 className="mt-3 text-sm font-semibold text-foreground">{title}</h2>
+              <p className="mt-2 text-sm text-muted-foreground">{body}</p>
+            </div>
+          </Reveal>
         ))}
       </div>
 
       <p className="mt-10 text-sm text-muted-foreground">
-        Questions about a specific security practice? <a href="/contact" className="underline underline-offset-4 hover:text-foreground">Get in touch</a>.
+        Questions about a specific security practice?{" "}
+        <a href="/contact" className="underline underline-offset-4 transition-colors hover:text-foreground">
+          Get in touch
+        </a>
+        .
       </p>
     </div>
   );

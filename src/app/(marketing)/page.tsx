@@ -7,6 +7,7 @@ import { PRODUCT_NAME } from "@/lib/company-config";
 import { MARKETING_FEATURES } from "@/lib/marketing/features-data";
 import { Button } from "@/components/ui/button";
 import { MockLeadsPanel, MockQuotePanel, MockDashboardPanel } from "@/components/marketing/mock-crm-panel";
+import { Reveal } from "@/components/marketing/reveal";
 
 export const metadata: Metadata = {
   title: `${PRODUCT_NAME} — CRM for Travel Agencies`,
@@ -53,17 +54,17 @@ export default async function HomePage() {
         />
         <div className="relative mx-auto max-w-6xl px-4 py-20 sm:px-6 sm:py-28">
           <div className="mx-auto max-w-2xl text-center">
-            <h1 className="text-4xl font-semibold tracking-tight text-foreground sm:text-5xl">
+            <h1 className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500 text-4xl font-semibold tracking-tight text-balance text-foreground sm:text-5xl">
               One CRM for every lead, quote, and booking
             </h1>
-            <p className="mt-5 text-lg text-muted-foreground">
+            <p className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500 motion-safe:delay-100 motion-safe:fill-mode-both mt-5 text-lg text-pretty text-muted-foreground">
               {PRODUCT_NAME} is a CRM built for travel agencies to manage leads, build quotes, track bookings, and
               communicate with customers — all in one place.
             </p>
-            <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Button asChild size="lg" className="gap-2">
+            <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500 motion-safe:delay-200 motion-safe:fill-mode-both mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+              <Button asChild size="lg" className="group/cta gap-2">
                 <Link href="/contact">
-                  Get in Touch <ArrowRight className="h-4 w-4" />
+                  Get in Touch <ArrowRight className="h-4 w-4 transition-transform group-hover/cta:translate-x-0.5" />
                 </Link>
               </Button>
               <Button asChild size="lg" variant="outline">
@@ -76,7 +77,7 @@ export default async function HomePage() {
 
       {/* Workflow overview */}
       <section className="border-b py-16 sm:py-20">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6">
+        <Reveal className="mx-auto max-w-6xl px-4 sm:px-6">
           <h2 className="text-center text-sm font-semibold uppercase tracking-wide text-muted-foreground">
             The complete workflow
           </h2>
@@ -88,12 +89,12 @@ export default async function HomePage() {
               </div>
             ))}
           </div>
-        </div>
+        </Reveal>
       </section>
 
       {/* Product preview */}
       <section className="border-b py-16 sm:py-20">
-        <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-2">
+        <Reveal className="mx-auto grid max-w-6xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-2">
           <div>
             <h2 className="text-3xl font-semibold tracking-tight text-foreground">See the whole pipeline at a glance</h2>
             <p className="mt-4 text-muted-foreground">
@@ -115,30 +116,31 @@ export default async function HomePage() {
             <MockDashboardPanel />
             <MockLeadsPanel />
           </div>
-        </div>
+        </Reveal>
       </section>
 
       {/* Feature grid */}
       <section className="border-b py-16 sm:py-20">
         <div className="mx-auto max-w-6xl px-4 sm:px-6">
-          <div className="text-center">
+          <Reveal className="text-center">
             <h2 className="text-3xl font-semibold tracking-tight text-foreground">Everything your team needs</h2>
             <p className="mt-3 text-muted-foreground">Built around how a travel agency actually works.</p>
-          </div>
+          </Reveal>
           <div className="mt-12 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
-            {MARKETING_FEATURES.map((feature) => (
-              <Link
-                key={feature.slug}
-                href={`/features/${feature.slug}`}
-                className="group rounded-xl border bg-background p-6 shadow-sm transition-shadow hover:shadow-md"
-              >
-                <feature.icon className="h-6 w-6 text-[#1c3a5e] dark:text-[#d4a24e]" aria-hidden />
-                <h3 className="mt-4 text-sm font-semibold text-foreground">{feature.navLabel}</h3>
-                <p className="mt-2 text-sm text-muted-foreground">{feature.summary}</p>
-                <span className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-foreground opacity-0 transition-opacity group-hover:opacity-100">
-                  Learn more <ArrowRight className="h-3.5 w-3.5" aria-hidden />
-                </span>
-              </Link>
+            {MARKETING_FEATURES.map((feature, i) => (
+              <Reveal key={feature.slug} delayMs={Math.min(i * 60, 240)}>
+                <Link
+                  href={`/features/${feature.slug}`}
+                  className="group flex h-full flex-col rounded-xl border bg-background p-6 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-foreground/15 hover:shadow-md"
+                >
+                  <feature.icon className="h-6 w-6 text-[#1c3a5e] dark:text-[#d4a24e]" aria-hidden />
+                  <h3 className="mt-4 text-sm font-semibold text-foreground">{feature.navLabel}</h3>
+                  <p className="mt-2 flex-1 text-sm text-muted-foreground">{feature.summary}</p>
+                  <span className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-foreground opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100">
+                    Learn more <ArrowRight className="h-3.5 w-3.5" aria-hidden />
+                  </span>
+                </Link>
+              </Reveal>
             ))}
           </div>
         </div>
@@ -146,7 +148,7 @@ export default async function HomePage() {
 
       {/* Security teaser */}
       <section className="border-b py-14">
-        <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-4 text-center sm:px-6">
+        <Reveal className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-4 text-center sm:px-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#12233a]">
             <ShieldCheck className="h-5 w-5 text-white" aria-hidden />
           </div>
@@ -154,17 +156,17 @@ export default async function HomePage() {
           <p className="max-w-xl text-sm text-muted-foreground">
             Google sign-in, server-enforced roles, encrypted credentials, and no raw card storage — see exactly how on
             the{" "}
-            <Link href="/security" className="font-medium text-foreground underline underline-offset-4">
+            <Link href="/security" className="font-medium text-foreground underline underline-offset-4 decoration-1 transition-colors hover:text-[#1c3a5e] dark:hover:text-[#d4a24e]">
               Security
             </Link>{" "}
             page.
           </p>
-        </div>
+        </Reveal>
       </section>
 
       {/* Quote preview + CTA */}
       <section className="py-16 sm:py-20">
-        <div className="mx-auto grid max-w-6xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-2">
+        <Reveal className="mx-auto grid max-w-6xl items-center gap-10 px-4 sm:px-6 lg:grid-cols-2">
           <div className="order-2 lg:order-1">
             <MockQuotePanel />
           </div>
@@ -175,9 +177,9 @@ export default async function HomePage() {
               needing a CRM login.
             </p>
             <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-              <Button asChild size="lg" className="gap-2">
+              <Button asChild size="lg" className="group/cta2 gap-2">
                 <Link href="/contact">
-                  Get in Touch <ArrowRight className="h-4 w-4" />
+                  Get in Touch <ArrowRight className="h-4 w-4 transition-transform group-hover/cta2:translate-x-0.5" />
                 </Link>
               </Button>
               <Button asChild size="lg" variant="outline">
@@ -185,7 +187,7 @@ export default async function HomePage() {
               </Button>
             </div>
           </div>
-        </div>
+        </Reveal>
       </section>
     </>
   );

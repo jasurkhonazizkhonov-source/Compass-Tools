@@ -33,8 +33,8 @@ export default function ContactPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 sm:py-20">
       <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300 text-center">
-        <h1 className="text-4xl font-semibold tracking-tight text-foreground">Contact {PRODUCT_NAME}</h1>
-        <p className="mt-4 text-muted-foreground">
+        <h1 className="text-4xl font-semibold tracking-tight text-balance text-foreground">Contact {PRODUCT_NAME}</h1>
+        <p className="mt-4 text-pretty text-muted-foreground">
           Have a question about a demo, a feature, your account, or billing? Send us a message below and our team will get
           back to you.
         </p>
@@ -42,7 +42,7 @@ export default function ContactPage() {
 
       <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-500 mt-10 grid gap-4 sm:grid-cols-3">
         {REASSURANCES.map(({ icon: Icon, title, body }) => (
-          <div key={title} className="rounded-xl border bg-background p-4 shadow-sm">
+          <div key={title} className="rounded-xl border bg-background p-4 shadow-sm transition-colors hover:border-foreground/15">
             <Icon className="h-5 w-5 text-[#1c3a5e] dark:text-[#d4a24e]" aria-hidden />
             <h2 className="mt-2 text-sm font-semibold text-foreground">{title}</h2>
             <p className="mt-1 text-xs text-muted-foreground">{body}</p>

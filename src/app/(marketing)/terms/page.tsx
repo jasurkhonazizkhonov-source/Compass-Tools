@@ -11,8 +11,10 @@ export const metadata: Metadata = {
 export default function TermsPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 sm:py-20">
-      <h1 className="text-4xl font-semibold tracking-tight text-foreground">Terms of Service</h1>
-      <p className="mt-3 text-sm text-muted-foreground">Last updated: {new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })}</p>
+      <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500">
+        <h1 className="text-4xl font-semibold tracking-tight text-foreground">Terms of Service</h1>
+        <p className="mt-3 text-sm text-muted-foreground">Last updated: {new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })}</p>
+      </div>
 
       <div className="prose-sm mt-10 space-y-8 text-sm leading-relaxed text-muted-foreground [&_h2]:mb-2 [&_h2]:mt-0 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground">
         <section>
@@ -57,7 +59,7 @@ export default function TermsPage() {
             responsible for having the right to collect and use that information, and for its own communications
             with its customers. {PRODUCT_NAME} stores and processes that information on the agency&apos;s behalf, as
             described in our{" "}
-            <a href="/privacy" className="underline underline-offset-4 hover:text-foreground">
+            <a href="/privacy" className="underline underline-offset-4 transition-colors hover:text-foreground">
               Privacy Policy
             </a>
             .
@@ -95,7 +97,7 @@ export default function TermsPage() {
           <h2>Contact</h2>
           <p>
             Questions about these terms can be sent through our{" "}
-            <a href="/contact" className="underline underline-offset-4 hover:text-foreground">
+            <a href="/contact" className="underline underline-offset-4 transition-colors hover:text-foreground">
               Contact
             </a>{" "}
             page.
