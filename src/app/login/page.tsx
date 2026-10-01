@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { getGoogleClientId } from "@/server/auth/google-config";
 import { GoogleSignInButton } from "@/components/layout/google-sign-in-button";
@@ -7,6 +8,21 @@ import { redirect } from "next/navigation";
 import { Users2, FileText, PlaneTakeoff, ShieldCheck } from "lucide-react";
 
 export const dynamic = "force-dynamic";
+
+// Intentionally indexable (not noindexed): an existing customer searching
+// "Compass Tools login" should land directly on this page, the same way a
+// visitor searching "<product> login" expects to for most SaaS products.
+// Its own title/canonical were previously missing, silently falling back to
+// the root layout's generic "Compass Tools" title — fixed here so that
+// search intent actually resolves to a useful result. The page itself
+// renders no account-specific data (it redirects signed-in visitors away
+// before rendering anything sensitive), so indexing it exposes nothing
+// private.
+export const metadata: Metadata = {
+  title: `Sign In — ${PRODUCT_NAME}`,
+  description: `Sign in to ${PRODUCT_NAME} with your Google account.`,
+  alternates: { canonical: "/login" },
+};
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 

@@ -86,6 +86,15 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
   // change today's behavior, since a real re-run of this effect does not
   // currently happen at all.
   const initializedRef = useRef(false);
+  // Real gap found during a mobile-login audit: the GIS callback below is
+  // registered once (see initializedRef above) and closes over whatever
+  // `isSigningIn` was at that first render — it can never see a LATER
+  // state update, so checking `isSigningIn` inside the callback would
+  // silently always read `false`. A ref is used instead so a second
+  // credential response arriving while the first is still in flight (e.g.
+  // the account chooser re-firing from a double-tap) is ignored rather than
+  // calling signInWithGoogle() twice concurrently.
+  const signingInRef = useRef(false);
 
   function clearSafetyNet() {
     if (safetyNetRef.current) {
@@ -108,10 +117,13 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
     window.google.accounts.id.initialize({
       client_id: clientId,
       callback: (response) => {
+        if (signingInRef.current) return;
+        signingInRef.current = true;
         setIsSigningIn(true);
         clearSafetyNet();
         safetyNetRef.current = setTimeout(() => {
           toast.error("Sign-in is taking longer than expected. Please try again.");
+          signingInRef.current = false;
           setIsSigningIn(false);
         }, STUCK_SIGN_IN_SAFETY_NET_MS);
         signInWithGoogle(response.credential)
@@ -142,6 +154,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
               router.push(`/access-denied?reason=${result.reason}`);
               return;
             }
+            signingInRef.current = false;
             setIsSigningIn(false);
           })
           .catch(() => {
@@ -151,6 +164,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
             // state rather than leaving it stuck.
             clearSafetyNet();
             toast.error("Sign-in failed. Please try again.");
+            signingInRef.current = false;
             setIsSigningIn(false);
           });
       },

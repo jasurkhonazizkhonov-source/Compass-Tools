@@ -161,6 +161,31 @@ describe("GoogleSignInButton — client state machine (Pass 38)", () => {
     await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
     expect(signInWithGoogle).toHaveBeenCalledTimes(2);
   });
+
+  // Real gap found during a mobile-login audit: the GIS callback is
+  // registered once and closes over its initial render's `isSigningIn`
+  // (always false), so a naive `if (isSigningIn) return` guard inside it
+  // would never actually fire — a second credential response arriving
+  // while the first sign-in is still in flight (e.g. a double-tap on the
+  // account chooser) could call signInWithGoogle() twice concurrently.
+  it("a second credential response while one is already in flight is ignored — never calls signInWithGoogle() twice concurrently", async () => {
+    let resolveFirst!: (v: { ok: true }) => void;
+    signInWithGoogle.mockReturnValueOnce(new Promise((resolve) => { resolveFirst = resolve; }));
+    await renderAndTriggerSignIn();
+    expect(await screen.findByText(/Signing in/i)).toBeInTheDocument();
+
+    // Fires again before the first call has resolved.
+    await act(async () => {
+      capturedCallback!({ credential: "second-credential-while-first-in-flight" });
+    });
+    expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst({ ok: true });
+    });
+    await waitFor(() => expect(routerPush).toHaveBeenCalledWith("/dashboard"));
+    expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+  });
 });
 
 // Pass 40 — investigated a hypothesis that React Strict Mode's dev-only
