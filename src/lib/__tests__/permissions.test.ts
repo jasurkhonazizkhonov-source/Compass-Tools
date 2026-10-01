@@ -5,6 +5,7 @@ import {
   canDeleteQuote,
   canDeleteBooking,
   canRevealPaymentMethod,
+  hasEffectiveRevealGrant,
   canConfirmPayment,
   canManageContactPaymentMethods,
   canDeletePaymentMethod,
@@ -217,6 +218,26 @@ describe("admin permission uniformity — role alone bypasses the grant array", 
   it("canRevealBookingIp: Admin is always true regardless of grants", () => {
     expect(canRevealBookingIp(ADMIN_WITH_NO_GRANTS)).toBe(true);
     expect(canRevealBookingIp(MANAGER_WITH_NO_GRANTS)).toBe(false);
+  });
+
+  // Real bug found and fixed: the Users-section UI used to check only
+  // current.includes("payments.reveal") for its "Reveal granted/not
+  // granted" badge and checkbox, while the real authorization check
+  // (canRevealPaymentMethod, below) already accepted the pre-rename alias
+  // "payments.manual_supplier_payment" too — an account holding only the
+  // legacy value was genuinely authorized to reveal but the UI showed it as
+  // "not granted". hasEffectiveRevealGrant is now the one shared check both
+  // the UI and canRevealPaymentMethod use, so they can never disagree.
+  it("hasEffectiveRevealGrant and canRevealPaymentMethod agree for every combination, including the legacy alias alone", () => {
+    expect(hasEffectiveRevealGrant(["payments.reveal"])).toBe(true);
+    expect(hasEffectiveRevealGrant(["payments.manual_supplier_payment"])).toBe(true);
+    expect(hasEffectiveRevealGrant(["payments.charge"])).toBe(false);
+    expect(hasEffectiveRevealGrant([])).toBe(false);
+    expect(hasEffectiveRevealGrant(null)).toBe(false);
+    expect(hasEffectiveRevealGrant(undefined)).toBe(false);
+
+    expect(canRevealPaymentMethod({ role: "ADMIN", paymentPermissions: ["payments.manual_supplier_payment"] })).toBe(true);
+    expect(canRevealPaymentMethod({ role: "MANAGER", paymentPermissions: ["payments.manual_supplier_payment"] })).toBe(true);
   });
 
   it("a role outside the eligible ceiling (e.g. Travel Agent) is still denied even with a grant present", () => {

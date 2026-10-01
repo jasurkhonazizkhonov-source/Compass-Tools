@@ -357,7 +357,26 @@ export async function sendBookingProfitNotification(params: BookingProfitNotific
     // recipient).
     const toEmail = recipients.map((r) => r.email).join(", ");
 
-    // Try every recipient whose Gmail *looks* connected, in order, not just
+    // Real bug found and fixed: the sender loop below used to iterate
+    // `recipients` directly — every active company user, alphabetical by
+    // name — and send AS whichever one happened to have a connected Gmail
+    // account first. The quote creator (params.agent, the sale this email
+    // announces) was already used for the email's CONTENT (agentFullName/
+    // agentRole/etc. below) but was never actually prioritized as the
+    // SENDING account, so the "From" identity on this announcement was
+    // effectively arbitrary — not the ticketing agent who clicked the
+    // button (that identity isn't in this function's candidate list at
+    // all), but not reliably the quote's creator either. Fixed to match the
+    // established convention already used by sendBookingSignedNotification
+    // above: try the quote creator first (only if they are a current
+    // active user — i.e. present in `recipients`, which is already scoped
+    // to status: "ACTIVE" — so a deactivated creator, or one with no
+    // connected Gmail, falls through to the same existing-recipient
+    // fallback exactly as before), never the other way around.
+    const agentAsRecipient = params.agent ? recipients.find((r) => r.id === params.agent!.id) : undefined;
+    const senderCandidates = agentAsRecipient ? [agentAsRecipient, ...recipients.filter((r) => r.id !== agentAsRecipient.id)] : recipients;
+
+    // Try every candidate whose Gmail *looks* connected, in order, not just
     // the first one — a connection can be recorded as CONNECTED yet still
     // fail at actual send time (an expired/revoked OAuth token only
     // surfaces once Gmail itself rejects the call). Previously this picked
@@ -368,7 +387,7 @@ export async function sendBookingProfitNotification(params: BookingProfitNotific
     // wins immediately.
     let sender: { id: string; email: string; fullName: string } | undefined;
     let result: Awaited<ReturnType<typeof sendEmail>> = { ok: false, error: "No recipient has connected Gmail yet — notification not sent." };
-    for (const candidate of recipients) {
+    for (const candidate of senderCandidates) {
       if ((await getGmailConnectionState(candidate.id)) !== "CONNECTED") continue;
       const attempt = await sendEmail({ accountId: candidate.id, to: candidate.email, bcc: toEmail, subject, html, senderName: candidate.fullName });
       if (attempt.ok) {

@@ -275,6 +275,45 @@ describe("sendBookingProfitNotification — recipient privacy (Part 19) and role
     expect(call.bcc).toContain("admin@example.com");
   });
 
+  // Real bug found and fixed: the sender loop used to iterate the full
+  // `recipients` list (ordered alphabetically by fullName) and send AS
+  // whichever active user happened to have Gmail connected first — NOT
+  // the quote creator (`agent`, who the email is actually ABOUT). "Admin
+  // One" sorts before "Nigora Dadabaeva" alphabetically, so the OLD code
+  // would have sent this email as the admin even though the agent (the
+  // actual quote creator/salesperson) also had Gmail connected and should
+  // have been the sender. This is the regression test for that fix.
+  it("sends AS the quote creator (agent) whenever they have Gmail connected, even when an alphabetically-earlier admin also does", async () => {
+    accounts.set("agent-1", { id: "agent-1", email: "agent@example.com", fullName: "Nigora Dadabaeva", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
+    gmailConnected = new Set(["admin-1", "agent-1"]); // admin-1 ("Admin One") sorts first alphabetically
+    const { sendBookingProfitNotification } = await import("../booking-notification");
+    const { sendEmail } = await import("@/server/email/service");
+    await sendBookingProfitNotification(BASE_PROFIT_PARAMS);
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ accountId: "agent-1" }));
+  });
+
+  it("falls back to another active user's Gmail only when the quote creator has none connected", async () => {
+    accounts.set("agent-1", { id: "agent-1", email: "agent@example.com", fullName: "Nigora Dadabaeva", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
+    gmailConnected = new Set(["admin-1"]); // agent-1 has no connection at all
+    const { sendBookingProfitNotification } = await import("../booking-notification");
+    const { sendEmail } = await import("@/server/email/service");
+    await sendBookingProfitNotification(BASE_PROFIT_PARAMS);
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ accountId: "admin-1" }));
+  });
+
+  it("falls back to another active user when the quote creator is no longer an active user (deactivated/removed)", async () => {
+    // agent-1 is intentionally NOT added to `accounts` at all here — same
+    // observable shape as a deactivated/deleted account: absent from the
+    // current active-Users query, so never a sender candidate, exactly
+    // like any account not in `recipients`.
+    gmailConnected = new Set(["admin-1"]);
+    const { sendBookingProfitNotification } = await import("../booking-notification");
+    const { sendEmail } = await import("@/server/email/service");
+    const outcome = await sendBookingProfitNotification(BASE_PROFIT_PARAMS);
+    expect(outcome.ok).toBe(true);
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ accountId: "admin-1" }));
+  });
+
   it("resolves the agent's role via ROLE_LABELS and threads it through as agentRole", async () => {
     const { sendBookingProfitNotification } = await import("../booking-notification");
     const templates = await import("@/server/email/templates");
@@ -291,6 +330,53 @@ describe("sendBookingProfitNotification — recipient privacy (Part 19) and role
     expect(templates.buildBookingProfitNotificationEmail).toHaveBeenCalledWith(
       expect.objectContaining({ agentRole: null })
     );
+  });
+
+  // Required behavior per spec: the recipient list is the CURRENT Users
+  // data, resolved FRESH on every call — never a list computed once and
+  // reused. Proven here by mutating the active-accounts data BETWEEN two
+  // calls (for two different bookings, since the first booking's own
+  // notification is otherwise idempotent) and confirming the second call's
+  // distribution list reflects the change: a newly added user is included,
+  // and an updated email address for an existing user is used.
+  it("resolves the recipient list fresh on every call — a user added or whose email changed after the first send is reflected on the next send", async () => {
+    const { sendBookingProfitNotification } = await import("../booking-notification");
+
+    const first = await sendBookingProfitNotification(BASE_PROFIT_PARAMS);
+    expect(first).toEqual({ ok: true });
+    expect(emailLogs[0].toEmail).not.toContain("new-hire@example.com");
+
+    // A new user is added, and an existing one's email changes — exactly
+    // the Users-section edits the spec describes.
+    accounts.set("new-hire-1", { id: "new-hire-1", email: "new-hire@example.com", fullName: "New Hire", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
+    const admin = accounts.get("admin-1")!;
+    accounts.set("admin-1", { ...admin, email: "admin-updated@example.com" });
+
+    const second = await sendBookingProfitNotification({ ...BASE_PROFIT_PARAMS, bookingId: "booking-2" });
+    expect(second).toEqual({ ok: true });
+    expect(emailLogs[1].toEmail).toContain("new-hire@example.com");
+    expect(emailLogs[1].toEmail).toContain("admin-updated@example.com");
+    expect(emailLogs[1].toEmail).not.toContain("admin@example.com");
+  });
+
+  // Required behavior per spec: a user no longer meeting the application's
+  // existing active-user rule (status !== "ACTIVE", the same rule every
+  // other recipient/session check in this codebase already uses) must drop
+  // out of the recipient list on the very next send, without any special
+  // handling beyond the existing status: "ACTIVE" filter already in the
+  // query above.
+  it("a deactivated user drops out of the recipient list on the next send", async () => {
+    accounts.set("agent-1", { id: "agent-1", email: "agent@example.com", fullName: "Nigora Dadabaeva", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
+    const { sendBookingProfitNotification } = await import("../booking-notification");
+
+    const first = await sendBookingProfitNotification(BASE_PROFIT_PARAMS);
+    expect(first).toEqual({ ok: true });
+    expect(emailLogs[0].toEmail).toContain("agent@example.com");
+
+    accounts.set("agent-1", { ...accounts.get("agent-1")!, status: "INACTIVE" });
+    const second = await sendBookingProfitNotification({ ...BASE_PROFIT_PARAMS, bookingId: "booking-2" });
+    expect(second).toEqual({ ok: true });
+    expect(emailLogs[1].toEmail).not.toContain("agent@example.com");
   });
 
   it("still records the FULL distribution list in EmailLog.toEmail for internal audit, even though the actual Gmail 'to' header only ever carries the sender's own address", async () => {

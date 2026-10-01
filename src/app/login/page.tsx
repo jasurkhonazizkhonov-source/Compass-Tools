@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { getGoogleClientId } from "@/server/auth/google-config";
 import { GoogleSignInButton } from "@/components/layout/google-sign-in-button";
@@ -72,12 +73,16 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
               "radial-gradient(circle at 15% 20%, rgba(212,162,78,0.25), transparent 45%), radial-gradient(circle at 85% 85%, rgba(255,255,255,0.08), transparent 50%)",
           }}
         />
-        <div className="relative flex items-center gap-3">
+        <Link
+          href="/"
+          className="relative flex w-fit items-center gap-3 rounded-lg outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-[#12233a]"
+          aria-label={`${PRODUCT_NAME} home`}
+        >
           <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/95 shadow-sm">
             <CompassMark className="h-8 w-8" />
           </div>
           <span className="text-lg font-semibold tracking-tight">{PRODUCT_NAME}</span>
-        </div>
+        </Link>
 
         <div className="relative max-w-md space-y-8">
           <h2 className="text-3xl font-semibold leading-tight tracking-tight">
@@ -104,12 +109,16 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
           throughout the transition, which animates opacity/transform only. */}
       <div className="flex items-center justify-center bg-muted/30 px-4 py-16 sm:px-6">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300 w-full max-w-sm space-y-8">
-          <div className="flex flex-col items-center text-center lg:hidden">
+          <Link
+            href="/"
+            className="flex flex-col items-center rounded-lg text-center outline-none transition-opacity hover:opacity-80 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 lg:hidden"
+            aria-label={`${PRODUCT_NAME} home`}
+          >
             <div className="flex h-14 w-14 items-center justify-center rounded-xl bg-white/95 shadow-sm">
               <CompassMark className="h-11 w-11" />
             </div>
             <span className="mt-3 text-base font-semibold tracking-tight text-foreground">{PRODUCT_NAME}</span>
-          </div>
+          </Link>
 
           <div className="rounded-2xl border bg-background p-6 shadow-sm sm:p-8">
             <div className="space-y-2 text-center">

@@ -31,6 +31,7 @@ import {
   PAYMENT_PERMISSION_LABELS,
   isPaymentPermissionGrantableForRole,
   isPaymentPermission,
+  hasEffectiveRevealGrant,
   type PaymentPermission,
   BOOKING_PERMISSIONS,
   BOOKING_PERMISSION_LABELS,
@@ -810,12 +811,42 @@ export function AccountPaymentPermissionsEditor({
     });
   }
 
+  // Real bug found and fixed: "payments.reveal" has a pre-rename alias,
+  // "payments.manual_supplier_payment" — canRevealPaymentMethod() (and the
+  // PAYMENT_PERMISSION_LABELS entry for the legacy value) already treat an
+  // account holding EITHER one as fully authorized to reveal, but this
+  // checkbox/badge previously checked current.includes("payments.reveal")
+  // alone — an account whose only grant was the legacy value would show as
+  // "Reveal not granted" and an unchecked box despite being genuinely
+  // authorized server-side. hasEffectiveRevealGrant is the one shared check
+  // both this UI and the real authorization function now use, so they can
+  // never disagree again. Unchecking now clears BOTH values (a full, clean
+  // revoke) rather than leaving a legacy grant silently still in effect.
+  function toggleReveal(checked: boolean) {
+    const next = checked ? [...current.filter((p) => p !== "payments.manual_supplier_payment"), "payments.reveal"] : current.filter((p) => p !== "payments.reveal" && p !== "payments.manual_supplier_payment");
+    setCurrent(next);
+    startTransition(async () => {
+      try {
+        await updatePaymentPermissions(accountId, next);
+        toast.success("Payment permissions updated");
+      } catch (err) {
+        setCurrent(current);
+        toast.error(err instanceof Error ? err.message : "Failed to update payment permissions");
+      }
+    });
+  }
+
   // Every Admin has full access to the other payment actions regardless of this
   // grant array (see permissions.ts), so those checkboxes would be misleading
-  // for an Admin. Full-card Reveal is the exception: it needs an explicit grant
-  // for every role, Admin included, so that ONE toggle is shown.
+  // for an Admin. Full-card Reveal is the exception, BY DESIGN: it is the one
+  // payment action that is NEVER granted by role alone, Admin included — an
+  // Admin must explicitly (and audibly) grant it to themselves or another
+  // Admin before anyone can decrypt a card number. A freshly created Admin
+  // correctly shows "Reveal not granted" until that explicit grant is made;
+  // that is the intended default-deny security posture, not a bug.
   const isAdmin = role === "ADMIN";
-  const visiblePermissions: readonly PaymentPermission[] = isAdmin ? ["payments.reveal"] : PAYMENT_PERMISSIONS;
+  const visiblePermissions: readonly PaymentPermission[] = isAdmin ? [] : PAYMENT_PERMISSIONS;
+  const revealGranted = hasEffectiveRevealGrant(current);
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -823,7 +854,7 @@ export function AccountPaymentPermissionsEditor({
         <button type="button" className="flex flex-wrap items-center gap-1 max-w-[220px] text-left">
           {isAdmin ? (
             <Badge variant="outline" className="text-[10px] font-normal">
-              Full access (Admin){current.includes("payments.reveal") ? " · Reveal granted" : " · Reveal not granted"}
+              Full access (Admin) · Reveal {revealGranted ? "granted" : "not granted"}
             </Badge>
           ) : current.length === 0 ? (
             <span className="text-sm text-muted-foreground">None</span>
@@ -839,9 +870,16 @@ export function AccountPaymentPermissionsEditor({
       <PopoverContent align="start" className="w-80">
         <p className="text-xs font-medium mb-1">Payment Permissions</p>
         <p className="text-xs text-muted-foreground mb-2">
-          Explicit, default-deny grants. Role alone never enables a payment-sensitive action.
+          Explicit, default-deny grants. Role alone never enables a payment-sensitive action — this applies to Admin
+          too for full-card Reveal specifically, which always requires this explicit grant.
         </p>
         <div className="space-y-2">
+          {isAdmin && (
+            <label className="flex items-start gap-2 text-sm">
+              <Checkbox checked={revealGranted} disabled={isPending} onCheckedChange={(v) => toggleReveal(v === true)} className="mt-0.5" />
+              <span>{PAYMENT_PERMISSION_LABELS["payments.reveal"]}</span>
+            </label>
+          )}
           {visiblePermissions.map((permission) => {
             const grantable = isPaymentPermissionGrantableForRole(permission, role);
             return (

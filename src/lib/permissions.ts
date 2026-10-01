@@ -297,6 +297,18 @@ export function hasPaymentPermission(account: PaymentAccount, permission: Paymen
 // gets granted — matches the spec's explicit ceiling.
 export const REVEAL_ELIGIBLE_ROLES: AccountRole[] = ["ADMIN", "MANAGER", "TICKETING_AGENT"];
 
+/** Whether a stored grant array carries EITHER the current "payments.reveal"
+ * permission or its pre-rename alias "payments.manual_supplier_payment" (an
+ * account granted Reveal before the rename keeps working — see
+ * PAYMENT_PERMISSION_LABELS' own note that the legacy value "still permits
+ * Reveal"). The single source of truth for "does this grant array carry
+ * effective Reveal access", used by both the real authorization check below
+ * AND the Users-section UI, so the two can never disagree about an account
+ * that happens to hold the legacy value instead of the current one. */
+export function hasEffectiveRevealGrant(permissions: string[] | null | undefined): boolean {
+  return !!permissions?.some((p) => p === "payments.reveal" || p === "payments.manual_supplier_payment");
+}
+
 /** Full-PAN reveal requires BOTH an eligible role AND the explicit
  * payments.reveal (or payments.manual_supplier_payment) grant — neither a
  * role alone nor a permission on an ineligible role is ever sufficient.
@@ -306,7 +318,7 @@ export const REVEAL_ELIGIBLE_ROLES: AccountRole[] = ["ADMIN", "MANAGER", "TICKET
 export function canRevealPaymentMethod(account: PaymentAccount): boolean {
   if (!account) return false;
   if (!REVEAL_ELIGIBLE_ROLES.includes(account.role)) return false;
-  return hasPaymentPermission(account, "payments.reveal") || hasPaymentPermission(account, "payments.manual_supplier_payment");
+  return hasEffectiveRevealGrant(account.paymentPermissions);
 }
 
 /** Manually confirming a payment was processed (replaces the old
