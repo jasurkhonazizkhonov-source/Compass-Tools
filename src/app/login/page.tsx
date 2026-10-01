@@ -79,7 +79,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
           </ul>
         </div>
 
-        <p className="relative text-xs text-white/50">Business Flights Travel · Internal CRM</p>
+        <p className="relative text-xs text-white/50">{PRODUCT_NAME} · Internal CRM</p>
       </div>
 
       {/* Sign-in panel */}

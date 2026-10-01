@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 
 export const metadata: Metadata = {
   title: `About — ${PRODUCT_NAME}`,
-  description: "Compass Tools is the CRM built for and used by Business Flights Travel's own agents.",
+  description: "Compass Tools is a CRM built for travel agencies to manage leads, quotes, bookings, and customer communication.",
   alternates: { canonical: "/about" },
 };
 
@@ -15,10 +15,10 @@ export default function AboutPage() {
       <h1 className="text-4xl font-semibold tracking-tight text-foreground">About {PRODUCT_NAME}</h1>
       <div className="mt-6 space-y-5 text-muted-foreground">
         <p>
-          {PRODUCT_NAME} is the CRM Business Flights Travel&apos;s own team uses every day to manage leads, build
-          fare quotes, track bookings, and stay in touch with customers. It was built around the way a real travel
-          agency actually operates — a lead comes in, an agent builds a quote, a customer signs and books, and the
-          team follows up — rather than a generic sales pipeline adapted after the fact.
+          {PRODUCT_NAME} is a CRM built for travel agencies to manage leads, build fare quotes, track bookings, and
+          stay in touch with customers every day. It is built around the way a travel agency actually operates — a
+          lead comes in, an agent builds a quote, a customer signs and books, and the team follows up — rather than a
+          generic sales pipeline adapted after the fact.
         </p>
         <p>
           Every lead is tracked from first contact through booking, every quote reflects real GDS itinerary data, and

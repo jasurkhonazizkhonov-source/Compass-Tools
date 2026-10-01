@@ -32,11 +32,11 @@ export default function PrivacyPage() {
         <section>
           <h2>Two separate systems</h2>
           <p>
-            {PRODUCT_NAME} is the CRM platform; it is also used by Business Flights Travel, one of the travel
-            agencies that runs on it. This website&apos;s own Contact form (above) is about {PRODUCT_NAME} the
-            product — a demo, a feature question, support, billing. It is kept entirely separate, in its own
-            database records and its own inbox visible only to {PRODUCT_NAME}&apos;s own team, from any inquiry a
-            traveler submits to a travel agency&apos;s own customer-facing website. We do not combine these.
+            {PRODUCT_NAME} is the CRM platform; travel agencies run their own, separate customer-facing websites on
+            top of it. This website&apos;s own Contact form (above) is about {PRODUCT_NAME} the product — a demo, a
+            feature question, support, billing. It is kept entirely separate, in its own database records and its own
+            inbox visible only to {PRODUCT_NAME}&apos;s own team, from any inquiry a traveler submits to a travel
+            agency&apos;s own customer-facing website. We do not combine these.
           </p>
         </section>
         <section>

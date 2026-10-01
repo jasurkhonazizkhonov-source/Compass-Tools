@@ -70,6 +70,64 @@ export function MockQuotePanel() {
   );
 }
 
+/** A stylized, fictional booking status list — used on the Booking
+ * Management feature page. */
+export function MockBookingPanel() {
+  const rows = [
+    { ref: "BK-3041", name: "J. Alvarez", status: "Ticketed", tone: "success" as const },
+    { ref: "BK-3042", name: "M. Okafor", status: "Charged", tone: "info" as const },
+    { ref: "BK-3039", name: "R. Tanaka", status: "Signed", tone: "warning" as const },
+  ];
+  return (
+    <div className="overflow-hidden rounded-xl border bg-background shadow-lg" aria-hidden>
+      <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-3">
+        <span className="text-xs font-semibold text-foreground">Bookings</span>
+        <span className="text-[11px] text-muted-foreground">Sample data</span>
+      </div>
+      <div className="divide-y">
+        {rows.map((row) => (
+          <div key={row.ref} className="flex items-center justify-between px-4 py-2.5 text-xs">
+            <div className="min-w-0">
+              <p className="truncate font-medium text-foreground">{row.name}</p>
+              <p className="text-muted-foreground">{row.ref}</p>
+            </div>
+            <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${TONE_CLASSES[row.tone]}`}>{row.status}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** A stylized, fictional sent-mail log — used on the Email Communication
+ * and Automated Follow-Up feature pages. */
+export function MockEmailPanel() {
+  const rows = [
+    { to: "j.alvarez@example.com", subject: "Your fare quote — LAX → CDG", when: "2m ago" },
+    { to: "m.okafor@example.com", subject: "Booking confirmed — BK-3042", when: "41m ago" },
+    { to: "s.kowalski@example.com", subject: "Following up on your inquiry", when: "3h ago" },
+  ];
+  return (
+    <div className="overflow-hidden rounded-xl border bg-background shadow-lg" aria-hidden>
+      <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-3">
+        <span className="text-xs font-semibold text-foreground">Sent mail</span>
+        <span className="text-[11px] text-muted-foreground">Sample data</span>
+      </div>
+      <div className="divide-y">
+        {rows.map((row) => (
+          <div key={row.subject} className="px-4 py-2.5 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <p className="truncate font-medium text-foreground">{row.subject}</p>
+              <span className="shrink-0 text-[10px] text-muted-foreground">{row.when}</span>
+            </div>
+            <p className="mt-0.5 truncate text-muted-foreground">To: {row.to}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /** A stylized, fictional dashboard summary strip — used on the homepage
  * and the Sales Visibility feature page. */
 export function MockDashboardPanel() {

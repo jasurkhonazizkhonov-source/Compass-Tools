@@ -41,7 +41,7 @@ export function SiteFooter() {
               <span className="text-sm font-semibold text-foreground">{PRODUCT_NAME}</span>
             </Link>
             <p className="mt-3 max-w-[220px] text-xs text-muted-foreground">
-              The CRM Business Flights Travel&apos;s team uses to manage leads, quotes, and bookings in one place.
+              A CRM built for travel agencies to manage leads, quotes, and bookings in one place.
             </p>
           </div>
           {FOOTER_COLUMNS.map((col) => (
@@ -60,7 +60,7 @@ export function SiteFooter() {
           ))}
         </div>
         <div className="mt-10 flex flex-col gap-2 border-t pt-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
-          <p>&copy; {new Date().getFullYear()} Business Flights Travel. All rights reserved.</p>
+          <p>&copy; {new Date().getFullYear()} {PRODUCT_NAME}. All rights reserved.</p>
           <Link href="/login" className="hover:text-foreground">
             Client Login
           </Link>

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { ArrowRight, CheckCircle2 } from "lucide-react";
+import { ArrowRight, CheckCircle2, ShieldCheck } from "lucide-react";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { MARKETING_FEATURES } from "@/lib/marketing/features-data";
@@ -9,12 +9,12 @@ import { Button } from "@/components/ui/button";
 import { MockLeadsPanel, MockQuotePanel, MockDashboardPanel } from "@/components/marketing/mock-crm-panel";
 
 export const metadata: Metadata = {
-  title: `${PRODUCT_NAME} — CRM for Business Flights Travel`,
+  title: `${PRODUCT_NAME} — CRM for Travel Agencies`,
   description:
-    "Compass Tools is the CRM Business Flights Travel's team uses to manage leads, quotes, bookings, and customer communication in one place.",
+    "Compass Tools is a CRM built for travel agencies to manage leads, quotes, bookings, and customer communication in one place.",
   alternates: { canonical: "/" },
   openGraph: {
-    title: `${PRODUCT_NAME} — CRM for Business Flights Travel`,
+    title: `${PRODUCT_NAME} — CRM for Travel Agencies`,
     description: "Manage leads, quotes, bookings, and customer communication in one place.",
     url: "/",
     type: "website",
@@ -57,8 +57,8 @@ export default async function HomePage() {
               One CRM for every lead, quote, and booking
             </h1>
             <p className="mt-5 text-lg text-muted-foreground">
-              {PRODUCT_NAME} is the CRM Business Flights Travel&apos;s team uses to manage leads, build quotes, track
-              bookings, and communicate with customers — all in one place.
+              {PRODUCT_NAME} is a CRM built for travel agencies to manage leads, build quotes, track bookings, and
+              communicate with customers — all in one place.
             </p>
             <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Button asChild size="lg" className="gap-2">
@@ -141,6 +141,24 @@ export default async function HomePage() {
               </Link>
             ))}
           </div>
+        </div>
+      </section>
+
+      {/* Security teaser */}
+      <section className="border-b py-14">
+        <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-4 text-center sm:px-6">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#12233a]">
+            <ShieldCheck className="h-5 w-5 text-white" aria-hidden />
+          </div>
+          <h2 className="text-2xl font-semibold tracking-tight text-foreground">Built with access control in mind</h2>
+          <p className="max-w-xl text-sm text-muted-foreground">
+            Google sign-in, server-enforced roles, encrypted credentials, and no raw card storage — see exactly how on
+            the{" "}
+            <Link href="/security" className="font-medium text-foreground underline underline-offset-4">
+              Security
+            </Link>{" "}
+            page.
+          </p>
         </div>
       </section>
 

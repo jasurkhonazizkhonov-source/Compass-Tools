@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowRight, CheckCircle2 } from "lucide-react";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { MARKETING_FEATURES, getFeatureBySlug } from "@/lib/marketing/features-data";
 import { Button } from "@/components/ui/button";
-import { MockLeadsPanel, MockQuotePanel, MockDashboardPanel } from "@/components/marketing/mock-crm-panel";
+import { MockLeadsPanel, MockQuotePanel, MockDashboardPanel, MockBookingPanel, MockEmailPanel } from "@/components/marketing/mock-crm-panel";
 
 // One dynamic route rendering all seven /features/<slug> pages from a
 // single typed data source (src/lib/marketing/features-data.ts) rather
@@ -33,7 +33,9 @@ const MOCK_PANEL_BY_SLUG: Record<string, React.ComponentType> = {
   leads: MockLeadsPanel,
   "customer-management": MockLeadsPanel,
   quotes: MockQuotePanel,
-  bookings: MockQuotePanel,
+  bookings: MockBookingPanel,
+  email: MockEmailPanel,
+  sequences: MockEmailPanel,
   analytics: MockDashboardPanel,
 };
 
