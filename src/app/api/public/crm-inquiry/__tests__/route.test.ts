@@ -13,6 +13,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 let companies: Map<string, { id: string }>;
 let inquiries: Array<Record<string, unknown>>;
+let companyFindUniqueShouldThrow: boolean;
 let contactFindUniqueShouldThrow: boolean;
 let inquiryCreateShouldThrow: boolean;
 
@@ -24,7 +25,10 @@ vi.mock("@/server/admin-notifications", () => ({
 vi.mock("@/lib/prisma", () => {
   const prisma: Record<string, unknown> = {
     company: {
-      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => companies.get(where.id) ?? null),
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
+        if (companyFindUniqueShouldThrow) throw new Error("connection terminated");
+        return companies.get(where.id) ?? null;
+      }),
     },
     contact: {
       findFirst: vi.fn(async () => {
@@ -75,6 +79,7 @@ const BASE_BODY = {
 beforeEach(() => {
   companies = new Map([["company-1", { id: "company-1" }]]);
   inquiries = [];
+  companyFindUniqueShouldThrow = false;
   contactFindUniqueShouldThrow = false;
   inquiryCreateShouldThrow = false;
   vi.clearAllMocks();
@@ -98,6 +103,19 @@ describe("POST /api/public/crm-inquiry", () => {
     const { POST } = await import("../route");
     await POST(makeRequest({ ...BASE_BODY, source: "BUSINESS_FLIGHTS_WEBSITE" }));
     expect(inquiries[0].source).toBe("CRM_WEBSITE");
+  });
+
+  it("a database failure during the company lookup returns a clean, structured error instead of throwing (real gap found and fixed)", async () => {
+    companyFindUniqueShouldThrow = true;
+    const { POST } = await import("../route");
+    const res = await POST(makeRequest(BASE_BODY));
+    const json = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(json.ok).toBe(false);
+    expect(typeof json.error).toBe("string");
+    expect(inquiries).toHaveLength(0);
+    expect(notifyNewInquiry).not.toHaveBeenCalled();
   });
 
   it("a database failure during the contact lookup returns a clean, structured error instead of throwing", async () => {

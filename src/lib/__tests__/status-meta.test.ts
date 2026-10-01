@@ -1,5 +1,28 @@
 import { describe, it, expect } from "vitest";
-import { leadSourceLabel, LEAD_STATUS_META, QUOTE_STATUS_META } from "../status-meta";
+import { leadSourceLabel, LEAD_STATUS_META, QUOTE_STATUS_META, inquirySubjectLabel, INQUIRY_SUBJECT_LABELS, CRM_INQUIRY_SUBJECT_LABELS } from "../status-meta";
+
+// Compass Tools CRM Inquiries and Business Flights Get In Touch share one
+// InquirySubject enum (see src/lib/inquiry-source.ts) but must read as two
+// different products' topics — never the same label implying the wrong
+// business. inquirySubjectLabel is the one place that distinction is made.
+describe("inquirySubjectLabel", () => {
+  it("shows Compass Tools CRM topics for a CRM_WEBSITE inquiry", () => {
+    expect(inquirySubjectLabel("CRM_WEBSITE", "GENERAL_INQUIRY")).toBe("General Compass Tools Inquiry");
+    expect(inquirySubjectLabel("CRM_WEBSITE", "FLIGHT_REQUEST_HELP")).toBe("CRM Demo Request");
+  });
+
+  it("shows Business Flights' own travel topics for a BUSINESS_FLIGHTS_WEBSITE inquiry, unchanged", () => {
+    expect(inquirySubjectLabel("BUSINESS_FLIGHTS_WEBSITE", "GENERAL_INQUIRY")).toBe("General Inquiry");
+    expect(inquirySubjectLabel("BUSINESS_FLIGHTS_WEBSITE", "FLIGHT_REQUEST_HELP")).toBe("Flight Request Help");
+  });
+
+  it("never shows a travel-flavored label for a CRM inquiry, and vice versa", () => {
+    for (const subject of Object.keys(CRM_INQUIRY_SUBJECT_LABELS) as (keyof typeof CRM_INQUIRY_SUBJECT_LABELS)[]) {
+      if (subject === "OTHER") continue; // the one label the two systems intentionally share
+      expect(CRM_INQUIRY_SUBJECT_LABELS[subject]).not.toBe(INQUIRY_SUBJECT_LABELS[subject]);
+    }
+  });
+});
 
 describe("leadSourceLabel", () => {
   it("labels PHONE as Incoming Call", () => {

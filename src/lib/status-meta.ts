@@ -1,4 +1,4 @@
-import type { LeadStatus, LeadSource, QuoteStatus, BookingStatus, Priority, PaymentChargeStatus, EnrollmentStatus, InquiryStatus, InquirySubject, CampaignStatus, MarketingSendStatus } from "@/generated/prisma/client";
+import type { LeadStatus, LeadSource, QuoteStatus, BookingStatus, Priority, PaymentChargeStatus, EnrollmentStatus, InquiryStatus, InquirySubject, InquirySource, CampaignStatus, MarketingSendStatus } from "@/generated/prisma/client";
 
 export type StatusTone = "success" | "info" | "purple" | "warning" | "neutral" | "destructive";
 
@@ -98,6 +98,14 @@ export const INQUIRY_STATUS_META: Record<InquiryStatus, { label: string; tone: S
 
 export const INQUIRY_STATUS_ORDER: InquiryStatus[] = ["NEW", "IN_PROGRESS", "REPLIED", "RESOLVED", "CLOSED"];
 
+// InquirySubject is ONE enum shared by both inquiry systems (see
+// src/lib/inquiry-source.ts) — Business Flights Travel's own external
+// website writes rows against it too, so its five values are never
+// renamed/added-to here (that would need a migration this task doesn't
+// need). What CAN safely change per system, with no schema change, is the
+// LABEL shown for each value — so the same five enum slots read as
+// Business Flights' travel-inquiry topics on that system's inbox, and as
+// Compass Tools' own CRM-product topics on the CRM's inbox and public form.
 export const INQUIRY_SUBJECT_LABELS: Record<InquirySubject, string> = {
   GENERAL_INQUIRY: "General Inquiry",
   FLIGHT_REQUEST_HELP: "Flight Request Help",
@@ -105,6 +113,22 @@ export const INQUIRY_SUBJECT_LABELS: Record<InquirySubject, string> = {
   CORPORATE_TRAVEL: "Corporate Travel",
   OTHER: "Other",
 };
+
+/** Compass Tools CRM's own topics for the same five enum slots — used only
+ * for CRM_WEBSITE-sourced inquiries (the public /contact form and the Admin
+ * "CRM Inquiries" inbox), never for Business Flights' Get In Touch. */
+export const CRM_INQUIRY_SUBJECT_LABELS: Record<InquirySubject, string> = {
+  GENERAL_INQUIRY: "General Compass Tools Inquiry",
+  FLIGHT_REQUEST_HELP: "CRM Demo Request",
+  EXISTING_BOOKING: "Technical Support",
+  CORPORATE_TRAVEL: "Billing & Subscription",
+  OTHER: "Other",
+};
+
+/** The right label for an inquiry's subject, given which system it belongs to. */
+export function inquirySubjectLabel(source: InquirySource, subject: InquirySubject): string {
+  return source === "CRM_WEBSITE" ? CRM_INQUIRY_SUBJECT_LABELS[subject] : INQUIRY_SUBJECT_LABELS[subject];
+}
 
 export const CAMPAIGN_STATUS_META: Record<CampaignStatus, { label: string; tone: StatusTone }> = {
   DRAFT: { label: "Draft", tone: "neutral" },

@@ -8,7 +8,7 @@ import { canViewGetInTouch } from "@/lib/permissions";
 import { InquiryDetailPanel } from "@/components/get-in-touch/inquiry-detail-panel";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { INQUIRY_SUBJECT_LABELS } from "@/lib/status-meta";
+import { inquirySubjectLabel } from "@/lib/status-meta";
 import { INQUIRY_SOURCE_META } from "@/lib/inquiry-source";
 import type { InquirySource } from "@/generated/prisma/client";
 
@@ -56,7 +56,7 @@ export async function InquiryDetailView({ source, id }: { source: InquirySource;
           )}
         </div>
         <p className="text-sm text-muted-foreground mt-1">
-          {INQUIRY_SUBJECT_LABELS[inquiry.subject]} · Received {format(inquiry.createdAt, "MMM d, yyyy 'at' h:mm a")}
+          {inquirySubjectLabel(source, inquiry.subject)} · Received {format(inquiry.createdAt, "MMM d, yyyy 'at' h:mm a")}
         </p>
       </div>
 

@@ -119,17 +119,22 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
   // — never reject a submission this route has never validated before.
   const phoneToStore = normalizedPhone ?? (options.requirePhone ? undefined : data.phone);
 
-  const company = await prisma.company.findUnique({ where: { id: data.companyId }, select: { id: true } });
-  if (!company) {
-    return NextResponse.json({ ok: false, error: "Unknown company" }, { status: 400 });
-  }
-
-  // The database calls are guarded so a transient failure returns the same
-  // clean { ok:false, error } JSON shape as every other failure path (and a
-  // clear "was this inquiry lost" signal) rather than Next's generic 500.
+  // Real gap found during the CRM health/reliability audit: only the
+  // duplicate-guard/create block below was wrapped in try/catch — this
+  // lookup sat BEFORE it, so a transient database failure here (the exact
+  // class this app has hit in production, see db-connection-retry.ts) threw
+  // uncaught and surfaced as Next's bare, empty-body 500 instead of this
+  // same route's own clean { ok:false, error } JSON every other failure path
+  // already returns. Every database call in this handler is now inside one
+  // guarded block.
   let inquiryId = "";
   let isDuplicate = false;
   try {
+    const company = await prisma.company.findUnique({ where: { id: data.companyId }, select: { id: true } });
+    if (!company) {
+      return NextResponse.json({ ok: false, error: "Unknown company" }, { status: 400 });
+    }
+
     // Matches an existing Contact by normalized phone/email — purely
     // informational, never overwrites the matched contact's own data.
     const orConditions = duplicateContactWhere(phoneToStore ?? undefined, data.email);

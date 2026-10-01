@@ -166,6 +166,21 @@ describe("ContactForm", () => {
     expect(await screen.findByRole("heading", { name: /thank you/i })).toHaveFocus();
   });
 
+  it("offers Compass Tools CRM topics, not Business Flights travel topics", async () => {
+    const user = userEvent.setup();
+    render(<ContactForm />);
+    expect(screen.getByRole("combobox", { name: /inquiry topic/i })).toHaveTextContent("General Compass Tools Inquiry");
+
+    await user.click(screen.getByRole("combobox", { name: /inquiry topic/i }));
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(options).toEqual(["General Compass Tools Inquiry", "CRM Demo Request", "Technical Support", "Billing & Subscription", "Other"]);
+    // This form posts to /api/public/crm-inquiry (CRM Inquiries), a
+    // completely separate system from Business Flights Travel's own public
+    // "Get In Touch" form — its options must never read like a travel
+    // agency's customer-service menu.
+    expect(options.join(" ")).not.toMatch(/flight booking|destination|baggage|existing booking/i);
+  });
+
   it("includes a honeypot field that is hidden from sighted users and removed from the accessibility tree", () => {
     render(<ContactForm />);
     const honeypot = document.getElementById("companyWebsite") as HTMLInputElement;

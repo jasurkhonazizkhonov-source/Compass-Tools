@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PhoneInput, DEFAULT_PHONE_COUNTRY } from "@/components/crm/phone-input";
 import { INVALID_EMAIL_MESSAGE, isDisposableEmail } from "@/lib/email-quality";
 import { isValidPhoneInput, type CountryCode } from "@/lib/phone";
+import { CRM_INQUIRY_SUBJECT_LABELS } from "@/lib/status-meta";
 
 // Public CRM marketing-site contact form. Submits to /api/public/crm-inquiry
 // — the CRM Inquiries system (rows tagged CRM_WEBSITE, shown only in the
@@ -32,13 +33,14 @@ import { isValidPhoneInput, type CountryCode } from "@/lib/phone";
 // Reuses the CRM's own PhoneInput (searchable, full-country-list selector +
 // libphonenumber-js validation) rather than a second phone-input
 // implementation or a new dependency.
-const SUBJECT_OPTIONS = [
-  { value: "FLIGHT_REQUEST_HELP", label: "Flight Booking / Quote Request" },
-  { value: "EXISTING_BOOKING", label: "Existing Booking" },
-  { value: "CORPORATE_TRAVEL", label: "Group / Corporate Travel" },
-  { value: "GENERAL_INQUIRY", label: "General Travel Inquiry" },
-  { value: "OTHER", label: "Other" },
-] as const;
+// Labels come from the single shared CRM_INQUIRY_SUBJECT_LABELS map (status-meta.ts)
+// so the Admin "CRM Inquiries" inbox and this public form can never drift apart.
+// The underlying InquirySubject enum is shared with the separate Business
+// Flights Travel website's own "Get In Touch" form — its five values are
+// fixed and are never renamed here; only what this CRM-specific form (and
+// the CRM inbox) DISPLAYS for each value changes.
+const SUBJECT_ORDER = ["GENERAL_INQUIRY", "FLIGHT_REQUEST_HELP", "EXISTING_BOOKING", "CORPORATE_TRAVEL", "OTHER"] as const;
+const SUBJECT_OPTIONS = SUBJECT_ORDER.map((value) => ({ value, label: CRM_INQUIRY_SUBJECT_LABELS[value] }));
 
 const contactFormSchema = z.object({
   firstName: z.string().trim().min(1, "First name is required").max(200),
@@ -262,7 +264,7 @@ export function ContactForm() {
           id="message"
           aria-required="true"
           rows={5}
-          placeholder="Tell us what you need help with, including your travel dates, destinations, or booking reference if applicable."
+          placeholder="Tell us what you need help with — a demo request, a question about a feature, a technical issue, or anything else."
           aria-invalid={!!errors.message}
           aria-describedby={`${messageHintId}${errors.message ? " message-error" : ""}`}
           {...register("message")}

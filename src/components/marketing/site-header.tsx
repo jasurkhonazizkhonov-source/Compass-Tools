@@ -6,6 +6,7 @@ import { Menu, X } from "lucide-react";
 import { CompassMark } from "@/components/brand/compass-mark";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { Button } from "@/components/ui/button";
+import { ThemeToggle } from "@/components/layout/theme-toggle";
 
 const NAV_LINKS = [
   { href: "/features", label: "Features" },
@@ -39,7 +40,8 @@ export function SiteHeader() {
           ))}
         </nav>
 
-        <div className="hidden items-center gap-3 md:flex">
+        <div className="hidden items-center gap-2 md:flex">
+          <ThemeToggle />
           <Button asChild variant="ghost" size="sm">
             <Link href="/login">Client Login</Link>
           </Button>
@@ -48,15 +50,18 @@ export function SiteHeader() {
           </Button>
         </div>
 
-        <button
-          type="button"
-          className="flex h-9 w-9 items-center justify-center rounded-md text-foreground md:hidden"
-          aria-label={mobileOpen ? "Close menu" : "Open menu"}
-          aria-expanded={mobileOpen}
-          onClick={() => setMobileOpen((v) => !v)}
-        >
-          {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-        </button>
+        <div className="flex items-center gap-1 md:hidden">
+          <ThemeToggle />
+          <button
+            type="button"
+            className="flex h-9 w-9 items-center justify-center rounded-md text-foreground"
+            aria-label={mobileOpen ? "Close menu" : "Open menu"}
+            aria-expanded={mobileOpen}
+            onClick={() => setMobileOpen((v) => !v)}
+          >
+            {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+        </div>
       </div>
 
       {mobileOpen && (

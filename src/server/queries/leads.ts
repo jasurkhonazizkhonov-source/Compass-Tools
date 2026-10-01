@@ -62,10 +62,16 @@ export async function getLeads(filters: LeadFilters) {
     prisma.lead.findMany({
       where,
       include: {
-        contact: true,
-        departureAirport: true,
-        arrivalAirport: true,
-        assignedAgent: true,
+        // Narrowed to exactly what the list row renders (contact
+        // name/email/phone, airport IATA codes, agent name) — `contact:
+        // true`/`assignedAgent: true` previously pulled every column of both
+        // full rows, including the agent's Decimal commissionPercent/
+        // tipPercent, into every one of up to 100 rows/page. Mirrors the same
+        // fix already applied to the Quotes and Bookings list queries.
+        contact: { select: { id: true, firstName: true, lastName: true, primaryEmail: true, primaryPhone: true } },
+        departureAirport: { select: { iata: true } },
+        arrivalAirport: { select: { iata: true } },
+        assignedAgent: { select: ACCOUNT_NAME_SELECT },
       },
       // updatedAt is used as the recency signal (matches Contact's list sort
       // and mirrors Quote's lastActivityAt convention) rather than

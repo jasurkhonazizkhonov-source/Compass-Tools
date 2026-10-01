@@ -3,7 +3,7 @@ import { PRODUCT_NAME } from "@/lib/company-config";
 
 export const metadata: Metadata = {
   title: `Terms of Service — ${PRODUCT_NAME}`,
-  description: "Terms for using this website and submitting inquiries to Business Flights Travel.",
+  description: `Terms for using this website and the ${PRODUCT_NAME} CRM.`,
   alternates: { canonical: "/terms" },
   robots: { index: true, follow: true },
 };
@@ -18,28 +18,77 @@ export default function TermsPage() {
         <section>
           <h2>Use of this website</h2>
           <p>
-            This website provides information about Business Flights Travel and the {PRODUCT_NAME} CRM used by our
-            team. It is provided for general informational purposes. You agree to use it lawfully and not to submit
-            false, misleading, or abusive content through any form on this site.
+            This website describes {PRODUCT_NAME}, a CRM platform for travel agencies. It is provided for general
+            informational purposes. You agree to use it lawfully and not to submit false, misleading, or abusive
+            content through the Contact form or any other form on this site.
           </p>
         </section>
         <section>
-          <h2>Inquiries</h2>
+          <h2>Contact form submissions</h2>
           <p>
-            Submitting the Get in Touch form does not create a booking or a binding agreement. It is a request for
-            our team to contact you. Any actual flight booking is subject to the separate terms and conditions
-            presented at the time of booking.
+            Submitting the Contact form does not create any booking, purchase, or binding agreement — it is a
+            request for our team to get back to you about {PRODUCT_NAME}. It is not a channel for a travel
+            agency&apos;s own customers to make or change a travel booking; a traveler with a booking question should
+            use the specific travel agency&apos;s own website or contact information.
           </p>
         </section>
         <section>
-          <h2>Client login</h2>
+          <h2>Use of the CRM application</h2>
           <p>
-            The CRM login is restricted to authorized Business Flights Travel staff. Attempting to access it without
-            authorization is prohibited.
+            Access to the {PRODUCT_NAME} application (Client Login) is restricted to authorized staff of the travel
+            agencies that use it. An account holder is responsible for keeping their account secure and for the
+            accuracy of the information they enter into the system. Attempting to access the application without
+            authorization, or to use it to store or process information you are not authorized to handle, is
+            prohibited.
           </p>
         </section>
         <section>
-          <h2>Changes</h2>
+          <h2>Acceptable use</h2>
+          <p>
+            You agree not to use {PRODUCT_NAME} or this website to violate any law, to attempt to bypass its security
+            controls, to interfere with its normal operation, or to collect, store, or transmit payment card data
+            outside of the application&apos;s own built-in card-handling feature.
+          </p>
+        </section>
+        <section>
+          <h2>Customer data responsibility</h2>
+          <p>
+            Where a travel agency enters its own customers&apos; information into {PRODUCT_NAME}, that agency is
+            responsible for having the right to collect and use that information, and for its own communications
+            with its customers. {PRODUCT_NAME} stores and processes that information on the agency&apos;s behalf, as
+            described in our{" "}
+            <a href="/privacy" className="underline underline-offset-4 hover:text-foreground">
+              Privacy Policy
+            </a>
+            .
+          </p>
+        </section>
+        <section>
+          <h2>Third-party integrations</h2>
+          <p>
+            {PRODUCT_NAME} integrates with Google Sign-In and, where a user chooses to connect it, the Gmail API to
+            send email on that user&apos;s behalf. Use of those integrations is also subject to Google&apos;s own
+            terms. We are not responsible for the availability of these third-party services.
+          </p>
+        </section>
+        <section>
+          <h2>Service availability</h2>
+          <p>
+            We aim to keep {PRODUCT_NAME} available and reliable, but do not guarantee uninterrupted access.
+            Maintenance, third-party outages (including our hosting, database, or email providers), or unforeseen
+            issues may occasionally affect availability.
+          </p>
+        </section>
+        <section>
+          <h2>Disclaimers and limitation of liability</h2>
+          <p>
+            {PRODUCT_NAME} is provided on an &quot;as is&quot; basis without warranties of any kind, express or implied. To the
+            fullest extent permitted by law, {PRODUCT_NAME} is not liable for indirect, incidental, or consequential
+            damages arising from use of this website or the application.
+          </p>
+        </section>
+        <section>
+          <h2>Changes to these terms</h2>
           <p>We may update these terms from time to time. The date above reflects the most recent revision.</p>
         </section>
         <section>
@@ -47,7 +96,7 @@ export default function TermsPage() {
           <p>
             Questions about these terms can be sent through our{" "}
             <a href="/contact" className="underline underline-offset-4 hover:text-foreground">
-              Get in Touch
+              Contact
             </a>{" "}
             page.
           </p>

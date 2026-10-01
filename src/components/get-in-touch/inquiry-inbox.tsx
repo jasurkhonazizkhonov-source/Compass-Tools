@@ -11,7 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { PaginationControls } from "@/components/crm/pagination-controls";
 import { redirectToValidPageIfNeeded } from "@/lib/pagination";
-import { INQUIRY_STATUS_META, INQUIRY_STATUS_ORDER, INQUIRY_SUBJECT_LABELS } from "@/lib/status-meta";
+import { INQUIRY_STATUS_META, INQUIRY_STATUS_ORDER, inquirySubjectLabel } from "@/lib/status-meta";
 import type { InquirySource, InquiryStatus } from "@/generated/prisma/client";
 import { cn } from "@/lib/utils";
 import { messagePreview } from "@/lib/message-preview";
@@ -119,7 +119,7 @@ export async function InquiryInbox({ source, searchParams }: { source: InquirySo
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{i.email}</TableCell>
                     <TableCell className="text-sm text-muted-foreground">{i.phone ?? "—"}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{INQUIRY_SUBJECT_LABELS[i.subject]}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground">{inquirySubjectLabel(source, i.subject)}</TableCell>
                     <TableCell className="max-w-[18rem] truncate text-sm text-muted-foreground" title="Open the inquiry to read the full message">
                       {messagePreview(i.message)}
                     </TableCell>
