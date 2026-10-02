@@ -21,6 +21,8 @@ import { ReassignLeadDialog } from "@/components/leads/reassign-lead-dialog";
 import { NotesPanel } from "@/components/crm/notes-panel";
 import { TasksPanel } from "@/components/crm/tasks-panel";
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
+import { LeadCapturedEvent } from "@/components/leads/lead-captured-event";
+import { leadRouteLabel } from "@/lib/lead-itinerary";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { QUOTE_STATUS_META } from "@/lib/status-meta";
@@ -47,6 +49,20 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     notFound();
   }
 
+  // The legs the Travel Request editor starts from. A multi-city lead with saved
+  // segments shows exactly those, in order. One that has none yet (switched to
+  // multi-city from another trip type, or captured before segments existed) starts
+  // from its single route — and its return leg, if it had one — so nothing the
+  // request already says is lost; it is only saved when the user presses Save.
+  const dayString = (d: Date | null) => (d ? d.toISOString().slice(0, 10) : "");
+  const editableSegments =
+    lead.segments.length > 0
+      ? lead.segments.map((seg) => ({ key: seg.id, from: seg.departureAirport, to: seg.arrivalAirport, date: dayString(seg.departureDate) }))
+      : [
+          { key: "seed-1", from: lead.departureAirport, to: lead.arrivalAirport, date: dayString(lead.departureDate) },
+          ...(lead.returnDate ? [{ key: "seed-2", from: lead.arrivalAirport, to: lead.departureAirport, date: dayString(lead.returnDate) }] : []),
+        ];
+
   return (
     <div className="space-y-5">
       <div>
@@ -59,7 +75,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               {lead.contact.firstName} {lead.contact.lastName}
             </h1>
             <p className="text-sm text-muted-foreground mt-1">
-              {lead.departureAirport?.iata ?? "?"} → {lead.arrivalAirport?.iata ?? "?"} ·{" "}
+              {leadRouteLabel(lead)} ·{" "}
               {lead.tripType.replace("_", " ")} · {lead.cabinClass.replace("_", " ")}
             </p>
           </div>
@@ -147,6 +163,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             preferredAirline={lead.preferredAirline}
             budget={lead.budget ? Number(lead.budget) : null}
             additionalNotes={lead.notes}
+            segments={editableSegments}
           />
           <CrmMetaCard
             leadId={lead.id}
@@ -254,6 +271,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               </TabsContent>
 
               <TabsContent value="activity" className="pt-4">
+                <LeadCapturedEvent createdAt={lead.createdAt} source={lead.source} />
                 <ActivityTimeline activities={lead.activities} leadId={lead.id} />
               </TabsContent>
 

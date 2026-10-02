@@ -77,6 +77,7 @@ export async function getSalesboard(viewer: Viewer, period: SalesboardPeriod = "
         JOIN "Account" a ON a."id" = q."sentByAgentId"
         WHERE b."status" = 'CONFIRMED' AND b."profitAmount" IS NOT NULL
           AND c."companyId" = ${viewer.companyId} AND b."updatedAt" >= ${start}
+          AND a."accountsVisible" = true
         GROUP BY a."id", a."fullName", a."role"
       `
     : await prisma.$queryRaw<SalesboardRow[]>`
@@ -89,9 +90,18 @@ export async function getSalesboard(viewer: Viewer, period: SalesboardPeriod = "
         JOIN "Account" a ON a."id" = q."sentByAgentId"
         WHERE b."status" = 'CONFIRMED' AND b."profitAmount" IS NOT NULL
           AND c."companyId" = ${viewer.companyId}
+          AND a."accountsVisible" = true
         GROUP BY a."id", a."fullName", a."role"
       `;
 
+  // Hidden accounts (Account.accountsVisible = false) are left off the board —
+  // the same operational-visibility rule as the Accounts directory and the
+  // Lead Acceptance roster. Nothing is deleted: their bookings, profit and
+  // quotes are untouched and still reachable everywhere else; a hidden user
+  // simply is not shown as a current salesperson. Hidden is a different state
+  // from inactive (blocks login) and paused (queue only), which this does
+  // not look at.
+  //
   // Part 13 — Commission is private and deliberately never computed or
   // exposed here; the Salesboard shows sales/profit only.
   return rows

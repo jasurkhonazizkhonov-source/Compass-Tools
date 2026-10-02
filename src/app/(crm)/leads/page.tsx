@@ -17,6 +17,8 @@ import { PRIORITY_META } from "@/lib/status-meta";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatPhoneInternational } from "@/lib/phone";
 import { redirectToValidPageIfNeeded } from "@/lib/pagination";
+import { formatRelativeUpdated } from "@/lib/relative-time";
+import { leadRouteLabel } from "@/lib/lead-itinerary";
 import type { LeadStatus, CabinClass, TripType, LeadSource } from "@/generated/prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -88,6 +90,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                   <TableHead>Agent</TableHead>
                   <TableHead>Priority</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Updated</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="sticky right-0 z-10 w-px bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]">
                     <span className="sr-only">Actions</span>
@@ -108,8 +111,8 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                           {lead.contact.primaryEmail || (lead.contact.primaryPhone ? formatPhoneInternational(lead.contact.primaryPhone) : null)}
                         </p>
                       </TableCell>
-                      <TableCell className="text-sm whitespace-nowrap">
-                        {lead.departureAirport?.iata ?? "—"} → {lead.arrivalAirport?.iata ?? "—"}
+                      <TableCell className="max-w-[240px] truncate text-sm whitespace-nowrap" title={leadRouteLabel(lead)}>
+                        {leadRouteLabel(lead)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                         {lead.departureDate ? format(lead.departureDate, "MMM d, yyyy") : "—"}
@@ -120,6 +123,9 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                       </TableCell>
                       <TableCell>
                         <LeadStatusSelect leadId={lead.id} status={lead.status} badgeClassName="text-sm" viewerRole={currentAccount?.role} />
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap" title={format(lead.updatedAt, "MMM d, yyyy h:mm a")}>
+                        {formatRelativeUpdated(lead.updatedAt)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                         {formatDistanceToNow(lead.createdAt, { addSuffix: true })}
@@ -165,7 +171,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                     <div>
                       <dt className="text-xs text-muted-foreground">Route</dt>
-                      <dd>{lead.departureAirport?.iata ?? "—"} → {lead.arrivalAirport?.iata ?? "—"}</dd>
+                      <dd className="break-words">{leadRouteLabel(lead)}</dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">Travel date</dt>
@@ -174,6 +180,10 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                     <div>
                       <dt className="text-xs text-muted-foreground">Agent</dt>
                       <dd className="break-words">{lead.assignedAgent?.fullName ?? <span className="text-muted-foreground">Unassigned</span>}</dd>
+                    </div>
+                    <div>
+                      <dt className="text-xs text-muted-foreground">Updated</dt>
+                      <dd>{formatRelativeUpdated(lead.updatedAt)}</dd>
                     </div>
                     <div>
                       <dt className="text-xs text-muted-foreground">Created</dt>

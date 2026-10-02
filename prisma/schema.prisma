@@ -58,6 +58,17 @@ model Account {
   // setAccountsVisibility in server/actions/accounts.ts).
   accountsVisible Boolean @default(true)
 
+  // Manager team membership. A TRAVEL_AGENT may be explicitly assigned to ONE
+  // Manager (Admin-only action — see setManagerTeam in
+  // src/server/actions/accounts.ts); a Manager's access to leads, contacts,
+  // quotes and bookings is then their own records plus those of exactly these
+  // members (src/server/visibility.ts) — never everyone's. Null = on nobody's
+  // team (and always null for any non-Travel-Agent). SetNull on delete so
+  // removing a manager account never removes the agents or their records.
+  managerId   String?
+  manager     Account?  @relation("ManagerTeam", fields: [managerId], references: [id], onDelete: SetNull)
+  teamMembers Account[] @relation("ManagerTeam")
+
   // The tenant this Account belongs to — the sole schema surface multi-
   // company isolation needs (see the Company model's own comment for why
   // Contact/Lead/Quote/Booking don't each need their own companyId).
@@ -163,6 +174,7 @@ model Account {
   @@index([role])
   @@index([status])
   @@index([companyId])
+  @@index([managerId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -403,6 +415,12 @@ model Lead {
   departureAirport   Airport? @relation("LeadDeparture", fields: [departureAirportId], references: [id])
   arrivalAirportId   Int?
   arrivalAirport     Airport? @relation("LeadArrival", fields: [arrivalAirportId], references: [id])
+
+  // The ordered legs of a MULTI_CITY request (see LeadSegment). Empty for one-way
+  // and round-trip leads, which keep using the fields above. For a multi-city
+  // lead the departure/arrival/date fields mirror the FIRST segment so every
+  // consumer that only knows about one route keeps working.
+  segments LeadSegment[]
 
   departureDate  DateTime?
   returnDate     DateTime?
@@ -648,6 +666,29 @@ model Attachment {
 // Reference data: Airports / Airlines / Aircraft
 // ─────────────────────────────────────────────────────────────────────────
 
+// One leg of a multi-city travel request, in order (`sequence` 1..n). This is
+// the same information the lead-capture endpoint and the CRM's Travel Request
+// section deal in — airports and a travel date — and deliberately nothing the
+// request does not actually carry (no times, airline or flight numbers: those
+// belong to the quote's itinerary, which is a separate, richer model).
+model LeadSegment {
+  id       String @id @default(cuid())
+  leadId   String
+  lead     Lead   @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  sequence Int
+
+  departureAirportId Int?
+  departureAirport   Airport? @relation("LeadSegmentDeparture", fields: [departureAirportId], references: [id])
+  arrivalAirportId   Int?
+  arrivalAirport     Airport? @relation("LeadSegmentArrival", fields: [arrivalAirportId], references: [id])
+  departureDate      DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([leadId, sequence])
+}
+
 model Airport {
   id          Int      @id @default(autoincrement())
   iata        String   @unique
@@ -662,6 +703,8 @@ model Airport {
 
   leadDepartures Lead[] @relation("LeadDeparture")
   leadArrivals   Lead[] @relation("LeadArrival")
+  leadSegmentDepartures LeadSegment[] @relation("LeadSegmentDeparture")
+  leadSegmentArrivals   LeadSegment[] @relation("LeadSegmentArrival")
   segmentDepartures FlightSegment[] @relation("SegmentDeparture")
   segmentArrivals   FlightSegment[] @relation("SegmentArrival")
 

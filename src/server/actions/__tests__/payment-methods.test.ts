@@ -157,7 +157,8 @@ describe("revealPaymentMethod — role x permission matrix", () => {
 
   for (const { role, eligible } of ROLE_CASES) {
     it(`${role} WITH payments.reveal + full record access -> ${eligible ? "allowed" : "denied"}`, async () => {
-      seedBookingAndCard();
+      // A Manager reaches only bookings inside their own scope, so for that role the booking is theirs.
+      seedBookingAndCard(role === "MANAGER" ? { quoteAgentId: "actor-1" } : {});
       currentActor = { id: "actor-1", role, status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
       const { revealPaymentMethod } = await import("../payment-methods");
       if (eligible) {
@@ -220,16 +221,27 @@ describe("revealPaymentMethod — IDOR/BOLA protection", () => {
     await expect(revealPaymentMethod("pm-1")).rejects.toThrow(/not authorized/i);
   });
 
-  it("a MANAGER (org-wide visibility role) CAN reveal a card on a booking owned by a different agent — by design, not an IDOR bypass", async () => {
+  it("a MANAGER with the Reveal grant can NOT reveal a card on a booking outside their own team — the role ceiling and grant are unchanged, the row scope is the manager's team", async () => {
     seedBookingAndCard({ quoteAgentId: "other-manager" });
     currentActor = { id: "manager-1", role: "MANAGER", status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
-    // MANAGER/ADMIN/TICKETING_AGENT get canViewAllRecords()=true (org-wide
-    // back-office queue) — a deliberate, documented design choice in
-    // permissions.ts, distinct from the restricted-visibility roles tested
-    // above where ownership genuinely gates access.
     const { revealPaymentMethod } = await import("../payment-methods");
-    const result = await revealPaymentMethod("pm-1");
-    expect(result).toMatchObject({ pan: "4111111111111111" });
+    await expect(revealPaymentMethod("pm-1")).rejects.toThrow(/not authorized/i);
+  });
+
+  it("…but CAN on a booking that is within their own scope", async () => {
+    seedBookingAndCard({ quoteAgentId: "manager-1" });
+    currentActor = { id: "manager-1", role: "MANAGER", status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    expect(await revealPaymentMethod("pm-1")).toMatchObject({ pan: "4111111111111111" });
+  });
+
+  it("a TICKETING_AGENT and an ADMIN (company-wide by design) can still reveal on any booking", async () => {
+    for (const role of ["TICKETING_AGENT", "ADMIN"]) {
+      seedBookingAndCard({ quoteAgentId: "someone-else" });
+      currentActor = { id: "t-1", role, status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
+      const { revealPaymentMethod } = await import("../payment-methods");
+      expect(await revealPaymentMethod("pm-1"), role).toMatchObject({ pan: "4111111111111111" });
+    }
   });
 });
 

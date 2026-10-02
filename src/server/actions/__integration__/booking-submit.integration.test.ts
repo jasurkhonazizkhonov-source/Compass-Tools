@@ -254,7 +254,11 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     // Every column of every table: the marker is nowhere as a standalone value.
     const tables = await prisma.$queryRaw<Array<{ table_name: string }>>`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`;
     const hits: string[] = [];
+    // Reference data (airports / airlines / aircraft) is bulk-seeded and keyed by auto-increment
+    // integer ids, so a 4-digit marker can collide with a plain id there; it can never hold card data.
+    const REFERENCE_TABLES = new Set(["Airport", "Airline", "AircraftType"]);
     for (const { table_name } of tables) {
+      if (REFERENCE_TABLES.has(table_name)) continue;
       const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${table_name}" t WHERE t::text ~ '(^|[^0-9A-Za-z.])${MARK}([^0-9A-Za-z.]|$)'`);
       if (rows[0].n > 0) hits.push(table_name);
     }

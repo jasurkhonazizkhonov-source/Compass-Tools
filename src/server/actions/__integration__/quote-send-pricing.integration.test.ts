@@ -238,4 +238,41 @@ describe.skipIf(!enabled)("quote pricing guard and send idempotency — real Pos
       expect(sendEmailMock).toHaveBeenCalledTimes(1);
     });
   });
+
+  // "Updated" on the Leads and Contacts lists: sending a quote is meaningful
+  // activity on the lead and the customer — but only when the send succeeded.
+  describe("a quote send counts as an update to its lead and contact", () => {
+    const stamps = async (q: { leadId: string; contactId: string }) => ({
+      lead: (await prisma.lead.findUniqueOrThrow({ where: { id: q.leadId } })).updatedAt.getTime(),
+      contact: (await prisma.contact.findUniqueOrThrow({ where: { id: q.contactId } })).updatedAt.getTime(),
+    });
+
+    it("a successful send moves both Updated times forward — even for a lead that is already QUOTED (so no status change would have touched it)", async () => {
+      const q = await makeQuote("SENT");
+      await prisma.lead.update({ where: { id: q.leadId }, data: { status: "QUOTED" } });
+      const before = await stamps(q);
+      await new Promise((r) => setTimeout(r, 25));
+      expect((await actions.sendQuote(q.id)).ok).toBe(true);
+      const after = await stamps(q);
+      expect(after.lead).toBeGreaterThan(before.lead);
+      expect(after.contact).toBeGreaterThan(before.contact);
+    });
+
+    it("a FAILED send leaves both Updated times exactly as they were", async () => {
+      const q = await makeQuote("DRAFT");
+      const before = await stamps(q);
+      await new Promise((r) => setTimeout(r, 25));
+      sendEmailMock.mockImplementationOnce(async () => ({ ok: false as const, error: "Gmail could not send this email. Please try again." }));
+      expect((await actions.sendQuote(q.id)).ok).toBe(false);
+      expect(await stamps(q)).toEqual(before);
+    });
+
+    it("a send that is refused outright (a signed quote) changes nothing either", async () => {
+      const q = await makeQuote("SIGNED");
+      const before = await stamps(q);
+      await new Promise((r) => setTimeout(r, 25));
+      expect((await actions.sendQuote(q.id)).ok).toBe(false);
+      expect(await stamps(q)).toEqual(before);
+    });
+  });
 });

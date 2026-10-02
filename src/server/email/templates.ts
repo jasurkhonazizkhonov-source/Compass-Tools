@@ -1409,6 +1409,8 @@ export type NewFlightRequestEmailParams = {
   arrivalAirport: NewFlightRequestAirport | null;
   departureDate: Date | null;
   returnDate: Date | null;
+  /** The ordered legs of a MULTI_CITY request, when it has any — every one is shown. */
+  segments?: Array<{ departureAirport: NewFlightRequestAirport | null; arrivalAirport: NewFlightRequestAirport | null; departureDate: Date | null }>;
   flexibleDates: boolean;
   preferredAirline: string | null;
   budget: number | null;
@@ -1503,6 +1505,7 @@ type LeadDetailInput = Pick<
   | "arrivalAirport"
   | "departureDate"
   | "returnDate"
+  | "segments"
   | "flexibleDates"
   | "preferredAirline"
   | "budget"
@@ -1547,7 +1550,13 @@ function leadDetailBlocks(d: LeadDetailInput) {
 
   const hasRoute = !!(d.departureAirport || d.arrivalAirport || d.departureDate || d.returnDate);
   const legs: string[] = [];
-  if (hasRoute) {
+  const multiCityLegs = d.tripType === "MULTI_CITY" && d.segments && d.segments.length > 0 ? d.segments : null;
+  if (multiCityLegs) {
+    // A multi-city request: one card per leg, in order — none collapsed into the first route.
+    multiCityLegs.forEach((seg, i) =>
+      legs.push(newRequestLegCard({ label: `Segment ${i + 1}`, from: seg.departureAirport, to: seg.arrivalAirport, date: seg.departureDate, brandColor: company.brandColor }))
+    );
+  } else if (hasRoute) {
     legs.push(
       newRequestLegCard({
         label: d.tripType === "ROUND_TRIP" ? "Outbound" : d.tripType === "MULTI_CITY" ? "Route" : "Flight",
@@ -1564,7 +1573,7 @@ function leadDetailBlocks(d: LeadDetailInput) {
 
   const itineraryHtml =
     legs.length > 0
-      ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Flight Itinerary</p>${legs.join("")}${d.tripType === "MULTI_CITY" ? `<p style="margin:0 0 22px; font-size:12px; color:${EMAIL_TOKENS.textSubtle}; line-height:1.6;">Multi-city request — the website form captured one route; confirm any additional legs with the client.</p>` : `<div style="height:12px; line-height:12px; font-size:0;">&nbsp;</div>`}`
+      ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Flight Itinerary</p>${legs.join("")}${d.tripType === "MULTI_CITY" && !multiCityLegs ? `<p style="margin:0 0 22px; font-size:12px; color:${EMAIL_TOKENS.textSubtle}; line-height:1.6;">Multi-city request — only one route was captured; confirm any additional legs with the client.</p>` : `<div style="height:12px; line-height:12px; font-size:0;">&nbsp;</div>`}`
       : "";
 
   const notesHtml = d.notes

@@ -86,3 +86,97 @@ describe("LeadOfferModal — visibility-aware polling (Pass 36)", () => {
     expect(getMyLeadOfferMock).toHaveBeenCalledTimes(3);
   });
 });
+
+// ── Fresh-lead alert wiring ────────────────────────────────────────────
+// The dialog asks lib/lead-offer-alert for ONE sound per offer. These prove the
+// trigger logic (the actual audio is covered in lib/__tests__/lead-offer-alert
+// with a fake Web Audio API, since a test run cannot hear): polling the same
+// offer repeatedly never re-triggers, a genuinely new offer does, the Accept /
+// Skip controls and countdown are unchanged, and a blocked sound is explained.
+describe("LeadOfferModal — alert sound trigger", () => {
+  const EXPIRES = new Date(Date.now() + 60_000).toISOString();
+  const OFFER = { leadId: "lead-1", contactName: "Dark Master", email: "d@x.example", phone: "+14155550123", source: "WEBSITE", route: "JFK → LGW", offerExpiresAt: EXPIRES };
+  let announce: ReturnType<typeof vi.fn>;
+  let accept: ReturnType<typeof vi.fn>;
+  let skip: ReturnType<typeof vi.fn>;
+
+  function wire(result: "played" | "blocked" | "duplicate" = "played") {
+    announce = vi.fn(async () => result);
+    accept = vi.fn(async () => ({ ok: true }));
+    skip = vi.fn(async () => ({ ok: true }));
+    vi.doMock("@/lib/lead-offer-alert", () => ({ announceLeadOffer: announce, initOfferAudio: vi.fn(() => () => {}) }));
+    vi.doMock("@/server/actions/lead-queue", () => ({ getMyLeadOffer: getMyLeadOfferMock, acceptLeadOffer: accept, skipLeadOffer: skip }));
+  }
+
+  it("sounds exactly once for an offer however many times the poll returns it", async () => {
+    getMyLeadOfferMock = vi.fn(async () => OFFER);
+    wire();
+    const { LeadOfferModal } = await import("../lead-offer-modal");
+    render(<LeadOfferModal accountId="account-1" />);
+    await act(async () => { await Promise.resolve(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(getMyLeadOfferMock.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce).toHaveBeenCalledWith(expect.objectContaining({ accountId: "account-1", key: `lead-1:${EXPIRES}` }));
+  });
+
+  it("sounds again for a genuinely new offer (a different lead, or the same lead re-offered with a new expiry)", async () => {
+    let current = OFFER;
+    getMyLeadOfferMock = vi.fn(async () => current);
+    wire();
+    const { LeadOfferModal } = await import("../lead-offer-modal");
+    render(<LeadOfferModal accountId="account-1" />);
+    await act(async () => { await Promise.resolve(); });
+    current = { ...OFFER, leadId: "lead-2" };
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    current = { ...OFFER, leadId: "lead-2", offerExpiresAt: new Date(Date.now() + 120_000).toISOString() };
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+    expect(announce).toHaveBeenCalledTimes(3);
+  });
+
+  it("shows the offer with Accept and Skip, and the countdown is still derived from the server's expiry", async () => {
+    getMyLeadOfferMock = vi.fn(async () => OFFER);
+    wire();
+    const { LeadOfferModal } = await import("../lead-offer-modal");
+    const { screen } = await import("@testing-library/react");
+    render(<LeadOfferModal accountId="account-1" />);
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole("button", { name: /Accept Lead/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Skip" })).toBeEnabled();
+    expect(screen.getByText(/^[01]:\d\d$/)).toBeInTheDocument(); // m:ss, ≤ 1:00
+  });
+
+  it("Accept and Skip still call the existing queue actions", async () => {
+    getMyLeadOfferMock = vi.fn(async () => OFFER);
+    wire();
+    const { LeadOfferModal } = await import("../lead-offer-modal");
+    const { screen, fireEvent } = await import("@testing-library/react");
+    render(<LeadOfferModal accountId="account-1" />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Skip" })); await Promise.resolve(); });
+    expect(skip).toHaveBeenCalledWith("lead-1");
+  });
+
+  it("when the browser blocks sound the dialog says so (and the tab title still announces the offer)", async () => {
+    getMyLeadOfferMock = vi.fn(async () => OFFER);
+    wire("blocked");
+    document.title = "Compass Tools";
+    const { LeadOfferModal } = await import("../lead-offer-modal");
+    const { screen } = await import("@testing-library/react");
+    render(<LeadOfferModal accountId="account-1" />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByText(/Sound is off until you click or press a key/)).toBeInTheDocument();
+    expect(document.title).toBe("(New lead) Compass Tools");
+  });
+
+  it("no sound is requested while there is no offer", async () => {
+    getMyLeadOfferMock = vi.fn(async () => null);
+    wire();
+    const { LeadOfferModal } = await import("../lead-offer-modal");
+    render(<LeadOfferModal accountId="account-1" />);
+    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(6_000); });
+    expect(announce).not.toHaveBeenCalled();
+  });
+});

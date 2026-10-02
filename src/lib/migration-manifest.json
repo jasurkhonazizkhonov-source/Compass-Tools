@@ -62,6 +62,8 @@
     "20260926000300_remove_stripe_payment_artifacts",
     "20260926000400_card_vault_hardening",
     "20261002000100_email_type_new_lead_assignment",
-    "20261002000200_email_type_contact_reassignment"
+    "20261002000200_email_type_contact_reassignment",
+    "20261003000100_manager_team",
+    "20261003000200_lead_segments"
   ]
 }

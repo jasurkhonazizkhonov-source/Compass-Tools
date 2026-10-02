@@ -43,7 +43,7 @@ vi.mock("@/server/email/templates", () => ({ buildQuoteEmail: vi.fn(() => ({ sub
 vi.mock("@/server/email/segment-mapper", () => ({ toEmailSegments: vi.fn(() => []) }));
 vi.mock("@/server/queries/company", () => ({ getCompanyForAccountId: vi.fn(async () => ({ id: "company-1", name: "Test Co" })) }));
 vi.mock("@/lib/company-config", () => ({ resolveBaseUrl: vi.fn(() => "https://app.example.com") }));
-vi.mock("@/server/actions/leads", () => ({ applyLeadStatusChange: vi.fn(async () => {}) }));
+vi.mock("@/server/lead-status-change", () => ({ applyLeadStatusChange: vi.fn(async () => {}) }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {

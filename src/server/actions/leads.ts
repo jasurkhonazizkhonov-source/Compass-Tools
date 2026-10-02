@@ -11,10 +11,12 @@ import { searchContacts } from "@/server/queries/contacts";
 import { canReassignLeads, canDeleteLead, canChangeBookedLeadStatus } from "@/lib/permissions";
 import { leadVisibilityWhere, contactVisibilityWhere } from "@/server/visibility";
 import { sendLeadReassignmentEmails } from "@/server/reassignment-email";
+import { applyLeadStatusChange } from "@/server/lead-status-change";
 import { runAfterResponse } from "@/lib/run-after-response";
 import { sendCrmEmail } from "@/server/email/crm-email";
 import { normalizePhoneNumberWithRecovery, phoneCountryMismatch, isSupportedCountry, type CountryCode } from "@/lib/phone";
 import { duplicateContactWhere } from "@/lib/contact-matching";
+import { leadSegmentsSchema, mirrorFromSegments } from "@/lib/lead-itinerary";
 import { resolveContactForNewLead } from "@/server/contact-resolution";
 import { Prisma, type LeadStatus } from "@/generated/prisma/client";
 
@@ -408,38 +410,6 @@ async function logAuditDenial(action: string, entityType: string, entityId: stri
   await prisma.auditLog.create({ data: { actorId, action, entityType, entityId, metadata: { reason } } });
 }
 
-/**
- * Shared core, deliberately WITHOUT a visibility/ownership check — used by
- * the public updateLeadStatus below (which adds that check for direct
- * user-initiated calls) AND by internal system-driven transitions that have
- * already established their own authorization through a different chain
- * (e.g. sendQuote's post-send "advance lead to QUOTED", which is
- * authorized via the quote itself, not the calling agent's lead ownership —
- * see quoteVisibilityWhere/quotes.ts).
- */
-export async function applyLeadStatusChange(leadId: string, toStatus: LeadStatus, actorId: string | undefined, note?: string) {
-  const lead = await prisma.lead.findUniqueOrThrow({ where: { id: leadId } });
-
-  await prisma.$transaction([
-    prisma.lead.update({ where: { id: leadId }, data: { status: toStatus } }),
-    prisma.leadStatusHistory.create({
-      data: { leadId, fromStatus: lead.status, toStatus, changedById: actorId, note },
-    }),
-  ]);
-
-  await logActivity({
-    leadId,
-    contactId: lead.contactId,
-    actorId,
-    type: "STATUS_CHANGED",
-    description: `Status changed from ${lead.status} to ${toStatus}`,
-  });
-
-  revalidatePath("/leads");
-  revalidatePath(`/leads/${leadId}`);
-  revalidatePath("/dashboard");
-}
-
 export async function updateLeadStatus(leadId: string, toStatus: LeadStatus, note?: string) {
   const actor = await getCurrentAccount();
   const visible = await prisma.lead.findFirst({ where: { id: leadId, ...leadVisibilityWhere(actor) }, select: { id: true } });
@@ -585,6 +555,63 @@ export async function updateLeadField(leadId: string, patch: z.infer<typeof upda
 }
 
 /**
+ * Replaces the ordered flight segments of a MULTI_CITY travel request — the one
+ * write behind the Travel Request section's add / edit / remove / reorder
+ * controls (the editor holds the whole list and sends it, so every one of those
+ * is the same atomic operation and a half-saved itinerary cannot exist).
+ *
+ * Authorization is exactly updateLeadField's: the caller must be able to see
+ * the lead under their row-level scope (so a Manager can edit only their own
+ * team's leads, and nobody can edit a lead by guessing its id). At least one
+ * segment must remain — the last cannot be removed — and every airport must
+ * exist. The lead-level departure/arrival/date columns are re-mirrored from
+ * the first segment in the same transaction, so everything that only knows one
+ * route stays consistent, and the write bumps the lead's Updated time like any
+ * other meaningful edit.
+ */
+export async function setLeadSegments(leadId: string, segments: z.infer<typeof leadSegmentsSchema>) {
+  const data = leadSegmentsSchema.parse(segments);
+  const actor = await getCurrentAccount();
+  const existing = await prisma.lead.findFirst({
+    where: { id: leadId, ...leadVisibilityWhere(actor) },
+    select: { id: true, contactId: true, tripType: true },
+  });
+  if (!existing) throw new Error("Lead not found");
+  if (existing.tripType !== "MULTI_CITY") throw new Error("Only a multi-city request has flight segments");
+
+  const airportIds = [...new Set(data.flatMap((seg) => [seg.departureAirportId, seg.arrivalAirportId]).filter((id): id is number => id != null))];
+  if (airportIds.length > 0 && (await prisma.airport.count({ where: { id: { in: airportIds } } })) !== airportIds.length) {
+    throw new Error("One of the selected airports does not exist");
+  }
+
+  await prisma.$transaction(async (tx) => {
+    await tx.leadSegment.deleteMany({ where: { leadId } });
+    await tx.leadSegment.createMany({
+      data: data.map((seg, i) => ({
+        leadId,
+        sequence: i + 1,
+        departureAirportId: seg.departureAirportId,
+        arrivalAirportId: seg.arrivalAirportId,
+        departureDate: seg.departureDate ? new Date(seg.departureDate) : null,
+      })),
+    });
+    await tx.lead.update({ where: { id: leadId }, data: mirrorFromSegments(data) });
+  });
+
+  await logActivity({
+    leadId,
+    contactId: existing.contactId,
+    actorId: actor?.id,
+    type: "LEAD_UPDATED",
+    description: `Updated itinerary (${data.length} flight segment${data.length === 1 ? "" : "s"})`,
+  });
+
+  revalidatePath(`/leads/${leadId}`);
+  revalidatePath("/leads");
+  return { count: data.length };
+}
+
+/**
  * Reassigns a single lead's owner. Claiming a currently-UNASSIGNED lead is
  * always allowed (that's normal lead-claiming, not reassignment). Moving a
  * lead AWAY from an existing owner to someone else requires
@@ -605,6 +632,13 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
   // is not enough (a Lead has no companyId of its own; its Contact does).
   if (lead.contact.companyId !== actor.companyId) {
     throw new Error("Lead not found");
+  }
+  // A Manager works only within their own team: they cannot hand off (or even
+  // address) a lead outside it by guessing an id. Admin keeps company-wide
+  // reach; other roles keep their existing rule (only claiming an unowned lead).
+  if (actor.role === "MANAGER") {
+    const inScope = await prisma.lead.findFirst({ where: { id: leadId, ...leadVisibilityWhere(actor) }, select: { id: true } });
+    if (!inScope) throw new Error("Lead not found");
   }
 
   const previousOwner = lead.assignedAgent;

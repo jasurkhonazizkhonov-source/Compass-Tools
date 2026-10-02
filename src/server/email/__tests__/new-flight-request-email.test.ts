@@ -190,3 +190,55 @@ describe("customer emails and sequences share the same branded shell", () => {
     expect(html).toContain('<meta name="viewport"');
   });
 });
+
+describe("multi-city requests — every captured segment is shown", () => {
+  const SEGMENTS = [
+    { departureAirport: { iata: "JFK", name: "John F. Kennedy International Airport", city: "New York", country: "United States" }, arrivalAirport: { iata: "LHR", name: "Heathrow Airport", city: "London", country: "United Kingdom" }, departureDate: new Date("2026-10-20T00:00:00Z") },
+    { departureAirport: { iata: "LHR", name: "Heathrow Airport", city: "London", country: "United Kingdom" }, arrivalAirport: { iata: "CDG", name: "Charles de Gaulle Airport", city: "Paris", country: "France" }, departureDate: new Date("2026-10-24T00:00:00Z") },
+    { departureAirport: { iata: "CDG", name: "Charles de Gaulle Airport", city: "Paris", country: "France" }, arrivalAirport: { iata: "JFK", name: "John F. Kennedy International Airport", city: "New York", country: "United States" }, departureDate: new Date("2026-10-30T00:00:00Z") },
+  ];
+
+  it("renders Segment 1, 2 and 3 in order with their dates — not collapsed into one route", () => {
+    const { html } = buildNewFlightRequestEmail({ ...FULL, tripType: "MULTI_CITY", returnDate: null, segments: SEGMENTS });
+    for (const text of ["Segment 1", "Segment 2", "Segment 3", "Oct 20, 2026", "Oct 24, 2026", "Oct 30, 2026", "Heathrow Airport", "Charles de Gaulle Airport"]) {
+      expect(html, text).toContain(text);
+    }
+    expect(html.indexOf("Segment 1")).toBeLessThan(html.indexOf("Segment 2"));
+    expect(html.indexOf("Segment 2")).toBeLessThan(html.indexOf("Segment 3"));
+    expect(html).not.toContain("only one route was captured");
+    expect(html).not.toContain(">Return<");
+  });
+
+  it("a multi-city request with no saved segments keeps the honest one-route note", () => {
+    const { html } = buildNewFlightRequestEmail({ ...FULL, tripType: "MULTI_CITY", returnDate: null, segments: [] });
+    expect(html).toContain("only one route was captured");
+  });
+
+  it("segments on a lead that is no longer multi-city are ignored (round trip still shows Outbound and Return)", () => {
+    const { html } = buildNewFlightRequestEmail({ ...FULL, tripType: "ROUND_TRIP", segments: SEGMENTS });
+    expect(html).toContain("Outbound");
+    expect(html).toContain("Return");
+    expect(html).not.toContain("Segment 1");
+  });
+
+  it("the lead-reassigned-to-you email shows all segments too (same shared itinerary block)", async () => {
+    const { buildLeadReassignmentEmail } = await import("../templates");
+    const { html } = buildLeadReassignmentEmail({
+      ...FULL,
+      tripType: "MULTI_CITY",
+      returnDate: null,
+      segments: SEGMENTS,
+      direction: "TO_YOU",
+      recipientFullName: "Andrew Kent",
+      status: "QUOTED",
+      source: "WEBSITE",
+      newOwnerName: "Andrew Kent",
+      previousOwnerName: "Nigora",
+      reassignedByName: "Sarah",
+      reassignedAt: new Date("2026-10-02T12:51:00Z"),
+      reason: null,
+      leadUrl: null,
+    });
+    expect(html).toContain("Segment 3");
+  });
+});

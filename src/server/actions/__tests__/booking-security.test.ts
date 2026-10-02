@@ -81,7 +81,8 @@ describe("revealBookingIp — role x permission matrix", () => {
 
   for (const { role, eligible } of ROLE_CASES) {
     it(`${role} WITH bookings.reveal_ip -> ${eligible ? "allowed" : "denied"}`, async () => {
-      seedBooking();
+      // A Manager only reaches bookings in their own scope now, so for that role the booking is theirs.
+      seedBooking(role === "MANAGER" ? { quoteAgentId: "actor-1" } : {});
       currentActor = { id: "actor-1", role, status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"] };
       const { revealBookingIp } = await import("../booking-security");
       if (eligible) {
@@ -93,7 +94,7 @@ describe("revealBookingIp — role x permission matrix", () => {
     });
 
     it(`${role} WITHOUT bookings.reveal_ip -> ${role === "ADMIN" ? "still allowed (Admin bypasses the grant array)" : "always denied"}`, async () => {
-      seedBooking();
+      seedBooking(role === "MANAGER" ? { quoteAgentId: "actor-1" } : {});
       currentActor = { id: "actor-1", role, status: "ACTIVE", bookingPermissions: [] };
       const { revealBookingIp } = await import("../booking-security");
       if (role === "ADMIN") {
@@ -123,18 +124,19 @@ describe("revealBookingIp — role x permission matrix", () => {
 describe("revealBookingIp — IDOR/BOLA protection", () => {
   it("denies reveal when the booking is outside a restricted actor's own visibility scope", async () => {
     seedBooking({ quoteAgentId: "someone-else", leadAssignedAgentId: "someone-else", contactOwnerId: "someone-else" });
-    // MANAGER has org-wide visibility, so this alone wouldn't test IDOR; the
-    // role ceiling already denies FLIGHT_EXPERT/TRAVEL_AGENT before IDOR
-    // even runs (matches the equivalent test in payment-methods.test.ts).
-    // IDOR is meaningfully exercised for TICKETING_AGENT/MANAGER/ADMIN,
-    // which have org-wide visibility by design (see visibility.ts) — so
-    // there is no restricted-but-eligible role to test a genuine denial
-    // with here; this is documented, not a gap, matching canViewAllRecords'
-    // intentional design for these three roles.
+    // A Manager is no longer company-wide: with the explicit grant AND an eligible
+    // role they still cannot reveal the IP of a booking outside their own team
+    // (the role ceiling and the grant are unchanged; the row scope narrowed).
     currentActor = { id: "manager-1", role: "MANAGER", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"] };
     const { revealBookingIp } = await import("../booking-security");
-    const result = await revealBookingIp("booking-1");
-    expect(result.ipAddress).toBe("203.0.113.42");
+    await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
+  });
+
+  it("a Manager CAN reveal the IP on a booking that is within their own scope (the grant is still required)", async () => {
+    seedBooking({ quoteAgentId: "manager-1" });
+    currentActor = { id: "manager-1", role: "MANAGER", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"] };
+    const { revealBookingIp } = await import("../booking-security");
+    expect((await revealBookingIp("booking-1")).ipAddress).toBe("203.0.113.42");
   });
 
   it("rejects a non-existent booking id", async () => {

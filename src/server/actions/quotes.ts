@@ -14,7 +14,7 @@ import { toEmailSegments } from "@/server/email/segment-mapper";
 import { transitionQuoteStatus } from "@/server/quote-status";
 import { getCompanyForAccountId } from "@/server/queries/company";
 import { resolveBaseUrl } from "@/lib/company-config";
-import { applyLeadStatusChange } from "@/server/actions/leads";
+import { applyLeadStatusChange } from "@/server/lead-status-change";
 import { SEGMENT_SELECT } from "@/server/queries/segment-select";
 import { parseAirportDateTimeString } from "@/lib/airport-datetime";
 import { canDeleteQuote } from "@/lib/permissions";
@@ -24,6 +24,7 @@ import { SUPPORTED_CURRENCIES, buildPricingSnapshot } from "@/lib/currency";
 import { isQuoteCancelable } from "@/lib/quote-cancelability";
 import { segmentSchema } from "@/server/actions/quote-segment-schema";
 import { Prisma } from "@/generated/prisma/client";
+import { touchLead, touchContact } from "@/server/record-touch";
 import { PRICING_EDITABLE_STATUSES, SENDABLE_QUOTE_STATUSES, QUOTE_SEND_DEDUPE_WINDOW_MS, isQuotePricingEditable, isQuoteSendable } from "@/lib/quote-send-rules";
 
 const quoteNumberAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
@@ -418,6 +419,14 @@ export async function sendQuote(quoteId: string, recipientEmail?: string) {
     }
 
     await transitionQuoteStatus(quoteId, "SENT");
+
+    // A quote reaching the customer is meaningful activity on the lead and the
+    // customer: bump both "Updated" times (and so their place in the Leads and
+    // Contacts lists). Only here — after a send that genuinely succeeded; a
+    // failed send returned above without touching either. Explicit, because a
+    // second quote / resend / already-QUOTED lead would otherwise change nothing.
+    await touchLead(quote.leadId);
+    await touchContact(quote.contactId);
 
     // Auto-advance the lead to QUOTED now that the quote genuinely reached
     // the customer — only after a successful send, never merely on quote

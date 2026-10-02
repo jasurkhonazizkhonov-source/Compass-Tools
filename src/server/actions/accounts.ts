@@ -153,6 +153,20 @@ export async function updateAccount(accountId: string, patch: z.infer<typeof upd
         }
 
         await tx.account.update({ where: { id: accountId }, data });
+
+        // Team membership follows role. Only a Manager can have team members and
+        // only a Travel Agent can be one, so a role change that breaks either
+        // end clears the relationship (records are untouched — only the
+        // manager's reach over them ends). Done in the same transaction as the
+        // role change so the two can never disagree.
+        if (data.role) {
+          if (data.role !== "MANAGER") {
+            await tx.account.updateMany({ where: { managerId: accountId }, data: { managerId: null } });
+          }
+          if (data.role !== "TRAVEL_AGENT") {
+            await tx.account.update({ where: { id: accountId }, data: { managerId: null } });
+          }
+        }
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     )
@@ -160,6 +174,82 @@ export async function updateAccount(accountId: string, patch: z.infer<typeof upd
 
   revalidatePath("/accounts");
   revalidatePath("/users");
+  revalidatePath("/leads");
+  revalidatePath("/contacts");
+}
+
+/**
+ * Admin-only: set EXACTLY which Travel Agents are on a Manager's team.
+ *
+ * A Manager's access to leads, contacts, quotes and bookings is their own
+ * records plus their team's (src/server/visibility.ts) — so this is the one
+ * place that grants or removes it, and it is validated entirely here on the
+ * server, whatever the UI offered:
+ *   • the caller must be an Admin of the same company;
+ *   • the target must currently be a MANAGER (nobody else can have a team);
+ *   • every member must be a TRAVEL_AGENT of the same company — never an
+ *     Admin, another Manager, a Ticketing Agent, a Flight Expert or a
+ *     Marketing Agent;
+ *   • an agent belongs to at most one Manager: naming an agent here moves
+ *     them off any previous manager's team.
+ * Agents named in the list are added; agents previously on this team but not
+ * in the list are removed. Removal only ends the manager's reach — no lead,
+ * contact, quote or booking is changed, moved or deleted. A hidden or inactive
+ * agent can be a member (their records stay in scope); membership does not make
+ * a hidden account visible anywhere.
+ */
+export async function setManagerTeam(managerId: string, memberIds: string[]) {
+  const current = await assertAdmin();
+  const ids = [...new Set(memberIds)];
+
+  const result = await withSerializableRetryMessage(() =>
+    prisma.$transaction(
+      async (tx) => {
+        const manager = await tx.account.findUnique({ where: { id: managerId }, select: { id: true, role: true, companyId: true, fullName: true } });
+        if (!manager || manager.companyId !== current!.companyId) throw new Error("Account not found");
+        if (manager.role !== "MANAGER") throw new Error("Only a Manager can have team members");
+
+        const members = ids.length
+          ? await tx.account.findMany({ where: { id: { in: ids } }, select: { id: true, role: true, companyId: true, fullName: true, managerId: true } })
+          : [];
+        if (members.length !== ids.length || members.some((m) => m.companyId !== current!.companyId)) throw new Error("Account not found");
+        if (members.some((m) => m.role !== "TRAVEL_AGENT")) throw new Error("Only Travel Agents can be team members");
+
+        const before = await tx.account.findMany({ where: { managerId }, select: { id: true, fullName: true } });
+        const beforeIds = new Set(before.map((m) => m.id));
+        const added = members.filter((m) => !beforeIds.has(m.id));
+        const removed = before.filter((m) => !ids.includes(m.id));
+
+        await tx.account.updateMany({ where: { managerId, id: { notIn: ids } }, data: { managerId: null } });
+        if (ids.length) await tx.account.updateMany({ where: { id: { in: ids } }, data: { managerId } });
+
+        await tx.auditLog.create({
+          data: {
+            actorId: current!.id,
+            action: "MANAGER_TEAM_CHANGED",
+            entityType: "Account",
+            entityId: managerId,
+            metadata: {
+              managerName: manager.fullName,
+              added: added.map((m) => ({ id: m.id, name: m.fullName, movedFromManagerId: m.managerId })),
+              removed: removed.map((m) => ({ id: m.id, name: m.fullName })),
+              teamSize: ids.length,
+            },
+          },
+        });
+        return { added: added.length, removed: removed.length, teamSize: ids.length };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    )
+  );
+
+  revalidatePath("/accounts");
+  revalidatePath("/users");
+  revalidatePath("/leads");
+  revalidatePath("/contacts");
+  revalidatePath("/quotes");
+  revalidatePath("/bookings");
+  return result;
 }
 
 export async function setAccountStatus(accountId: string, status: "ACTIVE" | "INACTIVE") {

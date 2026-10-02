@@ -59,6 +59,8 @@ vi.mock("@/lib/prisma", () => {
       if (!account) throw new Error(`account ${id} not found`);
       return { ...account };
     }),
+    // updateAccount's role-change hygiene clears manager-team links; no teams are modelled here.
+    updateMany: vi.fn(async () => ({ count: 0 })),
     count: vi.fn(async ({ where }: { where: { role?: string; status?: string; id?: { not: string } } }) => {
       return [...accounts.values()].filter((a) => {
         if (where.role && a.role !== where.role) return false;

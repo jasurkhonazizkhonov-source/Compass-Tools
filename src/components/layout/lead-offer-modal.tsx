@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { useRouter } from "next/navigation";
 import { BellRing, Loader2, Mail, Phone, Tag } from "lucide-react";
@@ -10,6 +10,7 @@ import { getMyLeadOffer, acceptLeadOffer, skipLeadOffer } from "@/server/actions
 import { leadSourceLabel } from "@/lib/status-meta";
 import { formatPhoneInternational } from "@/lib/phone";
 import { useSharedPoll } from "@/lib/use-shared-poll";
+import { announceLeadOffer, initOfferAudio } from "@/lib/lead-offer-alert";
 import type { LeadSource } from "@/generated/prisma/client";
 
 type Offer = {
@@ -44,45 +45,15 @@ function secondsLeft(expiresAt: string): number {
   return Math.max(0, Math.round((new Date(expiresAt).getTime() - Date.now()) / 1000));
 }
 
-// Short, subtle two-tone chime synthesized via the Web Audio API — no
-// bundled audio asset needed. Wrapped in try/catch since some browsers
-// block audio playback before any user gesture on the page; a blocked
-// chime is a silent no-op, never a console error or a thrown exception.
-function playOfferChime() {
-  try {
-    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    const now = ctx.currentTime;
-    [880, 1175].forEach((freq, i) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.type = "sine";
-      osc.frequency.value = freq;
-      const start = now + i * 0.12;
-      const end = start + 0.15;
-      gain.gain.setValueAtTime(0, start);
-      gain.gain.linearRampToValueAtTime(0.15, start + 0.02);
-      gain.gain.linearRampToValueAtTime(0, end);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(start);
-      osc.stop(end);
-    });
-    setTimeout(() => ctx.close().catch(() => undefined), 500);
-  } catch {
-    // Autoplay blocked or Web Audio unavailable — never surfaced to the user.
-  }
-}
-
 export function LeadOfferModal({ accountId }: { accountId: string | undefined }) {
   const router = useRouter();
   const [offer, setOffer] = useState<Offer | null>(null);
   const [, forceTick] = useState(0);
   const [isPending, startTransition] = useTransition();
-  // Tracks which offer's chime has already played, so re-renders and polls
-  // that return the SAME offer never replay it — only a genuinely new
-  // leadId (or the modal going away and a different one arriving) does.
-  const chimedForLeadId = useRef<string | null>(null);
+  // True while this tab could not make the alert sound (the browser has not
+  // had a user gesture yet) — the dialog then says so, and the sound plays at
+  // the user's first click/key press if the offer is still live.
+  const [soundBlocked, setSoundBlocked] = useState(false);
 
   // The countdown is always derived from the server's offerExpiresAt, never
   // from a client-side timer that could be reset — a refresh, a new tab, or
@@ -108,13 +79,37 @@ export function LeadOfferModal({ accountId }: { accountId: string | undefined })
     return () => clearInterval(tick);
   }, [offer]);
 
-  // Plays once per distinct offer — never on every poll/render while the
-  // same offer is still showing, never during the countdown itself.
+  // Prepare the alert sound on the user's first real interaction with the CRM
+  // (browsers only allow audio after one) and keep that audio context for every
+  // later offer. See lib/lead-offer-alert.ts for the why.
+  useEffect(() => initOfferAudio(), []);
+
+  // One alert per distinct OFFER — keyed by lead + this offer's own expiry, so
+  // polls, re-renders, remounts and other open tabs never repeat it, while the
+  // same lead re-offered to this user later (a new expiry) sounds again.
+  const offerKey = offer ? `${offer.leadId}:${offer.offerExpiresAt}` : null;
+  const offerExpiresAt = offer?.offerExpiresAt;
   useEffect(() => {
-    if (!offer || chimedForLeadId.current === offer.leadId) return;
-    chimedForLeadId.current = offer.leadId;
-    playOfferChime();
-  }, [offer]);
+    if (!offerKey || !offerExpiresAt || !accountId) return;
+    let cancelled = false;
+    void announceLeadOffer({ accountId, key: offerKey, expiresAt: new Date(offerExpiresAt).getTime() }).then((result) => {
+      if (!cancelled) setSoundBlocked(result === "blocked");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [offerKey, offerExpiresAt, accountId]);
+
+  // A visible cue that works even when sound cannot: the tab title announces
+  // the offer while it is live (useful when the CRM is in a background tab).
+  useEffect(() => {
+    if (!offerKey) return;
+    const original = document.title;
+    document.title = `(New lead) ${original}`;
+    return () => {
+      document.title = original;
+    };
+  }, [offerKey]);
 
   if (!accountId || !offer) return null;
 
@@ -190,6 +185,11 @@ export function LeadOfferModal({ accountId }: { accountId: string | undefined })
             <p className="text-xs text-muted-foreground mt-1">
               {expired ? "Offer expired" : "to accept this lead"}
             </p>
+            {soundBlocked && !expired && (
+              <p className="mt-2 text-xs text-muted-foreground" role="status">
+                Sound is off until you click or press a key on this page.
+              </p>
+            )}
           </div>
         </div>
 

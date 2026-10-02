@@ -7,6 +7,7 @@ import { logActivity } from "@/server/activity-log";
 import { resolveAirportCodes } from "@/server/queries/reference-data";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
+import { MAX_LEAD_SEGMENTS } from "@/lib/lead-itinerary";
 import type { LeadStatus } from "@/generated/prisma/client";
 
 // Part 12/25 — the public company website's flight-request form posts
@@ -28,6 +29,22 @@ const leadCaptureSchema = z
     departureAirportIata: z.string().length(3).optional(),
     arrivalAirportIata: z.string().length(3).optional(),
     departureDate: z.string().optional(),
+    // A multi-city request's ordered legs. Optional and additive: a form that
+    // only sends the single departure/arrival pair above keeps working exactly
+    // as before. When this is present with more than one leg (or with tripType
+    // MULTI_CITY) every leg is stored, in order, and shown in the CRM's Travel
+    // Request — none is collapsed into the first route.
+    segments: z
+      .array(
+        z.object({
+          departureAirportIata: z.string().length(3),
+          arrivalAirportIata: z.string().length(3),
+          departureDate: z.string().optional(),
+        })
+      )
+      .min(1)
+      .max(MAX_LEAD_SEGMENTS)
+      .optional(),
     returnDate: z.string().optional(),
     tripType: z.enum(["ONE_WAY", "ROUND_TRIP", "MULTI_CITY"]).default("ROUND_TRIP"),
     cabinClass: z.enum(["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"]).default("ECONOMY"),
@@ -113,9 +130,25 @@ export async function POST(req: Request) {
   // value for both the resolve call and the lookup.
   const departureIata = data.departureAirportIata?.toUpperCase();
   const arrivalIata = data.arrivalAirportIata?.toUpperCase();
-  const airportCodes = await resolveAirportCodes([departureIata, arrivalIata].filter((c): c is string => !!c));
-  const departureAirport = departureIata ? airportCodes[departureIata] : null;
-  const arrivalAirport = arrivalIata ? airportCodes[arrivalIata] : null;
+  // Multi-city: more than one leg, or an explicit MULTI_CITY with legs, means the
+  // legs ARE the itinerary. (A lone leg on a one-way/round-trip request is just
+  // that request's route.) All codes are resolved in one lookup.
+  const legs = (data.segments ?? []).map((seg) => ({
+    departureIata: seg.departureAirportIata.toUpperCase(),
+    arrivalIata: seg.arrivalAirportIata.toUpperCase(),
+    departureDate: seg.departureDate,
+  }));
+  const isMultiCity = legs.length > 1 || (data.tripType === "MULTI_CITY" && legs.length > 0);
+  const tripType = isMultiCity ? ("MULTI_CITY" as const) : data.tripType;
+  const airportCodes = await resolveAirportCodes(
+    [departureIata, arrivalIata, ...(isMultiCity ? legs.flatMap((l) => [l.departureIata, l.arrivalIata]) : [])].filter((c): c is string => !!c)
+  );
+  // For a multi-city lead the lead-level route mirrors the FIRST leg, so every
+  // consumer that only understands one route keeps working.
+  const first = isMultiCity ? legs[0] : null;
+  const departureAirport = first ? airportCodes[first.departureIata] : departureIata ? airportCodes[departureIata] : null;
+  const arrivalAirport = first ? airportCodes[first.arrivalIata] : arrivalIata ? airportCodes[arrivalIata] : null;
+  const firstDepartureDate = first ? first.departureDate : data.departureDate;
 
   let leadId: string;
   try {
@@ -148,9 +181,21 @@ export async function POST(req: Request) {
         contactId,
         departureAirportId: departureAirport?.id,
         arrivalAirportId: arrivalAirport?.id,
-        departureDate: data.departureDate ? new Date(data.departureDate) : undefined,
-        returnDate: data.returnDate ? new Date(data.returnDate) : undefined,
-        tripType: data.tripType,
+        departureDate: firstDepartureDate ? new Date(firstDepartureDate) : undefined,
+        returnDate: isMultiCity ? undefined : data.returnDate ? new Date(data.returnDate) : undefined,
+        tripType,
+        ...(isMultiCity
+          ? {
+              segments: {
+                create: legs.map((l, i) => ({
+                  sequence: i + 1,
+                  departureAirportId: airportCodes[l.departureIata]?.id,
+                  arrivalAirportId: airportCodes[l.arrivalIata]?.id,
+                  departureDate: l.departureDate ? new Date(l.departureDate) : undefined,
+                })),
+              },
+            }
+          : {}),
         cabinClass: data.cabinClass,
         adults: data.adults,
         children: data.children,

@@ -24,6 +24,7 @@ import { canViewAllRecords, canViewAllQuotesAndBookings, canManageAllSequences }
 // action and the /quotes/new page's own lead lookup).
 export function leadAccessForQuoting(actor: Viewer): Prisma.LeadWhereInput {
   if (!actor) return NOTHING_VISIBLE;
+  if (isManager(actor)) return leadVisibilityWhere(actor);
   if (canViewAllQuotesAndBookings(actor.role)) return { contact: { companyId: actor.companyId } };
   return { assignedAgentId: actor.id };
 }
@@ -34,6 +35,28 @@ export type Viewer = { id: string; role: AccountRole; companyId: string } | null
 // CRM page, but query functions are defensive rather than assuming it) is
 // treated as having access to nothing — fail closed, not fail open.
 const NOTHING_VISIBLE = { id: "__no_viewer__" };
+
+// ── Manager teams ──────────────────────────────────────────────────────
+// A MANAGER does NOT see every record in the company. They see their own
+// records plus those of the Travel Agents an Admin has explicitly placed on
+// their team (Account.managerId — see setManagerTeam in actions/accounts.ts).
+// Another manager's team, unassigned agents, other roles' records and
+// ownerless records are all outside their scope. Admin (and the back-office
+// roles that are company-wide by design) keep their existing breadth.
+//
+// This is a relation filter evaluated by the database, not a list of ids
+// fetched first, so (a) it can never go stale between a team change and the
+// next query, and (b) every code path that merges one of these fragments —
+// lists, detail pages, search, server actions, delete — inherits the same
+// boundary. `role: "TRAVEL_AGENT"` is repeated here on purpose: should an
+// agent ever be re-roled without their managerId being cleared, they simply
+// stop counting as a team member.
+function isManager(viewer: NonNullable<Viewer>): boolean {
+  return viewer.role === "MANAGER";
+}
+function onMyTeam(viewerId: string) {
+  return { is: { managerId: viewerId, role: "TRAVEL_AGENT" as const } };
+}
 
 // Company isolation (§32): a "sees everything" role only sees everything
 // WITHIN its own company — never another company's records. The
@@ -49,18 +72,33 @@ const NOTHING_VISIBLE = { id: "__no_viewer__" };
 // scoping through the nullable ownerId/assignedAgentId/agentId fields.
 export function contactVisibilityWhere(viewer: Viewer): Prisma.ContactWhereInput {
   if (!viewer) return NOTHING_VISIBLE;
+  if (isManager(viewer)) return { companyId: viewer.companyId, OR: [{ ownerId: viewer.id }, { owner: onMyTeam(viewer.id) }] };
   if (canViewAllRecords(viewer.role)) return { companyId: viewer.companyId };
   return { ownerId: viewer.id };
 }
 
 export function leadVisibilityWhere(viewer: Viewer): Prisma.LeadWhereInput {
   if (!viewer) return NOTHING_VISIBLE;
+  if (isManager(viewer)) return { contact: { companyId: viewer.companyId }, OR: [{ assignedAgentId: viewer.id }, { assignedAgent: onMyTeam(viewer.id) }] };
   if (canViewAllRecords(viewer.role)) return { contact: { companyId: viewer.companyId } };
   return { assignedAgentId: viewer.id };
 }
 
 export function quoteVisibilityWhere(viewer: Viewer): Prisma.QuoteWhereInput {
   if (!viewer) return NOTHING_VISIBLE;
+  if (isManager(viewer)) {
+    return {
+      contact: { companyId: viewer.companyId },
+      OR: [
+        { agentId: viewer.id },
+        { agent: onMyTeam(viewer.id) },
+        { lead: { assignedAgentId: viewer.id } },
+        { lead: { assignedAgent: onMyTeam(viewer.id) } },
+        { contact: { ownerId: viewer.id } },
+        { contact: { owner: onMyTeam(viewer.id) } },
+      ],
+    };
+  }
   if (canViewAllQuotesAndBookings(viewer.role)) return { contact: { companyId: viewer.companyId } };
   return {
     OR: [
@@ -73,6 +111,19 @@ export function quoteVisibilityWhere(viewer: Viewer): Prisma.QuoteWhereInput {
 
 export function bookingVisibilityWhere(viewer: Viewer): Prisma.BookingWhereInput {
   if (!viewer) return NOTHING_VISIBLE;
+  if (isManager(viewer)) {
+    return {
+      contact: { companyId: viewer.companyId },
+      OR: [
+        { quote: { agentId: viewer.id } },
+        { quote: { agent: onMyTeam(viewer.id) } },
+        { lead: { assignedAgentId: viewer.id } },
+        { lead: { assignedAgent: onMyTeam(viewer.id) } },
+        { contact: { ownerId: viewer.id } },
+        { contact: { owner: onMyTeam(viewer.id) } },
+      ],
+    };
+  }
   if (canViewAllQuotesAndBookings(viewer.role)) return { contact: { companyId: viewer.companyId } };
   return {
     OR: [
@@ -132,6 +183,15 @@ function tasksOwnedByUser(userId: string, companyId?: string): Prisma.TaskWhereI
   };
 }
 
+function tasksOwnedByTeam(managerId: string, companyId: string): Prisma.TaskWhereInput {
+  return {
+    OR: [
+      { lead: { assignedAgent: onMyTeam(managerId), contact: { companyId } } },
+      { AND: [{ leadId: null }, { contact: { owner: onMyTeam(managerId), companyId } }] },
+    ],
+  };
+}
+
 /**
  * @param scopeUserId Only honored for a company-wide viewer (canViewAllRecords)
  * — the "Specific User" / "My Tasks" filter. A restricted viewer always sees
@@ -139,6 +199,16 @@ function tasksOwnedByUser(userId: string, companyId?: string): Prisma.TaskWhereI
  */
 export function taskVisibilityWhere(viewer: Viewer, scopeUserId?: string): Prisma.TaskWhereInput {
   if (!viewer) return NOTHING_VISIBLE;
+  if (isManager(viewer)) {
+    // Tasks hang off leads/contacts, so a manager's tasks are those of their
+    // own and their team's leads/contacts — the same boundary as above.
+    const mine = tasksOwnedByUser(viewer.id, viewer.companyId);
+    const teams = tasksOwnedByTeam(viewer.id, viewer.companyId);
+    const inScope: Prisma.TaskWhereInput = { OR: [mine, teams] };
+    // A "specific user" filter can only narrow within that scope.
+    if (scopeUserId) return { AND: [inScope, tasksOwnedByUser(scopeUserId, viewer.companyId)] };
+    return inScope;
+  }
   if (canViewAllRecords(viewer.role)) {
     if (scopeUserId) return tasksOwnedByUser(scopeUserId, viewer.companyId);
     return {

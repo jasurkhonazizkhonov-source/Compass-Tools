@@ -19,13 +19,16 @@ type FakeBooking = {
   companyId: string;
   sentByAgentId: string | null;
 };
-type FakeAgent = { id: string; fullName: string; role: string };
+type FakeAgent = { id: string; fullName: string; role: string; accountsVisible?: boolean; status?: string };
 
 let bookings: FakeBooking[];
 let agents: Map<string, FakeAgent>;
 
 const fakePrisma = {
-  $queryRaw: vi.fn(async (_strings: TemplateStringsArray, companyId: string, start?: Date) => {
+  $queryRaw: vi.fn(async (strings: TemplateStringsArray, companyId: string, start?: Date) => {
+    // The fake honours the visibility predicate only if the real SQL carries it,
+    // so removing it from the query makes the hidden-account tests below fail.
+    const filtersHidden = strings.join("?").includes('a."accountsVisible" = true');
     const eligible = bookings.filter(
       (b) => b.status === "CONFIRMED" && b.profitAmount !== null && b.companyId === companyId && b.sentByAgentId != null && (!start || b.updatedAt >= start)
     );
@@ -33,6 +36,7 @@ const fakePrisma = {
     for (const b of eligible) {
       const agent = agents.get(b.sentByAgentId!);
       if (!agent) continue; // INNER JOIN Account — no matching account row
+      if (filtersHidden && agent.accountsVisible === false) continue;
       const existing = byAgent.get(agent.id);
       if (existing) {
         existing.profit += b.profitAmount!;
@@ -145,5 +149,55 @@ describe("getSalesboard — DB-side aggregation (Pass 24)", () => {
     const { getSalesboard } = await import("../salesboard");
     const result = await getSalesboard({ id: "viewer-1", role: "ADMIN", companyId: "company-1" }, "all");
     expect(result.map((r) => r.id)).toEqual(["high", "low"]);
+  });
+});
+
+describe("getSalesboard — hidden accounts are not shown as current salespeople", () => {
+  const VIEWER = { id: "viewer-1", role: "ADMIN" as const, companyId: "company-1" };
+  const booking = (id: string, agentId: string, profit: number): FakeBooking => ({ id, status: "CONFIRMED", profitAmount: profit, updatedAt: new Date(), companyId: "company-1", sentByAgentId: agentId });
+
+  it("a hidden user does not appear; a visible user still does, with the same figures", async () => {
+    agents.set("visible", { id: "visible", fullName: "Visible Vic", role: "TRAVEL_AGENT", accountsVisible: true });
+    agents.set("hidden", { id: "hidden", fullName: "Hidden Hal", role: "TRAVEL_AGENT", accountsVisible: false });
+    bookings = [booking("b1", "visible", 300), booking("b2", "hidden", 900)];
+    const { getSalesboard } = await import("../salesboard");
+    const rows = await getSalesboard(VIEWER, "all");
+    expect(rows.map((r) => r.fullName)).toEqual(["Visible Vic"]);
+    expect(rows[0]).toMatchObject({ profit: 300, bookingCount: 1 });
+  });
+
+  it("applies in every period, not only All Time", async () => {
+    agents.set("hidden", { id: "hidden", fullName: "Hidden Hal", role: "TRAVEL_AGENT", accountsVisible: false });
+    bookings = [booking("b1", "hidden", 900)];
+    const { getSalesboard } = await import("../salesboard");
+    for (const period of ["today", "week", "month", "year", "all"] as const) {
+      expect(await getSalesboard(VIEWER, period), period).toEqual([]);
+    }
+  });
+
+  it("hiding is not deleting: the hidden user's booking is untouched, and un-hiding brings the same figures straight back", async () => {
+    agents.set("hal", { id: "hal", fullName: "Hidden Hal", role: "TRAVEL_AGENT", accountsVisible: false });
+    bookings = [booking("b1", "hal", 900)];
+    const { getSalesboard } = await import("../salesboard");
+    expect(await getSalesboard(VIEWER, "all")).toEqual([]);
+    expect(bookings).toHaveLength(1);
+    agents.get("hal")!.accountsVisible = true;
+    expect(await getSalesboard(VIEWER, "all")).toEqual([{ id: "hal", fullName: "Hidden Hal", role: "Travel Agent", profit: 900, bookingCount: 1 }]);
+  });
+
+  it("hidden is distinct from inactive: an inactive-but-visible account is not filtered by this rule", async () => {
+    agents.set("gone", { id: "gone", fullName: "Gone Gus", role: "TRAVEL_AGENT", accountsVisible: true, status: "INACTIVE" });
+    bookings = [booking("b1", "gone", 120)];
+    const { getSalesboard } = await import("../salesboard");
+    expect((await getSalesboard(VIEWER, "all")).map((r) => r.fullName)).toEqual(["Gone Gus"]);
+  });
+
+  it("the query itself carries the shared visibility predicate (both the period and all-time variants)", async () => {
+    const { getSalesboard } = await import("../salesboard");
+    await getSalesboard(VIEWER, "all");
+    await getSalesboard(VIEWER, "month");
+    for (const call of fakePrisma.$queryRaw.mock.calls) {
+      expect((call[0] as unknown as TemplateStringsArray).join("?")).toContain('a."accountsVisible" = true');
+    }
   });
 });

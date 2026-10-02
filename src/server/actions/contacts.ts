@@ -7,6 +7,7 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
 import { canReassignLeads, canDeleteContact } from "@/lib/permissions";
 import { contactVisibilityWhere, leadVisibilityWhere } from "@/server/visibility";
+import { touchContactLeads } from "@/server/record-touch";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { performContactReassignment, recheckContactOwnershipMatch } from "@/server/contact-reassignment";
 import { sendCrmEmail } from "@/server/email/crm-email";
@@ -119,6 +120,8 @@ export async function updateContactField(
 ) {
   const actor = await assertContactAccess(await getCurrentAccount(), contactId, leadId);
   await prisma.contact.update({ where: { id: contactId }, data: patch });
+  // The customer's name changed — that is an update to each of their leads too.
+  await touchContactLeads(contactId);
   await logActivity({
     contactId,
     actorId: actor?.id,
@@ -171,6 +174,11 @@ export async function reassignContact(contactId: string, newOwnerId: string, rea
   const contact = await prisma.contact.findUniqueOrThrow({ where: { id: contactId }, select: { companyId: true, leads: { select: { id: true } } } });
   if (contact.companyId !== actor.companyId) {
     throw new Error("Contact not found");
+  }
+  // A Manager may only reassign contacts inside their own team (Admin: any).
+  if (actor.role === "MANAGER") {
+    const inScope = await prisma.contact.findFirst({ where: { id: contactId, ...contactVisibilityWhere(actor) }, select: { id: true } });
+    if (!inScope) throw new Error("Contact not found");
   }
 
   const result = await performContactReassignment({
@@ -267,6 +275,8 @@ async function syncPrimaryPhone(contactId: string) {
     }
   }
   await prisma.contact.update({ where: { id: contactId }, data: { primaryPhone: primary?.number ?? null } });
+  // The customer's phone changed — an update to each of their leads too.
+  await touchContactLeads(contactId);
 }
 
 async function syncPrimaryEmail(contactId: string) {
@@ -278,6 +288,8 @@ async function syncPrimaryEmail(contactId: string) {
     }
   }
   await prisma.contact.update({ where: { id: contactId }, data: { primaryEmail: primary?.email ?? null } });
+  // The customer's email changed — an update to each of their leads too.
+  await touchContactLeads(contactId);
 }
 
 const phoneSchema = z.object({

@@ -16,6 +16,7 @@ import { InlineEditField } from "@/components/crm/inline-edit-field";
 import { AirportSearchField } from "@/components/crm/airport-search";
 import { DatePicker } from "@/components/crm/date-picker";
 import { updateLeadField } from "@/server/actions/leads";
+import { LeadSegmentsEditor, type EditableSegment } from "@/components/leads/lead-segments-editor";
 import type { AirportOption } from "@/server/queries/reference-data";
 
 type Airport = { id: number; iata: string; name: string; city: string; country: string; timezone: string | null } | null;
@@ -47,6 +48,7 @@ export function TravelRequestCard({
   preferredAirline,
   budget,
   additionalNotes,
+  segments,
 }: {
   leadId: string;
   departureAirport: Airport;
@@ -65,7 +67,12 @@ export function TravelRequestCard({
    * customer's own submission (Lead.notes), distinct from the agent-authored
    * threaded Notes tab (Lead.notesRel) elsewhere on this page. */
   additionalNotes: string | null;
+  /** The editable legs of a MULTI_CITY request (seeded by the page from the lead's
+   * saved segments, or from its single route when none were saved yet). Ignored for
+   * one-way and round-trip requests. */
+  segments: EditableSegment[];
 }) {
+  const isMultiCity = tripType === "MULTI_CITY";
   return (
     <Card className="shadow-none">
       <CardHeader>
@@ -73,38 +80,42 @@ export function TravelRequestCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-4">
-          <InlineEditField<AirportOption | null>
-            label="From"
-            currentValue={departureAirport}
-            displayValue={departureAirport ? `${departureAirport.iata} — ${departureAirport.city}` : "Not set"}
-            editor={(value, setValue) => <AirportSearchField value={value} onChange={setValue} />}
-            onSave={(v) => updateLeadField(leadId, { departureAirportId: v?.id ?? null })}
-          />
-          <InlineEditField<AirportOption | null>
-            label="To"
-            currentValue={arrivalAirport}
-            displayValue={arrivalAirport ? `${arrivalAirport.iata} — ${arrivalAirport.city}` : "Not set"}
-            editor={(value, setValue) => <AirportSearchField value={value} onChange={setValue} />}
-            onSave={(v) => updateLeadField(leadId, { arrivalAirportId: v?.id ?? null })}
-          />
-          <InlineEditField<string>
-            label="Departure Date"
-            currentValue={departureDate ? format(departureDate, "yyyy-MM-dd") : ""}
-            displayValue={departureDate ? format(departureDate, "MMM d, yyyy") : "Not set"}
-            editor={(value, setValue) => (
-              <DatePicker value={value || null} onChange={(v) => setValue(v ?? "")} />
-            )}
-            onSave={(v) => updateLeadField(leadId, { departureDate: v || null })}
-          />
-          <InlineEditField<string>
-            label="Return Date"
-            currentValue={returnDate ? format(returnDate, "yyyy-MM-dd") : ""}
-            displayValue={returnDate ? format(returnDate, "MMM d, yyyy") : tripType === "ROUND_TRIP" ? "Not set" : "N/A"}
-            editor={(value, setValue) => (
-              <DatePicker value={value || null} onChange={(v) => setValue(v ?? "")} />
-            )}
-            onSave={(v) => updateLeadField(leadId, { returnDate: v || null })}
-          />
+          {!isMultiCity && (
+            <>
+              <InlineEditField<AirportOption | null>
+                label="From"
+                currentValue={departureAirport}
+                displayValue={departureAirport ? `${departureAirport.iata} — ${departureAirport.city}` : "Not set"}
+                editor={(value, setValue) => <AirportSearchField value={value} onChange={setValue} />}
+                onSave={(v) => updateLeadField(leadId, { departureAirportId: v?.id ?? null })}
+              />
+              <InlineEditField<AirportOption | null>
+                label="To"
+                currentValue={arrivalAirport}
+                displayValue={arrivalAirport ? `${arrivalAirport.iata} — ${arrivalAirport.city}` : "Not set"}
+                editor={(value, setValue) => <AirportSearchField value={value} onChange={setValue} />}
+                onSave={(v) => updateLeadField(leadId, { arrivalAirportId: v?.id ?? null })}
+              />
+              <InlineEditField<string>
+                label="Departure Date"
+                currentValue={departureDate ? format(departureDate, "yyyy-MM-dd") : ""}
+                displayValue={departureDate ? format(departureDate, "MMM d, yyyy") : "Not set"}
+                editor={(value, setValue) => (
+                  <DatePicker value={value || null} onChange={(v) => setValue(v ?? "")} />
+                )}
+                onSave={(v) => updateLeadField(leadId, { departureDate: v || null })}
+              />
+              <InlineEditField<string>
+                label="Return Date"
+                currentValue={returnDate ? format(returnDate, "yyyy-MM-dd") : ""}
+                displayValue={returnDate ? format(returnDate, "MMM d, yyyy") : tripType === "ROUND_TRIP" ? "Not set" : "N/A"}
+                editor={(value, setValue) => (
+                  <DatePicker value={value || null} onChange={(v) => setValue(v ?? "")} />
+                )}
+                onSave={(v) => updateLeadField(leadId, { returnDate: v || null })}
+              />
+            </>
+          )}
           <InlineEditField<string>
             label="Trip Type"
             currentValue={tripType}
@@ -134,6 +145,8 @@ export function TravelRequestCard({
             onSave={(v) => updateLeadField(leadId, { cabinClass: v as "ECONOMY" | "PREMIUM_ECONOMY" | "BUSINESS" | "FIRST" })}
           />
         </div>
+
+        {isMultiCity && <LeadSegmentsEditor leadId={leadId} initialSegments={segments} />}
 
         <div className="grid grid-cols-3 gap-4">
           <InlineEditField<number>

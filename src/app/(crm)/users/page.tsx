@@ -7,6 +7,7 @@ import { canManageAccounts, ROLE_LABELS } from "@/lib/permissions";
 import { OnlineIndicator } from "@/components/accounts/online-indicator";
 import { AccountFullNameEditor, AccountRoleSelect, AccountStatusSwitch, AccountVisibilityToggle, AccountPhoneEditor, AccountEmailEditor, AccountHiredAtEditor, AccountLocationEditor, AccountCommissionPercentEditor, AccountTipPercentEditor, AccountPaymentPermissionsEditor, AccountBookingPermissionsEditor, RemoveUserButton } from "@/components/accounts/account-row-editor";
 import { NewAccountDialog } from "@/components/accounts/new-account-dialog";
+import { ManagerTeamEditor, type TeamCandidate } from "@/components/accounts/manager-team-editor";
 import { EmptyState } from "@/components/crm/empty-state";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +30,14 @@ export default async function UsersPage() {
   const accounts = await getAllAccounts(current!.companyId);
   const activeAdminCount = accounts.filter((a) => a.role === "ADMIN" && a.status === "ACTIVE").length;
 
+  // Manager teams. The editor offers every Travel Agent (hidden and inactive
+  // ones too — Admin manages the full roster; a hidden agent's records are
+  // still in their manager's scope), and says which manager each is on now.
+  const nameById = new Map(accounts.map((a) => [a.id, a.fullName]));
+  const teamCandidates: TeamCandidate[] = accounts
+    .filter((a) => a.role === "TRAVEL_AGENT")
+    .map((a) => ({ id: a.id, fullName: a.fullName, managerId: a.managerId, managerName: a.managerId ? (nameById.get(a.managerId) ?? null) : null, hidden: !a.accountsVisible, inactive: a.status !== "ACTIVE" }));
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
@@ -50,6 +59,7 @@ export default async function UsersPage() {
               <TableRow>
                 <TableHead>Name</TableHead>
                 <TableHead>Role</TableHead>
+                <TableHead>Team</TableHead>
                 <TableHead>Phone</TableHead>
                 <TableHead>Email</TableHead>
                 <TableHead>Status</TableHead>
@@ -75,6 +85,20 @@ export default async function UsersPage() {
                     {a.id === current?.id && <Badge variant="outline" className="ml-2 text-[10px]">You</Badge>}
                   </TableCell>
                   <TableCell><AccountRoleSelect accountId={a.id} role={a.role} canEdit isLastActiveAdmin={isLastActiveAdmin} /></TableCell>
+                  <TableCell>
+                    {a.role === "MANAGER" ? (
+                      <ManagerTeamEditor
+                        managerId={a.id}
+                        managerName={a.fullName}
+                        candidates={teamCandidates}
+                        initialMemberIds={teamCandidates.filter((c) => c.managerId === a.id).map((c) => c.id)}
+                      />
+                    ) : a.role === "TRAVEL_AGENT" && a.managerId ? (
+                      <span className="text-sm text-muted-foreground">Manager: {nameById.get(a.managerId) ?? "—"}</span>
+                    ) : (
+                      <span className="text-sm text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell><AccountPhoneEditor accountId={a.id} phone={a.phone} canEdit /></TableCell>
                   <TableCell><AccountEmailEditor accountId={a.id} email={a.email} canEdit isLastActiveAdmin={isLastActiveAdmin} /></TableCell>
                   <TableCell>

@@ -6,6 +6,10 @@ import type { AccountRole } from "@/generated/prisma/client";
 const ALL_ROLES: AccountRole[] = ["ADMIN", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MANAGER"];
 const UNRESTRICTED: AccountRole[] = ["ADMIN", "MANAGER", "TICKETING_AGENT"];
 const RESTRICTED: AccountRole[] = ["TRAVEL_AGENT", "FLIGHT_EXPERT"];
+// Company-wide by design. A Manager is deliberately NOT here any more: a Manager
+// sees their own and their explicitly assigned team's records (see the Manager
+// block below), not the whole company.
+const COMPANY_WIDE: AccountRole[] = ["ADMIN", "TICKETING_AGENT"];
 
 describe("canViewAllRecords", () => {
   it("grants full visibility to ADMIN, MANAGER, and TICKETING_AGENT", () => {
@@ -25,7 +29,7 @@ const COMPANY = "company-1";
 
 describe("contactVisibilityWhere", () => {
   it("scopes a full-visibility role to its own company, not literally every row", () => {
-    for (const role of UNRESTRICTED) {
+    for (const role of COMPANY_WIDE) {
       expect(contactVisibilityWhere({ id: "acct-1", role, companyId: COMPANY })).toEqual({ companyId: COMPANY });
     }
   });
@@ -43,7 +47,7 @@ describe("contactVisibilityWhere", () => {
 
 describe("leadVisibilityWhere", () => {
   it("scopes a full-visibility role to its own company via the lead's contact", () => {
-    for (const role of UNRESTRICTED) {
+    for (const role of COMPANY_WIDE) {
       expect(leadVisibilityWhere({ id: "acct-1", role, companyId: COMPANY })).toEqual({ contact: { companyId: COMPANY } });
     }
   });
@@ -59,7 +63,7 @@ describe("leadVisibilityWhere", () => {
 
 describe("quoteVisibilityWhere", () => {
   it("scopes a full-visibility role to its own company via the quote's contact", () => {
-    for (const role of UNRESTRICTED) {
+    for (const role of COMPANY_WIDE) {
       expect(quoteVisibilityWhere({ id: "acct-1", role, companyId: COMPANY })).toEqual({ contact: { companyId: COMPANY } });
     }
   });
@@ -78,7 +82,7 @@ describe("quoteVisibilityWhere", () => {
 
 describe("bookingVisibilityWhere", () => {
   it("scopes a full-visibility role to its own company via the booking's contact", () => {
-    for (const role of UNRESTRICTED) {
+    for (const role of COMPANY_WIDE) {
       expect(bookingVisibilityWhere({ id: "acct-1", role, companyId: COMPANY })).toEqual({ contact: { companyId: COMPANY } });
     }
   });
@@ -152,11 +156,104 @@ describe("Pass 7 §5/§37 — Lead visibility is independent of Contact ownershi
     expect(visible.some((l) => l.id === "lead-2" || l.id === "lead-3")).toBe(false);
   });
 
-  it("a company-wide viewer (ADMIN/MANAGER/TICKETING_AGENT) sees every lead via contact.companyId, never contact.ownerId", () => {
-    for (const role of UNRESTRICTED) {
+  it("a company-wide viewer (ADMIN/TICKETING_AGENT) sees every lead via contact.companyId, never contact.ownerId", () => {
+    for (const role of COMPANY_WIDE) {
       const where = leadVisibilityWhere({ id: "admin-x", role, companyId: COMPANY });
       expect(where).toEqual({ contact: { companyId: COMPANY } });
       expect(JSON.stringify(where)).not.toContain("ownerId");
     }
+  });
+});
+
+// ── Manager teams ───────────────────────────────────────────────────────
+// A Manager sees their own records plus those of Travel Agents whose
+// managerId is theirs — never the whole company. The boundary is a relation
+// filter evaluated by the database, so it follows team changes instantly.
+describe("Manager visibility is team-scoped", () => {
+  const M = { id: "mgr-1", role: "MANAGER" as const, companyId: COMPANY };
+  const team = { is: { managerId: "mgr-1", role: "TRAVEL_AGENT" } };
+
+  it("leads: own + team members' leads, still inside the manager's company", () => {
+    expect(leadVisibilityWhere(M)).toEqual({ contact: { companyId: COMPANY }, OR: [{ assignedAgentId: "mgr-1" }, { assignedAgent: team }] });
+  });
+
+  it("contacts: own + team members' contacts", () => {
+    expect(contactVisibilityWhere(M)).toEqual({ companyId: COMPANY, OR: [{ ownerId: "mgr-1" }, { owner: team }] });
+  });
+
+  it("quotes: every ownership path (agent, lead agent, contact owner) for self or team", () => {
+    expect(quoteVisibilityWhere(M)).toEqual({
+      contact: { companyId: COMPANY },
+      OR: [
+        { agentId: "mgr-1" },
+        { agent: team },
+        { lead: { assignedAgentId: "mgr-1" } },
+        { lead: { assignedAgent: team } },
+        { contact: { ownerId: "mgr-1" } },
+        { contact: { owner: team } },
+      ],
+    });
+  });
+
+  it("bookings: the same paths through the booking's quote, lead and contact", () => {
+    expect(bookingVisibilityWhere(M)).toEqual({
+      contact: { companyId: COMPANY },
+      OR: [
+        { quote: { agentId: "mgr-1" } },
+        { quote: { agent: team } },
+        { lead: { assignedAgentId: "mgr-1" } },
+        { lead: { assignedAgent: team } },
+        { contact: { ownerId: "mgr-1" } },
+        { contact: { owner: team } },
+      ],
+    });
+  });
+
+  it("only Travel Agents on THIS manager's team count — the filter pins the manager id and the role", () => {
+    for (const where of [leadVisibilityWhere(M), contactVisibilityWhere(M), quoteVisibilityWhere(M), bookingVisibilityWhere(M)]) {
+      const json = JSON.stringify(where);
+      expect(json).toContain('"managerId":"mgr-1"');
+      expect(json).toContain('"role":"TRAVEL_AGENT"');
+    }
+  });
+
+  it("two managers get different, non-overlapping scopes", () => {
+    const other = { ...M, id: "mgr-2" };
+    expect(JSON.stringify(leadVisibilityWhere(M))).not.toEqual(JSON.stringify(leadVisibilityWhere(other)));
+    expect(JSON.stringify(leadVisibilityWhere(other))).not.toContain("mgr-1");
+  });
+
+  it("is never the company-wide fragment (the manager no longer sees every record)", () => {
+    expect(leadVisibilityWhere(M)).not.toEqual({ contact: { companyId: COMPANY } });
+    expect(contactVisibilityWhere(M)).not.toEqual({ companyId: COMPANY });
+  });
+
+  it("Admin and the back-office roles keep their existing breadth", () => {
+    expect(leadVisibilityWhere({ id: "a", role: "ADMIN", companyId: COMPANY })).toEqual({ contact: { companyId: COMPANY } });
+    expect(bookingVisibilityWhere({ id: "t", role: "TICKETING_AGENT", companyId: COMPANY })).toEqual({ contact: { companyId: COMPANY } });
+  });
+});
+
+describe("Manager task visibility follows the same team boundary", () => {
+  const M = { id: "mgr-1", role: "MANAGER" as const, companyId: COMPANY };
+
+  it("covers the manager's own and team members' lead/contact tasks — and never the whole company", async () => {
+    const { taskVisibilityWhere } = await import("../visibility");
+    const where = JSON.stringify(taskVisibilityWhere(M));
+    expect(where).toContain('"assignedAgentId":"mgr-1"');
+    expect(where).toContain('"managerId":"mgr-1"');
+    expect(taskVisibilityWhere(M)).not.toEqual({ OR: [{ contact: { companyId: COMPANY } }, { lead: { contact: { companyId: COMPANY } } }] });
+  });
+
+  it("a 'specific user' filter can only narrow inside that scope, never widen it", async () => {
+    const { taskVisibilityWhere } = await import("../visibility");
+    const where = taskVisibilityWhere(M, "someone-else") as { AND?: unknown[] };
+    expect(Array.isArray(where.AND)).toBe(true);
+    expect(JSON.stringify(where.AND![0])).toContain('"managerId":"mgr-1"'); // the scope is still ANDed in
+  });
+
+  it("Admin still gets the company-wide task scope", async () => {
+    const { taskVisibilityWhere } = await import("../visibility");
+    expect(taskVisibilityWhere({ id: "a", role: "ADMIN", companyId: COMPANY })).toEqual({ OR: [{ contact: { companyId: COMPANY } }, { lead: { contact: { companyId: COMPANY } } }] });
   });
 });

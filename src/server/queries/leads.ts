@@ -71,6 +71,13 @@ export async function getLeads(filters: LeadFilters) {
         contact: { select: { id: true, firstName: true, lastName: true, primaryEmail: true, primaryPhone: true } },
         departureAirport: { select: { iata: true } },
         arrivalAirport: { select: { iata: true } },
+        // A multi-city lead's whole itinerary, so the row shows every leg
+        // rather than collapsing to one route. Bounded (MAX_LEAD_SEGMENTS) and
+        // empty for ordinary leads.
+        segments: {
+          orderBy: { sequence: "asc" },
+          select: { id: true, sequence: true, departureAirport: { select: { iata: true } }, arrivalAirport: { select: { iata: true } } },
+        },
         assignedAgent: { select: ACCOUNT_NAME_SELECT },
       },
       // updatedAt is used as the recency signal (matches Contact's list sort
@@ -129,6 +136,7 @@ export async function getLeadDetail(leadId: string, viewer: Viewer) {
       contact: { include: { phones: true, emails: true } },
       departureAirport: true,
       arrivalAirport: true,
+      segments: { orderBy: { sequence: "asc" }, include: { departureAirport: true, arrivalAirport: true } },
       assignedAgent: { select: ACCOUNT_NAME_SELECT },
       referredByContact: { select: { id: true, firstName: true, lastName: true } },
       statusHistory: { orderBy: { changedAt: "desc" }, include: { changedBy: { select: ACCOUNT_NAME_SELECT } } },

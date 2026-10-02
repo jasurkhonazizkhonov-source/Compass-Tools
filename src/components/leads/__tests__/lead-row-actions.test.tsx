@@ -13,8 +13,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 // the button is the one reassignLead(); these tests cover what the user can
 // SEE and invoke from the list.
 
-const { reassignLead } = vi.hoisted(() => ({ reassignLead: vi.fn(async () => ({})) }));
-vi.mock("@/server/actions/leads", () => ({ reassignLead, sendLeadEmail: vi.fn(), sendContactEmail: vi.fn() }));
+const { reassignLead, deleteLead } = vi.hoisted(() => ({ reassignLead: vi.fn(async () => ({})), deleteLead: vi.fn(async () => undefined) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }) }));
+vi.mock("@/server/actions/leads", () => ({ reassignLead, deleteLead, sendLeadEmail: vi.fn(), sendContactEmail: vi.fn() }));
 vi.mock("@/server/actions/contacts", () => ({ sendContactEmail: vi.fn() }));
 
 const AGENTS = [
@@ -115,5 +116,52 @@ describe("both surfaces use the one rule (source-level)", () => {
     // and both open the same dialog, which calls the same server action
     expect(read("src", "components", "leads", "lead-row-actions.tsx")).toContain("ReassignLeadDialog");
     expect(read("src", "app", "(crm)", "leads", "[id]", "page.tsx")).toContain("ReassignLeadDialog");
+  });
+});
+
+describe("Leads list — Delete (Admin and Manager only)", () => {
+  it.each(["ADMIN", "MANAGER"] as const)("a %s sees Delete next to Call, Email and Reassign", (role) => {
+    renderActions({ viewerRole: role });
+    expect(screen.getByRole("button", { name: "Delete Lead" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Call/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Email/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reassign Lead" })).toBeInTheDocument();
+  });
+
+  it.each(["TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] as const)("a %s does NOT see Delete — even on an unassigned lead they may claim", (role) => {
+    renderActions({ viewerRole: role, assignedAgentId: null, assignedAgentName: null });
+    expect(screen.queryByRole("button", { name: /Delete/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete Lead" })).not.toBeInTheDocument();
+  });
+
+  it("is driven by the same rule as the server action (canDeleteLead) for every role", async () => {
+    const { canDeleteLead } = await import("@/lib/permissions");
+    for (const role of ["ADMIN", "MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT", undefined] as const) {
+      const { unmount } = renderActions({ viewerRole: role });
+      expect(screen.queryByRole("button", { name: "Delete Lead" }) !== null, String(role)).toBe(canDeleteLead(role));
+      unmount();
+    }
+  });
+
+  it("asks for confirmation first — cancelling deletes nothing; confirming calls the existing deleteLead() with this lead's id", async () => {
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm");
+    renderActions({ viewerRole: "ADMIN" });
+
+    confirm.mockReturnValueOnce(false);
+    await user.click(screen.getByRole("button", { name: "Delete Lead" }));
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(String(confirm.mock.calls[0][0])).toMatch(/Delete this lead\?/);
+    expect(deleteLead).not.toHaveBeenCalled();
+
+    confirm.mockReturnValueOnce(true);
+    await user.click(screen.getByRole("button", { name: "Delete Lead" }));
+    expect(deleteLead).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  it("the phone-card variant captions it", () => {
+    renderActions({ variant: "labeled", viewerRole: "MANAGER" });
+    expect(screen.getByText("Delete")).toBeInTheDocument();
   });
 });
