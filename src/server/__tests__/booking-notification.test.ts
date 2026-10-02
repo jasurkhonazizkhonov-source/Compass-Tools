@@ -292,6 +292,43 @@ describe("sendBookingProfitNotification — recipient privacy (Part 19) and role
     expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ accountId: "agent-1" }));
   });
 
+  // Integrated A/B/C scenario requested directly: User A (quote creator,
+  // Andrew) created the quote; User B (Sarah) is a separate active CRM user
+  // who happens to ALSO have Gmail connected — standing in for "the
+  // ticketing agent who clicks Notify Team," though note this function
+  // never even receives that person's identity (see
+  // sendNewSaleNotification in actions/bookings.ts: only actor.companyId is
+  // passed through, never actor.id/email/fullName) — and User C (Priya) is
+  // a third active user with no Gmail connection at all, included purely
+  // as an ordinary recipient. Proves, in one scenario, all three required
+  // properties together: sender starts with and resolves to A; B is never
+  // selected merely by being active/connected/"the one who clicked"; C is
+  // still included in the distribution list despite never being a sender
+  // candidate winner.
+  it("A/B/C scenario: sender is the quote creator (A), the other active connected user (B) is never selected merely by being present, and the third active user (C) still receives it", async () => {
+    accounts.set("user-a", { id: "user-a", email: "andrew@example.com", fullName: "Andrew (Creator)", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
+    accounts.set("user-b", { id: "user-b", email: "sarah@example.com", fullName: "Sarah (Ticketing)", role: "TICKETING_AGENT", status: "ACTIVE", companyId: "company-1" });
+    accounts.set("user-c", { id: "user-c", email: "priya@example.com", fullName: "Priya (Other Recipient)", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
+    accounts.delete("admin-1");
+    gmailConnected = new Set(["user-a", "user-b"]); // both A and B could send; C has no connection at all
+
+    const { sendBookingProfitNotification } = await import("../booking-notification");
+    const { sendEmail } = await import("@/server/email/service");
+    const outcome = await sendBookingProfitNotification({ ...BASE_PROFIT_PARAMS, agent: { ...BASE_PROFIT_PARAMS.agent, id: "user-a", email: "andrew@example.com", fullName: "Andrew (Creator)" } });
+
+    expect(outcome).toEqual({ ok: true });
+    // Sender is A, never B — even though B is active, connected, and would
+    // otherwise be a perfectly valid fallback candidate.
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(sendEmail).toHaveBeenCalledWith(expect.objectContaining({ accountId: "user-a" }));
+    // C still receives it (bcc distribution list), despite never being able
+    // to send it.
+    const call = vi.mocked(sendEmail).mock.calls[0][0];
+    expect(call.bcc).toContain("andrew@example.com");
+    expect(call.bcc).toContain("sarah@example.com");
+    expect(call.bcc).toContain("priya@example.com");
+  });
+
   it("falls back to another active user's Gmail only when the quote creator has none connected", async () => {
     accounts.set("agent-1", { id: "agent-1", email: "agent@example.com", fullName: "Nigora Dadabaeva", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" });
     gmailConnected = new Set(["admin-1"]); // agent-1 has no connection at all
