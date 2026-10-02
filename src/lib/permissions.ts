@@ -57,6 +57,16 @@ export function canReassignLeads(role: AccountRole | undefined) {
   return role === "ADMIN" || role === "MANAGER";
 }
 
+// Whether the Reassign (or, for an unassigned lead, Assign) control is offered
+// for a lead. ONE rule shared by every surface that shows it — the Leads list
+// and the individual lead page — so they can never disagree: Admin/Manager may
+// reassign any lead; anyone else may only claim a lead that has no owner yet.
+// This is the UI half only; reassignLead() enforces the same rule on the
+// server for every caller, whatever the UI shows.
+export function canOfferLeadReassign(role: AccountRole | undefined, currentOwnerId: string | null | undefined) {
+  return canReassignLeads(role) || !currentOwnerId;
+}
+
 // Item 12 — once a Lead reaches BOOKED (via the completed charged-quote/
 // ticketing workflow), only Admin/Manager may manually change it away from
 // that status. Kept as its own named function (rather than reusing

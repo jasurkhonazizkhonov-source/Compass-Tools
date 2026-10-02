@@ -233,3 +233,32 @@ describe("sendViaGmail — security", () => {
     expect(serialized).not.toContain("refresh-token-value");
   });
 });
+
+describe("sendViaGmail — Bcc recipients reach the raw message", () => {
+  async function rawOf(input: Parameters<typeof import("../gmail-send").sendViaGmail>[0]) {
+    seedConnection();
+    getAccessToken.mockResolvedValue({ token: "t" });
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: "m" }) });
+    const { sendViaGmail } = await import("../gmail-send");
+    await sendViaGmail(input);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    return Buffer.from(body.raw, "base64url").toString("utf8");
+  }
+
+  it("keeps the Bcc header (Gmail delivers to exactly what the raw message names — nodemailer drops it by default)", async () => {
+    const raw = await rawOf({ ...BASE_INPUT, bcc: "a@example.com, b@example.com" });
+    expect(raw).toMatch(/^Bcc: .*a@example\.com/im);
+    expect(raw).toContain("b@example.com");
+  });
+
+  it("accepts the Bcc list as separate addresses (an array), not only one joined string", async () => {
+    const raw = await rawOf({ ...BASE_INPUT, bcc: ["a@example.com", "b@example.com", "c@example.com"] });
+    for (const addr of ["a@example.com", "b@example.com", "c@example.com"]) expect(raw).toContain(addr);
+    expect(raw).toMatch(/^Bcc:/im);
+  });
+
+  it("a message without a Bcc list has no Bcc header at all", async () => {
+    const raw = await rawOf(BASE_INPUT);
+    expect(raw).not.toMatch(/^Bcc:/im);
+  });
+});

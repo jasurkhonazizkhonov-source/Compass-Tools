@@ -17,16 +17,14 @@
 //      as-is.
 import { prisma } from "@/lib/prisma";
 import { duplicateContactWhere } from "@/lib/contact-matching";
-import { sendEmail } from "@/server/email/service";
-import { buildReassignmentEmail } from "@/server/email/templates";
-import { getCompanyForAccountId } from "@/server/queries/company";
-import { resolveBaseUrl } from "@/lib/company-config";
+import { sendContactReassignmentEmails } from "@/server/reassignment-email";
+import { runAfterResponse } from "@/lib/run-after-response";
 
 export type ReassignContactResult = { reassignedLeadCount: number };
 
 /**
  * Moves a Contact's OWNERSHIP ONLY to `newOwnerId` — notifying the previous
- * and new Contact owner. No permission check — the caller is responsible
+ * and new Contact owner (in-app, plus an email to each). No permission check — the caller is responsible
  * for authorizing this before invoking it. `actor` is optional: when the
  * reassignment is system-triggered (no human actor), activity/audit
  * entries and outgoing email simply have no actor identity attached —
@@ -69,14 +67,27 @@ export async function performContactReassignment(params: {
   const contactName = `${contact.firstName} ${contact.lastName}`;
   const previousOwner = contact.owner;
 
-  await prisma.$transaction([
-    prisma.contact.update({ where: { id: contactId }, data: { ownerId: newOwnerId } }),
+  // Handing a contact to the person who already owns it changes nothing: no
+  // write, no activity/audit record, no notification, no email.
+  if (previousOwner && previousOwner.id === newOwner.id) return { reassignedLeadCount: 0 };
+
+  // The owner change is an atomic compare-and-set — the contact only moves if
+  // it is STILL owned by whoever we read as the previous owner — so a double
+  // click, a retry or two admins racing can only ever succeed once. The
+  // activity and audit rows are written in the same transaction, so there is
+  // never a reassignment record without a reassignment (or vice versa).
+  const moved = await prisma.$transaction(async (tx) => {
+    const claim = await tx.contact.updateMany({
+      where: { id: contactId, ownerId: previousOwner?.id ?? null },
+      data: { ownerId: newOwnerId },
+    });
+    if (claim.count === 0) return false;
     // A CONTACT-scoped event only — no per-lead LEAD_REASSIGNED entries,
     // since no Lead's ownership actually changes here (see this function's
     // own doc comment). A Contact with zero Leads attached (e.g. a brand-
     // new or Bulk-Contacts-imported contact) still gets this event, same
     // as before.
-    prisma.activity.create({
+    await tx.activity.create({
       data: {
         contactId,
         actorId: actor?.id,
@@ -92,8 +103,8 @@ export async function performContactReassignment(params: {
           reason: reason ?? null,
         },
       },
-    }),
-    prisma.auditLog.create({
+    });
+    await tx.auditLog.create({
       data: {
         actorId: actor?.id,
         action: auditAction,
@@ -107,17 +118,21 @@ export async function performContactReassignment(params: {
           reason,
         },
       },
-    }),
-  ]);
+    });
+    return true;
+  });
+  if (!moved) {
+    // Somebody changed the owner between our read and our write. If they
+    // moved it to the same person we were asked to, that request already did
+    // the work (a duplicate) — succeed quietly; otherwise surface the conflict.
+    const current = await prisma.contact.findUnique({ where: { id: contactId }, select: { ownerId: true } });
+    if (current?.ownerId === newOwnerId) return { reassignedLeadCount: 0 };
+    throw new Error("This contact was just reassigned by someone else. Refresh the page and try again.");
+  }
 
-  if (!previousOwner || previousOwner.id === newOwner.id) {
-    // Either brand-new (no previous owner to notify) or a same-owner no-op
-    // — still notify the new owner below, but there's no "previous owner"
-    // leg to run.
-  } else {
-    const baseUrl = resolveBaseUrl();
-    const contactUrl = `${baseUrl}/contacts/${contactId}`;
+  const reassignedAt = new Date();
 
+  if (previousOwner) {
     await prisma.notification.create({
       data: {
         accountId: previousOwner.id,
@@ -126,38 +141,6 @@ export async function performContactReassignment(params: {
         body: `Reassigned to ${newOwner.fullName}${actor ? ` by ${actor.fullName}` : reason ? ` — ${reason}` : ""}. Any leads you own for this contact are unaffected.`,
       },
     });
-
-    // Only sent when a human actor initiated this (an admin's own Gmail
-    // sends it) — a system-triggered reassignment has no CRM session to
-    // send an email FROM, so it relies on the in-app Notification alone.
-    if (previousOwner.email && actor) {
-      const company = await getCompanyForAccountId(actor.id);
-      const { subject, html } = buildReassignmentEmail({
-        recipientFullName: previousOwner.fullName,
-        contactFullName: contactName,
-        previousOwnerName: previousOwner.fullName,
-        newOwnerName: newOwner.fullName,
-        reassignedByName: actor.fullName,
-        reason,
-        reassignedAt: new Date(),
-        scope: "CONTACT",
-        leads: [],
-        contactUrl,
-        company,
-      });
-      const result = await sendEmail({ accountId: actor.id, to: previousOwner.email, subject, html, senderName: actor.fullName });
-      await prisma.emailLog.create({
-        data: {
-          type: "LEAD_REASSIGNMENT",
-          subject,
-          fromEmail: actor.email,
-          toEmail: previousOwner.email,
-          status: result.ok ? "SENT" : "FAILED",
-          errorMessage: result.ok ? undefined : result.error,
-          contactId,
-        },
-      });
-    }
   }
 
   await prisma.notification.create({
@@ -168,6 +151,23 @@ export async function performContactReassignment(params: {
       body: `Assigned to you${actor ? ` by ${actor.fullName}` : reason ? ` — ${reason}` : ""}.`,
     },
   });
+
+  // "Contact Reassigned" (previous owner) and "Contact Reassigned to You"
+  // (new owner) emails — each from that person's own Gmail to their own
+  // address, sent after the response and never able to undo the move. A
+  // contact with no previous owner (a first assignment) sends none.
+  if (previousOwner) {
+    await runAfterResponse(async () => {
+      await sendContactReassignmentEmails({
+        contactId,
+        previousOwnerId: previousOwner.id,
+        newOwnerId: newOwner.id,
+        actorId: actor?.id ?? null,
+        reassignedAt,
+        reason: reason || null,
+      });
+    });
+  }
 
   return { reassignedLeadCount: 0 };
 }

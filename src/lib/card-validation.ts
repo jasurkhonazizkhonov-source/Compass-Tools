@@ -73,6 +73,15 @@ export function isValidExpiry(month: number, year: number): boolean {
   return true;
 }
 
+/** Format check only: 3 digits for every brand except American Express, which
+ * uses 4. The security code is TRANSIENT input — it is validated for shape and
+ * then dropped; this module never stores, logs or returns it. */
+export function isValidCvvFormat(cvv: string, brand: CardBrand): boolean {
+  const digits = digitsOnly(cvv);
+  const expectedLength = brand === "American Express" ? 4 : 3;
+  return digits.length === expectedLength;
+}
+
 export function lastFour(cardNumber: string): string {
   return digitsOnly(cardNumber).slice(-4);
 }

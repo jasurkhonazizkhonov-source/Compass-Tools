@@ -1277,7 +1277,7 @@ model Booking {
   // a distinct, explicit "resend" path that does not re-check this field —
   // see sendAirlineConfirmationEmail in src/server/actions/bookings.ts.
   airlineConfirmationFirstSentAt DateTime?
-  fareAmount               Decimal? @db.Decimal(10, 2) // "Ticket Cost" in the UI
+  fareAmount               Decimal? @db.Decimal(10, 2) // "Ticket Nett Cost" in the UI — the agency's actual ticket expenditure, entered by the ticketing agent; NOT the customer's selling price
   taxAmount                Decimal? @db.Decimal(10, 2)
   serviceFeeAmount         Decimal? @db.Decimal(10, 2) // "Issuing Fee" in the UI
   profitAmount             Decimal? @db.Decimal(10, 2) // always server-computed — never client-editable
@@ -1661,6 +1661,10 @@ enum EmailType {
   // src/server/lead-assignment-email.ts). Its own type so it is never
   // confused with LEAD_REASSIGNMENT, the manual hand-off email.
   NEW_LEAD_ASSIGNMENT
+  // Contact-ownership hand-off notifications (previous and new owner). Lead
+  // hand-offs keep using LEAD_REASSIGNMENT; a pure contact reassignment is a
+  // different event and is never logged as a lead email.
+  CONTACT_REASSIGNMENT
 }
 
 enum EmailStatus {

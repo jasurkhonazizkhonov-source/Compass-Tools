@@ -347,15 +347,23 @@ export async function sendBookingProfitNotification(params: BookingProfitNotific
 
     // Part 19 — recipient privacy. This is a company-wide broadcast (every
     // active user), so the real distribution list must never appear in a
-    // header any recipient can see. `to` is the sending account's own
-    // address (so the sender also receives a normal copy of what went out,
-    // without exposing their identity to anyone else), and the actual
-    // recipient list goes in `bcc` — sendEmail/sendViaGmail already support
-    // this end to end, it just wasn't being used here. EmailLog.toEmail
-    // below still records the full distribution list for internal audit
-    // purposes only (never rendered in any email header, never shown to a
-    // recipient).
-    const toEmail = recipients.map((r) => r.email).join(", ");
+    // header any recipient can see. `to` is the quote creator's own address
+    // (so the creator also receives a normal copy of what went out, without
+    // exposing anyone else), and the actual recipient list goes in `bcc`.
+    // That only works because gmail-send.ts now keeps the Bcc header — it used
+    // to be silently dropped, so this email reached only its `to` address.
+    // EmailLog.toEmail below records the full distribution list for internal
+    // audit purposes only (never rendered in any email header, never shown to
+    // a recipient).
+    //
+    // The blind-copy list: every current active user, one address each
+    // (deduplicated case-insensitively — two accounts can never be sent the
+    // same message twice), passed to the provider as a list rather than one
+    // comma-joined string. Queried fresh by the `recipients` query above on
+    // every send, so a user added or deactivated since the last announcement
+    // is reflected immediately.
+    const bccList = [...new Map(recipients.filter((r) => r.email).map((r) => [r.email.trim().toLowerCase(), r.email.trim()] as const)).values()];
+    const toEmail = bccList.join(", ");
 
     // Real bug found and fixed: the sender loop below used to iterate
     // `recipients` directly — every active company user, alphabetical by
@@ -389,7 +397,23 @@ export async function sendBookingProfitNotification(params: BookingProfitNotific
     let result: Awaited<ReturnType<typeof sendEmail>> = { ok: false, error: "No recipient has connected Gmail yet — notification not sent." };
     for (const candidate of senderCandidates) {
       if ((await getGmailConnectionState(candidate.id)) !== "CONNECTED") continue;
-      const attempt = await sendEmail({ accountId: candidate.id, to: candidate.email, bcc: toEmail, subject, html, senderName: candidate.fullName });
+      // From = To = the quote creator whenever the creator's own connected
+      // Gmail sends it (Gmail authenticates as exactly the account that
+      // connected it — there is no way to send "as" anyone else, and no
+      // attempt to). If the creator has no working connection and a fallback
+      // candidate transmits it instead, the message is STILL addressed to the
+      // creator — the To identity follows the quote creator, only the
+      // transmitting mailbox differs — never to the fallback sender's own
+      // address by default. With no recorded creator (a legacy quote) the
+      // transmitting candidate's own address is the To, as before.
+      const attempt = await sendEmail({
+        accountId: candidate.id,
+        to: agentAsRecipient?.email ?? candidate.email,
+        bcc: bccList,
+        subject,
+        html,
+        senderName: candidate.fullName,
+      });
       if (attempt.ok) {
         sender = candidate;
         result = attempt;

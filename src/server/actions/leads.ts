@@ -10,12 +10,10 @@ import { addContactPhone, addContactEmail } from "@/server/actions/contacts";
 import { searchContacts } from "@/server/queries/contacts";
 import { canReassignLeads, canDeleteLead, canChangeBookedLeadStatus } from "@/lib/permissions";
 import { leadVisibilityWhere, contactVisibilityWhere } from "@/server/visibility";
-import { sendEmail } from "@/server/email/service";
-import { buildReassignmentEmail } from "@/server/email/templates";
-import { getCompanyForAccountId } from "@/server/queries/company";
+import { sendLeadReassignmentEmails } from "@/server/reassignment-email";
+import { runAfterResponse } from "@/lib/run-after-response";
 import { sendCrmEmail } from "@/server/email/crm-email";
 import { normalizePhoneNumberWithRecovery, phoneCountryMismatch, isSupportedCountry, type CountryCode } from "@/lib/phone";
-import { resolveBaseUrl } from "@/lib/company-config";
 import { duplicateContactWhere } from "@/lib/contact-matching";
 import { resolveContactForNewLead } from "@/server/contact-resolution";
 import { Prisma, type LeadStatus } from "@/generated/prisma/client";
@@ -601,8 +599,6 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
     include: {
       contact: { select: { firstName: true, lastName: true, companyId: true } },
       assignedAgent: { select: { id: true, fullName: true, email: true } },
-      departureAirport: { select: { iata: true } },
-      arrivalAirport: { select: { iata: true } },
     },
   });
   // Same IDOR/company-isolation guard as deleteLead — a valid leadId alone
@@ -664,18 +660,44 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
   // if narrow and self-healing, queue-fairness bug. Clearing the offer
   // fields here, exactly like acceptLeadOffer already does on its own
   // successful claim, closes it at the source.
-  await prisma.$transaction([
-    prisma.lead.update({
-      where: { id: leadId },
-      data: { assignedAgentId: newOwnerId, status: "ACCEPTED", offeredToId: null, offeredAt: null, offerExpiresAt: null },
-    }),
-    prisma.quote.updateMany({ where: { leadId }, data: { agentId: newOwnerId } }),
-    prisma.leadStatusHistory.create({
-      data: { leadId, fromStatus: lead.status, toStatus: "ACCEPTED", changedById: actor.id },
-    }),
-  ]);
+  // "Reassigning" a lead to the person who already owns it changes nothing:
+  // no write, no history, no activity/audit record, no notification and no
+  // email. (The UI never offers the current owner, but a stale tab, a retry
+  // or a direct call can still send it.)
+  if (previousOwner && previousOwner.id === newOwner.id) {
+    return { id: leadId, unchanged: true as const };
+  }
 
-  const leadLabel = `${lead.contact.firstName} ${lead.contact.lastName}${lead.departureAirport && lead.arrivalAirport ? ` — ${lead.departureAirport.iata} to ${lead.arrivalAirport.iata}` : ""}`;
+  // The owner change is an atomic compare-and-set: the lead is only moved if
+  // it is STILL owned by whoever we read as the previous owner. Two clicks,
+  // a browser retry or two admins racing all read the same previous owner,
+  // but only one UPDATE can match — the loser changes nothing and therefore
+  // records, notifies and emails nothing. Together with the quote carry-over
+  // and the status history this runs in one transaction, so a failure
+  // partway leaves no half-reassigned lead.
+  const moved = await prisma.$transaction(async (tx) => {
+    const claim = await tx.lead.updateMany({
+      where: { id: leadId, assignedAgentId: previousOwner?.id ?? null },
+      data: { assignedAgentId: newOwnerId, status: "ACCEPTED", offeredToId: null, offeredAt: null, offerExpiresAt: null },
+    });
+    if (claim.count === 0) return false;
+    await tx.quote.updateMany({ where: { leadId }, data: { agentId: newOwnerId } });
+    await tx.leadStatusHistory.create({
+      data: { leadId, fromStatus: lead.status, toStatus: "ACCEPTED", changedById: actor.id },
+    });
+    return true;
+  });
+  if (!moved) {
+    // Somebody changed the owner between our read and our write. If they
+    // moved it to the same person we were asked to, that request already did
+    // the work (a duplicate) — succeed quietly. Otherwise report the conflict
+    // rather than silently overwriting a newer decision.
+    const current = await prisma.lead.findUnique({ where: { id: leadId }, select: { assignedAgentId: true } });
+    if (current?.assignedAgentId === newOwnerId) return { id: leadId, unchanged: true as const };
+    throw new Error("This lead was just reassigned by someone else. Refresh the page and try again.");
+  }
+
+  const reassignedAt = new Date();
 
   await logActivity({
     leadId,
@@ -714,8 +736,7 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
     },
   });
 
-  if (previousOwner && previousOwner.id !== newOwner.id) {
-    const leadUrl = `${resolveBaseUrl()}/leads/${leadId}`;
+  if (previousOwner) {
     await prisma.notification.create({
       data: {
         accountId: previousOwner.id,
@@ -725,43 +746,10 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
         body: `Reassigned to ${newOwner.fullName} by ${actor?.fullName ?? "an admin"}.`,
       },
     });
-
-    if (previousOwner.email && actor) {
-      const company = await getCompanyForAccountId(actor.id);
-      const { subject, html } = buildReassignmentEmail({
-        recipientFullName: previousOwner.fullName,
-        contactFullName: `${lead.contact.firstName} ${lead.contact.lastName}`,
-        previousOwnerName: previousOwner.fullName,
-        newOwnerName: newOwner.fullName,
-        reassignedByName: actor.fullName,
-        reason: reason ?? null,
-        reassignedAt: new Date(),
-        scope: "LEAD",
-        leads: [{ label: leadLabel, url: leadUrl }],
-        company,
-      });
-      // Sent via the reassigning admin/manager's own connected Gmail — they
-      // performed the action, so the notification comes from them.
-      const result = await sendEmail({ accountId: actor.id, to: previousOwner.email, subject, html, senderName: actor.fullName });
-      await prisma.emailLog.create({
-        data: {
-          type: "LEAD_REASSIGNMENT",
-          subject,
-          fromEmail: actor.email,
-          toEmail: previousOwner.email,
-          status: result.ok ? "SENT" : "FAILED",
-          errorMessage: result.ok ? undefined : result.error,
-          messageId: result.ok ? result.messageId : undefined,
-          leadId,
-          contactId: lead.contactId,
-        },
-      });
-    }
   }
 
-  // Symmetric, low-cost heads-up to the new owner — no email (only the
-  // previous-owner notification was required), just the same bell
-  // notification type already used for queue-distributed leads.
+  // Symmetric heads-up to the new owner: the same bell notification type
+  // already used for queue-distributed leads.
   await prisma.notification.create({
     data: {
       accountId: newOwner.id,
@@ -771,6 +759,24 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
       body: previousOwner ? `Reassigned to you by ${actor?.fullName ?? "an admin"}.` : "Assigned to you.",
     },
   });
+
+  // The two reassignment emails (previous owner: "Lead Reassigned"; new
+  // owner: "Lead Reassigned to You"), each from that person's own Gmail to
+  // their own address. Sent after the response so Gmail latency never delays
+  // the click, and never able to undo it. Only an actual hand-off from one
+  // owner to another sends anything — claiming an unassigned lead does not.
+  if (previousOwner) {
+    await runAfterResponse(async () => {
+      await sendLeadReassignmentEmails({
+        leadId,
+        previousOwnerId: previousOwner.id,
+        newOwnerId: newOwner.id,
+        actorId: actor.id,
+        reassignedAt,
+        reason: reason ?? null,
+      });
+    });
+  }
 
   revalidatePath(`/leads/${leadId}`);
   revalidatePath("/leads");

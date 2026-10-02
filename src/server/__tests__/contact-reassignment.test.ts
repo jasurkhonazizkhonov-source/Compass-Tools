@@ -22,9 +22,10 @@ let quotes: Map<string, FakeQuote>;
 let accounts: Map<string, FakeAccount>;
 
 vi.mock("@/server/activity-log", () => ({ logActivity: vi.fn(async () => {}) }));
-vi.mock("@/server/email/service", () => ({ sendEmail: vi.fn(async () => ({ ok: true as const, messageId: "m1" })) }));
-vi.mock("@/server/email/templates", () => ({ buildReassignmentEmail: vi.fn(() => ({ subject: "s", html: "<p>h</p>" })) }));
-vi.mock("@/server/queries/company", () => ({ getCompanyForAccountId: vi.fn(async () => ({ id: "company-1", name: "Test Co" })) }));
+vi.mock("@/server/reassignment-email", () => ({
+  sendContactReassignmentEmails: vi.fn(async () => ({ previousOwner: "SENT", newOwner: "SENT" })),
+  sendLeadReassignmentEmails: vi.fn(async () => ({ previousOwner: "SENT", newOwner: "SENT" })),
+}));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fakePrisma: any = {
@@ -60,6 +61,14 @@ const fakePrisma: any = {
     update: vi.fn(async ({ where: { id }, data }: { where: { id: string }; data: Partial<FakeContact> }) => {
       Object.assign(contacts.get(id)!, data);
     }),
+    // The owner change is a compare-and-set: only applies if the contact is
+    // still owned by whoever the caller read as the previous owner.
+    updateMany: vi.fn(async ({ where, data }: { where: { id: string; ownerId: string | null }; data: Partial<FakeContact> }) => {
+      const c = contacts.get(where.id);
+      if (!c || c.ownerId !== where.ownerId) return { count: 0 };
+      Object.assign(c, data);
+      return { count: 1 };
+    }),
   },
   lead: {
     updateMany: vi.fn(async ({ where, data }: { where: { id: { in: string[] } }; data: Partial<FakeLead> }) => {
@@ -83,7 +92,7 @@ const fakePrisma: any = {
   notification: { create: vi.fn(async () => ({})) },
   emailLog: { create: vi.fn(async () => ({})) },
 };
-fakePrisma.$transaction = vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops));
+fakePrisma.$transaction = vi.fn(async (arg: ((tx: unknown) => Promise<unknown>) | Promise<unknown>[]) => (typeof arg === "function" ? arg(fakePrisma) : Promise.all(arg)));
 
 vi.mock("@/lib/prisma", () => ({ prisma: fakePrisma }));
 

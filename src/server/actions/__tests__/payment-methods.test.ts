@@ -530,3 +530,22 @@ describe("revealPaymentMethod — step-up, vault enablement and abuse controls",
     expect(JSON.stringify(auditLogs)).not.toContain("4111111111111111");
   });
 });
+
+describe("revealPaymentMethod — exactly what comes back (cardholder, number, expiry — never a security code)", () => {
+  for (const role of ["ADMIN", "TICKETING_AGENT"]) {
+    it(`an approved ${role} (explicit grant) receives the cardholder, the full number and the expiry — and nothing else of the card`, async () => {
+      seedBookingAndCard();
+      currentActor = { id: "actor-1", role, status: "ACTIVE", paymentPermissions: ["payments.reveal"], sessionCreatedAt: new Date() };
+      const { revealPaymentMethod } = await import("../payment-methods");
+      const result = await revealPaymentMethod("pm-1");
+      expect(Object.keys(result).sort()).toEqual(["cardBrand", "cardholderName", "expiryMonth", "expiryYear", "pan"]);
+      expect(JSON.stringify(result)).not.toMatch(/cvv|cvc|security|encrypted|ENC:/i);
+    });
+  }
+
+  it("the stored card has no field a security code could be read back from, so a code entered on the booking form can never be revealed", async () => {
+    seedBookingAndCard();
+    const stored = paymentMethods.get("pm-1")!;
+    expect(Object.keys(stored).join(",")).not.toMatch(/cvv|cvc|security|cid/i);
+  });
+});

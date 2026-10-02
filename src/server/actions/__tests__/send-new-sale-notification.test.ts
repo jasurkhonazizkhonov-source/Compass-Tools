@@ -181,7 +181,7 @@ describe("sendNewSaleNotification — authorization + preconditions", () => {
 
   it("rejects a Confirmed booking with no Ticket Cost saved yet", async () => {
     const { sendNewSaleNotification } = await import("../bookings");
-    await expect(sendNewSaleNotification("booking-no-fare")).rejects.toThrow(/Ticket Cost/i);
+    await expect(sendNewSaleNotification("booking-no-fare")).rejects.toThrow(/Ticket Nett Cost/i);
   });
 
   it("on success: sends the notification via the quote's original sender, correctly computed profit, and logs activity", async () => {
@@ -296,7 +296,7 @@ describe("sendCancellationNotification — authorization + preconditions", () =>
 
   it("rejects a confirmed-cancellation booking with no Ticket Cost saved", async () => {
     const { sendCancellationNotification } = await import("../bookings");
-    await expect(sendCancellationNotification("booking-no-fare")).rejects.toThrow(/Ticket Cost/i);
+    await expect(sendCancellationNotification("booking-no-fare")).rejects.toThrow(/Ticket Nett Cost/i);
   });
 
   it("on success: sends via BOOKING_CANCELLATION_NOTIFICATION (never BOOKING_PROFIT_NOTIFICATION), and logs activity", async () => {

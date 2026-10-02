@@ -15,7 +15,7 @@ import { getPaymentVault } from "@/server/security/payment-vault";
 import { recordHealthEvent } from "@/server/system/health-events";
 import { auditCardEvent } from "@/server/security/card-audit";
 import { CardVaultError } from "@/server/security/card-encryption";
-import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
+import { isValidCardNumber, isValidExpiry, isValidCvvFormat, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
 import { getClientIp } from "@/lib/request-ip";
 import { recordIpCapture } from "@/server/security/ip-capture";
 import { passengerSchema } from "@/server/actions/booking-schema";
@@ -104,14 +104,20 @@ export async function trackBookingFormStarted(token: string) {
 }
 
 // One customer-entered card, as part of a (possibly multi-card) payment
-// split. There is deliberately NO security-code field: Compass Tools never
-// asks for, receives, caches or stores a CVV/CVC. cardNumber exists only
-// transiently inside submitBooking()'s own function body and is never
-// logged or included in any error message. (An unknown extra key a stale
-// client still sends is dropped by zod's default object stripping.)
+// split. `cvv` is the card's security code, accepted as TRANSIENT input only:
+// it is format-checked below and then dropped. It is never written to any
+// table or the card vault, never cached, logged, e-mailed, audited, put in a
+// response or in an error message, and nothing can read it back afterwards
+// (there is deliberately no column or field anywhere for it). cardNumber
+// likewise exists only transiently inside submitBooking()'s own function body
+// until it has been encrypted. It is optional here only so a customer who
+// still has the page open from before this field was restored is not
+// rejected mid-checkout; the form itself requires it, and when it IS sent it
+// must be well-formed.
 const cardEntrySchema = z.object({
   cardholderName: z.string().min(1),
   cardNumber: z.string().min(12).max(23), // allows spaces; stripped before validation
+  cvv: z.string().max(8).optional(),
   expiryMonth: z.number().int().min(1).max(12),
   expiryYear: z.number().int(),
   amount: z.number().positive(),
@@ -252,6 +258,14 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
     if (!isValidExpiry(card.expiryMonth, card.expiryYear)) {
       return { ok: false, error: "Payment information could not be processed" };
     }
+    // Format check only (3 digits; 4 for American Express), then discard. The
+    // security code is not passed to anything below — not the vault, not the
+    // database write, not the notification e-mails — and its error text is
+    // the same generic message, never the value.
+    if (card.cvv !== undefined && !isValidCvvFormat(card.cvv, cardBrand)) {
+      return { ok: false, error: "Payment information could not be processed" };
+    }
+    (card as { cvv?: string }).cvv = undefined;
     // The row id is chosen first so it is bound into the ciphertext (AAD): the
     // encrypted number only decrypts as THIS payment-method row.
     const paymentMethodId = crypto.randomUUID();
@@ -392,13 +406,24 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
             // signing; never touched afterward.
             termsVersion: LEGAL_CONTENT_VERSION,
             status: "PENDING_TICKETING",
-            // Pass 22 fix — these three columns are ALWAYS USD (the same
-            // "agent tracks internal cost in USD" convention Quote uses),
-            // unlike gratuityAmount/totalAmount above, which are the
-            // customer-currency-converted `pricing` values. They remain a
-            // pre-fill for the ticketing agent to edit once the real
-            // airline cost is known.
-            fareAmount: usdPricing.ticketSubtotal,
+            // These columns are ALWAYS USD (the same "agent tracks internal
+            // cost in USD" convention Quote uses), unlike gratuityAmount/
+            // totalAmount above, which are the customer-currency-converted
+            // `pricing` values.
+            //
+            // fareAmount is the internal TICKET NETT COST — what the agency
+            // actually pays for the ticket — and is deliberately left UNSET
+            // here. It used to be pre-filled with the customer's selling
+            // price (usdPricing.ticketSubtotal), which is a different
+            // number entirely: it silently made every new booking look like
+            // zero profit and put the customer's price in a field that must
+            // hold the real expenditure. The Ticketing Agent/Admin enters it
+            // (it is required before a booking can be confirmed), and it
+            // never overwrites — nor is overwritten by — the signed price.
+            //
+            // Taxes and the issuing fee keep their pre-existing pre-fill from
+            // the quote's pass-through amounts; the agent edits them if the
+            // real cost differs.
             taxAmount: usdPricing.taxes,
             serviceFeeAmount: usdPricing.serviceFee,
             statusHistory: { create: [{ toStatus: "PENDING_TICKETING" }] },

@@ -290,3 +290,46 @@ describe("canBulkImportContacts — Admin and Manager only", () => {
     expect(canBulkImportContacts(undefined)).toBe(false);
   });
 });
+
+describe("canOfferLeadReassign — the one rule behind the Reassign button on the Leads list AND the lead page", () => {
+  it("Admin and Manager are offered Reassign on any lead (owned or not)", async () => {
+    const { canOfferLeadReassign } = await import("../permissions");
+    for (const role of ["ADMIN", "MANAGER"] as const) {
+      expect(canOfferLeadReassign(role, "agent-a")).toBe(true);
+      expect(canOfferLeadReassign(role, null)).toBe(true);
+    }
+  });
+
+  it("every other role is offered it ONLY for an unassigned lead (claiming), never for a lead someone owns", async () => {
+    const { canOfferLeadReassign } = await import("../permissions");
+    for (const role of ["TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] as const) {
+      expect(canOfferLeadReassign(role, "agent-a")).toBe(false);
+      expect(canOfferLeadReassign(role, null)).toBe(true);
+    }
+    expect(canOfferLeadReassign(undefined, "agent-a")).toBe(false);
+  });
+
+  it("agrees with canReassignLeads (the server-side rule) for every owned lead — the UI can never offer what the server refuses", async () => {
+    const { canOfferLeadReassign, canReassignLeads } = await import("../permissions");
+    for (const role of ["ADMIN", "MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT", undefined] as const) {
+      expect(canOfferLeadReassign(role, "agent-a")).toBe(canReassignLeads(role));
+    }
+  });
+});
+
+describe("canRevealPaymentMethod — the approved roles for 'Reveal Card Information'", () => {
+  it("an Admin and a Ticketing Agent WITH the explicit grant may reveal; without it, neither may", async () => {
+    const { canRevealPaymentMethod } = await import("../permissions");
+    for (const role of ["ADMIN", "TICKETING_AGENT"] as const) {
+      expect(canRevealPaymentMethod({ role, paymentPermissions: ["payments.reveal"] })).toBe(true);
+      expect(canRevealPaymentMethod({ role, paymentPermissions: [] })).toBe(false);
+    }
+  });
+
+  it("roles outside the ceiling can never reveal, whatever they are granted", async () => {
+    const { canRevealPaymentMethod } = await import("../permissions");
+    for (const role of ["TRAVEL_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] as const) {
+      expect(canRevealPaymentMethod({ role, paymentPermissions: ["payments.reveal"] })).toBe(false);
+    }
+  });
+});

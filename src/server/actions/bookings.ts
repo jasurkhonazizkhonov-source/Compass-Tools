@@ -79,7 +79,7 @@ const ticketingSchema = z.object({
   airlineConfirmationNumber: z.string().optional(),
   ticketNumbers: z.array(z.string()).optional(),
   status: z.enum(["PENDING_TICKETING", "TICKETED", "CONFIRMED", "CANCELED"]).optional(),
-  // "Ticket Cost" in the UI. Pass 34 — real gap found and fixed: unlike
+  // "Ticket Nett Cost" in the UI (the internal expenditure — never the customer's selling price). Pass 34 — real gap found and fixed: unlike
   // exchangeSchema's/requestCancellationSchema's equivalent money fields,
   // these had no `.min(0)`, so a negative Ticket Cost/Tax/Issuing Fee could
   // be submitted and would silently inflate the computed profitAmount (a
@@ -198,7 +198,7 @@ export async function updateBookingTicketing(input: z.infer<typeof ticketingSche
   // Cost, checked against the FINAL merged state. PNR Information is
   // internal-only and deliberately NOT required to confirm.
   if (finalStatus === "CONFIRMED" && (finalConfirmations.length === 0 || finalFare == null)) {
-    throw new Error("At least one Airline Confirmation Number and Ticket Cost are required to confirm a booking");
+    throw new Error("At least one Airline Confirmation Number and Ticket Nett Cost are required to confirm a booking");
   }
 
   // Total Selling Price comes from the quote's own per-passenger USD prices
@@ -800,7 +800,7 @@ export async function sendNewSaleNotification(bookingId: string) {
     throw new Error("Save the booking as Confirmed before sending the new-sale notification");
   }
   if (existing.fareAmount == null) {
-    throw new Error("Ticket Cost is required before sending the new-sale notification");
+    throw new Error("Ticket Nett Cost is required before sending the new-sale notification");
   }
 
   const quote = existing.quote;
@@ -934,7 +934,7 @@ export async function sendCancellationNotification(bookingId: string) {
     throw new Error("The cancellation must be confirmed (final) before notifying the team");
   }
   if (existing.fareAmount == null) {
-    throw new Error("Ticket Cost is required before sending the cancellation notification");
+    throw new Error("Ticket Nett Cost is required before sending the cancellation notification");
   }
 
   const quote = existing.quote;

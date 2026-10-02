@@ -100,8 +100,8 @@ describe("BookingFlow — previous card selector (Pass 25) — masked-only, neve
     expect(screen.getByPlaceholderText(/card number/i)).toHaveValue("");
   });
 
-  it("tells the customer they still need to enter the full card number (no security-code field exists)", () => {
+  it("tells the customer they still need to enter the full card number and security code", () => {
     renderBookingFlow({ previousPaymentMethods: [PREVIOUS_CARD] });
-    expect(screen.getByText(/still need to enter the full card number\./i)).toBeInTheDocument();
+    expect(screen.getByText(/still need to enter the full card number and security code\./i)).toBeInTheDocument();
   });
 });

@@ -129,7 +129,7 @@ export function BookingInformationCard({
             <p className="text-xs text-muted-foreground">Ticket Status</p>
             <StatusBadge label={meta.label} tone={meta.tone} className="mt-1" />
           </div>
-          <ReadOnlyField label="Ticket Cost" value={fareAmount != null ? formatMoney(fareAmount, "USD") : null} />
+          <ReadOnlyField label="Ticket Nett Cost" value={fareAmount != null ? formatMoney(fareAmount, "USD") : null} />
           <ReadOnlyField label="Taxes" value={taxAmount != null ? formatMoney(taxAmount, "USD") : null} />
           <ReadOnlyField label="Issuing Fee" value={serviceFeeAmount != null ? formatMoney(serviceFeeAmount, "USD") : null} />
           <ReadOnlyField label="Profit (calculated)" value={profitAmount != null ? formatMoney(profitAmount, "USD") : null} />

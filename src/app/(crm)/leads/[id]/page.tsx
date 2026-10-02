@@ -6,7 +6,7 @@ import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getApplicableSequences } from "@/server/queries/sequences";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canDeleteLead, canViewLeads } from "@/lib/permissions";
+import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads } from "@/lib/permissions";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { deleteLead } from "@/server/actions/leads";
 import { LeadSequencesPanel } from "@/components/leads/lead-sequences-panel";
@@ -87,7 +87,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
              * this dialog must not be the one place on this page that
              * mysteriously requires canReassignLeads even when there's no
              * owner to reassign FROM. */}
-            {(canReassignLeads(currentAccount?.role) || !lead.assignedAgentId) && (
+            {canOfferLeadReassign(currentAccount?.role, lead.assignedAgentId) && (
               <ReassignLeadDialog
                 leadId={lead.id}
                 leadLabel={`${lead.contact.firstName} ${lead.contact.lastName}`}

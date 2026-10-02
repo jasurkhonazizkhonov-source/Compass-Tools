@@ -17,7 +17,7 @@ export type SendEmailInput = {
   to: string;
   /** Additional recipients hidden from the primary `to` recipient — never
    * exposed to them in any visible header. */
-  bcc?: string;
+  bcc?: string | string[];
   subject: string;
   html: string;
   text?: string;

@@ -17,7 +17,7 @@ export type GmailSendInput = {
   /** Additional recipients hidden from the `to` recipient — e.g. internal
    * staff notified of a customer-facing send without being exposed to the
    * customer. Never included in the visible headers the recipient sees. */
-  bcc?: string;
+  bcc?: string | string[];
   subject: string;
   html: string;
   text?: string;
@@ -42,7 +42,7 @@ function toBase64Url(buffer: Buffer): string {
 async function buildRawMessage(input: {
   from: string;
   to: string;
-  bcc?: string;
+  bcc?: string | string[];
   subject: string;
   html: string;
   text?: string;
@@ -57,7 +57,18 @@ async function buildRawMessage(input: {
     text: input.text,
     replyTo: input.replyTo,
   });
-  const buffer = await composer.compile().build();
+  const message = composer.compile();
+  // Real defect fixed here: nodemailer's MimeNode DROPS the Bcc header from the
+  // built message unless keepBcc is set (its SMTP/sendmail transports set it
+  // themselves, because they deliver using a separate envelope). The Gmail API
+  // has no separate envelope — it delivers to exactly what the raw message's
+  // To/Cc/Bcc headers say — so without this the Bcc recipients were silently
+  // discarded and every "bcc" send (the New Sale team notification, the
+  // booking-confirmation staff copy) reached only its "to" address. Gmail
+  // removes the Bcc header from the copies it delivers, so To/Cc recipients
+  // still never see who was blind-copied.
+  message.keepBcc = true;
+  const buffer = await message.build();
   return toBase64Url(buffer);
 }
 

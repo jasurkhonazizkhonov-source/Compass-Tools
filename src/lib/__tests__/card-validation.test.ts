@@ -124,3 +124,21 @@ describe("isPaymentAllocationValid", () => {
     expect(isPaymentAllocationValid([], 0)).toBe(true);
   });
 });
+
+describe("isValidCvvFormat — format check only (the code itself is never kept)", () => {
+  it("3 digits for every brand except American Express, which takes 4", async () => {
+    const { isValidCvvFormat } = await import("../card-validation");
+    expect(isValidCvvFormat("123", "Visa")).toBe(true);
+    expect(isValidCvvFormat("1234", "Visa")).toBe(false);
+    expect(isValidCvvFormat("1234", "American Express")).toBe(true);
+    expect(isValidCvvFormat("123", "American Express")).toBe(false);
+    expect(isValidCvvFormat("12", "Mastercard")).toBe(false);
+    expect(isValidCvvFormat("", "Visa")).toBe(false);
+  });
+
+  it("ignores non-digit characters when counting (the form only ever sends digits)", async () => {
+    const { isValidCvvFormat } = await import("../card-validation");
+    expect(isValidCvvFormat("1 2 3", "Visa")).toBe(true);
+    expect(isValidCvvFormat("abc", "Visa")).toBe(false);
+  });
+});

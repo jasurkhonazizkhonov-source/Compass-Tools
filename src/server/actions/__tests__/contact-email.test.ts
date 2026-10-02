@@ -35,7 +35,7 @@ vi.mock("@/server/queries/company", () => ({
 }));
 vi.mock("@/server/email/templates", () => ({
   buildSequenceEmail: vi.fn(({ subject }: { subject: string }) => ({ subject, html: "<p>rendered</p>" })),
-  buildReassignmentEmail: vi.fn(() => ({ subject: "s", html: "<p>h</p>" })),
+  buildReassignmentEmail: vi.fn(() => ({ subject: "s", html: "<p>h</p>" })), // legacy name, unused now
 }));
 vi.mock("@/server/email/service", () => ({
   sendEmail: vi.fn(async ({ to, accountId }: { to: string; accountId: string }) => {

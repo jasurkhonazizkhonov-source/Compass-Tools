@@ -14,6 +14,8 @@
 // see them, but still show the relevant Company's own logo where useful.
 
 import { PRODUCT_NAME, type ResolvedCompanyBranding } from "@/lib/company-config";
+import { LEAD_STATUS_META, leadSourceLabel } from "@/lib/status-meta";
+import type { LeadSource, LeadStatus } from "@/generated/prisma/client";
 import { formatAirportDate, formatAirportTime } from "@/lib/airport-datetime";
 import { CURRENCY_SYMBOLS, type SupportedCurrency } from "@/lib/currency";
 import { resolveSignature, splitFullName } from "@/lib/email-signature";
@@ -113,7 +115,7 @@ function fmtSignedMoney(symbol: string, n: number): string {
  * `${subject} | ${company.name}` append. Never used for internal/staff
  * notification subjects (buildBookingProfitNotificationEmail,
  * buildBookingSignedNotificationEmail, buildTaskReminderEmail,
- * buildReassignmentEmail) — those keep their existing, unbranded subject
+ * buildLeadReassignmentEmail, buildContactReassignmentEmail) — those keep their existing, unbranded subject
  * format untouched by design (only CRM staff ever see them).
  *
  * A subject that already names the company is returned
@@ -937,56 +939,6 @@ export function buildCancellationConfirmedEmail(params: {
   return { subject, html };
 }
 
-export function buildReassignmentEmail(params: {
-  recipientFullName: string;
-  contactFullName: string;
-  previousOwnerName: string;
-  newOwnerName: string;
-  reassignedByName: string;
-  reason: string | null;
-  reassignedAt: Date;
-  // Pass 7 — explicit, not inferred from `leads.length`: a CONTACT-scope
-  // reassignment no longer touches any Lead's ownership (Contact and Lead
-  // ownership are independent), so `leads` is always empty for that scope
-  // now. Inferring "contact-level" from "more than one lead" was the old
-  // (now-incorrect) signal from when a Contact reassignment cascaded to
-  // every attached Lead.
-  scope: "LEAD" | "CONTACT";
-  // Only meaningful for scope "LEAD" — the single reassigned lead, for the
-  // "View Lead" link. Always empty for scope "CONTACT".
-  leads: { label: string; url: string }[];
-  contactUrl?: string;
-  company: ResolvedCompanyBranding;
-}) {
-  const isContactLevel = params.scope === "CONTACT";
-  const subject = isContactLevel
-    ? `Contact Reassigned — ${params.contactFullName}`
-    : `Lead Reassigned — ${params.contactFullName}`;
-
-  const html = internalWrapper(`
-    <p style="margin:0 0 4px; font-size:16px; color:#111827;">Hi ${params.recipientFullName.split(" ")[0]},</p>
-    <p style="margin:0 0 18px; font-size:14px; color:#4b5563; line-height:1.6;">
-      ${isContactLevel
-        ? `The contact <strong>${escapeHtml(params.contactFullName)}</strong> has been reassigned from your account. Any leads you own for this contact are unaffected — only the contact record itself has moved.`
-        : `The following lead has been reassigned from your account.`}
-    </p>
-    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb; border-radius:10px; margin-bottom:18px;">
-      <tr><td style="padding:14px 18px; font-size:13px; color:#374151; line-height:1.9;">
-        <strong>${isContactLevel ? "Contact" : "Lead"}:</strong> ${escapeHtml(params.contactFullName)}<br/>
-        <strong>Previous owner:</strong> ${escapeHtml(params.previousOwnerName)}<br/>
-        <strong>New owner:</strong> ${escapeHtml(params.newOwnerName)}<br/>
-        <strong>Reassigned by:</strong> ${escapeHtml(params.reassignedByName)}<br/>
-        <strong>Reassigned:</strong> ${params.reassignedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}
-      </td></tr>
-    </table>
-    ${params.reason ? `
-    <p style="margin:0 0 4px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Reason</p>
-    <p style="margin:0 0 18px; font-size:13px; color:#374151; line-height:1.6;">${escapeHtml(params.reason)}</p>` : ""}
-    ${ctaButton(isContactLevel ? (params.contactUrl ?? "#") : (params.leads[0]?.url ?? params.contactUrl ?? "#"), isContactLevel ? "View Contact" : "View Lead", params.company.brandColor)}
-  `);
-  return { subject, html };
-}
-
 const PRIORITY_COLOR: Record<"LOW" | "MEDIUM" | "HIGH", string> = {
   LOW: "#6b7280",
   MEDIUM: "#b45309",
@@ -1534,53 +1486,155 @@ function newRequestButton(href: string, label: string, brandColor: string, prima
   return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 8px 8px 0; display:inline-block;"><tr><td style="border-radius:8px; ${style}"><a href="${href}" style="display:inline-block; padding:12px 26px; font-size:14px; font-weight:700; text-decoration:none; border-radius:8px; color:${primary ? "#ffffff" : brandColor};">${label}</a></td></tr></table>`;
 }
 
-export function buildNewFlightRequestEmail(params: NewFlightRequestEmailParams) {
-  const { company } = params;
-  const subject = `New Flight Request — ${params.customerFullName}`;
+type LeadDetailInput = Pick<
+  NewFlightRequestEmailParams,
+  | "company"
+  | "customerFullName"
+  | "customerEmail"
+  | "customerPhone"
+  | "customerPhoneDisplay"
+  | "customerCountry"
+  | "tripType"
+  | "cabinClass"
+  | "adults"
+  | "children"
+  | "infants"
+  | "departureAirport"
+  | "arrivalAirport"
+  | "departureDate"
+  | "returnDate"
+  | "flexibleDates"
+  | "preferredAirline"
+  | "budget"
+  | "notes"
+>;
 
-  const routeSummary = params.departureAirport && params.arrivalAirport ? `${params.departureAirport.iata} → ${params.arrivalAirport.iata}` : null;
-  const summaryLine = [routeSummary, NEW_REQUEST_TRIP_LABELS[params.tripType], NEW_REQUEST_CABIN_LABELS[params.cabinClass], newRequestTravelers(params.adults, params.children, params.infants)]
+/**
+ * The lead-detail sections shared by every internal email that describes a
+ * lead in full (New Flight Request, "Lead Reassigned to You"): trip summary,
+ * client information, flight itinerary and client notes. One implementation,
+ * so the two emails can never drift apart in what they show or how they wrap.
+ * Optional values that are unset are omitted — never rendered as a
+ * placeholder.
+ */
+function leadDetailBlocks(d: LeadDetailInput) {
+  const { company } = d;
+  const routeSummary = d.departureAirport && d.arrivalAirport ? `${d.departureAirport.iata} → ${d.arrivalAirport.iata}` : null;
+  const summaryLine = [routeSummary, NEW_REQUEST_TRIP_LABELS[d.tripType], NEW_REQUEST_CABIN_LABELS[d.cabinClass], newRequestTravelers(d.adults, d.children, d.infants)]
     .filter(Boolean)
     .join(" · ");
-  const preheader = `${params.customerFullName} — ${summaryLine}`;
 
   const tripRows: Array<[string, string]> = [
-    ["Trip type", NEW_REQUEST_TRIP_LABELS[params.tripType]],
-    ["Cabin", NEW_REQUEST_CABIN_LABELS[params.cabinClass]],
-    ["Travelers", escapeHtml(newRequestTravelers(params.adults, params.children, params.infants))],
+    ["Trip type", NEW_REQUEST_TRIP_LABELS[d.tripType]],
+    ["Cabin", NEW_REQUEST_CABIN_LABELS[d.cabinClass]],
+    ["Travelers", escapeHtml(newRequestTravelers(d.adults, d.children, d.infants))],
   ];
-  if (params.departureDate) tripRows.push(["Departure date", newRequestDate(params.departureDate)]);
-  if (params.returnDate) tripRows.push(["Return date", newRequestDate(params.returnDate)]);
-  if (params.flexibleDates) tripRows.push(["Dates", "Flexible"]);
-  if (params.preferredAirline) tripRows.push(["Preferred airline", escapeHtml(params.preferredAirline)]);
-  if (params.budget != null) tripRows.push(["Approximate budget", `$${params.budget.toLocaleString("en-US")}`]);
+  if (d.departureDate) tripRows.push(["Departure date", newRequestDate(d.departureDate)]);
+  if (d.returnDate) tripRows.push(["Return date", newRequestDate(d.returnDate)]);
+  if (d.flexibleDates) tripRows.push(["Dates", "Flexible"]);
+  if (d.preferredAirline) tripRows.push(["Preferred airline", escapeHtml(d.preferredAirline)]);
+  if (d.budget != null) tripRows.push(["Approximate budget", `$${d.budget.toLocaleString("en-US")}`]);
 
-  const clientRows: Array<[string, string]> = [["Full name", escapeHtml(params.customerFullName)]];
-  if (params.customerEmail) {
-    clientRows.push(["Email", `<a href="mailto:${encodeURI(params.customerEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.customerEmail)}</a>`]);
+  const clientRows: Array<[string, string]> = [["Full name", escapeHtml(d.customerFullName)]];
+  if (d.customerEmail) {
+    clientRows.push(["Email", `<a href="mailto:${encodeURI(d.customerEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(d.customerEmail)}</a>`]);
   }
-  if (params.customerPhone) {
-    const display = params.customerPhoneDisplay ?? params.customerPhone;
-    clientRows.push(["Phone", `<a href="tel:${params.customerPhone.replace(/[^+\d]/g, "")}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(display)}</a>`]);
+  if (d.customerPhone) {
+    const display = d.customerPhoneDisplay ?? d.customerPhone;
+    clientRows.push(["Phone", `<a href="tel:${d.customerPhone.replace(/[^+\d]/g, "")}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(display)}</a>`]);
   }
-  if (params.customerCountry) clientRows.push(["Country", escapeHtml(params.customerCountry)]);
+  if (d.customerCountry) clientRows.push(["Country", escapeHtml(d.customerCountry)]);
 
-  const hasRoute = !!(params.departureAirport || params.arrivalAirport || params.departureDate || params.returnDate);
+  const hasRoute = !!(d.departureAirport || d.arrivalAirport || d.departureDate || d.returnDate);
   const legs: string[] = [];
   if (hasRoute) {
     legs.push(
       newRequestLegCard({
-        label: params.tripType === "ROUND_TRIP" ? "Outbound" : params.tripType === "MULTI_CITY" ? "Route" : "Flight",
-        from: params.departureAirport,
-        to: params.arrivalAirport,
-        date: params.departureDate,
+        label: d.tripType === "ROUND_TRIP" ? "Outbound" : d.tripType === "MULTI_CITY" ? "Route" : "Flight",
+        from: d.departureAirport,
+        to: d.arrivalAirport,
+        date: d.departureDate,
         brandColor: company.brandColor,
       })
     );
-    if (params.tripType === "ROUND_TRIP" && (params.returnDate || params.departureAirport || params.arrivalAirport)) {
-      legs.push(newRequestLegCard({ label: "Return", from: params.arrivalAirport, to: params.departureAirport, date: params.returnDate, brandColor: company.brandColor }));
+    if (d.tripType === "ROUND_TRIP" && (d.returnDate || d.departureAirport || d.arrivalAirport)) {
+      legs.push(newRequestLegCard({ label: "Return", from: d.arrivalAirport, to: d.departureAirport, date: d.returnDate, brandColor: company.brandColor }));
     }
   }
+
+  const itineraryHtml =
+    legs.length > 0
+      ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Flight Itinerary</p>${legs.join("")}${d.tripType === "MULTI_CITY" ? `<p style="margin:0 0 22px; font-size:12px; color:${EMAIL_TOKENS.textSubtle}; line-height:1.6;">Multi-city request — the website form captured one route; confirm any additional legs with the client.</p>` : `<div style="height:12px; line-height:12px; font-size:0;">&nbsp;</div>`}`
+      : "";
+
+  const notesHtml = d.notes
+    ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Notes From The Client</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL_TOKENS.mutedBackground}; border:1px solid ${EMAIL_TOKENS.border}; border-radius:10px; margin-bottom:22px;"><tr><td style="padding:14px 18px; font-size:14px; color:#374151; line-height:1.7; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(d.notes).replace(/\r?\n/g, "<br/>")}</td></tr></table>`
+    : "";
+
+  const replyHref = d.customerEmail
+    ? `mailto:${encodeURI(d.customerEmail)}?subject=${encodeURIComponent(`Your flight request${routeSummary ? ` — ${routeSummary}` : ""}`)}`
+    : null;
+  const callHref = d.customerPhone ? `tel:${d.customerPhone.replace(/[^+\d]/g, "")}` : null;
+
+  return {
+    routeSummary,
+    summaryLine,
+    tripSummaryHtml: `<p style="${NEW_REQUEST_SECTION_LABEL}">Trip Summary</p>${newRequestRows(tripRows)}`,
+    clientHtml: `<p style="${NEW_REQUEST_SECTION_LABEL}">Client Information</p>${newRequestRows(clientRows)}`,
+    itineraryHtml,
+    notesHtml,
+    replyHref,
+    callHref,
+  };
+}
+
+const NEW_REQUEST_FOOTER_NOTE = (company: ResolvedCompanyBranding, note: string) =>
+  `<p style="margin:0 0 4px; font-size:12px; font-weight:600; color:${EMAIL_TOKENS.text};">${escapeHtml(company.name)}</p>
+      <p style="margin:0; font-size:11px; color:${EMAIL_TOKENS.textFaint};">${note}</p>`;
+
+function newRequestBadge(label: string, background: string, color: string): string {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;">
+        <tr>
+          <td style="background:${background}; border-radius:6px; padding:5px 12px;">
+            <span style="font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:${color};">${label}</span>
+          </td>
+        </tr>
+      </table>`;
+}
+
+/**
+ * The shared shell for every internal lead/contact notification (New Flight
+ * Request, Lead/Contact Reassigned): the CRM's own "Internal CRM Notification"
+ * header — the same chrome the New Sale, Booking Signed and task emails use —
+ * with the company's logo (or its name, when no logo is configured) leading
+ * the body, and a footer that says who the email is for. One function so the
+ * internal notifications can never drift apart visually.
+ */
+function internalCompanyMark(company: ResolvedCompanyBranding): string {
+  return company.logoEmailUrl
+    ? `<img src="${company.logoEmailUrl}" alt="${escapeHtml(company.name)}" width="110" height="46" style="display:block; width:110px; height:46px; object-fit:contain; object-position:left; border:0; margin:0 0 18px;" />`
+    : `<p style="margin:0 0 18px; font-size:16px; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em;">${escapeHtml(company.name)}</p>`;
+}
+
+function renderInternalNotificationCard(params: { company: ResolvedCompanyBranding; preheader: string; footerNote: string; bodyHtml: string }): string {
+  const { company } = params;
+  const mark = internalCompanyMark(company);
+  return renderEmailCard({
+    company,
+    variant: "internal",
+    maxWidth: 600,
+    preheader: params.preheader,
+    footerHtml: NEW_REQUEST_FOOTER_NOTE(company, params.footerNote),
+    bodyHtml: `${mark}${params.bodyHtml}`,
+  });
+}
+
+export function buildNewFlightRequestEmail(params: NewFlightRequestEmailParams) {
+  const { company } = params;
+  const subject = `New Flight Request — ${params.customerFullName}`;
+  const blocks = leadDetailBlocks(params);
+  const preheader = `${params.customerFullName} — ${blocks.summaryLine}`;
 
   const submissionRows: Array<[string, string]> = [
     ["Submitted", params.submittedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE })],
@@ -1591,44 +1645,234 @@ export function buildNewFlightRequestEmail(params: NewFlightRequestEmailParams) 
   ];
 
   const buttons = [
-    params.customerEmail
-      ? newRequestButton(`mailto:${encodeURI(params.customerEmail)}?subject=${encodeURIComponent(`Your flight request${routeSummary ? ` — ${routeSummary}` : ""}`)}`, "Reply to Client", company.brandColor, true)
-      : "",
-    params.customerPhone ? newRequestButton(`tel:${params.customerPhone.replace(/[^+\d]/g, "")}`, "Call Client", company.brandColor, !params.customerEmail) : "",
+    blocks.replyHref ? newRequestButton(blocks.replyHref, "Reply to Client", company.brandColor, true) : "",
+    blocks.callHref ? newRequestButton(blocks.callHref, "Call Client", company.brandColor, !params.customerEmail) : "",
   ].join("");
 
-  const html = renderEmailCard({
+  const html = renderInternalNotificationCard({
     company,
-    variant: "transactional",
     preheader,
-    footerHtml: `<p style="margin:0 0 4px; font-size:12px; font-weight:600; color:${EMAIL_TOKENS.text};">${escapeHtml(company.name)}</p>
-      <p style="margin:0; font-size:11px; color:${EMAIL_TOKENS.textFaint};">Internal notification sent to the agent who accepted this request. It is not sent to the customer.</p>`,
+    footerNote: "Internal notification sent to the agent who accepted this request. It is not sent to the customer.",
     bodyHtml: `
-      <table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;">
-        <tr>
-          <td style="background:${EMAIL_TOKENS.successBackground}; border-radius:6px; padding:5px 12px;">
-            <span style="font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#065f46;">New Flight Request</span>
-          </td>
-        </tr>
-      </table>
+      ${newRequestBadge("New Flight Request", EMAIL_TOKENS.successBackground, "#065f46")}
       <h1 style="margin:0 0 6px; font-size:24px; line-height:1.25; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.customerFullName)}</h1>
-      <p style="margin:0 0 22px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${escapeHtml(summaryLine)}</p>
+      <p style="margin:0 0 22px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${escapeHtml(blocks.summaryLine)}</p>
 
       ${buttons ? `<div style="margin:0 0 24px;">${buttons}</div>` : ""}
 
-      <p style="${NEW_REQUEST_SECTION_LABEL}">Trip Summary</p>
-      ${newRequestRows(tripRows)}
+      ${blocks.tripSummaryHtml}
 
-      <p style="${NEW_REQUEST_SECTION_LABEL}">Client Information</p>
-      ${newRequestRows(clientRows)}
+      ${blocks.clientHtml}
 
-      ${legs.length > 0 ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Flight Itinerary</p>${legs.join("")}${params.tripType === "MULTI_CITY" ? `<p style="margin:0 0 22px; font-size:12px; color:${EMAIL_TOKENS.textSubtle}; line-height:1.6;">Multi-city request — the website form captured one route; confirm any additional legs with the client.</p>` : `<div style="height:12px; line-height:12px; font-size:0;">&nbsp;</div>`}` : ""}
+      ${blocks.itineraryHtml}
 
-      ${params.notes ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Notes From The Client</p>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL_TOKENS.mutedBackground}; border:1px solid ${EMAIL_TOKENS.border}; border-radius:10px; margin-bottom:22px;"><tr><td style="padding:14px 18px; font-size:14px; color:#374151; line-height:1.7; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.notes).replace(/\r?\n/g, "<br/>")}</td></tr></table>` : ""}
+      ${blocks.notesHtml}
 
       <p style="${NEW_REQUEST_SECTION_LABEL}">Submission Details</p>
       ${newRequestRows(submissionRows)}
+    `,
+  });
+  return { subject, html };
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Reassignment notifications — a DIFFERENT event from a fresh website lead
+// being accepted (that is "New Flight Request" above). These describe an
+// EXISTING lead or contact whose owner has just changed, and go to the two
+// people involved: the previous owner ("... reassigned from your account")
+// and the new owner ("... reassigned to you"). Built on the same branded
+// shell and section helpers as the New Flight Request email.
+// ───────────────────────────────────────────────────────────────────────
+
+export type LeadReassignmentEmailParams = LeadDetailInput & {
+  /** AWAY = to the previous owner; TO_YOU = to the new owner. */
+  direction: "AWAY" | "TO_YOU";
+  recipientFullName: string;
+  status: LeadStatus;
+  source: LeadSource;
+  /** The new owner's name (shown to the previous owner). */
+  newOwnerName: string;
+  /** The previous owner's name (shown to the NEW owner only — never to the previous owner, who is the recipient of the AWAY variant). */
+  previousOwnerName: string | null;
+  reassignedByName: string;
+  reassignedAt: Date;
+  reason: string | null;
+  /**
+   * An authenticated in-app link the recipient is actually allowed to open,
+   * or null when they may not (e.g. the previous owner of a restricted role,
+   * who no longer has access once the lead has moved). A null link renders
+   * a plain, non-clickable reference instead — never a link that would only
+   * lead to an authorization error.
+   */
+  leadUrl: string | null;
+};
+
+const REASSIGN_FOOTER_NOTE = "Internal CRM notification. It is not sent to the customer.";
+
+function reassignedAtLabel(d: Date): string {
+  return d.toLocaleString("en-US", { dateStyle: "long", timeStyle: "short", timeZone: DISPLAY_TIMEZONE });
+}
+
+function reassignmentRows(rows: Array<[string, string | null | undefined]>): string {
+  return newRequestRows(rows.filter((r): r is [string, string] => !!r[1]));
+}
+
+export function buildLeadReassignmentEmail(params: LeadReassignmentEmailParams) {
+  const { company } = params;
+  const away = params.direction === "AWAY";
+  const subject = away ? `Lead Reassigned — ${params.customerFullName}` : `Lead Reassigned to You — ${params.customerFullName}`;
+  const firstName = params.recipientFullName.split(" ")[0];
+  const blocks = leadDetailBlocks(params);
+  const preheader = away
+    ? `${params.customerFullName} was reassigned from your account to ${params.newOwnerName}.`
+    : `${params.customerFullName} — ${blocks.summaryLine}`;
+
+  const reassignmentRowsHtml = reassignmentRows([
+    ...(away ? ([["New owner", escapeHtml(params.newOwnerName)]] as Array<[string, string]>) : params.previousOwnerName ? ([["Previous owner", escapeHtml(params.previousOwnerName)]] as Array<[string, string]>) : []),
+    ["Reassigned by", escapeHtml(params.reassignedByName)],
+    ["Reassigned", reassignedAtLabel(params.reassignedAt)],
+    ["Reason", params.reason ? escapeHtml(params.reason) : null],
+    // Status/source only help the NEW owner; the previous owner does not need them.
+    ["Lead status", away ? null : LEAD_STATUS_META[params.status].label],
+    ["Source", away ? null : leadSourceLabel(params.source)],
+  ]);
+
+  const intro = away
+    ? `The following lead has been reassigned from your account.`
+    : `A lead has been reassigned to your account. Everything on record for it is below.`;
+
+  // A link only when the recipient can actually open it; otherwise a plain
+  // reference so nobody lands on a confusing authorization error.
+  const linkHtml = params.leadUrl
+    ? `<div style="margin:0 0 24px;">${newRequestButton(params.leadUrl, away ? "Lead Link" : "Open Lead", company.brandColor, true)}</div>`
+    : "";
+
+  const awayReference = `<p style="${NEW_REQUEST_SECTION_LABEL}">Lead Reference</p>
+      ${newRequestRows(
+        [
+          ["Client", escapeHtml(params.customerFullName)],
+          params.departureAirport && params.arrivalAirport ? (["Route", escapeHtml(`${params.departureAirport.iata} → ${params.arrivalAirport.iata}`)] as [string, string]) : null,
+          ["Trip", escapeHtml(blocks.summaryLine)] as [string, string],
+          params.departureDate ? (["Departure date", newRequestDate(params.departureDate)] as [string, string]) : null,
+          params.returnDate ? (["Return date", newRequestDate(params.returnDate)] as [string, string]) : null,
+        ].filter((r): r is [string, string] => r !== null)
+      )}`;
+
+  const toYouButtons = [
+    blocks.replyHref ? newRequestButton(blocks.replyHref, "Reply to Client", company.brandColor, false) : "",
+    blocks.callHref ? newRequestButton(blocks.callHref, "Call Client", company.brandColor, false) : "",
+  ].join("");
+
+  const bodyHtml = away
+    ? `
+      ${newRequestBadge("Lead Reassigned", EMAIL_TOKENS.warningBackground, "#92400e")}
+      <p style="margin:0 0 4px; font-size:16px; color:${EMAIL_TOKENS.text}; font-weight:600;">Hi ${escapeHtml(firstName)},</p>
+      <p style="margin:0 0 20px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${intro}</p>
+      <h1 style="margin:0 0 20px; font-size:22px; line-height:1.25; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.customerFullName)}</h1>
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">Reassignment</p>
+      ${reassignmentRowsHtml}
+
+      ${awayReference}
+
+      ${linkHtml}
+    `
+    : `
+      ${newRequestBadge("Lead Reassigned to You", EMAIL_TOKENS.successBackground, "#065f46")}
+      <p style="margin:0 0 4px; font-size:16px; color:${EMAIL_TOKENS.text}; font-weight:600;">Hi ${escapeHtml(firstName)},</p>
+      <p style="margin:0 0 20px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${intro}</p>
+      <h1 style="margin:0 0 6px; font-size:24px; line-height:1.25; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.customerFullName)}</h1>
+      <p style="margin:0 0 22px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${escapeHtml(blocks.summaryLine)}</p>
+
+      ${linkHtml}${toYouButtons ? `<div style="margin:0 0 24px;">${toYouButtons}</div>` : ""}
+
+      ${blocks.clientHtml}
+
+      ${blocks.tripSummaryHtml}
+
+      ${blocks.itineraryHtml}
+
+      ${blocks.notesHtml}
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">Reassignment</p>
+      ${reassignmentRowsHtml}
+    `;
+
+  const html = renderInternalNotificationCard({ company, preheader, footerNote: REASSIGN_FOOTER_NOTE, bodyHtml });
+  return { subject, html };
+}
+
+export type ContactReassignmentEmailParams = {
+  company: ResolvedCompanyBranding;
+  direction: "AWAY" | "TO_YOU";
+  recipientFullName: string;
+  contactFullName: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  contactPhoneDisplay: string | null;
+  contactCountry: string | null;
+  /** How many leads sit under this contact — a real count, shown only when > 0. */
+  leadCount: number;
+  newOwnerName: string;
+  previousOwnerName: string | null;
+  /** "Automatic ownership match" style label when no person did it. */
+  reassignedByName: string;
+  reassignedAt: Date;
+  reason: string | null;
+  /** Authenticated link the recipient can actually open, or null (plain reference only). */
+  contactUrl: string | null;
+};
+
+export function buildContactReassignmentEmail(params: ContactReassignmentEmailParams) {
+  const { company } = params;
+  const away = params.direction === "AWAY";
+  const subject = away ? `Contact Reassigned — ${params.contactFullName}` : `Contact Reassigned to You — ${params.contactFullName}`;
+  const firstName = params.recipientFullName.split(" ")[0];
+
+  const infoRows: Array<[string, string]> = [["Full name", escapeHtml(params.contactFullName)]];
+  if (!away) {
+    // Contact details go to the NEW owner only; the previous owner already
+    // knows this customer and does not need their details re-sent.
+    if (params.contactEmail) infoRows.push(["Email", `<a href="mailto:${encodeURI(params.contactEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.contactEmail)}</a>`]);
+    if (params.contactPhone) {
+      infoRows.push(["Phone", `<a href="tel:${params.contactPhone.replace(/[^+\d]/g, "")}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.contactPhoneDisplay ?? params.contactPhone)}</a>`]);
+    }
+    if (params.contactCountry) infoRows.push(["Country", escapeHtml(params.contactCountry)]);
+  }
+  if (params.leadCount > 0) infoRows.push(["Leads on this contact", String(params.leadCount)]);
+
+  const reassignmentRowsHtml = reassignmentRows([
+    ...(away ? ([["New owner", escapeHtml(params.newOwnerName)]] as Array<[string, string]>) : params.previousOwnerName ? ([["Previous owner", escapeHtml(params.previousOwnerName)]] as Array<[string, string]>) : []),
+    ["Reassigned by", escapeHtml(params.reassignedByName)],
+    ["Reassigned", reassignedAtLabel(params.reassignedAt)],
+    ["Reason", params.reason ? escapeHtml(params.reason) : null],
+  ]);
+
+  const intro = away
+    ? `The following contact has been reassigned from your account. Only the contact record moved — any leads you own for this contact are unaffected.`
+    : `A contact has been reassigned to your account. Only the contact record moved — the leads under it keep their own owners.`;
+
+  const linkHtml = params.contactUrl
+    ? `<div style="margin:0 0 24px;">${newRequestButton(params.contactUrl, away ? "Contact Link" : "Open Contact", company.brandColor, true)}</div>`
+    : "";
+
+  const html = renderInternalNotificationCard({
+    company,
+    preheader: away ? `${params.contactFullName} was reassigned from your account to ${params.newOwnerName}.` : `${params.contactFullName} was reassigned to you.`,
+    footerNote: REASSIGN_FOOTER_NOTE,
+    bodyHtml: `
+      ${away ? newRequestBadge("Contact Reassigned", EMAIL_TOKENS.warningBackground, "#92400e") : newRequestBadge("Contact Reassigned to You", EMAIL_TOKENS.successBackground, "#065f46")}
+      <p style="margin:0 0 4px; font-size:16px; color:${EMAIL_TOKENS.text}; font-weight:600;">Hi ${escapeHtml(firstName)},</p>
+      <p style="margin:0 0 20px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${intro}</p>
+      <h1 style="margin:0 0 20px; font-size:22px; line-height:1.25; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.contactFullName)}</h1>
+
+      ${linkHtml}
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">${away ? "Contact Reference" : "Contact Information"}</p>
+      ${newRequestRows(infoRows)}
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">Reassignment</p>
+      ${reassignmentRowsHtml}
     `,
   });
   return { subject, html };
@@ -1726,7 +1970,7 @@ export function buildBookingProfitNotificationEmail(params: {
   const bodyNoun = label === "EXCHANGE" ? "an exchange booking" : label === "CANCELLATION" ? "a cancellation" : "a booking";
 
   const html = internalWrapper(`
-    ${params.company.logoEmailUrl ? `<img src="${params.company.logoEmailUrl}" alt="${escapeHtml(params.company.name)}" width="110" height="46" style="display:block; width:110px; height:46px; object-fit:contain; object-position:left; border:0; margin:0 0 18px;" />` : ""}
+    ${internalCompanyMark(params.company)}
 
     <table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;">
       <tr>

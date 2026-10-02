@@ -201,7 +201,7 @@ describe("updateBookingTicketing — auth + IDOR/BOLA protection", () => {
     seedBooking();
     currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1" };
     const { updateBookingTicketing } = await import("../bookings");
-    await expect(updateBookingTicketing({ bookingId: "booking-1", status: "CONFIRMED" })).rejects.toThrow(/Ticket Cost|Airline Confirmation/i);
+    await expect(updateBookingTicketing({ bookingId: "booking-1", status: "CONFIRMED" })).rejects.toThrow(/Ticket Nett Cost|Airline Confirmation/i);
   });
 
   it("PNR Information is internal-only and NOT required to confirm a booking — only Airline Confirmation + Ticket Cost are", async () => {

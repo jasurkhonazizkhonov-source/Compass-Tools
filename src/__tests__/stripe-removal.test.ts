@@ -166,31 +166,70 @@ describe("Stripe removal — repo-wide verification", () => {
     }
   });
 
-  it("no CVV/CVC/security-code handling exists anywhere in executable source — Compass Tools never collects, caches or stores one", () => {
-    // Comments may still EXPLAIN the rule (several files do), but no
-    // executable line — identifier, string, JSX text, schema field — may
-    // mention a card security code. There is no allow-list of code files:
-    // the previous in-memory CVV cache and everything built on it was
-    // removed, so any new hit is a regression to investigate, not to
-    // allow-list.
-    // The ONE allowed exception: the System Health sanitizer lists the security-
-    // code words in its DEFENSIVE key deny-list (so such a key can never be
-    // stored in an incident). It handles no value; it only refuses to.
+  // The security code is TRANSIENT input only: the customer types it into the
+  // booking form, it travels once with "Finish Booking", the server format-
+  // checks it and drops it. It is never stored, cached, logged, e-mailed or
+  // returned (and Reveal can never show it, because nothing keeps it). That
+  // handling is confined to exactly these four files; any other mention in
+  // executable source is a regression to investigate.
+  const TRANSIENT_CODE_FILES = [
+    path.join("src", "components", "booking", "card-payment-section.tsx"), // the input
+    path.join("src", "components", "booking", "booking-flow.tsx"), // validation + the one submit payload + clearing
+    path.join("src", "lib", "card-validation.ts"), // isValidCvvFormat (format check only)
+    path.join("src", "server", "actions", "booking.ts"), // schema key, format check, discard
+  ];
+  const executableCode = (file: string) =>
+    readFileSync(file, "utf-8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      // \r?\n: on a Windows checkout files have CRLF, and a stray \r would stop the comment strip matching.
+      .split(/\r?\n/)
+      .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
+      .join("\n");
+
+  it("security-code handling exists ONLY in the four files that take it as transient input — nowhere else in executable source", () => {
+    // The System Health sanitizer lists the security-code words in its
+    // DEFENSIVE key deny-list (so such a key can never be stored in an
+    // incident). It handles no value; it only refuses to.
     const DEFENSIVE_DENY_LIST = path.join("src", "server", "system", "health-events.ts");
+    const allowed = new Set([DEFENSIVE_DENY_LIST, ...TRANSIENT_CODE_FILES]);
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
       if (file.includes(`${path.sep}__integration__${path.sep}`)) continue;
-      if (path.relative(ROOT, file) === DEFENSIVE_DENY_LIST) continue;
-      const code = readFileSync(file, "utf-8")
-        .replace(/\/\*[\s\S]*?\*\//g, "")
-        // \r?\n: on a Windows checkout files have CRLF, and a stray \r would stop the comment strip matching.
-        .split(/\r?\n/)
-        .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
-        .join("\n");
-      if (/cvv|\bcvc\b|security_?code|\bcid\b/i.test(code)) offenders.push(path.relative(ROOT, file));
+      if (allowed.has(path.relative(ROOT, file))) continue;
+      if (/cvv|\bcvc\b|security_?code|\bcid\b/i.test(executableCode(file))) offenders.push(path.relative(ROOT, file));
     }
     expect(offenders).toEqual([]);
+  });
+
+  it("the server action touches the security code in exactly three ways — a schema key, a format check, and the discard — and never hands it to the database, the vault, a log or an e-mail", () => {
+    const code = executableCode(path.join(ROOT, "src", "server", "actions", "booking.ts"));
+    const lines = code.split("\n").filter((l) => /cvv/i.test(l));
+    expect(lines.length).toBeGreaterThan(0);
+    for (const line of lines) {
+      const ok =
+        /^\s*cvv: z\.string\(\)/.test(line) || // the schema key
+        /isValidCvvFormat/.test(line) || // the format check (also its import)
+        /\(card as \{ cvv\?: string \}\)\.cvv = undefined/.test(line) || // the discard
+        /card\.cvv !== undefined/.test(line); // the guard around the format check
+      expect(ok, line.trim()).toBe(true);
+    }
+    // the only identifier it could be passed through is `card`, and none of the
+    // calls that persist, encrypt, log or send receive the whole card object
+    expect(code).not.toMatch(/store\([^)]*card\b[^.]/);
+    expect(code).not.toMatch(/console\.\w+\([^)]*\bcvv\b/i);
+  });
+
+  it("the form keeps the security code in React state only — never in browser storage, a cookie, a URL or a console call", () => {
+    for (const rel of [TRANSIENT_CODE_FILES[0], TRANSIENT_CODE_FILES[1]]) {
+      const code = executableCode(path.join(ROOT, rel));
+      for (const line of code.split("\n").filter((l) => /cvv/i.test(l))) {
+        expect(line, line.trim()).not.toMatch(/localStorage|sessionStorage|cookie|indexedDB|console\.|searchParams|router\.(push|replace)|URLSearchParams|fetch\(|JSON\.stringify/);
+      }
+    }
+    // and the flow clears it after every definitive answer
+    const flow = executableCode(path.join(ROOT, TRANSIENT_CODE_FILES[1]));
+    expect((flow.match(/cvv: ""/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
 
   it("the removed CVV modules, routes and email template no longer exist", () => {

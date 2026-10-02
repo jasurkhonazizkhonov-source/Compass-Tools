@@ -35,6 +35,9 @@ let requestHeaders: Map<string, string>;
 let currentIp = "";
 vi.mock("next/headers", () => ({ headers: vi.fn(async () => requestHeaders) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
+// Only the ticketing step below acts as a signed-in user; submitBooking is the public customer action.
+let currentActor: { id: string; role: string; status: string; companyId: string; fullName: string; email: string; paymentPermissions: string[]; bookingPermissions: string[] } | null = null;
+vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => currentActor) }));
 // No request scope exists in a test process; run deferred work inline so
 // assertions can observe its effects deterministically.
 // Deferred tasks are collected so each test can await them (production runs
@@ -227,12 +230,16 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(sendStaffEmail).toHaveBeenCalledTimes(1);
   });
 
-  it("NO CVV ANYWHERE: even if a stale client still sends a security code, it is never stored, cached, logged or echoed — not in any table of the database", async () => {
+  it("NO CVV ANYWHERE: a security code is accepted as transient input, but is never stored, cached, logged or echoed — not in any table of the database", async () => {
     const { quote } = await makeQuote();
     const spies = [vi.spyOn(console, "log"), vi.spyOn(console, "error"), vi.spyOn(console, "warn"), vi.spyOn(console, "info")];
-    const MARK = "CVVMARK-8f3a1c";
+    // A 4-digit marker is only valid for American Express, so this booking uses
+    // an Amex test number; the table scan below looks for the marker as a whole
+    // token (never inside an id) so a coincidental substring cannot fail it.
+    const MARK = "7391";
+    const AMEX = "378282246310005";
     const base = input(quote.secureToken);
-    const withCode = { ...base, paymentMethods: base.paymentMethods.map((c) => ({ ...c, cvv: MARK, cvc: MARK, securityCode: MARK })) };
+    const withCode = { ...base, paymentMethods: base.paymentMethods.map((c) => ({ ...c, cardNumber: AMEX, cvv: MARK })) };
     const result = await submitBooking(withCode as never);
     await flushDeferred();
     expect(result.ok).toBe(true);
@@ -241,13 +248,14 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     const logged = JSON.stringify(spies.flatMap((spy) => spy.mock.calls));
     spies.forEach((spy) => spy.mockRestore());
     expect(logged).not.toContain(MARK);
-    expect(logged).not.toContain("4111111111111111"); // nor the card number
+    expect(logged).not.toContain(AMEX); // nor the card number
+    expect(JSON.stringify(result)).not.toContain(MARK);
 
-    // Every column of every table: the marker is nowhere.
+    // Every column of every table: the marker is nowhere as a standalone value.
     const tables = await prisma.$queryRaw<Array<{ table_name: string }>>`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`;
     const hits: string[] = [];
     for (const { table_name } of tables) {
-      const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${table_name}" t WHERE t::text LIKE '%${MARK}%'`);
+      const rows = await prisma.$queryRawUnsafe<Array<{ n: number }>>(`SELECT count(*)::int AS n FROM "${table_name}" t WHERE t::text ~ '(^|[^0-9A-Za-z.])${MARK}([^0-9A-Za-z.]|$)'`);
       if (rows[0].n > 0) hits.push(table_name);
     }
     expect(hits).toEqual([]);
@@ -255,7 +263,15 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     // The stored card has no security-code field at all, and no plain PAN.
     const [pm] = await prisma.paymentMethod.findMany({ where: { bookingId: result.bookingId } });
     expect(Object.keys(pm).join(",")).not.toMatch(/cvv|cvc|security|cid/i);
-    expect(JSON.stringify(pm)).not.toContain("4111111111111111");
+    expect(JSON.stringify(pm)).not.toContain(AMEX);
+  });
+
+  it("a malformed security code is refused with the generic message and records no booking", async () => {
+    const { quote } = await makeQuote();
+    const base = input(quote.secureToken);
+    const bad = { ...base, paymentMethods: base.paymentMethods.map((c) => ({ ...c, cvv: "12" })) };
+    expect(await submitBooking(bad as never)).toEqual({ ok: false, error: "Payment information could not be processed" });
+    expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
   });
 
   it("FULL signer IP: an IPv6 address is stored complete (untruncated) and the encrypted vault gets it too", async () => {
@@ -314,7 +330,9 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(result.ok).toBe(true);
     const booking = await prisma.booking.findUniqueOrThrow({ where: { quoteId: quote.id } });
     expect(Number(booking.totalAmount)).toBe(855);
-    expect(Number(booking.fareAmount)).toBe(500); // internal cost stays USD
+    // Ticket Nett Cost is the agent's own entry — never seeded from the customer's price.
+    expect(booking.fareAmount).toBeNull();
+    expect(Number(booking.taxAmount)).toBe(50); // internal ledger stays USD
     expect(Number((await prisma.quote.findUniqueOrThrow({ where: { id: quote.id } })).total)).toBe(570);
   });
 
@@ -542,5 +560,73 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     const result = await submitBooking(input(quote.secureToken));
     expect(result.ok).toBe(false);
     expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(0);
+  });
+
+  it("SELLING PRICE vs TICKET NETT COST: the customer signs ticket 1,800 + gratuity 200 = 2,000; Ticket Nett Cost starts unset, then the ticketing agent enters 1,450 — and the two never overwrite each other", async () => {
+    const { updateBookingTicketing } = await import("../bookings");
+    const { customerPriceSummary } = await import("@/lib/booking-price-summary");
+    const agent = await prisma.account.create({
+      data: { fullName: "Ticketing Tina", email: `tina-${TAG}-${++seq}@example.test`, role: "TICKETING_AGENT", status: "ACTIVE", companyId: "default-company" },
+    });
+    try {
+      // The customer's quote: 1 adult at 1,800, no taxes/fee, 200 gratuity → 2,000 total.
+      const n = ++seq;
+      const contact = await prisma.contact.create({ data: { firstName: "Price", lastName: `Split${n}`, primaryEmail: `price${n}-${TAG}@example.test`, companyId: "default-company" } });
+      contactIds.push(contact.id);
+      const lead = await prisma.lead.create({ data: { contactId: contact.id, status: "QUOTED", source: "OTHER" } });
+      const quote = await prisma.quote.create({
+        data: { quoteNumber: `Q-${TAG}-${n}`, secureToken: `tok-${TAG}-${n}`, leadId: lead.id, contactId: contact.id, status: "SENT", adults: 1, adultPrice: 1800, taxes: 0, serviceFee: 0, total: 1800 },
+      });
+      const result = await submitBooking(input(quote.secureToken, { gratuityAmount: 200 }, 2000));
+      await flushDeferred();
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+
+      const summaryOf = async () => {
+        const b = await prisma.booking.findUniqueOrThrow({ where: { id: result.bookingId }, include: { quote: true } });
+        return {
+          booking: b,
+          summary: customerPriceSummary({
+            adults: b.quote.adults,
+            adultPrice: Number(b.quote.adultPrice),
+            children: b.quote.children,
+            childPrice: Number(b.quote.childPrice),
+            infants: b.quote.infants,
+            infantPrice: Number(b.quote.infantPrice),
+            taxes: Number(b.quote.taxes),
+            serviceFee: Number(b.quote.serviceFee),
+            currency: b.quote.currency,
+            exchangeRate: b.quote.exchangeRate != null ? Number(b.quote.exchangeRate) : null,
+            gratuityAmount: Number(b.gratuityAmount),
+            totalAmount: Number(b.totalAmount),
+          }),
+        };
+      };
+
+      // Initially: signed summary 1,800 / 200 / 2,000 and NO nett cost.
+      const before = await summaryOf();
+      expect(before.summary).toMatchObject({ ticketCost: 1800, gratuity: 200, total: 2000 });
+      expect(before.booking.fareAmount).toBeNull();
+
+      // The ticketing agent enters the real expenditure.
+      currentActor = { id: agent.id, role: "TICKETING_AGENT", status: "ACTIVE", companyId: "default-company", fullName: agent.fullName, email: agent.email, paymentPermissions: [], bookingPermissions: [] };
+      await updateBookingTicketing({ bookingId: result.bookingId, fareAmount: 1450 });
+
+      // The nett cost is stored; the customer's signed figures are untouched.
+      const after = await summaryOf();
+      expect(Number(after.booking.fareAmount)).toBe(1450);
+      expect(after.summary).toMatchObject({ ticketCost: 1800, gratuity: 200, total: 2000 });
+      expect(Number(after.booking.totalAmount)).toBe(2000);
+      expect(Number(after.booking.quote.adultPrice)).toBe(1800);
+
+      // Editing the nett cost again still leaves the signed price alone.
+      await updateBookingTicketing({ bookingId: result.bookingId, fareAmount: 1500 });
+      const again = await summaryOf();
+      expect(Number(again.booking.fareAmount)).toBe(1500);
+      expect(again.summary).toMatchObject({ ticketCost: 1800, gratuity: 200, total: 2000 });
+    } finally {
+      currentActor = null;
+      await prisma.account.delete({ where: { id: agent.id } }).catch(() => {});
+    }
   });
 });

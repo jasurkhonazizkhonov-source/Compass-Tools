@@ -17,6 +17,7 @@ import { canRevealPaymentMethod, canConfirmPayment, canRevealBookingIp, canDelet
 import { deleteBooking } from "@/server/actions/bookings";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { formatMoney, isSupportedCurrency } from "@/lib/currency";
+import { customerPriceSummary } from "@/lib/booking-price-summary";
 import { getBookingType, BOOKING_TYPE_LABELS } from "@/lib/booking-type";
 import { Badge } from "@/components/ui/badge";
 import { resolveAirlineConfirmations } from "@/lib/airline-confirmations";
@@ -39,6 +40,20 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
   const bookingType = getBookingType(booking.quote);
   const segments = booking.quote.itinerary?.segments ?? [];
   const currency = isSupportedCurrency(booking.quote.currency) ? booking.quote.currency : "USD";
+  const priceSummary = customerPriceSummary({
+    adults: booking.quote.adults,
+    adultPrice: Number(booking.quote.adultPrice),
+    children: booking.quote.children,
+    childPrice: Number(booking.quote.childPrice),
+    infants: booking.quote.infants,
+    infantPrice: Number(booking.quote.infantPrice),
+    taxes: Number(booking.quote.taxes),
+    serviceFee: Number(booking.quote.serviceFee),
+    currency,
+    exchangeRate: booking.quote.exchangeRate != null ? Number(booking.quote.exchangeRate) : null,
+    gratuityAmount: Number(booking.gratuityAmount),
+    totalAmount: Number(booking.totalAmount),
+  });
 
   // Pass 23 — resolve the booking's confirmations (transparently falling
   // back to any pre-Pass-23 legacy single value) and enrich each with an
@@ -288,15 +303,19 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
         <Card className="shadow-none sticky top-6 h-fit">
           <CardHeader><CardTitle className="text-sm font-medium">Price Summary</CardTitle></CardHeader>
           <CardContent className="space-y-1.5 text-sm">
-            <div className="flex justify-between text-muted-foreground"><span>Ticket Cost</span><span>{formatMoney(Number(booking.fareAmount), currency)}</span></div>
-            {Number(booking.taxAmount) > 0 && (
-              <div className="flex justify-between text-muted-foreground"><span>Taxes</span><span>{formatMoney(Number(booking.taxAmount), currency)}</span></div>
+            {/* The customer's signed Price Summary — selling prices only. The
+                internal Ticket Nett Cost / Taxes / Issuing Fee the ticketing
+                agent enters under "Booking Information" never appear here and
+                never change these figures. */}
+            <div className="flex justify-between text-muted-foreground"><span>Ticket cost</span><span>{formatMoney(priceSummary.ticketCost, currency)}</span></div>
+            {priceSummary.taxes > 0 && (
+              <div className="flex justify-between text-muted-foreground"><span>Taxes</span><span>{formatMoney(priceSummary.taxes, currency)}</span></div>
             )}
-            {Number(booking.serviceFeeAmount) > 0 && (
-              <div className="flex justify-between text-muted-foreground"><span>Issuing Fee</span><span>{formatMoney(Number(booking.serviceFeeAmount), currency)}</span></div>
+            {priceSummary.serviceFee > 0 && (
+              <div className="flex justify-between text-muted-foreground"><span>Service fee</span><span>{formatMoney(priceSummary.serviceFee, currency)}</span></div>
             )}
-            <div className="flex justify-between text-muted-foreground"><span>Gratuity</span><span>{formatMoney(Number(booking.gratuityAmount), currency)}</span></div>
-            <div className="flex justify-between font-semibold text-base pt-2 border-t"><span>Total</span><span>{formatMoney(Number(booking.totalAmount), currency)}</span></div>
+            <div className="flex justify-between text-muted-foreground"><span>Gratuity</span><span>{formatMoney(priceSummary.gratuity, currency)}</span></div>
+            <div className="flex justify-between font-semibold text-base pt-2 border-t"><span>Total</span><span>{formatMoney(priceSummary.total, currency)}</span></div>
           </CardContent>
         </Card>
       </div>

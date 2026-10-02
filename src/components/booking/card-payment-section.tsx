@@ -1,5 +1,6 @@
 "use client";
 
+import { useId } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -14,6 +15,9 @@ export type CardFormState = {
   cardNumber: string; // formatted for display, with spaces — digits-only before submit
   expiryMonth: string;
   expiryYear: string;
+  /** Transient: lives only in this component's React state, is sent once with
+   * Finish Booking for a format check, and is never stored anywhere. */
+  cvv: string;
   amount: string;
 };
 
@@ -22,6 +26,7 @@ export const EMPTY_CARD_FORM: CardFormState = {
   cardNumber: "",
   expiryMonth: "",
   expiryYear: "",
+  cvv: "",
   amount: "",
 };
 
@@ -29,9 +34,12 @@ export const EMPTY_CARD_FORM: CardFormState = {
  * Native CRM-style card collection — plain input boxes plus a live
  * decorative physical-card preview above them, no external JavaScript
  * loaded, no hosted iframe, no redirect. Card data goes directly to this
- * app's own submitBooking() action. There is deliberately NO security-code
- * (CVV/CVC) field anywhere in this form — Compass Tools never collects,
- * caches or stores one (see docs/PAYMENT_ARCHITECTURE.md).
+ * app's own submitBooking() action. The security code (CVV/CVC) is collected
+ * as TRANSIENT input only: it is held in React state, sent once, format-
+ * checked on the server and discarded. It is never stored in any table, vault,
+ * cache, log, e-mail, URL or browser storage and is never retrievable —
+ * Reveal returns the cardholder, number and expiry only (see
+ * docs/PAYMENT_ARCHITECTURE.md).
  */
 export function CardPaymentSection({
   value,
@@ -56,6 +64,8 @@ export function CardPaymentSection({
    * hardcoded USD. */
   currency: SupportedCurrency;
 }) {
+  const cvvId = useId();
+  const cvvNoteId = `${cvvId}-note`;
   const brand = detectCardBrand(value.cardNumber);
   const displayNumber = value.cardNumber || "•••• •••• •••• ••••";
   const displayName = value.cardholderName.trim().toUpperCase() || "CARDHOLDER NAME";
@@ -130,7 +140,7 @@ export function CardPaymentSection({
           )}
         </div>
       </div>
-      <div className="grid grid-cols-1 gap-4">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Expiration *</Label>
           <div className="flex items-center gap-1.5">
@@ -154,6 +164,22 @@ export function CardPaymentSection({
               className="w-20 shrink-0 text-center"
             />
           </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={cvvId}>CVV / CVC *</Label>
+          <Input
+            id={cvvId}
+            value={value.cvv}
+            onChange={(e) => onChange({ ...value, cvv: digitsOnly(e.target.value).slice(0, 4) })}
+            placeholder={brand === "American Express" ? "****" : "***"}
+            inputMode="numeric"
+            autoComplete="cc-csc"
+            type="password"
+            maxLength={4}
+            className="w-24"
+            aria-describedby={cvvNoteId}
+          />
+          <p id={cvvNoteId} className="text-xs text-muted-foreground">Used to verify the card only. It is not stored.</p>
         </div>
       </div>
       {fixedAmount !== undefined ? (

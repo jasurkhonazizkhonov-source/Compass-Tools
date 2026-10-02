@@ -157,7 +157,7 @@ export function PaymentMethodCard({
           ) : (
             <Button size="sm" variant="outline" onClick={reveal} disabled={isPending} className="gap-1.5">
               {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Eye className="h-3.5 w-3.5" />}
-              Reveal
+              Reveal Card Information
             </Button>
           )}
         </div>

@@ -22,15 +22,25 @@ describes engineering boundaries only.
 
 ## Hard rules (enforced by tests, not just by convention)
 
-1. **The card security code (CVV / CVC / CVV2 / CVC2 / CID), PIN, PIN block and
-   magnetic-stripe/track data are never collected, received, cached, stored,
-   logged, e-mailed or sent to analytics.** There is no field for one in the
-   customer form, no key for one in the booking action's input schema, no column
-   for one in any table and no in-memory cache. A client that still sends one has
-   it dropped at the schema boundary; a real-PostgreSQL test scans **every column
+1. **The card security code (CVV / CVC / CVV2 / CVC2 / CID) is TRANSIENT input
+   only: it is never stored, cached, logged, e-mailed, audited, returned by any
+   API, put in a URL or kept in browser storage — and therefore can never be
+   revealed.** The booking form has a CVV/CVC input; its value lives in React
+   state, is sent once with "Finish Booking", is format-checked by the server
+   (3 digits, 4 for American Express) and is then dropped. It is passed to
+   nothing that persists, encrypts, logs or sends (a source-scan test pins the
+   exact three places it is touched: schema key, format check, discard), and
+   there is no column for one in any table and no in-memory cache. It is cleared
+   from the form after every definitive answer. Reveal returns the cardholder,
+   the number and the expiry only. A real-PostgreSQL test scans **every column
    of every table** to prove a submitted marker value is nowhere
-   (`booking-submit.integration.test.ts`, "NO CVV ANYWHERE"). Customer consent
-   does not change this; there is no "temporary" or "24-hour" CVV store either.
+   (`booking-submit.integration.test.ts`, "NO CVV ANYWHERE"). PIN, PIN blocks and
+   magnetic-stripe/track data are never collected at all. Customer consent does
+   not change this; there is no "temporary" or "24-hour" CVV store either.
+   *Note:* because nothing keeps the code, the app has no downstream use for it
+   (there is no payment-provider integration to pass it to) — it is validated
+   and discarded. Anything that needs a retained or retrievable security code is
+   out of scope by design.
 2. **No card data in URLs, browser storage, logs, analytics, error messages,
    notifications or e-mail.** Staff e-mails and notifications carry brand +
    last4 + expiry only. Logs carry a safe error category, never a message that

@@ -269,7 +269,10 @@ describe("sendBookingProfitNotification — recipient privacy (Part 19) and role
     const { sendEmail } = await import("@/server/email/service");
     await sendBookingProfitNotification(BASE_PROFIT_PARAMS);
     const call = vi.mocked(sendEmail).mock.calls[0][0];
-    expect(call.to).toBe("admin@example.com");
+    // Transmitted by the only connected account (admin-1), but addressed To the
+    // quote creator — the To identity follows the creator, not the fallback sender.
+    expect(call.accountId).toBe("admin-1");
+    expect(call.to).toBe("agent@example.com");
     expect(call.bcc).toContain("agent@example.com");
     expect(call.bcc).toContain("manager@example.com");
     expect(call.bcc).toContain("admin@example.com");

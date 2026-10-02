@@ -16,7 +16,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // customer-currency values — this test proves both halves of that split.
 
 type FakeBookingCreateData = {
-  fareAmount: number;
+  // Ticket Nett Cost — deliberately NOT seeded at booking time (see below).
+  fareAmount?: number | null;
   taxAmount: number;
   serviceFeeAmount: number;
   gratuityAmount: number;
@@ -147,7 +148,7 @@ beforeEach(() => {
 });
 
 describe("submitBooking — non-USD currency: fareAmount/taxAmount/serviceFeeAmount stay USD, gratuityAmount/totalAmount convert (Pass 22 fix)", () => {
-  it("seeds fareAmount/taxAmount/serviceFeeAmount with the RAW USD figures, not the AUD-converted ones", async () => {
+  it("seeds taxAmount/serviceFeeAmount with the RAW USD figures, not the AUD-converted ones — and leaves Ticket Nett Cost (fareAmount) UNSET", async () => {
     quoteCurrency = "AUD";
     quoteExchangeRate = 1.5; // deliberately not 1, so a currency mix-up is visible
 
@@ -157,10 +158,9 @@ describe("submitBooking — non-USD currency: fareAmount/taxAmount/serviceFeeAmo
 
     expect(result.ok).toBe(true);
     expect(capturedCreateData).not.toBeNull();
-    // USD quote pricing: adultPrice 500, taxes 50, serviceFee 20 — these
-    // must land on the Booking exactly as entered, never multiplied by
-    // the 1.5 AUD rate.
-    expect(capturedCreateData!.fareAmount).toBe(500);
+    // USD quote pricing: adultPrice 500, taxes 50, serviceFee 20 — taxes and
+    // the issuing fee must land on the Booking exactly as entered, never
+    // multiplied by the 1.5 AUD rate.
     expect(capturedCreateData!.taxAmount).toBe(50);
     expect(capturedCreateData!.serviceFeeAmount).toBe(20);
   });
@@ -177,14 +177,13 @@ describe("submitBooking — non-USD currency: fareAmount/taxAmount/serviceFeeAmo
     expect(capturedCreateData!.gratuityAmount).toBe(0);
   });
 
-  it("a wrong (pre-fix) implementation would have stored fareAmount=750 (500*1.5) instead of the correct 500 — this pins the exact regression", async () => {
+  it("a wrong (pre-fix) implementation would have stored taxAmount=75 (50*1.5) instead of the correct 50 — this pins the exact regression", async () => {
     quoteCurrency = "AUD";
     quoteExchangeRate = 1.5;
 
     const { submitBooking } = await import("../booking");
     await submitBooking(baseInput(855));
 
-    expect(capturedCreateData!.fareAmount).not.toBe(750);
     expect(capturedCreateData!.taxAmount).not.toBe(75); // 50 * 1.5
     expect(capturedCreateData!.serviceFeeAmount).not.toBe(30); // 20 * 1.5
   });
@@ -197,9 +196,95 @@ describe("submitBooking — non-USD currency: fareAmount/taxAmount/serviceFeeAmo
     const result = await submitBooking(baseInput(570));
 
     expect(result.ok).toBe(true);
-    expect(capturedCreateData!.fareAmount).toBe(500);
     expect(capturedCreateData!.taxAmount).toBe(50);
     expect(capturedCreateData!.serviceFeeAmount).toBe(20);
     expect(capturedCreateData!.totalAmount).toBe(570);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Selling price vs Ticket Nett Cost. The customer signs a Price Summary
+// (ticket cost + taxes + service fee + gratuity = total). The Ticketing Agent
+// separately enters what the ticket ACTUALLY cost the agency (Ticket Nett
+// Cost, Booking.fareAmount). Those are different numbers: the nett cost must
+// start UNSET — never copied from the customer's price — while the signed
+// amounts are stored exactly as signed.
+// ───────────────────────────────────────────────────────────────────────
+describe("submitBooking — Ticket Nett Cost is not seeded from the customer's selling price", () => {
+  it("creates the booking with Ticket Nett Cost UNSET, whatever the customer's ticket price is", async () => {
+    const { submitBooking } = await import("../booking");
+    const result = await submitBooking(baseInput(570));
+    expect(result.ok).toBe(true);
+    expect(capturedCreateData!.fareAmount ?? null).toBeNull();
+    expect(Object.keys(capturedCreateData!)).not.toContain("fareAmount");
+  });
+
+  it("while the customer's signed amounts are stored exactly as signed (ticket 500 + taxes 50 + service fee 20 + gratuity 200 = total)", async () => {
+    const { submitBooking } = await import("../booking");
+    const input = { ...baseInput(770), gratuityAmount: 200 };
+    const result = await submitBooking(input);
+    expect(result.ok).toBe(true);
+    expect(capturedCreateData!.gratuityAmount).toBe(200);
+    expect(capturedCreateData!.totalAmount).toBe(770);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// The card security code (CVV/CVC) is TRANSIENT input: format-checked, then
+// dropped. It must never reach the database write, the card vault, the
+// notification e-mails, the logs or the response.
+// ───────────────────────────────────────────────────────────────────────
+describe("submitBooking — the security code is validated and discarded, never persisted", () => {
+  const CODE = "7391"; // a 4-digit marker that cannot collide with other fixture numbers
+
+  function withCode(code: string | undefined, number = "4111111111111111") {
+    const base = baseInput(570);
+    return { ...base, paymentMethods: base.paymentMethods.map((c) => ({ ...c, cardNumber: number, ...(code === undefined ? {} : { cvv: code }) })) };
+  }
+
+  it("accepts a well-formed code (3 digits, or 4 for American Express) and the booking succeeds", async () => {
+    const { submitBooking } = await import("../booking");
+    expect((await submitBooking(withCode("123"))).ok).toBe(true);
+    expect((await submitBooking(withCode("1234", "378282246310005"))).ok).toBe(true);
+  });
+
+  it("rejects a malformed code with the same generic message — and records no booking", async () => {
+    const { submitBooking } = await import("../booking");
+    for (const bad of ["12", "12a", "12345678", "1234"]) {
+      capturedCreateData = null;
+      const result = await submitBooking(withCode(bad)); // 4 digits is wrong for a Visa
+      expect(result).toEqual({ ok: false, error: "Payment information could not be processed" });
+      expect(capturedCreateData).toBeNull();
+    }
+  });
+
+  it("a client that does not send one (a stale page) is not rejected mid-checkout", async () => {
+    const { submitBooking } = await import("../booking");
+    expect((await submitBooking(withCode(undefined))).ok).toBe(true);
+  });
+
+  it("the code appears in NOTHING that is written: not the booking row (incl. nested payment methods/passengers/signature), not the vault, not a log, not the result", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    const vault = await import("@/server/security/payment-vault");
+    const logs: string[] = [];
+    const spies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation((...a: unknown[]) => void logs.push(a.map(String).join(" "))));
+    const { submitBooking } = await import("../booking");
+    const result = await submitBooking(withCode(CODE, "378282246310005"));
+    spies.forEach((s) => s.mockRestore());
+
+    expect(result.ok).toBe(true);
+    expect(JSON.stringify(capturedCreateData)).not.toContain(CODE);
+    expect(JSON.stringify(result)).not.toContain(CODE);
+    expect(logs.join("\n")).not.toContain(CODE);
+    // every other write the action made, anywhere
+    const writes = [prisma.quote, prisma.quoteStatusHistory, prisma.lead, prisma.leadStatusHistory, prisma.paymentMethod, prisma.booking]
+      .flatMap((m) => Object.values(m as unknown as Record<string, { mock?: { calls: unknown[][] } }>))
+      .flatMap((fn) => fn.mock?.calls ?? []);
+    expect(JSON.stringify(writes)).not.toContain(CODE);
+    // the vault only ever sees the card number (and its row id), never the code
+    const stored = vi.mocked(vault.getPaymentVault).mock.results.flatMap((r) => (r.value as { store: { mock: { calls: unknown[][] } } }).store.mock.calls);
+    expect(JSON.stringify(stored)).not.toContain(CODE);
+    // and the booking row has no field that could hold one
+    expect(JSON.stringify(Object.keys(capturedCreateData!))).not.toMatch(/cvv|cvc|security/i);
   });
 });

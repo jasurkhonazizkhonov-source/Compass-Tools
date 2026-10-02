@@ -23,7 +23,7 @@ import { calculatePricing, GRATUITY_PRESETS } from "@/lib/pricing";
 import { buildPricingSnapshot, formatMoney, type SupportedCurrency } from "@/lib/currency";
 import { normalizePhoneNumber, type CountryCode } from "@/lib/phone";
 import { submitBooking } from "@/server/actions/booking";
-import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour } from "@/lib/card-validation";
+import { isValidCardNumber, isValidExpiry, isValidCvvFormat, detectCardBrand, lastFour } from "@/lib/card-validation";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
 import type { AirlineOption } from "@/server/queries/reference-data";
 
@@ -292,6 +292,7 @@ export function BookingFlow({
       if (!card.cardholderName.trim()) return `${label}Cardholder name is required`;
       if (!isValidCardNumber(card.cardNumber)) return `${label}Please enter a valid card number`;
       if (!isValidExpiry(Number(card.expiryMonth), Number(card.expiryYear))) return `${label}Please enter a valid expiration date`;
+      if (!isValidCvvFormat(card.cvv, detectCardBrand(card.cardNumber))) return `${label}Please enter the card's security code (CVV/CVC)`;
       if (amountFor(card) <= 0) return `${label}Please enter an amount to charge`;
     }
     if (Math.abs(remaining) > 0.01) {
@@ -391,6 +392,7 @@ export function BookingFlow({
             cardNumber: c.cardNumber,
             expiryMonth: Number(c.expiryMonth),
             expiryYear: Number(c.expiryYear),
+            cvv: c.cvv,
             amount: amountFor(c),
           })),
           paymentConsent: true,
@@ -427,12 +429,15 @@ export function BookingFlow({
       if (result.ok) {
         // Once the card has been stored the full number never needs to exist in
         // this component's state again.
-        setCards((prev) => prev.map((c) => ({ ...c, cardNumber: "" })));
+        setCards((prev) => prev.map((c) => ({ ...c, cardNumber: "", cvv: "" })));
         router.push(`/quote/${token}/confirmation`);
       } else {
         // A rejection (e.g. a temporary storage problem) keeps what the
         // customer typed so a retry is one click — the same value already sat
-        // in this state before they pressed Finish Booking.
+        // in this state before they pressed Finish Booking. The security code
+        // is the exception: it is cleared on every definitive answer and
+        // must be typed again.
+        setCards((prev) => prev.map((c) => ({ ...c, cvv: "" })));
         toast.error(result.error);
       }
     });
@@ -540,7 +545,7 @@ export function BookingFlow({
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground">You&apos;ll still need to enter the full card number.</p>
+                      <p className="text-xs text-muted-foreground">You&apos;ll still need to enter the full card number and security code.</p>
                     </div>
                   )}
                   <CardPaymentSection

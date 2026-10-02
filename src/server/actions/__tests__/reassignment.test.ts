@@ -50,20 +50,16 @@ vi.mock("@/server/activity-log", () => ({
   logActivity: vi.fn(async () => {}),
 }));
 
-vi.mock("@/server/email/service", () => ({
-  sendEmail: vi.fn(async () => ({ ok: true as const, messageId: "msg-1" })),
+// The two reassignment emails are covered by their own tests
+// (reassignment-email.test.ts); here we only assert WHEN they are requested.
+vi.mock("@/server/reassignment-email", () => ({
+  sendLeadReassignmentEmails: vi.fn(async () => ({ previousOwner: "SENT", newOwner: "SENT" })),
+  sendContactReassignmentEmails: vi.fn(async () => ({ previousOwner: "SENT", newOwner: "SENT" })),
 }));
 
-vi.mock("@/server/email/templates", () => ({
-  buildReassignmentEmail: vi.fn(() => ({ subject: "subject", html: "<p>html</p>" })),
-}));
-
-vi.mock("@/server/queries/company", () => ({
-  getCompanyForAccountId: vi.fn(async () => ({ id: "company-1", name: "Test Co" })),
-}));
-
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const prisma: any = {
     lead: {
       findUniqueOrThrow: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
         const lead = leadsMap.get(id);
@@ -97,15 +93,22 @@ vi.mock("@/lib/prisma", () => ({
         }
         return { id: lead.id, assignedAgentId: lead.assignedAgentId };
       }),
-      updateMany: vi.fn(async ({ where, data }: { where: { id: { in: string[] } }; data: Partial<FakeLead> }) => {
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string | { in: string[] }; assignedAgentId?: string | null }; data: Partial<FakeLead> }) => {
         let count = 0;
         for (const l of leadsMap.values()) {
-          if (where.id.in.includes(l.id)) {
+          const idMatches = typeof where.id === "string" ? where.id === l.id : where.id.in.includes(l.id);
+          // reassignLead's owner change is a compare-and-set on assignedAgentId.
+          const ownerMatches = where.assignedAgentId === undefined || l.assignedAgentId === where.assignedAgentId;
+          if (idMatches && ownerMatches) {
             Object.assign(l, data);
             count++;
           }
         }
         return { count };
+      }),
+      findUnique: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
+        const lead = leadsMap.get(id);
+        return lead ? { assignedAgentId: lead.assignedAgentId } : null;
       }),
     },
     contact: {
@@ -130,6 +133,16 @@ vi.mock("@/lib/prisma", () => ({
         const contact = contacts.get(id)!;
         Object.assign(contact, data);
         return contact;
+      }),
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; ownerId: string | null }; data: Partial<FakeContact> }) => {
+        const contact = contacts.get(where.id);
+        if (!contact || contact.ownerId !== where.ownerId) return { count: 0 };
+        Object.assign(contact, data);
+        return { count: 1 };
+      }),
+      findUnique: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
+        const contact = contacts.get(id);
+        return contact ? { ownerId: contact.ownerId } : null;
       }),
     },
     quote: {
@@ -166,9 +179,11 @@ vi.mock("@/lib/prisma", () => ({
     auditLog: { create: vi.fn(async () => ({})) },
     notification: { create: vi.fn(async () => ({})) },
     emailLog: { create: vi.fn(async () => ({})) },
-    $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
-  },
-}));
+  };
+  // The interactive-transaction form hands the callback the same fake (no real isolation needed here).
+  prisma.$transaction = vi.fn(async (arg: ((tx: unknown) => Promise<unknown>) | Promise<unknown>[]) => (typeof arg === "function" ? arg(prisma) : Promise.all(arg)));
+  return { prisma };
+});
 
 beforeEach(() => {
   currentActor = { id: "admin-1", fullName: "Admin One", email: "admin@example.com", status: "ACTIVE", companyId: "company-1", role: "ADMIN" };
@@ -643,5 +658,161 @@ describe("hidden accounts — cannot be assigned new work; existing history is u
   it("visible active accounts are completely unaffected", async () => {
     const { reassignLead } = await import("../leads");
     await expect(reassignLead("lead-1", "agent-b")).resolves.toBeDefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────
+// Reassignment notifications — a different event from a fresh website lead
+// being accepted. Both people involved (previous owner, new owner) are
+// emailed once per genuine hand-off; nothing is emailed or recorded when the
+// owner does not actually change; a duplicate request cannot double-send.
+// ───────────────────────────────────────────────────────────────────────
+describe("reassignment notifications — lead", () => {
+  beforeEach(() => {
+    // agent-a is the (previously "removed") owner in the shared fixture; for
+    // these tests a real, active previous owner is what matters.
+    accounts.set("agent-a", { ...accounts.get("agent-a")!, status: "ACTIVE" });
+  });
+
+  it("requests the previous-owner AND new-owner emails exactly once for a real A → B hand-off, naming the actor and the reason", async () => {
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    await reassignLead("lead-1", "agent-b", "Agent A on leave");
+    expect(sendLeadReassignmentEmails).toHaveBeenCalledTimes(1);
+    expect(sendLeadReassignmentEmails).toHaveBeenCalledWith(
+      expect.objectContaining({ leadId: "lead-1", previousOwnerId: "agent-a", newOwnerId: "agent-b", actorId: "admin-1", reason: "Agent A on leave" })
+    );
+  });
+
+  it("the owner actually changes (previous owner → new owner) when it does", async () => {
+    const { reassignLead } = await import("../leads");
+    await reassignLead("lead-1", "agent-b");
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-b");
+  });
+
+  it("A → A is a complete no-op: no owner write, no status reset, no history/activity/audit row, no in-app notification, no email", async () => {
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    const { logActivity } = await import("@/server/activity-log");
+    const { prisma } = await import("@/lib/prisma");
+    const result = await reassignLead("lead-1", "agent-a");
+    expect(result).toMatchObject({ unchanged: true });
+    expect(leadsMap.get("lead-1")!.status).toBe("ATTEMPTING_TO_CONTACT"); // not reset to ACCEPTED
+    expect(statusHistory).toHaveLength(0);
+    expect(logActivity).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+    expect(prisma.notification.create).not.toHaveBeenCalled();
+    expect(sendLeadReassignmentEmails).not.toHaveBeenCalled();
+  });
+
+  it("claiming an UNASSIGNED lead is not a reassignment: no email goes out (there is no previous owner)", async () => {
+    leadsMap.get("lead-1")!.assignedAgentId = null;
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    await reassignLead("lead-1", "agent-b");
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-b");
+    expect(sendLeadReassignmentEmails).not.toHaveBeenCalled();
+  });
+
+  it("a double-click / duplicate concurrent request does one hand-off: one history row, one activity, one email request", async () => {
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    const { logActivity } = await import("@/server/activity-log");
+    const results = await Promise.all([reassignLead("lead-1", "agent-b"), reassignLead("lead-1", "agent-b")]);
+    expect(results.filter((r) => !("unchanged" in r))).toHaveLength(1);
+    expect(statusHistory).toHaveLength(1);
+    expect(vi.mocked(logActivity).mock.calls.filter(([a]) => a.type === "LEAD_REASSIGNED")).toHaveLength(1);
+    expect(sendLeadReassignmentEmails).toHaveBeenCalledTimes(1);
+  });
+
+  it("two admins racing to send the same lead to DIFFERENT people: exactly one wins, the other is told, and only the winner's emails go out", async () => {
+    accounts.set("agent-c", { id: "agent-c", fullName: "Agent C", email: "c@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" });
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    const settled = await Promise.allSettled([reassignLead("lead-1", "agent-b"), reassignLead("lead-1", "agent-c")]);
+    expect(settled.filter((s) => s.status === "fulfilled")).toHaveLength(1);
+    const rejected = settled.find((s) => s.status === "rejected") as PromiseRejectedResult;
+    expect(String(rejected.reason)).toMatch(/just reassigned by someone else/i);
+    expect(sendLeadReassignmentEmails).toHaveBeenCalledTimes(1);
+    expect(["agent-b", "agent-c"]).toContain(leadsMap.get("lead-1")!.assignedAgentId);
+  });
+
+  it("an unauthorized user (Travel Agent) cannot reassign by calling the action directly: nothing changes and nothing is sent", async () => {
+    currentActor = { id: "agent-b", fullName: "Agent B", email: "b@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" };
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    await expect(reassignLead("lead-1", "agent-b")).rejects.toThrow(/not authorized/i);
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a");
+    expect(sendLeadReassignmentEmails).not.toHaveBeenCalled();
+  });
+
+  it("a Manager is authorized and triggers the same notifications", async () => {
+    currentActor = { id: "mgr-1", fullName: "Manager One", email: "m@example.com", status: "ACTIVE", companyId: "company-1", role: "MANAGER" };
+    accounts.set("mgr-1", currentActor);
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    await reassignLead("lead-1", "agent-b");
+    expect(sendLeadReassignmentEmails).toHaveBeenCalledWith(expect.objectContaining({ actorId: "mgr-1" }));
+  });
+
+  it("a hidden new owner is still refused (and nothing is emailed)", async () => {
+    accounts.set("agent-hidden", { id: "agent-hidden", fullName: "Hidden Agent", email: "h@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT", accountsVisible: false });
+    const { reassignLead } = await import("../leads");
+    const { sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    await expect(reassignLead("lead-1", "agent-hidden")).rejects.toThrow(/hidden/i);
+    expect(sendLeadReassignmentEmails).not.toHaveBeenCalled();
+  });
+});
+
+describe("reassignment notifications — contact", () => {
+  beforeEach(() => {
+    accounts.set("agent-a", { ...accounts.get("agent-a")!, status: "ACTIVE" });
+  });
+
+  it("requests the previous-owner AND new-owner emails once for a real A → B contact hand-off, and never a lead email", async () => {
+    const { reassignContact } = await import("../contacts");
+    const { sendContactReassignmentEmails, sendLeadReassignmentEmails } = await import("@/server/reassignment-email");
+    await reassignContact("contact-1", "agent-b", "Territory change");
+    expect(contacts.get("contact-1")!.ownerId).toBe("agent-b");
+    expect(sendContactReassignmentEmails).toHaveBeenCalledTimes(1);
+    expect(sendContactReassignmentEmails).toHaveBeenCalledWith(
+      expect.objectContaining({ contactId: "contact-1", previousOwnerId: "agent-a", newOwnerId: "agent-b", actorId: "admin-1", reason: "Territory change" })
+    );
+    // a pure contact reassignment must never send a lead-specific email
+    expect(sendLeadReassignmentEmails).not.toHaveBeenCalled();
+  });
+
+  it("A → A is a complete no-op (no write, no activity, no notification, no email)", async () => {
+    const { reassignContact } = await import("../contacts");
+    const { sendContactReassignmentEmails } = await import("@/server/reassignment-email");
+    const { prisma } = await import("@/lib/prisma");
+    await reassignContact("contact-1", "agent-a", "same");
+    expect(activities).toHaveLength(0);
+    expect(prisma.notification.create).not.toHaveBeenCalled();
+    expect(sendContactReassignmentEmails).not.toHaveBeenCalled();
+  });
+
+  it("a duplicate concurrent request does one hand-off and one email request", async () => {
+    const { reassignContact } = await import("../contacts");
+    const { sendContactReassignmentEmails } = await import("@/server/reassignment-email");
+    await Promise.all([reassignContact("contact-1", "agent-b", "x"), reassignContact("contact-1", "agent-b", "x")]);
+    expect(activities.filter((a) => a.type === "CONTACT_REASSIGNED")).toHaveLength(1);
+    expect(sendContactReassignmentEmails).toHaveBeenCalledTimes(1);
+  });
+
+  it("an unassigned contact being given its first owner sends no reassignment email", async () => {
+    contacts.get("contact-1")!.ownerId = null;
+    const { reassignContact } = await import("../contacts");
+    const { sendContactReassignmentEmails } = await import("@/server/reassignment-email");
+    await reassignContact("contact-1", "agent-b", "first owner");
+    expect(sendContactReassignmentEmails).not.toHaveBeenCalled();
+  });
+
+  it("an unauthorized role cannot reassign a contact, and nothing is sent", async () => {
+    currentActor = { id: "agent-b", fullName: "Agent B", email: "b@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT" };
+    const { reassignContact } = await import("../contacts");
+    const { sendContactReassignmentEmails } = await import("@/server/reassignment-email");
+    await expect(reassignContact("contact-1", "agent-b", "x")).rejects.toThrow(/not authorized/i);
+    expect(sendContactReassignmentEmails).not.toHaveBeenCalled();
   });
 });

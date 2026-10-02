@@ -271,7 +271,7 @@ export function BookingTicketingForm({
     : statusValue !== "CONFIRMED"
       ? "Ticket status must be Confirmed"
       : fare.trim() === ""
-        ? "Ticket Cost is required"
+        ? "Ticket Nett Cost is required"
         : null;
 
   function notifyNewSale() {
@@ -352,7 +352,7 @@ export function BookingTicketingForm({
             )}
           </div>
           <ReadOnlyField label="Ticket Status" value={STATUSES.find((s) => s.value === saved.status)?.label ?? saved.status} />
-          <ReadOnlyField label="Ticket Cost" value={saved.fare ? `$${saved.fare}` : "—"} />
+          <ReadOnlyField label="Ticket Nett Cost" value={saved.fare ? `$${saved.fare}` : "—"} />
           <ReadOnlyField label="Taxes" value={saved.tax ? `$${saved.tax}` : "—"} />
           <ReadOnlyField label="Issuing Fee" value={saved.issuingFee ? `$${saved.issuingFee}` : "—"} />
           <ReadOnlyField
@@ -481,7 +481,7 @@ export function BookingTicketingForm({
 
       <div className="grid grid-cols-2 gap-3 pt-2 border-t">
         <div className="space-y-1.5">
-          <Label className="text-xs">Ticket Cost <span className="text-muted-foreground font-normal">(required to confirm)</span></Label>
+          <Label className="text-xs">Ticket Nett Cost <span className="text-muted-foreground font-normal">(actual cost paid — required to confirm)</span></Label>
           <Input type="number" value={fare} onChange={(e) => setFare(e.target.value)} className="h-8" />
         </div>
         <div className="space-y-1.5">
