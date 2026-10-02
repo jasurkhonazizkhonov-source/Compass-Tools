@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import type { Prisma } from "@/generated/prisma/client";
 import airportsData from "@/data/reference/airports.json";
 import airlinesData from "@/data/reference/airlines.json";
 import aircraftData from "@/data/reference/aircraft.json";
@@ -320,7 +321,25 @@ export async function resolveAircraftCodes(codes: string[]): Promise<Record<stri
   return map;
 }
 
-/** Every active account in the caller's own company EXCEPT
+/**
+ * Options shared by the two agent-list functions below. An account an Admin
+ * has hidden (Account.accountsVisible = false) is a current-roster concept:
+ * it must not be offered in pickers/filters for current users. It is NOT a
+ * deletion, so history still has to resolve its name — `includeIds` keeps
+ * an account that is the CURRENT value of the field being edited (the lead's
+ * present assignee, the task's present assignee) in the list so that value
+ * still displays; `includeHidden` is for audit/historical views
+ * (Commissions) that must be able to select any account's records.
+ */
+export type AgentListOptions = { includeIds?: Array<string | null | undefined>; includeHidden?: boolean };
+
+function visibleAccountsFilter(opts?: AgentListOptions): Prisma.AccountWhereInput {
+  if (opts?.includeHidden) return {};
+  const keep = (opts?.includeIds ?? []).filter((id): id is string => !!id);
+  return keep.length > 0 ? { OR: [{ accountsVisible: true }, { id: { in: keep } }] } : { accountsVisible: true };
+}
+
+/** Every active, VISIBLE (not hidden — see AgentListOptions) account in the caller's own company EXCEPT
  * TICKETING_AGENT/FLIGHT_EXPERT/MARKETING_AGENT — the roles explicitly
  * excluded from the lead/contact-ownership workflow (see
  * src/components/layout/sidebar.tsx's LEAD_WORKFLOW_ROLES and
@@ -329,9 +348,9 @@ export async function resolveAircraftCodes(codes: string[]): Promise<Record<stri
  * select. Always scoped by companyId (see the Company model's comment in
  * schema.prisma) — an agent must never see or assign work to another
  * company's staff. */
-export async function listLeadEligibleAgents(companyId: string) {
+export async function listLeadEligibleAgents(companyId: string, opts?: AgentListOptions) {
   return prisma.account.findMany({
-    where: { status: "ACTIVE", companyId, role: { notIn: ["TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] } },
+    where: { status: "ACTIVE", companyId, role: { notIn: ["TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] }, ...visibleAccountsFilter(opts) },
     orderBy: { fullName: "asc" },
     // email is additive — existing callers (New Lead dialog, Contact
     // reassignment) simply don't read it; Bulk Contacts' Assigned User
@@ -349,9 +368,9 @@ export async function listLeadEligibleAgents(companyId: string) {
  * New/Edit Task dialog's Assignee select. Ticketing Agent/Flight Expert
  * are deliberately left in this list — task assignment for those two
  * roles is pre-existing behavior, unrelated to this fix. */
-export async function listTaskEligibleAgents(companyId: string) {
+export async function listTaskEligibleAgents(companyId: string, opts?: AgentListOptions) {
   return prisma.account.findMany({
-    where: { status: "ACTIVE", companyId, role: { not: "MARKETING_AGENT" } },
+    where: { status: "ACTIVE", companyId, role: { not: "MARKETING_AGENT" }, ...visibleAccountsFilter(opts) },
     orderBy: { fullName: "asc" },
     select: { id: true, fullName: true, role: true },
   });

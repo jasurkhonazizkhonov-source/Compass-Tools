@@ -666,7 +666,7 @@ export function AccountVisibilityToggle({ accountId, visible }: { accountId: str
     startTransition(async () => {
       try {
         await setAccountsVisibility(accountId, checked);
-        toast.success(checked ? "Now visible in Accounts directory" : "Hidden from Accounts directory");
+        toast.success(checked ? "Account is visible to the team again" : "Account hidden from team lists");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to update Accounts visibility");
       }
@@ -678,14 +678,14 @@ export function AccountVisibilityToggle({ accountId, visible }: { accountId: str
       <Switch
         checked={visible}
         disabled={isPending}
-        aria-label="Visible in Accounts directory"
+        aria-label="Visible in team lists (Accounts, Lead Acceptance, assignment lists)"
         onCheckedChange={toggle}
       />
       <span
         className="text-xs text-muted-foreground"
-        title="When disabled, this account no longer appears in the Accounts directory visible to CRM users. Existing records, ownership, history, and account data are not affected."
+        title="When hidden, this account no longer appears in the Accounts directory, the Lead Acceptance list, or assignment pickers, and is not offered new leads. Nothing is deleted: existing leads, contacts, quotes, bookings, history, and the account itself are untouched, and it can still sign in. You can always unhide it here."
       >
-        {visible ? "Visible" : "Hidden from Accounts"}
+        {visible ? "Visible" : "Hidden from team lists"}
       </span>
     </div>
   );

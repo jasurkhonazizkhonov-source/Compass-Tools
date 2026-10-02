@@ -145,9 +145,18 @@ export async function reassignContact(contactId: string, newOwnerId: string, rea
     throw new Error("You are not authorized to reassign this contact");
   }
 
-  const newOwner = await prisma.account.findUnique({ where: { id: newOwnerId }, select: { id: true, status: true, companyId: true } });
+  const newOwner = await prisma.account.findUnique({ where: { id: newOwnerId }, select: { id: true, status: true, companyId: true, accountsVisible: true } });
   if (!newOwner || newOwner.status !== "ACTIVE") {
     throw new Error("New owner must be an active CRM account");
+  }
+  // A hidden account is not part of the current visible team and cannot be
+  // made the owner of a customer. (The actor assigning to themselves is
+  // exempt.) Enforced here, in the user-facing action only — the shared
+  // performContactReassignment helper also serves the automatic duplicate-
+  // contact ownership match, where the matched owner may legitimately be a
+  // hidden account and must not be blocked.
+  if (newOwner.accountsVisible === false && newOwner.id !== actor.id) {
+    throw new Error("New owner is hidden and cannot be assigned contacts");
   }
   // A contact can never be reassigned to an account in a different
   // company — that would be handing one company's customer relationship

@@ -168,9 +168,15 @@ export async function createLead(input: CreateLeadInput) {
   // agent-picker UI is already scoped this way via listLeadEligibleAgents,
   // but that's a UX nicety, not the enforcement.
   if (parsed.assignedAgentId) {
-    const targetAgent = await prisma.account.findUnique({ where: { id: parsed.assignedAgentId }, select: { companyId: true, status: true } });
+    const targetAgent = await prisma.account.findUnique({ where: { id: parsed.assignedAgentId }, select: { companyId: true, status: true, accountsVisible: true } });
     if (!targetAgent || targetAgent.companyId !== actor.companyId || targetAgent.status !== "ACTIVE") {
       throw new Error("Assigned agent must be an active account in your own company");
+    }
+    // A hidden account (accountsVisible = false) is not part of the current
+    // visible team and cannot be handed NEW work. Exempt: a hidden user
+    // creating a lead for themselves (they can still sign in and work).
+    if (targetAgent.accountsVisible === false && parsed.assignedAgentId !== actor.id) {
+      throw new Error("That account is hidden and cannot be assigned new leads");
     }
     // Handing a brand-new lead directly to someone else at creation time is
     // the same authority as reassigning an existing one — previously
@@ -610,9 +616,16 @@ export async function reassignLead(leadId: string, newOwnerId: string, reason?: 
     throw new Error("You are not authorized to reassign this lead");
   }
 
-  const newOwner = await prisma.account.findUnique({ where: { id: newOwnerId }, select: { id: true, fullName: true, status: true, companyId: true } });
+  const newOwner = await prisma.account.findUnique({ where: { id: newOwnerId }, select: { id: true, fullName: true, status: true, companyId: true, accountsVisible: true } });
   if (!newOwner || newOwner.status !== "ACTIVE") {
     throw new Error("New owner must be an active CRM account");
+  }
+  // Hidden accounts cannot be handed a lead by reassignment. Exempt: the
+  // actor assigning to themselves, and "reassigning" to the lead's CURRENT
+  // owner (a no-op that must not start failing just because that owner was
+  // hidden after receiving the lead — history is never rewritten).
+  if (newOwner.accountsVisible === false && newOwner.id !== actor.id && newOwner.id !== previousOwner?.id) {
+    throw new Error("New owner is hidden and cannot be assigned leads");
   }
   // A lead can never be reassigned to an account in a different company —
   // same rationale as reassignContact's identical check.

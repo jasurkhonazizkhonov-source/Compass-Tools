@@ -12,7 +12,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const DEFAULT_COMPANY_ID = "company-1";
 
-type FakeAccount = { id: string; role: string; status: string; fullName?: string; companyId?: string };
+type FakeAccount = { id: string; role: string; status: string; fullName?: string; companyId?: string; accountsVisible?: boolean };
 type FakeQueueEntry = { id: string; accountId: string; isActive: boolean; joinedAt: Date; lastAssignedAt: Date | null; leadsAssignedCount: number };
 type FakeLead = {
   id: string;
@@ -57,6 +57,11 @@ vi.mock("@/server/activity-log", () => ({
   logActivity: vi.fn(async () => {}),
 }));
 
+const sendNewFlightRequestEmail = vi.fn<(args: { leadId: string; recipientId: string; acceptedAt: Date }) => Promise<{ ok: boolean; alreadySent?: boolean; error?: string }>>(async () => ({ ok: true }));
+vi.mock("@/server/lead-assignment-email", () => ({
+  sendNewFlightRequestEmail: (args: { leadId: string; recipientId: string; acceptedAt: Date }) => sendNewFlightRequestEmail(args),
+}));
+
 vi.mock("@/server/queries/lead-queue", () => ({
   getQueuePosition: vi.fn(async () => null),
 }));
@@ -79,6 +84,8 @@ function effectiveActiveOrder(companyId?: string): FakeQueueEntry[] {
     const account = accounts.get(e.accountId);
     if (!account || account.status !== "ACTIVE") return false;
     if (LEAD_INELIGIBLE_ROLES.includes(account.role)) return false;
+    // Mirrors `a."accountsVisible" = true` — a hidden account is never a candidate.
+    if (account.accountsVisible === false) return false;
     // Pass 22 fix regression coverage — mirrors the real query's new
     // `a."companyId" = ${companyId}` filter.
     if (companyId !== undefined && (account.companyId ?? DEFAULT_COMPANY_ID) !== companyId) return false;
@@ -1132,5 +1139,116 @@ describe("acceptLeadOffer — Activity History event (Pass 5)", () => {
     expect(payload.actorId).toBe("Sarah");
     expect(payload.description).toContain("Sarah Johnson");
     expect(payload.metadata).toMatchObject({ source: "Lead Queue" });
+  });
+});
+
+
+// Hidden accounts (Account.accountsVisible = false): not part of the current
+// visible team, so never offered a new lead — but nothing about them or the
+// visible team's rotation is otherwise changed or deleted.
+describe("hidden accounts and lead distribution", () => {
+  it("never offers a new lead to a hidden account, even when it is first in the rotation", async () => {
+    seedMember("hidden-1", {}, { accountsVisible: false });
+    seedMember("visible-1");
+    seedWebsiteLead("lead-1");
+    const { distributeNewWebsiteLead } = await import("../lead-queue");
+    const result = await distributeNewWebsiteLead("lead-1");
+    expect(result).toEqual({ offered: true, accountId: "visible-1" });
+  });
+
+  it("offers nothing (the lead stays pending, not lost) when the only active member is hidden", async () => {
+    seedMember("hidden-1", {}, { accountsVisible: false });
+    seedWebsiteLead("lead-1");
+    const { distributeNewWebsiteLead } = await import("../lead-queue");
+    const result = await distributeNewWebsiteLead("lead-1");
+    expect(result).toEqual({ offered: false, reason: "no_active_workers" });
+    expect(leads.get("lead-1")?.offeredToId).toBeNull();
+    expect(queueEntries.has("hidden-1")).toBe(true); // the queue row is untouched, never deleted
+  });
+
+  it("does not alter the order among visible members: a hidden member in the middle changes nothing", async () => {
+    seedMember("a");
+    seedMember("hidden-1", {}, { accountsVisible: false });
+    seedMember("b");
+    seedWebsiteLead("lead-1");
+    seedWebsiteLead("lead-2");
+    const first = await distributeAndAccept("lead-1");
+    const second = await distributeAndAccept("lead-2");
+    expect([first, second]).toEqual([
+      { offered: true, accountId: "a" },
+      { offered: true, accountId: "b" },
+    ]);
+  });
+
+  it("a paused (inactive) visible member is still skipped exactly as before", async () => {
+    seedMember("paused-1", { isActive: false });
+    seedMember("visible-1");
+    seedWebsiteLead("lead-1");
+    const { distributeNewWebsiteLead } = await import("../lead-queue");
+    expect(await distributeNewWebsiteLead("lead-1")).toEqual({ offered: true, accountId: "visible-1" });
+  });
+
+  it("a hidden account that ALREADY holds a live offer can still accept it (history/work in progress is not stripped)", async () => {
+    seedMember("hidden-1");
+    seedWebsiteLead("lead-1");
+    const { distributeNewWebsiteLead, acceptLeadOffer } = await import("../lead-queue");
+    await distributeNewWebsiteLead("lead-1");
+    accounts.get("hidden-1")!.accountsVisible = false; // hidden after the offer was made
+    currentActor = accounts.get("hidden-1")!;
+    expect(await acceptLeadOffer("lead-1")).toEqual({ ok: true });
+    expect(leads.get("lead-1")?.assignedAgentId).toBe("hidden-1");
+  });
+});
+
+// The "New Flight Request" email is requested exactly once per acceptance,
+// for the account that actually accepted — never for anyone else.
+describe("acceptLeadOffer — New Flight Request email", () => {
+  async function offerTo(accountId: string, leadId = "lead-1") {
+    seedMember(accountId);
+    seedWebsiteLead(leadId);
+    const { distributeNewWebsiteLead } = await import("../lead-queue");
+    const offered = await distributeNewWebsiteLead(leadId);
+    expect(offered).toEqual({ offered: true, accountId });
+    currentActor = accounts.get(accountId)!;
+  }
+
+  it("requests the email for the accepting agent, and only them", async () => {
+    await offerTo("agent-a");
+    seedMember("agent-b"); // another eligible agent who did NOT accept
+    const { acceptLeadOffer } = await import("../lead-queue");
+    expect(await acceptLeadOffer("lead-1")).toEqual({ ok: true });
+    expect(sendNewFlightRequestEmail).toHaveBeenCalledTimes(1);
+    expect(sendNewFlightRequestEmail).toHaveBeenCalledWith(expect.objectContaining({ leadId: "lead-1", recipientId: "agent-a" }));
+    expect(sendNewFlightRequestEmail).not.toHaveBeenCalledWith(expect.objectContaining({ recipientId: "agent-b" }));
+  });
+
+  it("a duplicate accept (double-click / retry / second tab) never sends a second email", async () => {
+    await offerTo("agent-a");
+    const { acceptLeadOffer } = await import("../lead-queue");
+    const [first, second] = await Promise.all([acceptLeadOffer("lead-1"), acceptLeadOffer("lead-1")]);
+    expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
+    expect(sendNewFlightRequestEmail).toHaveBeenCalledTimes(1);
+    const again = await acceptLeadOffer("lead-1");
+    expect(again.ok).toBe(false);
+    expect(sendNewFlightRequestEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("an agent who is not the current offer holder gets no email and no assignment", async () => {
+    await offerTo("agent-a");
+    seedMember("agent-b");
+    currentActor = accounts.get("agent-b")!;
+    const { acceptLeadOffer } = await import("../lead-queue");
+    expect((await acceptLeadOffer("lead-1")).ok).toBe(false);
+    expect(sendNewFlightRequestEmail).not.toHaveBeenCalled();
+    expect(leads.get("lead-1")?.assignedAgentId).toBeNull();
+  });
+
+  it("a failed email never undoes or blocks the assignment, and the failure does not throw", async () => {
+    await offerTo("agent-a");
+    sendNewFlightRequestEmail.mockResolvedValueOnce({ ok: false, error: "Gmail down" });
+    const { acceptLeadOffer } = await import("../lead-queue");
+    expect(await acceptLeadOffer("lead-1")).toEqual({ ok: true });
+    expect(leads.get("lead-1")?.assignedAgentId).toBe("agent-a");
+    expect(contacts.get("contact-for-lead-1")?.ownerId).toBe("agent-a");
   });
 });

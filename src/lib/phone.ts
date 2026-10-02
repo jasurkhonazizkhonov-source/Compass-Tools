@@ -62,6 +62,15 @@ export function formatPhoneInternational(e164: string): string {
   return parsed ? parsed.formatInternational() : e164;
 }
 
+/** The country a stored phone number belongs to (e.g. "United States"),
+ * derived from the number itself — never guessed. Null when the value
+ * doesn't parse to a single known country (an unparseable legacy string, or
+ * a shared calling code such as +1 where the library can't pick one). */
+export function phoneCountryName(e164: string): string | null {
+  const parsed = parsePhoneNumberFromString(e164);
+  return parsed?.country ? (regionNames.of(parsed.country) ?? parsed.country) : null;
+}
+
 /**
  * Recovers the one specific, unambiguous shape of phone number Excel (and
  * some other copy/paste sources) is known to mangle: a full NANP (US/

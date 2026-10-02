@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // previously never got updated when the lead/contact it belongs to moved
 // to a new owner).
 
-type FakeAccount = { id: string; fullName: string; email: string; status: string; companyId: string; role: string };
+type FakeAccount = { id: string; fullName: string; email: string; status: string; companyId: string; role: string; accountsVisible?: boolean };
 type FakeContact = { id: string; firstName: string; lastName: string; companyId: string; ownerId: string | null };
 type FakeLead = {
   id: string;
@@ -148,7 +148,7 @@ vi.mock("@/lib/prisma", () => ({
     account: {
       findUnique: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
         const account = accounts.get(id);
-        return account ? { id: account.id, fullName: account.fullName, status: account.status, companyId: account.companyId } : null;
+        return account ? { id: account.id, fullName: account.fullName, status: account.status, companyId: account.companyId, accountsVisible: account.accountsVisible } : null;
       }),
       findUniqueOrThrow: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
         const account = accounts.get(id);
@@ -591,5 +591,57 @@ describe("updateLeadField — assignedAgentId guard (Pass 34)", () => {
       "You are not authorized to reassign this lead"
     );
     expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a"); // unchanged
+  });
+});
+
+
+// Hidden accounts (accountsVisible = false) are not part of the current
+// visible team: they cannot be handed new leads/contacts. Nothing already
+// assigned to them is touched or renamed.
+describe("hidden accounts — cannot be assigned new work; existing history is untouched", () => {
+  beforeEach(() => {
+    accounts.set("agent-hidden", { id: "agent-hidden", fullName: "Hidden Agent", email: "h@example.com", status: "ACTIVE", companyId: "company-1", role: "TRAVEL_AGENT", accountsVisible: false });
+  });
+
+  it("reassignLead refuses a hidden new owner and leaves the lead and its quotes exactly as they were", async () => {
+    const { reassignLead } = await import("../leads");
+    await expect(reassignLead("lead-1", "agent-hidden", "x")).rejects.toThrow(/hidden/i);
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-a");
+    expect(quotes.get("quote-1")!.agentId).toBe("agent-a");
+  });
+
+  it("reassignContact refuses a hidden new owner and leaves the contact untouched", async () => {
+    const { reassignContact } = await import("../contacts");
+    await expect(reassignContact("contact-1", "agent-hidden", "x")).rejects.toThrow(/hidden/i);
+    expect(contacts.get("contact-1")!.ownerId).toBe("agent-a");
+  });
+
+  it("a lead that ALREADY belongs to an agent who is later hidden stays assigned to them, and can still be moved to a visible agent (name preserved in the audit trail)", async () => {
+    leadsMap.get("lead-1")!.assignedAgentId = "agent-hidden";
+    const { logActivity } = await import("@/server/activity-log");
+    const { reassignLead } = await import("../leads");
+    await reassignLead("lead-1", "agent-b", "handing over");
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("agent-b");
+    const call = vi.mocked(logActivity).mock.calls.find(([arg]) => arg.type === "LEAD_REASSIGNED");
+    expect(call![0].metadata).toMatchObject({ previousOwnerId: "agent-hidden", previousOwnerName: "Hidden Agent" });
+  });
+
+  it('"reassigning" a lead to its CURRENT owner does not start failing just because that owner was hidden', async () => {
+    leadsMap.get("lead-1")!.assignedAgentId = "agent-hidden";
+    const { reassignLead } = await import("../leads");
+    await expect(reassignLead("lead-1", "agent-hidden")).resolves.toBeDefined();
+  });
+
+  it("a hidden Admin can still assign work to themselves (hidden users can sign in and work)", async () => {
+    accounts.set("admin-1", { ...accounts.get("admin-1")!, accountsVisible: false });
+    currentActor = accounts.get("admin-1")!;
+    const { reassignLead } = await import("../leads");
+    await expect(reassignLead("lead-1", "admin-1")).resolves.toBeDefined();
+    expect(leadsMap.get("lead-1")!.assignedAgentId).toBe("admin-1");
+  });
+
+  it("visible active accounts are completely unaffected", async () => {
+    const { reassignLead } = await import("../leads");
+    await expect(reassignLead("lead-1", "agent-b")).resolves.toBeDefined();
   });
 });

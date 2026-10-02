@@ -42,15 +42,20 @@ model Account {
   status    AccountStatus @default(ACTIVE)
   avatarUrl String?
 
-  // Pass 11 Part 1 — purely a directory-visibility preference for the
-  // general read-only /accounts page, NOT a deactivation/deletion concept
-  // (that's `status` above, which has real side effects like pulling the
-  // account out of the lead queue). Defaults to true so every existing
-  // account stays visible after this migration. Admin-only to change (see
-  // setAccountsVisibility in server/actions/accounts.ts); does not affect
-  // login, sessions, lead/contact ownership, commission history, queue
-  // membership, or online status — an Admin can still see and toggle it
-  // back on from /users at any time.
+  // "Hidden" (accountsVisible = false) — NOT a deactivation/deletion concept
+  // (that's `status` above, which blocks login). A hidden account is simply
+  // not part of the CURRENT VISIBLE TEAM: it is left out of the /accounts
+  // directory, the Lead Acceptance roster and queue positions, lead
+  // distribution (it is never offered a new lead), and every assignment /
+  // user-picker list (see listLeadEligibleAgents/listTaskEligibleAgents in
+  // server/queries/reference-data.ts and the assignee checks in leads.ts/
+  // contacts.ts). It does NOT affect login, sessions, existing lead/contact/
+  // quote/booking ownership and history (names keep resolving everywhere),
+  // commission/sales history, notification delivery, or the admin /users
+  // page, which always lists every account. Nothing is deleted or rewritten:
+  // unhiding restores the account everywhere, queue fairness history
+  // included. Defaults to true. Admin-only to change (see
+  // setAccountsVisibility in server/actions/accounts.ts).
   accountsVisible Boolean @default(true)
 
   // The tenant this Account belongs to — the sole schema surface multi-
@@ -1651,6 +1656,11 @@ enum EmailType {
   // Contact-originated email is distinguishable from one sent through a
   // specific Lead, the same way LEAD_EMAIL and INQUIRY_EMAIL already are.
   CONTACT_EMAIL
+  // The "New Flight Request" email sent to the agent who just ACCEPTED a
+  // website-captured lead from the queue (see acceptLeadOffer and
+  // src/server/lead-assignment-email.ts). Its own type so it is never
+  // confused with LEAD_REASSIGNMENT, the manual hand-off email.
+  NEW_LEAD_ASSIGNMENT
 }
 
 enum EmailStatus {

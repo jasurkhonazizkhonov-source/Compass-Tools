@@ -203,13 +203,16 @@ export async function setAccountStatus(accountId: string, status: "ACTIVE" | "IN
 }
 
 /**
- * Admin-only toggle for whether this account appears in the general
- * read-only /accounts directory (Pass 11 Part 1). Deliberately its own
+ * Admin-only toggle for whether this account is part of the current visible
+ * team: the /accounts directory, the Lead Acceptance roster and queue
+ * positions, lead distribution, and the assignment pickers (see the
+ * accountsVisible field comment in schema.prisma for the full list and for
+ * what it deliberately does NOT affect). Deliberately its own
  * tiny, focused mutation rather than folded into updateAccountSchema —
  * this is a directory-display preference, not an identity/compensation
  * field, and keeping it separate means it can never accidentally ride
  * along with (or be blocked by) the role/email admin-safety transaction
- * updateAccount runs. Does NOT touch status, lead queue membership,
+ * updateAccount runs. Does NOT touch status, the LeadQueueEntry row,
  * sessions, ownership, or any other field — same same-company IDOR guard
  * as every other account mutation in this file.
  */

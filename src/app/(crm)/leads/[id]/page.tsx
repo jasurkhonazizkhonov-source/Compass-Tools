@@ -153,6 +153,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             source={lead.source}
             priority={lead.priority}
             assignedAgentId={lead.assignedAgentId}
+            assignedAgentName={lead.assignedAgent?.fullName ?? null}
             agents={leadEligibleAgents}
             createdAt={lead.createdAt}
             canReassign={canReassignLeads(currentAccount?.role)}

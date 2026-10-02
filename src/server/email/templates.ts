@@ -264,6 +264,8 @@ const EMAIL_RESPONSIVE_STYLE = `<style>
   @media only screen and (max-width: 480px) {
     .ct-seg-row .ct-seg-cell, .ct-seg-row .ct-seg-cell-mid { display:block !important; width:100% !important; box-sizing:border-box; text-align:left !important; padding:8px 14px !important; }
     .ct-seg-row .ct-seg-cell-right { text-align:left !important; }
+    .ct-kv-label, .ct-kv-value { display:block !important; width:100% !important; box-sizing:border-box; padding-top:2px !important; padding-bottom:2px !important; }
+    .ct-kv-value { padding-bottom:10px !important; border-top:0 !important; }
   }
 </style>`;
 
@@ -1423,6 +1425,212 @@ export function buildBookingSignedNotificationEmail(params: {
 
     ${ctaButton(params.bookingUrl, "View Booking Securely", params.company.brandColor)}
   `);
+  return { subject, html };
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// New Flight Request — sent to the agent who just ACCEPTED a website-
+// captured lead (see sendNewFlightRequestEmail in
+// src/server/lead-assignment-email.ts). Everything here is driven by the
+// Lead's real columns (see the Lead model and the public lead-capture
+// route's own schema) — nothing is invented: an unset optional value is
+// simply omitted, never rendered as a placeholder.
+// ───────────────────────────────────────────────────────────────────────
+
+export type NewFlightRequestAirport = { iata: string; name: string; city: string; country: string };
+
+export type NewFlightRequestEmailParams = {
+  company: ResolvedCompanyBranding;
+  customerFullName: string;
+  customerEmail: string | null;
+  customerPhone: string | null;
+  /** International display form of customerPhone (e.g. "+1 415 555 1234"). */
+  customerPhoneDisplay: string | null;
+  /** Derived from the phone number itself; null when it can't be determined. */
+  customerCountry: string | null;
+  tripType: "ONE_WAY" | "ROUND_TRIP" | "MULTI_CITY";
+  cabinClass: "ECONOMY" | "PREMIUM_ECONOMY" | "BUSINESS" | "FIRST";
+  adults: number;
+  children: number;
+  infants: number;
+  departureAirport: NewFlightRequestAirport | null;
+  arrivalAirport: NewFlightRequestAirport | null;
+  departureDate: Date | null;
+  returnDate: Date | null;
+  flexibleDates: boolean;
+  preferredAirline: string | null;
+  budget: number | null;
+  notes: string | null;
+  submittedAt: Date;
+  acceptedAt: Date;
+  acceptedByName: string;
+};
+
+const NEW_REQUEST_TRIP_LABELS = { ONE_WAY: "One way", ROUND_TRIP: "Round trip", MULTI_CITY: "Multi-city" } as const;
+const NEW_REQUEST_CABIN_LABELS = { ECONOMY: "Economy", PREMIUM_ECONOMY: "Premium Economy", BUSINESS: "Business", FIRST: "First" } as const;
+
+function newRequestDate(d: Date): string {
+  // Lead dates are calendar dates (stored at UTC midnight), so they are
+  // rendered in UTC — a local-zone render would slip them a day.
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", year: "numeric", timeZone: "UTC" });
+}
+
+function newRequestTravelers(adults: number, children: number, infants: number): string {
+  const parts = [`${adults} adult${adults === 1 ? "" : "s"}`];
+  if (children > 0) parts.push(`${children} child${children === 1 ? "" : "ren"}`);
+  if (infants > 0) parts.push(`${infants} infant${infants === 1 ? "" : "s"}`);
+  return parts.join(", ");
+}
+
+const NEW_REQUEST_SECTION_LABEL = `margin:0 0 8px; font-size:11px; font-weight:700; letter-spacing:0.06em; color:${EMAIL_TOKENS.textFaint}; text-transform:uppercase;`;
+
+function newRequestRows(rows: Array<[string, string]>): string {
+  const body = rows
+    .map(
+      ([label, valueHtml], i) => `
+        <tr>
+          <td class="ct-kv-label" style="padding:9px 0; ${i > 0 ? `border-top:1px solid ${EMAIL_TOKENS.border};` : ""} width:38%; vertical-align:top; font-size:12px; color:${EMAIL_TOKENS.textSubtle};">${label}</td>
+          <td class="ct-kv-value" style="padding:9px 0; ${i > 0 ? `border-top:1px solid ${EMAIL_TOKENS.border};` : ""} vertical-align:top; font-size:14px; font-weight:600; color:${EMAIL_TOKENS.text}; word-break:break-word; overflow-wrap:anywhere;">${valueHtml}</td>
+        </tr>`
+    )
+    .join("");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${EMAIL_TOKENS.border}; border-radius:10px; margin-bottom:22px;"><tr><td style="padding:4px 18px;"><table role="presentation" width="100%" cellpadding="0" cellspacing="0">${body}</table></td></tr></table>`;
+}
+
+function newRequestLegCard(params: { label: string; from: NewFlightRequestAirport | null; to: NewFlightRequestAirport | null; date: Date | null; brandColor: string }): string {
+  const airport = (a: NewFlightRequestAirport | null, role: string) =>
+    a
+      ? `<p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.06em; color:${EMAIL_TOKENS.textFaint}; text-transform:uppercase;">${role}</p>
+         <p style="margin:2px 0 0; font-size:20px; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em;">${escapeHtml(a.iata)}</p>
+         <p style="margin:2px 0 0; font-size:13px; font-weight:600; color:${EMAIL_TOKENS.text};">${escapeHtml(a.city)}, ${escapeHtml(a.country)}</p>
+         <p style="margin:2px 0 0; font-size:12px; color:${EMAIL_TOKENS.textSubtle}; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(a.name)}</p>`
+      : `<p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.06em; color:${EMAIL_TOKENS.textFaint}; text-transform:uppercase;">${role}</p>
+         <p style="margin:2px 0 0; font-size:13px; color:${EMAIL_TOKENS.textSubtle};">Not specified</p>`;
+  return `
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid ${EMAIL_TOKENS.border}; border-left:4px solid ${params.brandColor}; border-radius:10px; margin-bottom:10px;">
+      <tr>
+        <td style="padding:14px 18px 4px;">
+          <span style="font-size:12px; font-weight:700; color:${EMAIL_TOKENS.text};">${params.label}</span>
+          ${params.date ? `<span style="font-size:12px; color:${EMAIL_TOKENS.textSubtle};"> &middot; ${newRequestDate(params.date)}</span>` : ""}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:6px 18px 16px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+            <tr>
+              <td class="ct-seg-cell" style="width:50%; vertical-align:top; padding-right:10px;">${airport(params.from, "From")}</td>
+              <td class="ct-seg-cell" style="width:50%; vertical-align:top; padding-left:10px;">${airport(params.to, "To")}</td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>`;
+}
+
+function newRequestButton(href: string, label: string, brandColor: string, primary: boolean): string {
+  const style = primary
+    ? `background:${brandColor}; color:#ffffff; border:1px solid ${brandColor};`
+    : `background:#ffffff; color:${brandColor}; border:1px solid ${brandColor};`;
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 8px 8px 0; display:inline-block;"><tr><td style="border-radius:8px; ${style}"><a href="${href}" style="display:inline-block; padding:12px 26px; font-size:14px; font-weight:700; text-decoration:none; border-radius:8px; color:${primary ? "#ffffff" : brandColor};">${label}</a></td></tr></table>`;
+}
+
+export function buildNewFlightRequestEmail(params: NewFlightRequestEmailParams) {
+  const { company } = params;
+  const subject = `New Flight Request — ${params.customerFullName}`;
+
+  const routeSummary = params.departureAirport && params.arrivalAirport ? `${params.departureAirport.iata} → ${params.arrivalAirport.iata}` : null;
+  const summaryLine = [routeSummary, NEW_REQUEST_TRIP_LABELS[params.tripType], NEW_REQUEST_CABIN_LABELS[params.cabinClass], newRequestTravelers(params.adults, params.children, params.infants)]
+    .filter(Boolean)
+    .join(" · ");
+  const preheader = `${params.customerFullName} — ${summaryLine}`;
+
+  const tripRows: Array<[string, string]> = [
+    ["Trip type", NEW_REQUEST_TRIP_LABELS[params.tripType]],
+    ["Cabin", NEW_REQUEST_CABIN_LABELS[params.cabinClass]],
+    ["Travelers", escapeHtml(newRequestTravelers(params.adults, params.children, params.infants))],
+  ];
+  if (params.departureDate) tripRows.push(["Departure date", newRequestDate(params.departureDate)]);
+  if (params.returnDate) tripRows.push(["Return date", newRequestDate(params.returnDate)]);
+  if (params.flexibleDates) tripRows.push(["Dates", "Flexible"]);
+  if (params.preferredAirline) tripRows.push(["Preferred airline", escapeHtml(params.preferredAirline)]);
+  if (params.budget != null) tripRows.push(["Approximate budget", `$${params.budget.toLocaleString("en-US")}`]);
+
+  const clientRows: Array<[string, string]> = [["Full name", escapeHtml(params.customerFullName)]];
+  if (params.customerEmail) {
+    clientRows.push(["Email", `<a href="mailto:${encodeURI(params.customerEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.customerEmail)}</a>`]);
+  }
+  if (params.customerPhone) {
+    const display = params.customerPhoneDisplay ?? params.customerPhone;
+    clientRows.push(["Phone", `<a href="tel:${params.customerPhone.replace(/[^+\d]/g, "")}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(display)}</a>`]);
+  }
+  if (params.customerCountry) clientRows.push(["Country", escapeHtml(params.customerCountry)]);
+
+  const hasRoute = !!(params.departureAirport || params.arrivalAirport || params.departureDate || params.returnDate);
+  const legs: string[] = [];
+  if (hasRoute) {
+    legs.push(
+      newRequestLegCard({
+        label: params.tripType === "ROUND_TRIP" ? "Outbound" : params.tripType === "MULTI_CITY" ? "Route" : "Flight",
+        from: params.departureAirport,
+        to: params.arrivalAirport,
+        date: params.departureDate,
+        brandColor: company.brandColor,
+      })
+    );
+    if (params.tripType === "ROUND_TRIP" && (params.returnDate || params.departureAirport || params.arrivalAirport)) {
+      legs.push(newRequestLegCard({ label: "Return", from: params.arrivalAirport, to: params.departureAirport, date: params.returnDate, brandColor: company.brandColor }));
+    }
+  }
+
+  const submissionRows: Array<[string, string]> = [
+    ["Submitted", params.submittedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE })],
+    ["Source", "Website flight request"],
+    ["Accepted by", escapeHtml(params.acceptedByName)],
+    ["Accepted at", params.acceptedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE })],
+    ["Status", "New"],
+  ];
+
+  const buttons = [
+    params.customerEmail
+      ? newRequestButton(`mailto:${encodeURI(params.customerEmail)}?subject=${encodeURIComponent(`Your flight request${routeSummary ? ` — ${routeSummary}` : ""}`)}`, "Reply to Client", company.brandColor, true)
+      : "",
+    params.customerPhone ? newRequestButton(`tel:${params.customerPhone.replace(/[^+\d]/g, "")}`, "Call Client", company.brandColor, !params.customerEmail) : "",
+  ].join("");
+
+  const html = renderEmailCard({
+    company,
+    variant: "transactional",
+    preheader,
+    footerHtml: `<p style="margin:0 0 4px; font-size:12px; font-weight:600; color:${EMAIL_TOKENS.text};">${escapeHtml(company.name)}</p>
+      <p style="margin:0; font-size:11px; color:${EMAIL_TOKENS.textFaint};">Internal notification sent to the agent who accepted this request. It is not sent to the customer.</p>`,
+    bodyHtml: `
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:14px;">
+        <tr>
+          <td style="background:${EMAIL_TOKENS.successBackground}; border-radius:6px; padding:5px 12px;">
+            <span style="font-size:11px; font-weight:700; letter-spacing:0.06em; text-transform:uppercase; color:#065f46;">New Flight Request</span>
+          </td>
+        </tr>
+      </table>
+      <h1 style="margin:0 0 6px; font-size:24px; line-height:1.25; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.customerFullName)}</h1>
+      <p style="margin:0 0 22px; font-size:14px; color:${EMAIL_TOKENS.textMuted}; line-height:1.6;">${escapeHtml(summaryLine)}</p>
+
+      ${buttons ? `<div style="margin:0 0 24px;">${buttons}</div>` : ""}
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">Trip Summary</p>
+      ${newRequestRows(tripRows)}
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">Client Information</p>
+      ${newRequestRows(clientRows)}
+
+      ${legs.length > 0 ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Flight Itinerary</p>${legs.join("")}${params.tripType === "MULTI_CITY" ? `<p style="margin:0 0 22px; font-size:12px; color:${EMAIL_TOKENS.textSubtle}; line-height:1.6;">Multi-city request — the website form captured one route; confirm any additional legs with the client.</p>` : `<div style="height:12px; line-height:12px; font-size:0;">&nbsp;</div>`}` : ""}
+
+      ${params.notes ? `<p style="${NEW_REQUEST_SECTION_LABEL}">Notes From The Client</p>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL_TOKENS.mutedBackground}; border:1px solid ${EMAIL_TOKENS.border}; border-radius:10px; margin-bottom:22px;"><tr><td style="padding:14px 18px; font-size:14px; color:#374151; line-height:1.7; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(params.notes).replace(/\r?\n/g, "<br/>")}</td></tr></table>` : ""}
+
+      <p style="${NEW_REQUEST_SECTION_LABEL}">Submission Details</p>
+      ${newRequestRows(submissionRows)}
+    `,
+  });
   return { subject, html };
 }
 

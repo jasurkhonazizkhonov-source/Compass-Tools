@@ -47,7 +47,7 @@ export default async function CommissionsPage({ searchParams }: { searchParams: 
   const [{ rows: commissions, total, pageCount, pageSize: effectivePageSize }, summary, eligibleAgents] = await Promise.all([
     getCommissions(current, filters, page, pageSize),
     getCommissionsSummary(current, filters),
-    canFilterByUser ? listLeadEligibleAgents(current!.companyId) : Promise.resolve([]),
+    canFilterByUser ? listLeadEligibleAgents(current!.companyId, { includeHidden: true }) : Promise.resolve([]),
   ]);
   redirectToValidPageIfNeeded(sp, "/commissions", page, pageCount);
 

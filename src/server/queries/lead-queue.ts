@@ -2,6 +2,12 @@ import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { compareQueueEntries } from "@/lib/lead-distribution";
 
+// Hidden accounts (Account.accountsVisible = false) are excluded from every
+// queue roster/position below — they are not part of the current, visible
+// team (see the field's comment in schema.prisma) — so a visible worker's
+// number here always matches what the Lead Acceptance roster shows. The
+// hidden account's LeadQueueEntry itself is never touched or deleted.
+//
 // Position is a permanent rank by original joinedAt, computed across every
 // entry that has EVER joined the queue — active or paused — WITHIN THIS
 // COMPANY (Pass 22 fix: previously counted every LeadQueueEntry across
@@ -14,7 +20,7 @@ import { compareQueueEntries } from "@/lib/lead-distribution";
 // anyone, including the paused worker themselves once they resume.
 export async function getQueuePosition(entry: { joinedAt: Date }, companyId: string): Promise<number> {
   return prisma.leadQueueEntry.count({
-    where: { joinedAt: { lte: entry.joinedAt }, account: { companyId } },
+    where: { joinedAt: { lte: entry.joinedAt }, account: { companyId, accountsVisible: true } },
   });
 }
 
@@ -51,7 +57,7 @@ export const getMyQueueStatus = cache(async (accountId: string | undefined, comp
 // missing across every function in this file.
 export async function getActiveQueueMembers(companyId: string) {
   const entries = await prisma.leadQueueEntry.findMany({
-    where: { isActive: true, account: { companyId } },
+    where: { isActive: true, account: { companyId, accountsVisible: true } },
     include: { account: { select: { id: true, fullName: true } } },
   });
   return entries.sort(compareQueueEntries);
@@ -65,7 +71,7 @@ export async function getActiveQueueMembers(companyId: string) {
 // workers to every viewer — a real cross-tenant staff-roster leak).
 export async function getAllQueueMembers(companyId: string) {
   const entries = await prisma.leadQueueEntry.findMany({
-    where: { account: { companyId } },
+    where: { account: { companyId, accountsVisible: true } },
     orderBy: { joinedAt: "asc" },
     include: { account: { select: { id: true, fullName: true, avatarUrl: true } } },
   });

@@ -48,7 +48,7 @@ describe("getQueuePosition — scoped by company (Pass 22 fix)", () => {
     expect(position).toBe(3);
     expect(leadQueueEntry.countCalls[0].where).toEqual({
       joinedAt: { lte: entry.joinedAt },
-      account: { companyId: "company-1" },
+      account: { companyId: "company-1", accountsVisible: true },
     });
     vi.doUnmock("@/lib/prisma");
     vi.doUnmock("@/lib/lead-distribution");
@@ -112,7 +112,7 @@ describe("getActiveQueueMembers — scoped by company (Pass 22 fix)", () => {
     const { getActiveQueueMembers } = await import("../lead-queue");
     await getActiveQueueMembers("company-1");
 
-    expect(leadQueueEntry.findManyCalls[0].where).toEqual({ isActive: true, account: { companyId: "company-1" } });
+    expect(leadQueueEntry.findManyCalls[0].where).toEqual({ isActive: true, account: { companyId: "company-1", accountsVisible: true } });
     vi.doUnmock("@/lib/prisma");
     vi.doUnmock("@/lib/lead-distribution");
   });
@@ -126,7 +126,7 @@ describe("getAllQueueMembers — scoped by company (Pass 22 fix, the confirmed s
     const { getAllQueueMembers } = await import("../lead-queue");
     await getAllQueueMembers("company-1");
 
-    expect(leadQueueEntry.findManyCalls[0].where).toEqual({ account: { companyId: "company-1" } });
+    expect(leadQueueEntry.findManyCalls[0].where).toEqual({ account: { companyId: "company-1", accountsVisible: true } });
     vi.doUnmock("@/lib/prisma");
   });
 

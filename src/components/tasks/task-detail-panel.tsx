@@ -158,6 +158,11 @@ export function TaskDetailPanel({ task, agents }: { task: TaskDetail; agents: Ag
                 <span className="flex items-center gap-1.5"><UserIcon className="h-3.5 w-3.5 text-muted-foreground" /><SelectValue /></span>
               </SelectTrigger>
               <SelectContent>
+                {/* `agents` lists current, visible accounts only — an assignee an
+                    Admin later hid is still shown as this task's current value. */}
+                {task.assignee && !agents.some((a) => a.id === task.assignee!.id) && (
+                  <SelectItem key={task.assignee.id} value={task.assignee.id}>{task.assignee.fullName}</SelectItem>
+                )}
                 {agents.map((a) => (
                   <SelectItem key={a.id} value={a.id}>{a.fullName}</SelectItem>
                 ))}

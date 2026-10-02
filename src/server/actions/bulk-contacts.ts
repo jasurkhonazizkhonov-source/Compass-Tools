@@ -151,12 +151,12 @@ export async function bulkCreateContacts(rows: BulkContactRowInput[]): Promise<B
   const assigneeIds = [...new Set(parsedRows.map((r) => r.assignedAgentId).filter((id): id is string => !!id))];
   if (assigneeIds.length > 0) {
     const validAssignees = await prisma.account.findMany({
-      where: { id: { in: assigneeIds }, companyId: actor.companyId, status: "ACTIVE" },
+      where: { id: { in: assigneeIds }, companyId: actor.companyId, status: "ACTIVE", OR: [{ accountsVisible: true }, { id: actor.id }] },
       select: { id: true },
     });
     const validIds = new Set(validAssignees.map((a) => a.id));
     const badRow = parsedRows.find((r) => r.assignedAgentId && !validIds.has(r.assignedAgentId));
-    if (badRow) throw new Error("One or more assigned agents are invalid or no longer active.");
+    if (badRow) throw new Error("One or more assigned agents are invalid, hidden, or no longer active.");
   }
 
   const byClientId = new Map(results.map((r) => [r.clientId, r]));

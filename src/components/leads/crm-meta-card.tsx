@@ -25,6 +25,7 @@ export function CrmMetaCard({
   source,
   priority,
   assignedAgentId,
+  assignedAgentName,
   agents,
   createdAt,
   canReassign,
@@ -34,6 +35,10 @@ export function CrmMetaCard({
   source: string;
   priority: "LOW" | "MEDIUM" | "HIGH";
   assignedAgentId: string | null;
+  /** The current owner's name from the lead's own joined relation. `agents`
+   * only lists current, visible accounts, so an owner an Admin later hid
+   * must still resolve to their real name here — never "Unassigned". */
+  assignedAgentName?: string | null;
   agents: Agent[];
   createdAt: Date;
   referredByContact?: { id: string; firstName: string; lastName: string } | null;
@@ -90,7 +95,7 @@ export function CrmMetaCard({
           <InlineEditField<string>
             label="Assigned Agent"
             currentValue={assignedAgentId ?? ""}
-            displayValue={agents.find((a) => a.id === assignedAgentId)?.fullName ?? "Unassigned"}
+            displayValue={agents.find((a) => a.id === assignedAgentId)?.fullName ?? assignedAgentName ?? "Unassigned"}
             editor={(value, setValue) => (
               <Select value={value} onValueChange={setValue}>
                 <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
@@ -104,7 +109,7 @@ export function CrmMetaCard({
         ) : (
           <div className="min-h-8">
             <p className="text-xs text-muted-foreground mb-0.5">Assigned Agent</p>
-            <p className="text-sm">{agents.find((a) => a.id === assignedAgentId)?.fullName ?? "Unassigned"}</p>
+            <p className="text-sm">{agents.find((a) => a.id === assignedAgentId)?.fullName ?? assignedAgentName ?? "Unassigned"}</p>
           </div>
         )}
         <div>

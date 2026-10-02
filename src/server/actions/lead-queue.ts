@@ -8,6 +8,7 @@ import { isEligibleForAutoDistribution } from "@/lib/lead-distribution";
 import { getQueuePosition } from "@/server/queries/lead-queue";
 import { runAfterResponse } from "@/lib/run-after-response";
 import { shouldRunPendingPickup } from "@/server/lead-pickup-throttle";
+import { sendNewFlightRequestEmail } from "@/server/lead-assignment-email";
 
 /** Worker opts into the lead-distribution queue. Idempotent — a worker can
  * only ever have one queue row (accountId is unique), reused across
@@ -169,6 +170,13 @@ async function offerLeadToNextWorker(leadId: string): Promise<DistributionResult
     // if their queue row were ever left stale. a."companyId" = ${companyId}
     // is the actual cross-tenant fix — see this function's doc comment.
     //
+    // a."accountsVisible" = true: an account an Admin has hidden is not part
+    // of the current visible team and is never offered a new lead. Nothing
+    // is deleted — its LeadQueueEntry (and every lead it already holds) is
+    // untouched, and unhiding it restores it to the rotation with its
+    // fairness history intact. A hidden worker who ALREADY holds a live offer
+    // can still accept/skip it (those paths act by account id).
+    //
     // ONE LIVE OFFER PER WORKER — lock FIRST, check AFTER. This used to be a
     // single statement: candidate query + NOT EXISTS("worker already holds a
     // live offer") + FOR UPDATE SKIP LOCKED. Postgres does not re-evaluate
@@ -186,7 +194,7 @@ async function offerLeadToNextWorker(leadId: string): Promise<DistributionResult
     const candidates = await tx.$queryRaw<Array<{ id: string; accountId: string }>>`
       SELECT lqe."id", lqe."accountId" FROM "LeadQueueEntry" lqe
       JOIN "Account" a ON a."id" = lqe."accountId"
-      WHERE lqe."isActive" = true AND a."status" = 'ACTIVE' AND a."companyId" = ${companyId}
+      WHERE lqe."isActive" = true AND a."status" = 'ACTIVE' AND a."accountsVisible" = true AND a."companyId" = ${companyId}
         AND a."role" NOT IN ('TICKETING_AGENT', 'FLIGHT_EXPERT', 'MARKETING_AGENT')
       ORDER BY lqe."lastAssignedAt" ASC NULLS FIRST, lqe."joinedAt" ASC
       LIMIT 25
@@ -343,6 +351,20 @@ export async function acceptLeadOffer(leadId: string) {
       metadata: { source: "Lead Queue", queuePosition: position },
     }),
   ]);
+
+  // The accepting agent gets a "New Flight Request" email with everything
+  // the website captured. Reached ONLY by the single request that won the
+  // atomic claim above (a repeat/duplicate accept returned early with
+  // count === 0), so it is requested exactly once per acceptance. Runs after
+  // the response (the assignment is already committed and must never be
+  // delayed or undone by mail delivery); sendNewFlightRequestEmail never
+  // throws and records SENT/FAILED in EmailLog. The unread state the agent
+  // sees is the LEAD_ASSIGNED Notification created above — this CRM has no
+  // separate mail inbox model, so none is invented.
+  await runAfterResponse(async () => {
+    const outcome = await sendNewFlightRequestEmail({ leadId, recipientId: account.id, acceptedAt: now });
+    if (!outcome.ok) console.error("[lead-queue] NEW_FLIGHT_REQUEST_EMAIL_NOT_SENT");
+  });
 
   revalidatePath("/leads");
   revalidatePath(`/leads/${leadId}`);

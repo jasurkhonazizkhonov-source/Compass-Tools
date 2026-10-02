@@ -4,9 +4,9 @@ import { prisma } from "@/lib/prisma";
  * Every field on every Account IN ONE COMPANY — the full, unfiltered
  * roster. Used by the admin-only /users management page, which must
  * continue to see and manage EVERY account regardless of its
- * accountsVisible preference (Pass 11 Part 1 — "hidden from Accounts" is
- * only a /accounts-directory display preference, never a real deletion, so
- * Admin user-management must never lose sight of a hidden account). Do NOT
+ * accountsVisible preference (a hidden account is never deleted — it is only
+ * left out of current-team views — so Admin user-management must never lose
+ * sight of it). Do NOT
  * use this for the general-purpose /accounts directory — use
  * getAccountsDirectory below instead, which excludes hidden accounts at
  * the query level. Always scoped by companyId — an Admin/Manager must
