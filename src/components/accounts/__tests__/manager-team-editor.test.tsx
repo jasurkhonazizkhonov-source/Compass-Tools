@@ -8,10 +8,12 @@ import { ManagerTeamEditor, type TeamCandidate } from "../manager-team-editor";
 // Admin's control for a Manager's explicit team. The list only ever offers
 // Travel Agents (the server enforces the same rule); this proves the control
 // behaves, says when an agent would be moved from another team, and sends
-// exactly the chosen ids.
+// ONLY what the Admin changed (an add/remove diff), never the whole list — so a
+// stale snapshot of the team can't undo a change made elsewhere meanwhile.
 
-const { setManagerTeam } = vi.hoisted(() => ({ setManagerTeam: vi.fn(async () => ({ added: 0, removed: 0, teamSize: 0 })) }));
-vi.mock("@/server/actions/accounts", () => ({ setManagerTeam }));
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const { changeManagerTeam } = vi.hoisted(() => ({ changeManagerTeam: vi.fn(async (..._args: unknown[]) => ({ added: 0, removed: 0, teamSize: 0 })) }));
+vi.mock("@/server/actions/accounts", () => ({ changeManagerTeam }));
 
 const CANDIDATES: TeamCandidate[] = [
   { id: "ta-1", fullName: "John Agent", managerId: "mgr-1", managerName: "Andrew Manager", hidden: false, inactive: false },
@@ -48,15 +50,15 @@ describe("ManagerTeamEditor", () => {
     expect(screen.queryByText(/On Andrew Manager's team/)).not.toBeInTheDocument();
   });
 
-  it("Save is disabled until the selection changes, then sends exactly the chosen ids", async () => {
+  it("Save is disabled until the selection changes, then sends only the agent that was added", async () => {
     const user = userEvent.setup();
     setup();
     await user.click(screen.getByRole("button", { name: "Edit Andrew Manager's team" }));
     expect(screen.getByRole("button", { name: "Save team" })).toBeDisabled();
     await user.click(screen.getByLabelText(/Sarah Agent/));
     await user.click(screen.getByRole("button", { name: "Save team" }));
-    expect(setManagerTeam).toHaveBeenCalledWith("mgr-1", expect.arrayContaining(["ta-1", "ta-2"]));
-    expect((setManagerTeam.mock.calls[0] as unknown as [string, string[]])[1]).toHaveLength(2);
+    // ta-1 was already on the team and was not touched, so it is not part of the request.
+    expect(changeManagerTeam).toHaveBeenCalledWith("mgr-1", { add: ["ta-2"], remove: [] });
   });
 
   it("an agent can be removed from the team", async () => {
@@ -65,7 +67,7 @@ describe("ManagerTeamEditor", () => {
     await user.click(screen.getByRole("button", { name: "Edit Andrew Manager's team" }));
     await user.click(screen.getByLabelText(/John Agent/));
     await user.click(screen.getByRole("button", { name: "Save team" }));
-    expect(setManagerTeam).toHaveBeenCalledWith("mgr-1", []);
+    expect(changeManagerTeam).toHaveBeenCalledWith("mgr-1", { add: [], remove: ["ta-1"] });
   });
 
   it("Cancel discards unsaved ticks and calls nothing", async () => {
@@ -74,7 +76,7 @@ describe("ManagerTeamEditor", () => {
     await user.click(screen.getByRole("button", { name: "Edit Andrew Manager's team" }));
     await user.click(screen.getByLabelText(/Sarah Agent/));
     await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(setManagerTeam).not.toHaveBeenCalled();
+    expect(changeManagerTeam).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Edit Andrew Manager's team" }));
     expect(screen.getByLabelText(/Sarah Agent/)).not.toBeChecked();
   });

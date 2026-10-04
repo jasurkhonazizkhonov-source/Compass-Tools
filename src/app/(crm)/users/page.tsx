@@ -88,6 +88,9 @@ export default async function UsersPage() {
                   <TableCell>
                     {a.role === "MANAGER" ? (
                       <ManagerTeamEditor
+                        // Re-created whenever the team on the server changes (e.g. an agent moved here from
+                        // another manager's row), so the editor never shows or re-saves a stale team.
+                        key={`${a.id}:${teamCandidates.filter((c) => c.managerId === a.id).map((c) => c.id).sort().join(",")}`}
                         managerId={a.id}
                         managerName={a.fullName}
                         candidates={teamCandidates}

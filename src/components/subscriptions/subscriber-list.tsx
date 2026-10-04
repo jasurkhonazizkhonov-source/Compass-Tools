@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/crm/empty-state";
 import { Users } from "lucide-react";
 import { deleteSubscriber, deleteSubscribers, deleteSubscribersMatchingFilter, getSubscriberCountForFilter } from "@/server/actions/subscribers";
 import { BulkSubscriberDialog } from "@/components/subscriptions/bulk-subscriber-dialog";
+import { UnsubscribeDetails } from "@/components/subscriptions/unsubscribe-details";
 import type { SubscriberStatus } from "@/generated/prisma/client";
 
 type Subscriber = {
@@ -21,6 +22,12 @@ type Subscriber = {
   status: "SUBSCRIBED" | "UNSUBSCRIBED";
   source: string | null;
   subscribedAt: Date;
+  unsubscribedAt?: Date | null;
+  unsubscribeReasonCategory?: string | null;
+  unsubscribeReason?: string | null;
+  unsubscribeSource?: string | null;
+  unsubscribeRespondedAt?: Date | null;
+  lastCampaignName?: string | null;
 };
 
 /**
@@ -339,6 +346,7 @@ export function SubscriberList({
                 <TableHead>Status</TableHead>
                 <TableHead>Source</TableHead>
                 <TableHead>Subscribed</TableHead>
+                <TableHead>Unsubscribe details</TableHead>
                 <TableHead className="w-10" />
               </TableRow>
             </TableHeader>
@@ -362,6 +370,24 @@ export function SubscriberList({
                   </TableCell>
                   <TableCell className="text-sm text-muted-foreground">{s.source ?? "—"}</TableCell>
                   <TableCell className="text-xs text-muted-foreground">{format(s.subscribedAt, "MMM d, yyyy")}</TableCell>
+                  <TableCell className="align-top">
+                    {s.status === "UNSUBSCRIBED" ? (
+                      <UnsubscribeDetails
+                        subscriber={{
+                          id: s.id,
+                          email: s.email,
+                          unsubscribedAt: s.unsubscribedAt ?? null,
+                          unsubscribeReasonCategory: s.unsubscribeReasonCategory ?? null,
+                          unsubscribeReason: s.unsubscribeReason ?? null,
+                          unsubscribeSource: s.unsubscribeSource ?? null,
+                          unsubscribeRespondedAt: s.unsubscribeRespondedAt ?? null,
+                          lastCampaignName: s.lastCampaignName ?? null,
+                        }}
+                      />
+                    ) : (
+                      <span className="text-sm text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" onClick={() => setRemoveOneId(s.id)} aria-label={`Remove ${s.email}`} title="Remove subscriber">
                       <Trash2 className="h-3.5 w-3.5" />

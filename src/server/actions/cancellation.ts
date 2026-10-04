@@ -6,6 +6,7 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getClientIp } from "@/lib/request-ip";
+import { getRequestLocation, type ApproximateLocation } from "@/lib/request-geo";
 import { recordIpCapture } from "@/server/security/ip-capture";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
@@ -547,10 +548,12 @@ export async function confirmCancellationByCustomer(token: string, passengers?: 
   // blocks the customer's cancellation confirmation from succeeding.
   if (quote.booking) {
     let ip: string | undefined;
+    let location: ApproximateLocation | undefined;
     let userAgent: string | undefined;
     try {
       const headerList = await headers();
       ip = getClientIp(headerList);
+      location = getRequestLocation(headerList);
       userAgent = headerList.get("user-agent") ?? undefined;
     } catch {
       // headers() can throw outside a request context — must never block confirmation.
@@ -558,6 +561,7 @@ export async function confirmCancellationByCustomer(token: string, passengers?: 
     await recordIpCapture({
       ip,
       userAgent,
+      location,
       formType: "CANCELLATION_CONFIRMATION",
       bookingId: quote.booking.id,
       signerName: quote.contact ? `${quote.contact.firstName} ${quote.contact.lastName}`.trim() : null,

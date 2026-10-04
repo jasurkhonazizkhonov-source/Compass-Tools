@@ -115,6 +115,12 @@ export type IpVaultEntry = {
   suspicious: boolean;
   notes: string | null;
   booking: { id: string; bookingReference: string } | null;
+  /** Approximate, IP-derived location captured with this event; null fields = not available. */
+  geoCity: string | null;
+  geoRegion: string | null;
+  geoCountry: string | null;
+  geoCountryCode: string | null;
+  geoTimeZone: string | null;
 };
 
 const IP_VAULT_ENTRY_SELECT = {
@@ -130,6 +136,11 @@ const IP_VAULT_ENTRY_SELECT = {
   suspicious: true,
   notes: true,
   booking: { select: { id: true, bookingReference: true } },
+  geoCity: true,
+  geoRegion: true,
+  geoCountry: true,
+  geoCountryCode: true,
+  geoTimeZone: true,
 } as const;
 
 type IpVaultRow = {
@@ -145,6 +156,11 @@ type IpVaultRow = {
   suspicious: boolean;
   notes: string | null;
   booking: { id: string; bookingReference: string } | null;
+  geoCity: string | null;
+  geoRegion: string | null;
+  geoCountry: string | null;
+  geoCountryCode: string | null;
+  geoTimeZone: string | null;
 };
 
 function toIpVaultEntry(r: IpVaultRow): IpVaultEntry {
@@ -161,6 +177,11 @@ function toIpVaultEntry(r: IpVaultRow): IpVaultEntry {
     suspicious: r.suspicious,
     notes: r.notes,
     booking: r.booking,
+    geoCity: r.geoCity,
+    geoRegion: r.geoRegion,
+    geoCountry: r.geoCountry,
+    geoCountryCode: r.geoCountryCode,
+    geoTimeZone: r.geoTimeZone,
   };
 }
 

@@ -17,16 +17,28 @@ function setVisibility(state: "visible" | "hidden") {
   document.dispatchEvent(new Event("visibilitychange"));
 }
 
+type AnyFn = (...args: unknown[]) => unknown;
 let getMyLeadOfferMock: ReturnType<typeof vi.fn>;
+// One set of spies for the whole file, reached through closures. The module mocks are registered ONCE
+// per test (here), before the component module is imported; a test only chooses behaviour (wire) and
+// never re-registers a mock after the import — re-registration is what made this file order- and
+// load-sensitive.
+let announce: ReturnType<typeof vi.fn>;
+let accept: ReturnType<typeof vi.fn>;
+let skip: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.useFakeTimers();
   getMyLeadOfferMock = vi.fn(async () => null);
+  announce = vi.fn(async () => "played");
+  accept = vi.fn(async () => ({ ok: true }));
+  skip = vi.fn(async () => ({ ok: true }));
   vi.doMock("@/server/actions/lead-queue", () => ({
-    getMyLeadOffer: getMyLeadOfferMock,
-    acceptLeadOffer: vi.fn(),
-    skipLeadOffer: vi.fn(),
+    getMyLeadOffer: (...args: unknown[]) => (getMyLeadOfferMock as AnyFn)(...args),
+    acceptLeadOffer: (...args: unknown[]) => (accept as AnyFn)(...args),
+    skipLeadOffer: (...args: unknown[]) => (skip as AnyFn)(...args),
   }));
+  vi.doMock("@/lib/lead-offer-alert", () => ({ announceLeadOffer: (...args: unknown[]) => (announce as AnyFn)(...args), initOfferAudio: vi.fn(() => () => {}) }));
   vi.doMock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
   setVisibility("visible");
 });
@@ -94,18 +106,17 @@ describe("LeadOfferModal — visibility-aware polling (Pass 36)", () => {
 // offer repeatedly never re-triggers, a genuinely new offer does, the Accept /
 // Skip controls and countdown are unchanged, and a blocked sound is explained.
 describe("LeadOfferModal — alert sound trigger", () => {
-  const EXPIRES = new Date(Date.now() + 60_000).toISOString();
-  const OFFER = { leadId: "lead-1", contactName: "Dark Master", email: "d@x.example", phone: "+14155550123", source: "WEBSITE", route: "JFK → LGW", offerExpiresAt: EXPIRES };
-  let announce: ReturnType<typeof vi.fn>;
-  let accept: ReturnType<typeof vi.fn>;
-  let skip: ReturnType<typeof vi.fn>;
-
+  // Built per test, AFTER the fake clock starts. Computed once when the file is collected, a slow
+  // run (the whole suite importing in parallel) could let the 60-second offer expire before the
+  // test ran, and the component would then correctly auto-skip it — a load-dependent failure.
+  let EXPIRES: string;
+  let OFFER: { leadId: string; contactName: string; email: string; phone: string; source: string; route: string; offerExpiresAt: string };
+  beforeEach(() => {
+    EXPIRES = new Date(Date.now() + 60_000).toISOString();
+    OFFER = { leadId: "lead-1", contactName: "Dark Master", email: "d@x.example", phone: "+14155550123", source: "WEBSITE", route: "JFK → LGW", offerExpiresAt: EXPIRES };
+  });
   function wire(result: "played" | "blocked" | "duplicate" = "played") {
     announce = vi.fn(async () => result);
-    accept = vi.fn(async () => ({ ok: true }));
-    skip = vi.fn(async () => ({ ok: true }));
-    vi.doMock("@/lib/lead-offer-alert", () => ({ announceLeadOffer: announce, initOfferAudio: vi.fn(() => () => {}) }));
-    vi.doMock("@/server/actions/lead-queue", () => ({ getMyLeadOffer: getMyLeadOfferMock, acceptLeadOffer: accept, skipLeadOffer: skip }));
   }
 
   it("sounds exactly once for an offer however many times the poll returns it", async () => {

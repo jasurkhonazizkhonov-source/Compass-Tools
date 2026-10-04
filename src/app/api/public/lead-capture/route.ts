@@ -8,6 +8,7 @@ import { resolveAirportCodes } from "@/server/queries/reference-data";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { MAX_LEAD_SEGMENTS } from "@/lib/lead-itinerary";
+import { buildLeadSubmissionInfoCreate } from "@/server/lead-submission-info";
 import type { LeadStatus } from "@/generated/prisma/client";
 
 // Part 12/25 — the public company website's flight-request form posts
@@ -150,6 +151,11 @@ export async function POST(req: Request) {
   const arrivalAirport = first ? airportCodes[first.arrivalIata] : arrivalIata ? airportCodes[arrivalIata] : null;
   const firstDepartureDate = first ? first.departureDate : data.departureDate;
 
+  // The submitting connection's IP and approximate location, from the request's own
+  // trusted headers only (see lead-submission-info.ts) — written in the SAME insert as
+  // the lead, so it can never be lost or detached from it.
+  const submissionInfo = buildLeadSubmissionInfoCreate(req.headers);
+
   let leadId: string;
   try {
     // Same dedup-by-phone/email logic createLead uses for an agent-entered
@@ -209,6 +215,7 @@ export async function POST(req: Request) {
         assignedAgentId,
         status: initialStatus,
         statusHistory: { create: [{ toStatus: initialStatus }] },
+        ...(submissionInfo ? { submissionInfo: { create: submissionInfo } } : {}),
       },
       select: { id: true },
     });

@@ -6,6 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSubscriptions } from "@/lib/permissions";
 import { parseEmailList } from "@/lib/bulk-subscriber-parse";
+import { sendCrmEmail } from "@/server/email/crm-email";
 import type { SubscriberStatus } from "@/generated/prisma/client";
 
 const emailSchema = z.string().email();
@@ -192,4 +193,66 @@ export async function createBulkSubscribers(rawText: string) {
 
   revalidatePath("/subscriptions");
   return { created: toCreate.length, results };
+}
+
+const respondSchema = z.object({
+  subject: z.string().trim().min(1).max(300),
+  body: z.string().trim().min(1).max(20000),
+});
+
+export type RespondToSubscriberResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * "Respond" to a customer who unsubscribed — a PERSONAL, one-to-one reply from the
+ * acting Admin/Marketing Agent's own connected Gmail, through the very same core the
+ * Lead and Contact composers use (sendCrmEmail): the premium one-to-one layout with
+ * the agent's signature, the agent as sender and reply-to, the connected-Gmail checks,
+ * an EmailLog row. It is deliberately NOT a marketing send:
+ *   • no unsubscribe footer (a deliberate human message carries none — see
+ *     buildSequenceEmail's "personal" variant);
+ *   • the subscription is never touched — status, unsubscribedAt and the stored reason
+ *     are exactly as they were, so replying can neither re-subscribe the customer nor
+ *     imply that it does (only the public /subscribe endpoint ever opts anyone back
+ *     in); the only thing recorded is that a staff member answered (respondedAt/By);
+ *   • the recipient is read from the stored subscriber record, never from the client,
+ *     and sendCrmEmail's allow-list is that one address;
+ *   • the customer's private reason is never copied into the message — the agent sees
+ *     it while composing and decides what to write.
+ * Same Admin/Marketing Agent gate as the rest of Subscriptions, company-scoped so
+ * another company's subscriber id is "not found". Actionable failures (Gmail not
+ * connected, send failed) are RETURNED — a thrown message would reach the browser as
+ * an opaque production digest — while an authorization failure still throws.
+ */
+export async function respondToUnsubscribedSubscriber(subscriberId: string, input: z.infer<typeof respondSchema>): Promise<RespondToSubscriberResult> {
+  const staff = await assertMarketingAccess();
+  const parsed = respondSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Subject and message are both required" };
+
+  const subscriber = await prisma.subscriber.findFirst({
+    where: { id: subscriberId, companyId: staff.companyId },
+    select: { id: true, email: true, status: true },
+  });
+  if (!subscriber) return { ok: false, error: "Subscriber not found" };
+  if (subscriber.status !== "UNSUBSCRIBED") return { ok: false, error: "Only an unsubscribed customer can be answered from here" };
+
+  try {
+    await sendCrmEmail({
+      actor: { id: staff.id, fullName: staff.fullName, email: staff.email, phone: staff.phone },
+      to: subscriber.email,
+      subject: parsed.data.subject,
+      body: parsed.data.body,
+      allowedRecipients: new Set([subscriber.email]),
+      emailLogType: "SUBSCRIBER_EMAIL",
+    });
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Failed to send email" };
+  }
+
+  // Only the follow-up marker — never the subscription itself.
+  await prisma.subscriber.updateMany({
+    where: { id: subscriber.id, companyId: staff.companyId, status: "UNSUBSCRIBED" },
+    data: { unsubscribeRespondedAt: new Date(), unsubscribeRespondedById: staff.id },
+  });
+  revalidatePath("/subscriptions");
+  return { ok: true };
 }

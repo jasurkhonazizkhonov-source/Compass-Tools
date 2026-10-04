@@ -111,6 +111,7 @@ describe("BookingIpReveal", () => {
     const { unmount } = await setup();
     fireEvent.click(revealButton());
     await waitFor(() => expect(pageHas(V4)).toBe(true));
+    await act(async () => {}); // let the reveal hook attach its blur listener (a passive effect) before blurring
     act(() => void window.dispatchEvent(new Event("blur")));
     expect(pageHas(V4)).toBe(false);
     fireEvent.click(revealButton());
@@ -177,5 +178,70 @@ describe("BookingIpReveal", () => {
     expect(log).not.toHaveBeenCalled();
     expect(window.location.href).not.toContain(V4);
     log.mockRestore();
+  });
+
+  describe("IP + approximate location", () => {
+    const GEO = { city: "Los Angeles", region: "California", country: "United States", countryCode: "US", timeZone: "America/Los_Angeles", source: "Vercel edge geolocation (approximate)" };
+
+    it("shows the full IP with the signing time and the approximate city, country, region and time zone, worded as IP-based and approximate", async () => {
+      revealMock.mockResolvedValue({ ipAddress: V4, userAgent: "Mozilla/5.0 Test", ipVersion: "v4", signedAt: new Date("2026-10-01T10:00:00Z"), location: GEO });
+      await setup();
+      fireEvent.click(revealButton());
+      await waitFor(() => expect(pageHas(V4)).toBe(true));
+      expect(screen.getByText(/Approximate location \(IP-based\)/)).toBeInTheDocument();
+      const loc = screen.getByTestId("ip-location");
+      expect(loc).toHaveTextContent("Los Angeles");
+      expect(loc).toHaveTextContent("United States (US)");
+      expect(loc).toHaveTextContent("California");
+      expect(loc).toHaveTextContent("America/Los_Angeles");
+      expect(loc).toHaveTextContent(/not the signer's exact position/i);
+      expect(screen.getByText("Captured at signing")).toBeInTheDocument();
+      expect(document.body.textContent).not.toMatch(/physically|exact address/i);
+    });
+
+    it("city unavailable: the City row says 'Not available' — no city is invented — while the country is shown", async () => {
+      revealMock.mockResolvedValue({ ipAddress: V4, userAgent: null, ipVersion: "v4", signedAt: null, location: { city: null, region: null, country: "United States", countryCode: "US", timeZone: null, source: "x" } });
+      await setup();
+      fireEvent.click(revealButton());
+      await waitFor(() => expect(pageHas(V4)).toBe(true));
+      const loc = screen.getByTestId("ip-location");
+      expect(loc).toHaveTextContent(/City\s*Not available/);
+      expect(loc).toHaveTextContent("United States (US)");
+      expect(loc).not.toHaveTextContent("Region / state");
+    });
+
+    it("no location captured (older booking): says so plainly and still shows the IP", async () => {
+      revealMock.mockResolvedValue({ ipAddress: V6, userAgent: null, ipVersion: "v6", signedAt: null, location: null });
+      await setup();
+      fireEvent.click(revealButton());
+      await waitFor(() => expect(pageHas(V6)).toBe(true));
+      expect(screen.queryByTestId("ip-location")).not.toBeInTheDocument();
+      expect(screen.getByText(/No location was captured for this signing event/)).toBeInTheDocument();
+      expect(screen.getByText("v6")).toBeInTheDocument();
+    });
+
+    it("the location is hidden together with the IP when it auto-hides, and is never rendered before a successful reveal", async () => {
+      revealMock.mockResolvedValue({ ipAddress: V4, userAgent: null, ipVersion: "v4", signedAt: null, location: GEO });
+      await setup();
+      expect(pageHas("Los Angeles")).toBe(false);
+      fireEvent.click(revealButton());
+      await waitFor(() => expect(pageHas("Los Angeles")).toBe(true));
+      fireEvent.click(screen.getByRole("button", { name: /^hide$/i }));
+      expect(pageHas("Los Angeles")).toBe(false);
+      expect(pageHas(V4)).toBe(false);
+    });
+
+    it("history entries show each event's approximate location when one was captured", async () => {
+      previewMock.mockResolvedValue({ ...PREVIEW, count: 2 });
+      historyMock.mockResolvedValue([
+        { id: "e1", ipAddress: V4, ipVersion: "v4", formType: "NEW_BOOKING", signerName: null, signerEmail: "a@example.com", userAgent: null, capturedAt: new Date("2026-10-01T10:00:00Z"), riskScore: 0, suspicious: false, notes: null, booking: null, geoCity: "Paris", geoRegion: null, geoCountry: "France", geoCountryCode: "FR", geoTimeZone: null },
+        { id: "e2", ipAddress: V6, ipVersion: "v6", formType: "EXCHANGE_BOOKING", signerName: null, signerEmail: "a@example.com", userAgent: null, capturedAt: new Date("2026-10-02T10:00:00Z"), riskScore: 0, suspicious: false, notes: null, booking: null, geoCity: null, geoRegion: null, geoCountry: null, geoCountryCode: null, geoTimeZone: null },
+      ]);
+      await setup();
+      fireEvent.click(screen.getByRole("button", { name: /full ip history/i }));
+      await waitFor(() => expect(pageHas(V6)).toBe(true));
+      expect(screen.getByText(/Approx\. location \(IP-based\): Paris, France/)).toBeInTheDocument();
+      expect(screen.getAllByText(/Approx\. location/)).toHaveLength(1); // the second event had none captured — nothing invented
+    });
   });
 });

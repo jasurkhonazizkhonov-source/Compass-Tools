@@ -1,14 +1,7 @@
-import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
+import { unsubscribeResponse } from "@/server/unsubscribe-page";
 
-function htmlPage(title: string, message: string) {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title>
-<style>body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f4f5f7;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px;}
-.card{background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:36px;max-width:420px;text-align:center;}
-h1{font-size:18px;margin:0 0 8px;}p{color:#6b7280;font-size:14px;margin:0;}</style></head>
-<body><div class="card"><h1>${title}</h1><p>${message}</p></div></body></html>`;
-}
 
 /**
  * Pass 16 §4/§5 — one-click unsubscribe for the automated Sequence drip
@@ -39,15 +32,12 @@ export async function GET(req: Request) {
   // same profile: idempotent, low-consequence, opt-out only).
   const rateLimitCheck = await checkPublicRateLimit(req.headers, "SEQUENCE_UNSUBSCRIBE", RATE_LIMITS.UNSUBSCRIBE);
   if (!rateLimitCheck.allowed) {
-    return new NextResponse(htmlPage("Please try again shortly", "Too many requests from this connection. Please wait a few minutes and try again."), {
-      status: 429,
-      headers: { "Content-Type": "text/html", "Retry-After": String(rateLimitCheck.retryAfterSeconds) },
-    });
+    return unsubscribeResponse({ kind: "rate-limited" }, { "Retry-After": String(rateLimitCheck.retryAfterSeconds) });
   }
 
   const enrollmentId = new URL(req.url).searchParams.get("enrollment");
   if (!enrollmentId) {
-    return new NextResponse(htmlPage("Invalid link", "This unsubscribe link is missing its identifier."), { status: 400, headers: { "Content-Type": "text/html" } });
+    return unsubscribeResponse({ kind: "missing" });
   }
 
   const enrollment = await prisma.sequenceEnrollment.findUnique({
@@ -55,7 +45,7 @@ export async function GET(req: Request) {
     select: { id: true, leadId: true },
   });
   if (!enrollment) {
-    return new NextResponse(htmlPage("Link not found", "This unsubscribe link is no longer valid."), { status: 404, headers: { "Content-Type": "text/html" } });
+    return unsubscribeResponse({ kind: "invalid" });
   }
 
   await prisma.sequenceEnrollment.updateMany({
@@ -63,8 +53,5 @@ export async function GET(req: Request) {
     data: { status: "UNSUBSCRIBED" },
   });
 
-  return new NextResponse(
-    htmlPage("You're unsubscribed", "You will no longer receive these automated emails. If you'd still like to hear from your travel agent directly, feel free to reply to any of their previous emails."),
-    { headers: { "Content-Type": "text/html" } }
-  );
+  return unsubscribeResponse({ kind: "done", variant: "sequence" });
 }

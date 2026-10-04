@@ -7,7 +7,7 @@
 // (larger) suite of pure-logic/live-DB tests, and this import is opt-in
 // per file so only actual component tests pay for jsdom + RTL setup.
 import { afterEach } from "vitest";
-import { cleanup } from "@testing-library/react";
+import { cleanup, configure } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 // This project doesn't run vitest in `globals: true` mode, so Testing
@@ -15,6 +15,13 @@ import "@testing-library/jest-dom/vitest";
 // `afterEach`) never fires — without this, a render from one `it` block
 // leaks into the next within the same file.
 afterEach(cleanup);
+
+// findBy*/waitFor give up after 1 second by default. With several hundred component and database
+// suites importing in parallel on a development machine, a perfectly healthy render can take longer
+// than that to appear (the same contention vitest.config.ts raises testTimeout for), which made a
+// handful of tests fail intermittently with "unable to find element" — a different one each run.
+// Waiting longer costs nothing when the element appears promptly.
+configure({ asyncUtilTimeout: 6000 });
 
 // jsdom implements neither the Pointer Events capture methods nor
 // scrollIntoView — Radix UI's Select/Combobox (and similar) primitives call

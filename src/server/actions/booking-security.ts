@@ -19,7 +19,23 @@ const GENERIC_DENIAL = "You are not authorized to reveal this booking's submissi
  * found / not accessible) still throw the generic denial — they must not
  * explain themselves. Same contract as revealPaymentMethod's RevealResult.
  */
-export type BookingIpRevealResult = { ipAddress: string | null; userAgent: string | null } | { error: string };
+/**
+ * What a successful reveal returns. `location` is the platform's APPROXIMATE,
+ * IP-derived estimate of where the signer's network is — stored with the signing
+ * event itself (never looked up again here) and `null` when it was not captured
+ * (older bookings, or a deployment without a trusted edge) — never invented.
+ */
+export type BookingIpLocation = {
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  countryCode: string | null;
+  timeZone: string | null;
+  source: string | null;
+};
+export type BookingIpRevealResult =
+  | { ipAddress: string | null; userAgent: string | null; ipVersion: "v4" | "v6" | null; signedAt: Date | null; location: BookingIpLocation | null }
+  | { error: string };
 
 async function auditBookingIpAccess(params: {
   actorId: string | undefined;
@@ -103,7 +119,7 @@ export async function revealBookingIp(bookingId: string): Promise<BookingIpRevea
   // also be a booking this account can see under normal row-level scope.
   const booking = await prisma.booking.findFirst({
     where: { id: bookingId, ...bookingVisibilityWhere(actor) },
-    select: { id: true, signature: { select: { ipAddress: true, userAgent: true } } },
+    select: { id: true, signature: { select: { ipAddress: true, userAgent: true, signedAt: true } } },
   });
   if (!booking) {
     await auditBookingIpAccess({ actorId: actor.id, bookingId, success: false, reason: "BOOKING_NOT_ACCESSIBLE" });
@@ -118,5 +134,23 @@ export async function revealBookingIp(bookingId: string): Promise<BookingIpRevea
 
   await auditBookingIpAccess({ actorId: actor.id, bookingId, success: true });
 
-  return { ipAddress: booking.signature?.ipAddress ?? null, userAgent: booking.signature?.userAgent ?? null };
+  // Geography captured WITH the original signing event (the earliest new-booking or
+  // exchange-booking capture). Columns only — the encrypted IP is never touched here.
+  const capture = await prisma.ipCapture.findFirst({
+    where: { bookingId, softDeletedAt: null, formType: { in: ["NEW_BOOKING", "EXCHANGE_BOOKING"] } },
+    orderBy: [{ capturedAt: "asc" }, { id: "asc" }],
+    select: { ipVersion: true, capturedAt: true, geoCity: true, geoRegion: true, geoCountry: true, geoCountryCode: true, geoTimeZone: true, geoSource: true },
+  });
+  const hasGeo = !!capture && !!(capture.geoCity || capture.geoRegion || capture.geoCountry || capture.geoCountryCode || capture.geoTimeZone);
+  const ip = booking.signature?.ipAddress ?? null;
+
+  return {
+    ipAddress: ip,
+    userAgent: booking.signature?.userAgent ?? null,
+    ipVersion: ip ? (ip.includes(":") ? "v6" : "v4") : null,
+    signedAt: booking.signature?.signedAt ?? capture?.capturedAt ?? null,
+    location: hasGeo
+      ? { city: capture!.geoCity, region: capture!.geoRegion, country: capture!.geoCountry, countryCode: capture!.geoCountryCode, timeZone: capture!.geoTimeZone, source: capture!.geoSource }
+      : null,
+  };
 }

@@ -66,7 +66,18 @@ export async function POST(req: Request) {
     await prisma.subscriber.upsert({
       where: { companyId_email: { companyId, email } },
       create: { companyId, email, source },
-      update: { status: "SUBSCRIBED", unsubscribedAt: null, ...(source ? { source } : {}) },
+      // Re-subscribing also retires the previous unsubscribe's reason/follow-up: they
+      // described a state that no longer exists, and must never read as the current one.
+      update: {
+        status: "SUBSCRIBED",
+        unsubscribedAt: null,
+        unsubscribeReasonCategory: null,
+        unsubscribeReason: null,
+        unsubscribeSource: null,
+        unsubscribeRespondedAt: null,
+        unsubscribeRespondedById: null,
+        ...(source ? { source } : {}),
+      },
     });
     isNewSubscriber = !existing;
   } catch {

@@ -245,6 +245,35 @@ describe("revealPaymentMethod — IDOR/BOLA protection", () => {
   });
 });
 
+describe("revealPaymentMethod — the complete authorised reveal (name, number, expiration) and never a security code", () => {
+  it("returns exactly the cardholder name, full PAN, brand and expiration — and no CVV/CVC/security-code key of any kind", async () => {
+    seedBookingAndCard();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    const result = await revealPaymentMethod("pm-1");
+    expect(result).toMatchObject({ cardholderName: expect.any(String), pan: "4111111111111111", expiryMonth: expect.any(Number), expiryYear: expect.any(Number) });
+    expect(Object.keys(result).sort()).toEqual(["cardBrand", "cardholderName", "expiryMonth", "expiryYear", "pan"]);
+    expect(JSON.stringify(result).toLowerCase()).not.toMatch(/cvv|cvc|securitycode|security_code/);
+  });
+
+  it("neither the audit entry nor anything logged to the console contains the card number, cardholder name or expiration", async () => {
+    const consoleSpies = (["log", "info", "warn", "error", "debug"] as const).map((m) => vi.spyOn(console, m).mockImplementation(() => {}));
+    seedBookingAndCard();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", paymentPermissions: ["payments.reveal"] };
+    const { revealPaymentMethod } = await import("../payment-methods");
+    const result = await revealPaymentMethod("pm-1");
+    if ("error" in result) throw new Error("expected a reveal");
+    const audit = JSON.stringify(auditLogs);
+    expect(audit).not.toContain(result.pan);
+    expect(audit).not.toContain(result.cardholderName);
+    expect(audit).not.toContain(`${String(result.expiryMonth).padStart(2, "0")}/${result.expiryYear}`);
+    for (const spy of consoleSpies) {
+      expect(JSON.stringify(spy.mock.calls)).not.toContain(result.pan);
+      spy.mockRestore();
+    }
+  });
+});
+
 describe("revealPaymentMethod — audit trail never contains the PAN or CVV", () => {
   it("records a SUCCESS audit entry with only last4, never the full PAN", async () => {
     seedBookingAndCard();

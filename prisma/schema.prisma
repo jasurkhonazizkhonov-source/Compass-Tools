@@ -422,6 +422,12 @@ model Lead {
   // consumer that only knows about one route keeps working.
   segments LeadSegment[]
 
+  // What the SERVER learned about the submitting request (IP, approximate
+  // location). One row per Lead, written by the public lead-capture endpoint and by
+  // the website's own form handler; read only by the permission-gated
+  // "Lead Submission Information" section of the lead page.
+  submissionInfo LeadSubmissionInfo?
+
   departureDate  DateTime?
   returnDate     DateTime?
   tripType       TripType   @default(ROUND_TRIP)
@@ -687,6 +693,28 @@ model LeadSegment {
   updatedAt DateTime @updatedAt
 
   @@index([leadId, sequence])
+}
+
+// One row per Lead: what the SERVER learned about the submitting request — the
+// full IP address it received, the platform's approximate (IP-derived, never
+// exact) location, and the currency the customer chose for their budget. A
+// separate table so an ordinary Lead query never loads these values. Plaintext,
+// like the Contact email/phone beside it. Migration
+// 20261004000100_lead_submission_info.
+model LeadSubmissionInfo {
+  id             String   @id @default(cuid())
+  leadId         String   @unique
+  lead           Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  ipAddress      String?
+  ipVersion      String?
+  city           String?
+  region         String?
+  country        String?
+  countryCode    String?
+  timeZone       String?
+  geoSource      String?
+  budgetCurrency String?
+  capturedAt     DateTime @default(now())
 }
 
 model Airport {
@@ -1455,6 +1483,17 @@ model IpCapture {
   signerEmail String?
   userAgent   String?
 
+  // Approximate, IP-derived location of the network at the moment of signing,
+  // stored with the event so it stays historically stable (never re-derived
+  // later, never invented for rows captured before this existed). Each field
+  // is null when the platform did not supply it. See src/lib/request-geo.ts.
+  geoCity        String?
+  geoRegion      String?
+  geoCountry     String?
+  geoCountryCode String?
+  geoTimeZone    String?
+  geoSource      String?
+
   capturedAt DateTime @default(now())
 
   // Soft delete only — see the model doc comment above. Excluded from
@@ -1708,6 +1747,10 @@ enum EmailType {
   // hand-offs keep using LEAD_REASSIGNMENT; a pure contact reassignment is a
   // different event and is never logged as a lead email.
   CONTACT_REASSIGNMENT
+  // A staff member's personal reply to a subscriber who unsubscribed and left a
+  // reason (Subscriptions → Respond). Sent through the same one-to-one core as
+  // LEAD_EMAIL / CONTACT_EMAIL; never a marketing send.
+  SUBSCRIBER_EMAIL
 }
 
 enum EmailStatus {
@@ -1985,6 +2028,16 @@ model Subscriber {
   // Opaque token embedded in the one-click unsubscribe link — never the
   // subscriber's own id/email, so the link can't be used to probe/enumerate.
   unsubscribeToken String          @unique @default(cuid())
+
+  // Optional, customer-provided reason given on the unsubscribe page. Stored
+  // only when the customer actually supplied one; cleared if they re-subscribe.
+  unsubscribeReasonCategory String?
+  unsubscribeReason         String?  @db.VarChar(1000)
+  // "EMAIL_LINK" for the public unsubscribe page; null for older rows.
+  unsubscribeSource         String?
+  // Set when a staff member answered the customer from the CRM.
+  unsubscribeRespondedAt    DateTime?
+  unsubscribeRespondedById  String?
 
   sends MarketingCampaignSend[]
 

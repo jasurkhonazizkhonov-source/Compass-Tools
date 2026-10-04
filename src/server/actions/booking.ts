@@ -17,6 +17,7 @@ import { auditCardEvent } from "@/server/security/card-audit";
 import { CardVaultError } from "@/server/security/card-encryption";
 import { isValidCardNumber, isValidExpiry, isValidCvvFormat, detectCardBrand, lastFour, digitsOnly, isPaymentAllocationValid } from "@/lib/card-validation";
 import { getClientIp } from "@/lib/request-ip";
+import { getRequestLocation } from "@/lib/request-geo";
 import { recordIpCapture } from "@/server/security/ip-capture";
 import { passengerSchema } from "@/server/actions/booking-schema";
 import { sendBookingSignedNotification } from "@/server/booking-notification";
@@ -346,6 +347,9 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
   // validation (a malformed/spoofed header value resolves to undefined
   // rather than being stored as a garbage string).
   const ip = getClientIp(headerList);
+  // Approximate, IP-derived location from the platform edge's own headers (read only
+  // behind the trusted proxy — see request-geo.ts). Never client-supplied.
+  const location = getRequestLocation(headerList);
   const userAgent = headerList.get("user-agent") ?? undefined;
   const now = new Date();
 
@@ -548,6 +552,7 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
         recordIpCapture({
           ip,
           userAgent,
+          location,
           formType: quote.originalQuoteId ? "EXCHANGE_BOOKING" : "NEW_BOOKING",
           bookingId: booking.id,
           signerName: parsed.signedName,

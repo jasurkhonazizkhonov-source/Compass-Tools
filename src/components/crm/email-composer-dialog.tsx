@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/dialog";
 import { sendLeadEmail } from "@/server/actions/leads";
 import { sendContactEmail } from "@/server/actions/contacts";
+import { respondToUnsubscribedSubscriber } from "@/server/actions/subscribers";
 
 /**
  * Part 2's original Leads-page Email button, generalized (Pass 6) so the
@@ -37,6 +38,10 @@ import { sendContactEmail } from "@/server/actions/contacts";
 export function EmailComposerButton({
   leadId,
   contactId,
+  subscriberId,
+  defaultSubject = "",
+  triggerLabel,
+  context,
   emails,
   contactName,
   size = "icon-sm",
@@ -46,6 +51,15 @@ export function EmailComposerButton({
    * matches which detail page this is rendered on. */
   leadId?: string;
   contactId?: string;
+  /** Subscriptions → Respond: answer a customer who unsubscribed. Same composer and the same
+   * one-to-one send core; the marketing subscription is never touched by it. */
+  subscriberId?: string;
+  /** Pre-filled subject (editable). */
+  defaultSubject?: string;
+  /** When set, the trigger is a labelled button (e.g. "Respond") instead of the icon button. */
+  triggerLabel?: string;
+  /** Read-only context shown to the sender while composing (never copied into the message). */
+  context?: React.ReactNode;
   /** Every email address on file for this lead's/contact's own record,
    * primary first — when there's more than one, the agent explicitly picks
    * which to send to (or several) rather than silently defaulting. Always
@@ -57,7 +71,7 @@ export function EmailComposerButton({
   size?: "icon-sm" | "icon";
 }) {
   const [open, setOpen] = useState(false);
-  const [subject, setSubject] = useState("");
+  const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set(emails[0] ? [emails[0]] : []));
   const [isPending, startTransition] = useTransition();
@@ -65,7 +79,7 @@ export function EmailComposerButton({
   if (emails.length === 0) return null;
 
   function reset() {
-    setSubject("");
+    setSubject(defaultSubject);
     setBody("");
     setSelected(new Set(emails[0] ? [emails[0]] : []));
   }
@@ -95,6 +109,10 @@ export function EmailComposerButton({
           await sendLeadEmail(leadId, payload);
         } else if (contactId) {
           await sendContactEmail(contactId, payload);
+        } else if (subscriberId) {
+          // Returns (rather than throws) an actionable failure, since a thrown message is masked in production.
+          const result = await respondToUnsubscribedSubscriber(subscriberId, { subject: payload.subject, body: payload.body });
+          if (!result.ok) throw new Error(result.error);
         } else {
           throw new Error("No lead or contact to send this email against");
         }
@@ -111,25 +129,28 @@ export function EmailComposerButton({
     <>
       <Button
         variant="outline"
-        size={size}
+        size={triggerLabel ? "sm" : size}
+        className={triggerLabel ? "gap-1.5" : undefined}
         onClick={(e) => {
           e.stopPropagation();
           e.preventDefault();
           setOpen(true);
         }}
-        aria-label={`Email ${contactName}`}
-        title={`Email ${contactName}`}
+        aria-label={triggerLabel ? `${triggerLabel} ${contactName}` : `Email ${contactName}`}
+        title={triggerLabel ? `${triggerLabel} ${contactName}` : `Email ${contactName}`}
       >
         <Mail className="h-3.5 w-3.5" />
+        {triggerLabel}
       </Button>
 
       <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) reset(); }}>
         <DialogContent className="sm:max-w-lg">
           <DialogHeader>
-            <DialogTitle>Email {contactName}</DialogTitle>
+            <DialogTitle>{subscriberId ? `Respond to ${contactName}` : `Email ${contactName}`}</DialogTitle>
             <DialogDescription>Sent from your connected Gmail account.</DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
+            {context}
             <div className="space-y-1.5">
               <Label>To</Label>
               {emails.length > 1 ? (

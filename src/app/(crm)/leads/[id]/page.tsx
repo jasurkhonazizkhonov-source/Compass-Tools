@@ -22,6 +22,8 @@ import { NotesPanel } from "@/components/crm/notes-panel";
 import { TasksPanel } from "@/components/crm/tasks-panel";
 import { ActivityTimeline } from "@/components/crm/activity-timeline";
 import { LeadCapturedEvent } from "@/components/leads/lead-captured-event";
+import { LeadSubmissionInformation } from "@/components/leads/lead-submission-information";
+import { getLeadSubmissionInfo } from "@/server/queries/lead-submission-info";
 import { leadRouteLabel } from "@/lib/lead-itinerary";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
@@ -37,8 +39,10 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
   const currentAccount = await getCurrentAccount();
   if (!canViewLeads(currentAccount?.role)) notFound();
   const viewer = currentAccount ? { id: currentAccount.id, role: currentAccount.role, companyId: currentAccount.companyId } : null;
-  const [lead, agents, leadEligibleAgents, applicableSequences] = await Promise.all([
+  const [lead, submissionInfo, agents, leadEligibleAgents, applicableSequences] = await Promise.all([
     getLeadDetail(id, viewer),
+    // Separate, lead-scoped query (never part of getLeadDetail) — see queries/lead-submission-info.ts.
+    getLeadSubmissionInfo(id, viewer),
     currentAccount ? listTaskEligibleAgents(currentAccount.companyId) : Promise.resolve([]),
     currentAccount ? listLeadEligibleAgents(currentAccount.companyId) : Promise.resolve([]),
     getApplicableSequences(viewer),
@@ -272,6 +276,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
               <TabsContent value="activity" className="pt-4">
                 <LeadCapturedEvent createdAt={lead.createdAt} source={lead.source} />
+                <LeadSubmissionInformation createdAt={lead.createdAt} info={submissionInfo} fromWebsite={lead.source === "WEBSITE"} />
                 <ActivityTimeline activities={lead.activities} leadId={lead.id} />
               </TabsContent>
 

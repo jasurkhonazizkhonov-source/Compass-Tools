@@ -92,13 +92,19 @@ function isSerializationConflict(err: unknown): boolean {
   return err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2034" || err.meta?.code === "40001");
 }
 async function withSerializableRetryMessage<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (isSerializationConflict(err)) {
-      throw new Error("This request conflicted with another simultaneous change — please try again.");
+  // A serialization failure is Postgres telling us the transaction lost a race with another
+  // one and is safe to run again unchanged — so it is retried (the same idiom the lead and
+  // bootstrap code use) before the user is ever asked to. Only when it keeps losing does the
+  // message below reach them.
+  const ATTEMPTS = 4;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (!isSerializationConflict(err)) throw err;
+      if (attempt >= ATTEMPTS) throw new Error("This request conflicted with another simultaneous change — please try again.");
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt + Math.floor(Math.random() * 40)));
     }
-    throw err;
   }
 }
 
@@ -238,6 +244,80 @@ export async function setManagerTeam(managerId: string, memberIds: string[]) {
           },
         });
         return { added: added.length, removed: removed.length, teamSize: ids.length };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    )
+  );
+
+  revalidatePath("/accounts");
+  revalidatePath("/users");
+  revalidatePath("/leads");
+  revalidatePath("/contacts");
+  revalidatePath("/quotes");
+  revalidatePath("/bookings");
+  return result;
+}
+
+/**
+ * Admin-only: add and/or remove SPECIFIC Travel Agents on a Manager's team — an
+ * incremental change, unlike setManagerTeam's "this is the whole team" replacement.
+ *
+ * The Users page edits a team from a snapshot the browser loaded earlier. Replacing the
+ * whole team from a stale snapshot silently undoes whatever changed in between: an agent
+ * another Admin (or this Admin, on a different Manager's row) just moved to this team
+ * would be pulled back, taking the access away from the Manager they were moved to.
+ * Sending only what the Admin actually changed makes that impossible — an agent the
+ * Admin did not touch is never read or written.
+ *   • add:    every id must be a TRAVEL_AGENT of the caller's company; they join this team
+ *             and leave any team they were on (one manager per agent);
+ *   • remove: only ids CURRENTLY on this manager's team are affected (anyone else, e.g.
+ *             someone since moved to another manager, is left exactly where they are);
+ *   • the same Admin/company/role validation as setManagerTeam, the same audit entry, and
+ *     like it no lead, contact, quote or booking is changed — only the Manager's reach.
+ * Access follows on the very next query: visibility is a live relation filter on
+ * Account.managerId, so there is nothing cached to invalidate.
+ */
+export async function changeManagerTeam(managerId: string, change: { add?: string[]; remove?: string[] }) {
+  const current = await assertAdmin();
+  const add = [...new Set(change.add ?? [])];
+  const remove = [...new Set(change.remove ?? [])].filter((id) => !add.includes(id));
+
+  const result = await withSerializableRetryMessage(() =>
+    prisma.$transaction(
+      async (tx) => {
+        const manager = await tx.account.findUnique({ where: { id: managerId }, select: { id: true, role: true, companyId: true, fullName: true } });
+        if (!manager || manager.companyId !== current!.companyId) throw new Error("Account not found");
+        if (manager.role !== "MANAGER") throw new Error("Only a Manager can have team members");
+
+        const toAdd = add.length ? await tx.account.findMany({ where: { id: { in: add } }, select: { id: true, role: true, companyId: true, fullName: true, managerId: true } }) : [];
+        if (toAdd.length !== add.length || toAdd.some((m) => m.companyId !== current!.companyId)) throw new Error("Account not found");
+        if (toAdd.some((m) => m.role !== "TRAVEL_AGENT")) throw new Error("Only Travel Agents can be team members");
+
+        // Only agents genuinely on THIS team can be removed from it.
+        const toRemove = remove.length ? await tx.account.findMany({ where: { id: { in: remove }, managerId }, select: { id: true, fullName: true } }) : [];
+
+        const newlyAdded = toAdd.filter((m) => m.managerId !== managerId);
+        if (toRemove.length) await tx.account.updateMany({ where: { id: { in: toRemove.map((m) => m.id) }, managerId }, data: { managerId: null } });
+        if (toAdd.length) await tx.account.updateMany({ where: { id: { in: toAdd.map((m) => m.id) } }, data: { managerId } });
+
+        const teamSize = await tx.account.count({ where: { managerId } });
+        if (newlyAdded.length || toRemove.length) {
+          await tx.auditLog.create({
+            data: {
+              actorId: current!.id,
+              action: "MANAGER_TEAM_CHANGED",
+              entityType: "Account",
+              entityId: managerId,
+              metadata: {
+                managerName: manager.fullName,
+                added: newlyAdded.map((m) => ({ id: m.id, name: m.fullName, movedFromManagerId: m.managerId })),
+                removed: toRemove.map((m) => ({ id: m.id, name: m.fullName })),
+                teamSize,
+              },
+            },
+          });
+        }
+        return { added: newlyAdded.length, removed: toRemove.length, teamSize };
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     )

@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { setManagerTeam } from "@/server/actions/accounts";
+import { changeManagerTeam } from "@/server/actions/accounts";
 
 export type TeamCandidate = {
   id: string;
@@ -48,9 +48,14 @@ export function ManagerTeamEditor({ managerId, managerName, candidates, initialM
 
   function save() {
     const ids = [...selected];
+    // Send only what THIS Admin changed (relative to the team shown when this popover was
+    // opened) — never the whole list. An agent they did not touch is not read or written,
+    // so a stale snapshot can never undo a change made elsewhere in the meantime.
+    const add = ids.filter((id) => !saved.includes(id));
+    const remove = saved.filter((id) => !selected.has(id));
     startTransition(async () => {
       try {
-        await setManagerTeam(managerId, ids);
+        await changeManagerTeam(managerId, { add, remove });
         setSaved(ids);
         toast.success(`${managerName}'s team updated`);
         setOpen(false);

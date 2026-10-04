@@ -318,6 +318,24 @@ could spoof their recorded IP by sending a fake header.
 Never guess this value or copy it from another deployment without
 confirming what actually sits in front of THIS one.
 
+### 5.1 Where IP and approximate location are captured — and the limits
+
+The server captures the client IP, and an **approximate, IP-derived location**, in three places:
+
+| Where | Stored in | Notes |
+|---|---|---|
+| Booking form signing (new booking / exchange) | `Signature.ipAddress` + the encrypted `IpCapture` row (with `geoCity`/`geoRegion`/`geoCountry`/`geoCountryCode`/`geoTimeZone`) | Location is stored WITH the signing event so it stays historically stable. Shown only through the audited, permission-gated Reveal. |
+| Customer cancellation confirmation | `IpCapture` | Same columns. |
+| Website lead (public `/api/public/lead-capture`, and the website's own form handler) | `LeadSubmissionInfo` (one row per Lead, plaintext) | Shown only in the lead's "Lead Submission Information" section to someone who can see that lead (own leads; a Manager's own + team; Admin/Ticketing company-wide). Never part of a lead list or the ordinary lead query. |
+
+How it is determined, and what that means:
+
+- **The IP** comes only from `getClientIp()` (`src/lib/request-ip.ts`) — the trusted-proxy rules above. A form field, a JSON body value or an `X-Forwarded-For` header sent straight at an unproxied server is never believed. With no trusted proxy configured nothing is captured (the record is simply created without an IP).
+- **The location** comes only from the platform edge's own `x-vercel-ip-*` headers (`src/lib/request-geo.ts`), and is read **only when the trusted-proxy mode is `vercel`** (explicit or auto-detected on Vercel). Behind any other proxy, or with none, the location is absent — the UI says "Not available" rather than guessing. There is **no external geolocation provider, no API key and no browser-side lookup**.
+- **It is approximate.** It estimates where the *network* is, never where the person is: VPNs, mobile carriers, corporate gateways, privacy relays and IPv6 all make it wrong or coarse, and any field (typically the city) can be missing. Region names are spelled out for US states, Canadian provinces and Australian states; elsewhere only the code is shown. Precise coordinates and postal codes are deliberately not read. Network owner (ISP) and ASN are not supplied by the platform and are not captured.
+- **Old records are never back-filled.** Bookings signed, and leads captured, before this existed keep no location.
+- **A website that writes leads straight to the database** (rather than through `/api/public/lead-capture`) must write `LeadSubmissionInfo` itself, from its own trusted request path; the CRM only reads it.
+
 ## 5a. Set `CRON_SECRET` and confirm the Vercel Cron job
 
 `vercel.json` schedules exactly one cron job:

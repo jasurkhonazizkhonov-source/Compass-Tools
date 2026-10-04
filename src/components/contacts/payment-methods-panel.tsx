@@ -12,6 +12,7 @@ import { removePaymentMethod } from "@/server/actions/contact-payment-methods";
 import type { CardBrand } from "@/lib/card-validation";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import { useTimedReveal } from "@/components/bookings/use-timed-reveal";
+import { RevealedCardFields, type RevealedCardData } from "@/components/bookings/revealed-card-fields";
 
 type ContactPaymentMethod = {
   id: string;
@@ -83,7 +84,7 @@ function PaymentMethodRow({
   canReveal: boolean;
   canManage: boolean;
 }) {
-  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ pan: string }>();
+  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<RevealedCardData>();
   const [isPending, setIsPending] = useState(false);
   const [isRemoving, setIsRemoving] = useState(false);
 
@@ -95,7 +96,7 @@ function PaymentMethodRow({
         toast.error(result.error, { duration: 8000 });
         return;
       }
-      show({ pan: result.pan });
+      show({ cardholderName: result.cardholderName, pan: result.pan, cardBrand: result.cardBrand, expiryMonth: result.expiryMonth, expiryYear: result.expiryYear });
     } catch (err) {
       toast.error(safeActionMessage(err, "Unable to reveal this card. You may not have permission."));
     } finally {
@@ -161,7 +162,7 @@ function PaymentMethodRow({
                 <ShieldAlert className="h-3.5 w-3.5" />
                 Privileged view — auto-hides in {secondsLeft}s
               </div>
-              <p className="text-sm font-mono font-medium">{revealed.pan.replace(/(.{4})/g, "$1 ").trim()}</p>
+              <RevealedCardFields card={revealed} />
               <Button size="sm" variant="outline" onClick={hide} className="gap-1.5">
                 <EyeOff className="h-3.5 w-3.5" /> Hide
               </Button>

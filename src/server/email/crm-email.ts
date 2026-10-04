@@ -55,7 +55,7 @@ export async function sendCrmEmail(params: {
   allowedRecipients: Set<string>;
   leadId?: string;
   contactId?: string;
-  emailLogType: "LEAD_EMAIL" | "CONTACT_EMAIL";
+  emailLogType: "LEAD_EMAIL" | "CONTACT_EMAIL" | "SUBSCRIBER_EMAIL";
 }): Promise<{ ok: true }> {
   const { actor, to, subject, body, allowedRecipients, leadId, contactId, emailLogType } = params;
 
@@ -109,13 +109,17 @@ export async function sendCrmEmail(params: {
     throw new Error(result.error || "Failed to send email");
   }
 
-  await logActivity({
-    leadId,
-    contactId,
-    actorId: actor.id,
-    type: "EMAIL_SENT",
-    description: `Email sent: "${subject}"`,
-  });
+  // A reply to a marketing subscriber is not tied to any lead or contact, so there is
+  // no activity timeline to add it to — the EmailLog row above is its record.
+  if (leadId || contactId) {
+    await logActivity({
+      leadId,
+      contactId,
+      actorId: actor.id,
+      type: "EMAIL_SENT",
+      description: `Email sent: "${subject}"`,
+    });
+  }
 
   return { ok: true };
 }

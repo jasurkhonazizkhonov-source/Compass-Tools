@@ -16,6 +16,8 @@ type FakeBooking = {
 
 let currentActor: FakeAccount | null;
 let bookings: Map<string, FakeBooking>;
+type FakeCapture = { ipVersion: string; capturedAt: Date; geoCity: string | null; geoRegion: string | null; geoCountry: string | null; geoCountryCode: string | null; geoTimeZone: string | null; geoSource: string | null };
+let captureRow: FakeCapture | null;
 let auditLogs: Array<{ actorId: string | undefined; action: string; entityType: string; entityId: string; metadata: Record<string, unknown> }>;
 
 vi.mock("@/lib/dev-session", () => ({
@@ -48,13 +50,17 @@ vi.mock("@/lib/prisma", () => ({
           });
           if (!matches) return null;
         }
-        return { id: row.id, createdAt: row.createdAt, signature: { ipAddress: row.ipAddress } };
+        return { id: row.id, createdAt: row.createdAt, signature: { ipAddress: row.ipAddress, userAgent: null, signedAt: new Date("2026-10-01T10:00:00Z") } };
       }),
+    },
+    ipCapture: {
+      findFirst: vi.fn(async () => captureRow),
     },
   },
 }));
 
 beforeEach(() => {
+  captureRow = null;
   bookings = new Map();
   auditLogs = [];
   currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"] };
@@ -213,6 +219,79 @@ describe("revealBookingIp — indefinite retention, no automatic age-based expir
   });
 });
 
+describe("revealBookingIp — approximate IP-derived location and signing time", () => {
+  const GEO: FakeCapture = { ipVersion: "v4", capturedAt: new Date("2026-10-01T10:00:00Z"), geoCity: "Los Angeles", geoRegion: "California", geoCountry: "United States", geoCountryCode: "US", geoTimeZone: "America/Los_Angeles", geoSource: "Vercel edge geolocation (approximate)" };
+
+  it("returns the full IP with the city, country, region and time zone captured WITH the signing event, plus the signing time and IP version", async () => {
+    seedBooking();
+    captureRow = GEO;
+    const { revealBookingIp } = await import("../booking-security");
+    const result = await revealBookingIp("booking-1");
+    expect(result).toEqual({
+      ipAddress: "203.0.113.42",
+      userAgent: null,
+      ipVersion: "v4",
+      signedAt: new Date("2026-10-01T10:00:00Z"),
+      location: { city: "Los Angeles", region: "California", country: "United States", countryCode: "US", timeZone: "America/Los_Angeles", source: "Vercel edge geolocation (approximate)" },
+    });
+  });
+
+  it("an IPv6 signer is labelled v6 and returned in full", async () => {
+    seedBooking({ ipAddress: "2001:db8:85a3::8a2e:370:7334" });
+    captureRow = { ...GEO, ipVersion: "v6" };
+    const { revealBookingIp } = await import("../booking-security");
+    expect(await revealBookingIp("booking-1")).toMatchObject({ ipAddress: "2001:db8:85a3::8a2e:370:7334", ipVersion: "v6" });
+  });
+
+  it("when only the country was supplied the city stays null — nothing is invented", async () => {
+    seedBooking();
+    captureRow = { ...GEO, geoCity: null, geoRegion: null, geoTimeZone: null };
+    const { revealBookingIp } = await import("../booking-security");
+    const result = await revealBookingIp("booking-1");
+    expect(result).toMatchObject({ location: { city: null, region: null, country: "United States", countryCode: "US", timeZone: null } });
+  });
+
+  it("an older booking whose capture holds no location (or no capture row at all) reports location: null — never a fabricated place", async () => {
+    seedBooking();
+    const { revealBookingIp } = await import("../booking-security");
+    captureRow = { ...GEO, geoCity: null, geoRegion: null, geoCountry: null, geoCountryCode: null, geoTimeZone: null, geoSource: null };
+    expect(await revealBookingIp("booking-1")).toMatchObject({ ipAddress: "203.0.113.42", location: null });
+    captureRow = null;
+    expect(await revealBookingIp("booking-1")).toMatchObject({ ipAddress: "203.0.113.42", location: null });
+  });
+
+  it("the audit entry for a reveal never contains the IP or the location", async () => {
+    seedBooking();
+    captureRow = GEO;
+    const { revealBookingIp } = await import("../booking-security");
+    await revealBookingIp("booking-1");
+    const audit = JSON.stringify(auditLogs);
+    expect(auditLogs).toHaveLength(1);
+    for (const secret of ["203.0.113.42", "Los Angeles", "California", "United States", "America/Los_Angeles"]) expect(audit).not.toContain(secret);
+  });
+
+  it("an unauthorised role gets neither the IP nor the location (the capture is not even read)", async () => {
+    seedBooking();
+    captureRow = GEO;
+    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"] };
+    const { revealBookingIp } = await import("../booking-security");
+    await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
+    const prismaMock = (await import("@/lib/prisma")).prisma as unknown as { ipCapture: { findFirst: ReturnType<typeof vi.fn> } };
+    expect(prismaMock.ipCapture.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("a stale session gets only the returned step-up error — no IP, no location, and the capture is not read", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    seedBooking();
+    captureRow = GEO;
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", bookingPermissions: [], sessionCreatedAt: new Date(Date.now() - 60 * 60 * 1000) };
+    const { revealBookingIp } = await import("../booking-security");
+    const result = await revealBookingIp("booking-1");
+    expect(result).toEqual({ error: expect.any(String) });
+    expect(JSON.stringify(result)).not.toMatch(/203.0.113|Los Angeles/);
+  });
+});
+
 describe("revealBookingIp — recent sign-in step-up (same real check as the card Reveal)", () => {
   const MIN = 60 * 1000;
 
@@ -243,7 +322,7 @@ describe("revealBookingIp — recent sign-in step-up (same real check as the car
     currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", bookingPermissions: [], sessionCreatedAt: new Date(Date.now() - 2 * MIN) };
     const { revealBookingIp } = await import("../booking-security");
     const result = await revealBookingIp("booking-1");
-    expect(result).toEqual({ ipAddress: "203.0.113.42", userAgent: null });
+    expect(result).toMatchObject({ ipAddress: "203.0.113.42", userAgent: null });
     expect(auditLogs).toHaveLength(1);
     expect(auditLogs[0].action).toBe("BOOKING_IP_REVEALED");
     expect(JSON.stringify(auditLogs[0].metadata)).not.toContain("203.0.113.42");

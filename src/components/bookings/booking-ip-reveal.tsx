@@ -8,6 +8,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { revealBookingIp } from "@/server/actions/booking-security";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import { useTimedReveal } from "./use-timed-reveal";
+import { IpLocationFields, hasIpLocation, ipLocationSummary } from "@/components/security/ip-location";
+import type { BookingIpLocation } from "@/server/actions/booking-security";
 import { getBookingIpMaskedPreview, getIpHistoryForBooking, type IpVaultEntry, type IpVaultMaskedPreview } from "@/server/actions/ip-vault";
 
 const REVEAL_TIMEOUT_SECONDS = 60;
@@ -65,7 +67,7 @@ function NotCapturedNotice({ reason }: { reason: string }) {
  * request-ip.ts) instead of leaving the viewer to guess.
  */
 export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; canReveal: boolean }) {
-  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ ip: string; userAgent: string | null }>(REVEAL_TIMEOUT_SECONDS);
+  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ ip: string; userAgent: string | null; signedAt: Date | null; location: BookingIpLocation | null }>(REVEAL_TIMEOUT_SECONDS);
   const [isPending, setIsPending] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [preview, setPreview] = useState<IpVaultMaskedPreview | null | undefined>(undefined);
@@ -96,7 +98,7 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
         toast.error(result.error, { duration: 8000 });
         return;
       }
-      show({ ip: result.ipAddress ?? "—", userAgent: result.userAgent });
+      show({ ip: result.ipAddress ?? "—", userAgent: result.userAgent, signedAt: result.signedAt, location: result.location });
     } catch (err) {
       const message = safeActionMessage(err, "Unable to reveal the submission IP. You may not have permission.");
       setErrorMessage(message);
@@ -168,6 +170,13 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
               {revealed.ip !== "—" && <VersionBadge version={ipVersionOf(revealed.ip)} />}
             </p>
           </div>
+          {revealed.signedAt && (
+            <div>
+              <p className="text-xs text-muted-foreground">Captured at signing</p>
+              <p className="text-sm font-medium">{new Date(revealed.signedAt).toLocaleString()}</p>
+            </div>
+          )}
+          <IpLocationFields location={revealed.location} emptyNote="No location was captured for this signing event (older booking, or no trusted edge at the time)." />
           {revealed.userAgent && (
             <div>
               <p className="text-xs text-muted-foreground">User-Agent</p>
@@ -223,6 +232,11 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
                 {entry.ipAddress}
                 <VersionBadge version={entry.ipVersion === "v6" ? "v6" : "v4"} />
               </p>
+              {hasIpLocation({ city: entry.geoCity, region: entry.geoRegion, country: entry.geoCountry, countryCode: entry.geoCountryCode, timeZone: entry.geoTimeZone }) && (
+                <p className="text-muted-foreground break-words">
+                  Approx. location (IP-based): {ipLocationSummary({ city: entry.geoCity, region: entry.geoRegion, country: entry.geoCountry, countryCode: entry.geoCountryCode })}
+                </p>
+              )}
               {entry.signerEmail && <p className="text-muted-foreground">{entry.signerEmail}</p>}
             </div>
           ))}

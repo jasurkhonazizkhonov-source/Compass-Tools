@@ -64,6 +64,8 @@
     "20261002000100_email_type_new_lead_assignment",
     "20261002000200_email_type_contact_reassignment",
     "20261003000100_manager_team",
-    "20261003000200_lead_segments"
+    "20261003000200_lead_segments",
+    "20261004000100_lead_submission_info",
+    "20261004000200_unsubscribe_reason_and_booking_geo"
   ]
 }

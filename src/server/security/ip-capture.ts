@@ -12,6 +12,7 @@ import { prisma } from "@/lib/prisma";
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { recordHealthEvent } from "@/server/system/health-events";
 import { isValidIpAddress, normalizeIp } from "@/lib/request-ip";
+import { locationToIpCaptureColumns, type ApproximateLocation } from "@/lib/request-geo";
 import { encryptIp, hashIpForSearch, hashSubnetForSearch } from "./ip-encryption";
 import { assessRisk, HIGH_RISK_THRESHOLD, VELOCITY_WINDOW_MS } from "./ip-risk";
 import type { IpCaptureFormType } from "@/generated/prisma/client";
@@ -19,6 +20,8 @@ import type { IpCaptureFormType } from "@/generated/prisma/client";
 export async function recordIpCapture(params: {
   ip: string | undefined;
   userAgent: string | undefined;
+  /** Approximate, IP-derived location of the network, stored with the event. Omitted when unknown — never invented. */
+  location?: ApproximateLocation;
   formType: IpCaptureFormType;
   bookingId: string;
   signerName?: string | null;
@@ -99,6 +102,7 @@ export async function recordIpCapture(params: {
         signerName: params.signerName ?? null,
         signerEmail: params.signerEmail ?? null,
         userAgent: params.userAgent ?? null,
+        ...locationToIpCaptureColumns(params.location),
         riskScore: assessment.score,
       },
     });

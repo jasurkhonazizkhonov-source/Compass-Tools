@@ -175,6 +175,16 @@ export function canViewLeads(role: AccountRole | undefined) {
   return !!role && !BACK_OFFICE_ONLY_ROLES.includes(role) && !isMarketingOnly(role);
 }
 
+/**
+ * The "Lead Submission Information" section of a lead (IP address + approximate
+ * location). Any role that has the Leads area at all — and only for leads the
+ * viewer can already see (see queries/lead-submission-info.ts). Marketing-only and
+ * back-office-only roles have no Leads area and therefore no access.
+ */
+export function canViewLeadSubmissionInfo(role: AccountRole | undefined) {
+  return canViewLeads(role);
+}
+
 export function canViewSequencesPage(role: AccountRole | undefined) {
   return !!role && !BACK_OFFICE_ONLY_ROLES.includes(role) && !isMarketingOnly(role);
 }
