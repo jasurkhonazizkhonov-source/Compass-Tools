@@ -5,7 +5,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@/test/rtl-setup";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { FlightSegmentEditor, type EditableSegment } from "../flight-segment-editor";
+import { FlightSegmentEditor, DURATION_INPUT_CLASS, type EditableSegment } from "../flight-segment-editor";
 
 // Pass 13 §3/§4/§58 — the itinerary builder's duration field is now an
 // hours + minutes editor, never raw total minutes as the primary editing
@@ -171,5 +171,54 @@ describe("FlightSegmentEditor — duration hours/minutes editor (Pass 13 §3)", 
     expect(screen.queryByLabelText("Flight duration in minutes")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Flight duration — hours")).toBeInTheDocument();
     expect(screen.getByLabelText("Flight duration — minutes")).toBeInTheDocument();
+  });
+
+  describe("input sizing — two-digit values must stay fully visible", () => {
+    const hours = () => screen.getByLabelText("Flight duration — hours") as HTMLInputElement;
+    const minutes = () => screen.getByLabelText("Flight duration — minutes") as HTMLInputElement;
+
+    it("both boxes use the shared wide class: at least 4rem, never shrinking, tight padding, no number spinner over the digits", () => {
+      renderEditor(emptySegment({ durationOverrideMinutes: 12 * 60 + 59 }));
+      for (const input of [hours(), minutes()]) {
+        for (const token of ["w-[4.5rem]", "min-w-[4.5rem]", "shrink-0", "px-2", "[appearance:textfield]"]) {
+          expect(input.className, token).toContain(token);
+        }
+        expect(input.className).toContain(DURATION_INPUT_CLASS.split(" ")[0]);
+        // The old, too-narrow sizing is gone.
+        expect(input.className).not.toMatch(/(^|s)w-12(s|$)/);
+      }
+    });
+
+    it("a manual 12h 59m (two-digit hours and minutes) renders with both values complete", () => {
+      renderEditor(emptySegment({ durationOverrideMinutes: 12 * 60 + 59 }));
+      expect(hours().value).toBe("12");
+      expect(minutes().value).toBe("59");
+    });
+
+    it("a calculated two-digit duration (09:00 -> 21:59 = 12h 59m) renders with both values complete", () => {
+      renderEditor(emptySegment({ departureTime: "09:00", arrivalTime: "21:59" }));
+      expect(hours().value).toBe("12");
+      expect(minutes().value).toBe("59");
+    });
+
+    it("a one-digit duration is unchanged (8h 5m) and the pair stays labelled, with the h / m unit hints hidden from assistive tech", () => {
+      renderEditor(emptySegment({ durationOverrideMinutes: 8 * 60 + 5 }));
+      expect(hours().value).toBe("8");
+      expect(minutes().value).toBe("5");
+      const group = screen.getByTestId("flight-duration-inputs");
+      expect(group.textContent).toContain("h");
+      expect(group.textContent).toContain("m");
+      expect(group.querySelectorAll('[aria-hidden="true"]')).toHaveLength(2);
+    });
+
+    it("typing a two-digit minutes value keeps both digits (5 then 9 -> 59), and the box stays editable", async () => {
+      const user = userEvent.setup();
+      const onChange = renderEditor(emptySegment({ durationOverrideMinutes: 3 * 60 }));
+      await user.clear(minutes());
+      await user.type(minutes(), "59");
+      expect(minutes().value).toBe("59");
+      expect(minutes()).toBeEnabled();
+      expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ durationOverrideMinutes: 3 * 60 + 59 }));
+    });
   });
 });

@@ -4,7 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 // is the REAL implementation — only prisma.booking.findFirst is faked, interpreting
 // the exact where shape it produces, so IDOR tests exercise real authorization logic.
 
-type FakeAccount = { id: string; role: string; status: string; bookingPermissions: string[] };
+type FakeAccount = { id: string; role: string; status: string; bookingPermissions: string[]; sessionCreatedAt?: Date | null };
 type FakeBooking = {
   id: string;
   createdAt: Date;
@@ -87,7 +87,7 @@ describe("revealBookingIp — role x permission matrix", () => {
       const { revealBookingIp } = await import("../booking-security");
       if (eligible) {
         const result = await revealBookingIp("booking-1");
-        expect(result.ipAddress).toBe("203.0.113.42");
+        expect(result).toMatchObject({ ipAddress: "203.0.113.42" });
       } else {
         await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
       }
@@ -99,7 +99,7 @@ describe("revealBookingIp — role x permission matrix", () => {
       const { revealBookingIp } = await import("../booking-security");
       if (role === "ADMIN") {
         const result = await revealBookingIp("booking-1");
-        expect(result.ipAddress).toBe("203.0.113.42");
+        expect(result).toMatchObject({ ipAddress: "203.0.113.42" });
       } else {
         await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
       }
@@ -136,7 +136,7 @@ describe("revealBookingIp — IDOR/BOLA protection", () => {
     seedBooking({ quoteAgentId: "manager-1" });
     currentActor = { id: "manager-1", role: "MANAGER", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"] };
     const { revealBookingIp } = await import("../booking-security");
-    expect((await revealBookingIp("booking-1")).ipAddress).toBe("203.0.113.42");
+    expect(await revealBookingIp("booking-1")).toMatchObject({ ipAddress: "203.0.113.42" });
   });
 
   it("rejects a non-existent booking id", async () => {
@@ -185,14 +185,14 @@ describe("revealBookingIp — indefinite retention, no automatic age-based expir
     seedBooking({ createdAt: new Date(Date.now() - 400 * 24 * 60 * 60 * 1000) }); // > 1 year old
     const { revealBookingIp } = await import("../booking-security");
     const result = await revealBookingIp("booking-1");
-    expect(result.ipAddress).toBe("203.0.113.42");
+    expect(result).toMatchObject({ ipAddress: "203.0.113.42" });
   });
 
   it("Test B — a booking several years old is still revealable", async () => {
     seedBooking({ createdAt: new Date(Date.now() - 5 * 365 * 24 * 60 * 60 * 1000) }); // ~5 years old
     const { revealBookingIp } = await import("../booking-security");
     const result = await revealBookingIp("booking-1");
-    expect(result.ipAddress).toBe("203.0.113.42");
+    expect(result).toMatchObject({ ipAddress: "203.0.113.42" });
   });
 
   it("Test C — setting BOOKING_IP_RETENTION_DAYS has no effect at all — the variable is no longer read by this action", async () => {
@@ -200,7 +200,7 @@ describe("revealBookingIp — indefinite retention, no automatic age-based expir
     seedBooking({ createdAt: new Date(Date.now() - 400 * 24 * 60 * 60 * 1000) });
     const { revealBookingIp } = await import("../booking-security");
     const result = await revealBookingIp("booking-1");
-    expect(result.ipAddress).toBe("203.0.113.42");
+    expect(result).toMatchObject({ ipAddress: "203.0.113.42" });
     // Never denied for a retention reason — that reason code no longer exists.
     expect(auditLogs.some((e) => e.metadata.reason === "RETENTION_EXPIRED")).toBe(false);
   });
@@ -209,16 +209,55 @@ describe("revealBookingIp — indefinite retention, no automatic age-based expir
     seedBooking({ createdAt: new Date() });
     const { revealBookingIp } = await import("../booking-security");
     const result = await revealBookingIp("booking-1");
-    expect(result.ipAddress).toBe("203.0.113.42");
+    expect(result).toMatchObject({ ipAddress: "203.0.113.42" });
   });
 });
 
-describe("revealBookingIp — production fails closed (no real MFA/step-up system)", () => {
-  it("denies reveal in production even for a fully-permissioned admin", async () => {
+describe("revealBookingIp — recent sign-in step-up (same real check as the card Reveal)", () => {
+  const MIN = 60 * 1000;
+
+  it("in production, a fully-permissioned admin with a STALE session gets a RETURNED, actionable error (not a throw) and the IP is not disclosed", async () => {
     vi.stubEnv("APP_ENV", "production");
     seedBooking();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", bookingPermissions: [], sessionCreatedAt: new Date(Date.now() - 16 * MIN) };
     const { revealBookingIp } = await import("../booking-security");
+    const result = await revealBookingIp("booking-1");
+    expect(result).toEqual({ error: expect.stringMatching(/sign-in within the last 15 minutes/i) });
+    expect(JSON.stringify(result)).not.toContain("203.0.113.42");
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe("BOOKING_IP_REVEAL_DENIED");
+    expect(auditLogs[0].metadata.reason).toBe("RECENT_LOGIN_REQUIRED");
+  });
+
+  it("in production, an account with no recorded sign-in time is refused the same way", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    seedBooking();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", bookingPermissions: [], sessionCreatedAt: null };
+    const { revealBookingIp } = await import("../booking-security");
+    expect(await revealBookingIp("booking-1")).toEqual({ error: expect.any(String) });
+  });
+
+  it("in production, an admin who signed in recently CAN reveal (the regression: this used to always throw, masked as React error #441)", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    seedBooking();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", bookingPermissions: [], sessionCreatedAt: new Date(Date.now() - 2 * MIN) };
+    const { revealBookingIp } = await import("../booking-security");
+    const result = await revealBookingIp("booking-1");
+    expect(result).toEqual({ ipAddress: "203.0.113.42", userAgent: null });
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0].action).toBe("BOOKING_IP_REVEALED");
+    expect(JSON.stringify(auditLogs[0].metadata)).not.toContain("203.0.113.42");
+  });
+
+  it("in production, authorization failures still THROW the generic denial, even with a fresh session (role / IDOR are checked before the step-up)", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    seedBooking({ quoteAgentId: "someone-else" });
+    const fresh = new Date(Date.now() - MIN);
+    const { revealBookingIp } = await import("../booking-security");
+    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"], sessionCreatedAt: fresh };
     await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
-    expect(auditLogs[0].metadata.reason).toBe("MFA_REQUIRED_NOT_CONFIGURED");
+    currentActor = { id: "mgr-1", role: "MANAGER", status: "ACTIVE", bookingPermissions: ["bookings.reveal_ip"], sessionCreatedAt: fresh };
+    await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
+    expect(auditLogs.map((e) => e.metadata.reason)).toEqual(["MISSING_PERMISSION", "BOOKING_NOT_ACCESSIBLE"]);
   });
 });

@@ -1,11 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Eye, EyeOff, History, Info, Loader2, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { revealBookingIp } from "@/server/actions/booking-security";
+import { safeActionMessage } from "@/lib/safe-action-message";
+import { useTimedReveal } from "./use-timed-reveal";
 import { getBookingIpMaskedPreview, getIpHistoryForBooking, type IpVaultEntry, type IpVaultMaskedPreview } from "@/server/actions/ip-vault";
 
 const REVEAL_TIMEOUT_SECONDS = 60;
@@ -46,7 +48,11 @@ function NotCapturedNotice({ reason }: { reason: string }) {
  * button — same pattern as PaymentMethodCard's PAN reveal: the resolved IP
  * is held only in this component's own local state (never a context,
  * global store, or any browser storage), cleared on auto-hide timeout,
- * manual Hide, or unmount.
+ * manual Hide, tab change, or unmount (useTimedReveal — the same hook the
+ * card Reveal uses). A refusal is RETURNED by the actions as { error }
+ * and shown inline plus as a toast; a thrown error (which production masks
+ * as an opaque digest, i.e. "Minified React error #441") only ever reaches
+ * the catch below and is replaced by a readable fallback.
  *
  * Extended to show a non-privileged MASKED preview (first octet/hextet
  * only, e.g. "24.x.x.x") to every viewer who can see the booking at all —
@@ -59,13 +65,12 @@ function NotCapturedNotice({ reason }: { reason: string }) {
  * request-ip.ts) instead of leaving the viewer to guess.
  */
 export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; canReveal: boolean }) {
-  const [revealed, setRevealed] = useState<{ ip: string; userAgent: string | null } | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(REVEAL_TIMEOUT_SECONDS);
+  const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ ip: string; userAgent: string | null }>(REVEAL_TIMEOUT_SECONDS);
   const [isPending, setIsPending] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [preview, setPreview] = useState<IpVaultMaskedPreview | null | undefined>(undefined);
   const [history, setHistory] = useState<IpVaultEntry[] | null>(null);
   const [historyLoading, setHistoryLoading] = useState(false);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,39 +86,21 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
     };
   }, [bookingId]);
 
-  function clearTimer() {
-    if (intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
-    }
-  }
-
-  function hide() {
-    clearTimer();
-    setRevealed(null);
-  }
-
-  useEffect(() => clearTimer, []);
-
   async function reveal() {
     setIsPending(true);
+    setErrorMessage(null);
     try {
       const result = await revealBookingIp(bookingId);
-      setRevealed({ ip: result.ipAddress ?? "—", userAgent: result.userAgent });
-      setSecondsLeft(REVEAL_TIMEOUT_SECONDS);
-      clearTimer();
-      intervalRef.current = setInterval(() => {
-        setSecondsLeft((s) => {
-          if (s <= 1) {
-            clearTimer();
-            setRevealed(null);
-            return REVEAL_TIMEOUT_SECONDS;
-          }
-          return s - 1;
-        });
-      }, 1000);
+      if ("error" in result) {
+        setErrorMessage(result.error);
+        toast.error(result.error, { duration: 8000 });
+        return;
+      }
+      show({ ip: result.ipAddress ?? "—", userAgent: result.userAgent });
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to reveal submission IP");
+      const message = safeActionMessage(err, "Unable to reveal the submission IP. You may not have permission.");
+      setErrorMessage(message);
+      toast.error(message);
     } finally {
       setIsPending(false);
     }
@@ -127,9 +114,13 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
     setHistoryLoading(true);
     try {
       const entries = await getIpHistoryForBooking(bookingId);
+      if (!Array.isArray(entries)) {
+        toast.error(entries.error, { duration: 8000 });
+        return;
+      }
       setHistory(entries);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Unable to load IP history");
+      toast.error(safeActionMessage(err, "Unable to load IP history. You may not have permission."));
     } finally {
       setHistoryLoading(false);
     }
@@ -172,7 +163,7 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
           </div>
           <div>
             <p className="text-xs text-muted-foreground">Submission IP</p>
-            <p className="text-sm font-medium font-mono flex items-center gap-1.5">
+            <p className="text-sm font-medium font-mono flex flex-wrap items-center gap-1.5 break-all">
               {revealed.ip}
               {revealed.ip !== "—" && <VersionBadge version={ipVersionOf(revealed.ip)} />}
             </p>
@@ -197,9 +188,14 @@ export function BookingIpReveal({ bookingId, canReveal }: { bookingId: string; c
             </p>
             <Button size="sm" variant="outline" onClick={reveal} disabled={isPending} className="h-6 gap-1.5 px-2 text-xs">
               {isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}
-              Reveal
+              {isPending ? "Revealing…" : "Reveal"}
             </Button>
           </div>
+          {errorMessage && (
+            <p role="alert" className="mt-1.5 text-xs text-destructive break-words">
+              {errorMessage}
+            </p>
+          )}
         </div>
       ) : preview ? (
         <div>

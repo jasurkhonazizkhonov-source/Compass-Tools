@@ -15,9 +15,9 @@ export const REVEAL_TIMEOUT_SECONDS = 30;
  * Two independent timers on purpose: the interval only decrements the displayed
  * countdown; a single one-shot timeout is the only thing that conceals.
  */
-export function useTimedReveal<T>() {
+export function useTimedReveal<T>(timeoutSeconds: number = REVEAL_TIMEOUT_SECONDS) {
   const [value, setValue] = useState<T | null>(null);
-  const [secondsLeft, setSecondsLeft] = useState(REVEAL_TIMEOUT_SECONDS);
+  const [secondsLeft, setSecondsLeft] = useState(timeoutSeconds);
   const tick = useRef<ReturnType<typeof setInterval> | null>(null);
   const expiry = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -37,11 +37,11 @@ export function useTimedReveal<T>() {
     (next: T) => {
       clearTimers();
       setValue(next);
-      setSecondsLeft(REVEAL_TIMEOUT_SECONDS);
+      setSecondsLeft(timeoutSeconds);
       tick.current = setInterval(() => setSecondsLeft((s) => Math.max(0, s - 1)), 1000);
-      expiry.current = setTimeout(hide, REVEAL_TIMEOUT_SECONDS * 1000);
+      expiry.current = setTimeout(hide, timeoutSeconds * 1000);
     },
-    [clearTimers, hide]
+    [clearTimers, hide, timeoutSeconds]
   );
 
   useEffect(() => {

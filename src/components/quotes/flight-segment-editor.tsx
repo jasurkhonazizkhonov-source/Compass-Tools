@@ -377,6 +377,19 @@ export function FlightSegmentEditor({
  * consistent with how every other numeric field in this builder already
  * behaves (e.g. the pre-existing 1–1440 total-minutes clamp this replaces).
  */
+/**
+ * Sizing for the hours/minutes boxes. The app-wide Input has 10px horizontal
+ * padding, so the old 48px (w-12) box left ~28px of text area — and Chrome's
+ * number spinner took ~15px of that on hover/focus, clipping two-digit values
+ * like "12" or "59". Fixed here, in the one shared component every itinerary
+ * surface (quote builder, exchange builder, segment editor) renders through:
+ * a 4.5rem box that never shrinks (shrink-0 / min-w), tighter padding, the
+ * native spinner hidden (arrow keys and typing still work, and the digits are
+ * never covered), centred tabular digits.
+ */
+export const DURATION_INPUT_CLASS =
+  "h-8 w-[4.5rem] min-w-[4.5rem] shrink-0 px-2 text-center text-sm tabular-nums [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none";
+
 function DurationHoursMinutesInput({ totalMinutes, onChange }: { totalMinutes: number | null; onChange: (minutes: number | null) => void }) {
   const hours = totalMinutes != null ? Math.floor(totalMinutes / 60) : null;
   const minutes = totalMinutes != null ? totalMinutes % 60 : null;
@@ -393,14 +406,14 @@ function DurationHoursMinutesInput({ totalMinutes, onChange }: { totalMinutes: n
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="flight-duration-inputs">
       <Input
         type="number"
         inputMode="numeric"
         min={0}
         step={1}
         aria-label="Flight duration — hours"
-        className="h-7 w-12 text-xs text-right tabular-nums"
+        className={DURATION_INPUT_CLASS}
         value={hours ?? ""}
         placeholder="0"
         onChange={(e) => {
@@ -413,7 +426,7 @@ function DurationHoursMinutesInput({ totalMinutes, onChange }: { totalMinutes: n
           commit(raw === "" ? 0 : Number(raw), minutes ?? 0);
         }}
       />
-      <span className="text-muted-foreground">h</span>
+      <span className="text-muted-foreground -ml-1 mr-1" aria-hidden="true">h</span>
       <Input
         type="number"
         inputMode="numeric"
@@ -421,7 +434,7 @@ function DurationHoursMinutesInput({ totalMinutes, onChange }: { totalMinutes: n
         max={59}
         step={1}
         aria-label="Flight duration — minutes"
-        className="h-7 w-12 text-xs text-right tabular-nums"
+        className={DURATION_INPUT_CLASS}
         value={minutes ?? ""}
         placeholder="0"
         onChange={(e) => {
@@ -429,7 +442,7 @@ function DurationHoursMinutesInput({ totalMinutes, onChange }: { totalMinutes: n
           commit(hours ?? 0, raw === "" ? 0 : Number(raw));
         }}
       />
-      <span className="text-muted-foreground">m</span>
+      <span className="text-muted-foreground -ml-1" aria-hidden="true">m</span>
     </div>
   );
 }

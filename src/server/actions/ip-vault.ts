@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canRevealBookingIp } from "@/lib/permissions";
 import { bookingVisibilityWhere } from "@/server/visibility";
-import { requireRecentAuthentication } from "@/server/security/privileged-access";
+import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
 import { getClientIp, trustedProxyMode } from "@/lib/request-ip";
 import { decryptIp, maskIp } from "@/server/security/ip-encryption";
 
@@ -75,6 +75,10 @@ async function auditIpVaultAccess(params: {
   });
 }
 
+const STEP_UP_MESSAGE = `For security, viewing IP history requires a sign-in within the last ${RECENT_LOGIN_WINDOW_MS / 60000} minutes. Sign out, sign back in, then try again.`;
+
+class StepUpRequired extends Error {}
+
 async function authorizeIpVaultAccess(entityId: string, action: (typeof IP_VAULT_ACTIONS)[number]) {
   const actor = await getCurrentAccount();
   if (!actor || actor.status !== "ACTIVE") {
@@ -90,10 +94,10 @@ async function authorizeIpVaultAccess(entityId: string, action: (typeof IP_VAULT
     await auditIpVaultAccess({ actorId: actor.id, action, entityId, success: false, reason: "RATE_LIMITED" });
     throw new Error("Too many IP lookups in a short period — please wait a few minutes and try again");
   }
-  const stepUp = requireRecentAuthentication();
+  const stepUp = requireRecentLogin(actor.sessionCreatedAt);
   if (!stepUp.ok) {
     await auditIpVaultAccess({ actorId: actor.id, action, entityId, success: false, reason: stepUp.reason });
-    throw new Error(GENERIC_DENIAL);
+    throw new StepUpRequired(STEP_UP_MESSAGE);
   }
   return actor;
 }
@@ -168,8 +172,15 @@ function toIpVaultEntry(r: IpVaultRow): IpVaultEntry {
  * only the original Signature. Used by BookingIpReveal's "View full IP
  * history" panel on the Booking detail page.
  */
-export async function getIpHistoryForBooking(bookingId: string): Promise<IpVaultEntry[]> {
-  const actor = await authorizeIpVaultAccess(bookingId, "IP_VAULT_HISTORY_VIEWED");
+export async function getIpHistoryForBooking(bookingId: string): Promise<IpVaultEntry[] | { error: string }> {
+  let actor;
+  try {
+    actor = await authorizeIpVaultAccess(bookingId, "IP_VAULT_HISTORY_VIEWED");
+  } catch (err) {
+    // An actionable refusal is returned (a thrown message is masked in production); everything else stays a throw.
+    if (err instanceof StepUpRequired) return { error: STEP_UP_MESSAGE };
+    throw err;
+  }
 
   const booking = await prisma.booking.findFirst({ where: { id: bookingId, ...bookingVisibilityWhere(actor) }, select: { id: true } });
   if (!booking) {

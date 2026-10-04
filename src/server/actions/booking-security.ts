@@ -5,10 +5,21 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canRevealBookingIp } from "@/lib/permissions";
 import { bookingVisibilityWhere } from "@/server/visibility";
-import { requireRecentAuthentication } from "@/server/security/privileged-access";
+import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
 import { getClientIp } from "@/lib/request-ip";
 
 const GENERIC_DENIAL = "You are not authorized to reveal this booking's submission IP";
+
+/**
+ * A refusal the user can act on (sign in again) is RETURNED, not thrown:
+ * Next.js replaces the message of any error thrown from a Server Action with an
+ * opaque digest in production, which React surfaces to the client as
+ * "Minified React error #441" (the masked "error occurred in the Server
+ * Components render"). Authorization failures (no session / no grant / not
+ * found / not accessible) still throw the generic denial — they must not
+ * explain themselves. Same contract as revealPaymentMethod's RevealResult.
+ */
+export type BookingIpRevealResult = { ipAddress: string | null; userAgent: string | null } | { error: string };
 
 async function auditBookingIpAccess(params: {
   actorId: string | undefined;
@@ -53,8 +64,12 @@ async function auditBookingIpAccess(params: {
  *        bookings.reveal_ip permission (canRevealBookingIp checks both).
  *   4:   IDOR/BOLA protection — reuses bookingVisibilityWhere(), the same
  *        row-level scope every other booking-detail access goes through.
- *   5:   recent authentication / MFA via requireRecentAuthentication() —
- *        fails closed in production, no-op-but-labeled in development.
+ *   5:   recent sign-in via requireRecentLogin() — the same real step-up the
+ *        card Reveal uses (a Google sign-in within the last 15 minutes) in
+ *        every production-class environment; a stale session is refused with
+ *        a returned, actionable message. (This previously used
+ *        requireRecentAuthentication(), which fails closed in production
+ *        unconditionally and THREW — the cause of React error #441.)
  *   6:   audit event for both success and denial, referencing the booking
  *        rather than duplicating its stored IP into the audit record.
  *   7-8: return only to this call's caller — auto-hide/Hide is client-side.
@@ -72,7 +87,7 @@ async function auditBookingIpAccess(params: {
  * explicit, deliberate, out-of-band data-management action (e.g. a direct,
  * authorized deletion an administrator performs), never automatically.
  */
-export async function revealBookingIp(bookingId: string) {
+export async function revealBookingIp(bookingId: string): Promise<BookingIpRevealResult> {
   const actor = await getCurrentAccount();
 
   if (!actor || actor.status !== "ACTIVE") {
@@ -95,10 +110,10 @@ export async function revealBookingIp(bookingId: string) {
     throw new Error(GENERIC_DENIAL);
   }
 
-  const stepUp = requireRecentAuthentication();
+  const stepUp = requireRecentLogin(actor.sessionCreatedAt);
   if (!stepUp.ok) {
     await auditBookingIpAccess({ actorId: actor.id, bookingId, success: false, reason: stepUp.reason });
-    throw new Error(GENERIC_DENIAL);
+    return { error: `For security, Reveal requires a sign-in within the last ${RECENT_LOGIN_WINDOW_MS / 60000} minutes. Sign out, sign back in, then try again.` };
   }
 
   await auditBookingIpAccess({ actorId: actor.id, bookingId, success: true });

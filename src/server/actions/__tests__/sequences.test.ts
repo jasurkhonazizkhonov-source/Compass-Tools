@@ -171,7 +171,7 @@ type FakeEnrollment = {
 let enrollments: FakeEnrollment[];
 let stepLogs: Array<Record<string, unknown>>;
 let emailLogs: Array<Record<string, unknown>>;
-let sendEmailCalls: Array<{ to: string }>;
+let sendEmailCalls: Array<{ to: string; html: string; subject: string; replyTo?: string; senderName?: string; accountId: string }>;
 // Pass 35 — fixtures for enrollLeads' batched-activity-log test.
 let leads: Map<string, { contactEmail: string | null }>;
 let activities: Array<Record<string, unknown>>;
@@ -182,8 +182,8 @@ vi.mock("@/server/queries/company", () => ({
   getCompanyForAccountId: vi.fn(async () => ({ id: "company-1", name: "Test Travel Co", brandColor: "#1c3a5e", logoEmailUrl: null, logoWebUrl: "", logoIconUrl: "", website: null, phone: null, signatureTemplate: "" })),
 }));
 vi.mock("@/server/email/service", () => ({
-  sendEmail: vi.fn(async (args: { to: string }) => {
-    sendEmailCalls.push({ to: args.to });
+  sendEmail: vi.fn(async (args: { to: string; html: string; subject: string; replyTo?: string; senderName?: string; accountId: string }) => {
+    sendEmailCalls.push({ to: args.to, html: args.html, subject: args.subject, replyTo: args.replyTo, senderName: args.senderName, accountId: args.accountId });
     return { ok: true as const, messageId: `msg-${sendEmailCalls.length}` };
   }),
 }));
@@ -320,6 +320,21 @@ describe("processDueSequenceSteps — concurrency (Pass 19)", () => {
     expect(result).toMatchObject({ sent: 1, failed: 0 });
     expect(sendEmailCalls).toHaveLength(1);
     expect(sendEmailCalls[0].to).toBe("andrew@example.com");
+  });
+
+  it("the automated send uses the sequence design: the agent as sender and reply-to, subtle branding, and this enrollment's own one-click unsubscribe link", async () => {
+    seedDueEnrollment();
+    const { processDueSequenceSteps } = await import("../sequences");
+    await processDueSequenceSteps();
+    expect(sendEmailCalls).toHaveLength(1);
+    const call = sendEmailCalls[0];
+    expect(call.replyTo).toBeTruthy();
+    expect(call.senderName).toBeTruthy();
+    expect(call.html).toContain("https://example.com/api/public/sequence-unsubscribe?enrollment=");
+    expect(call.html).toContain("Unsubscribe");
+    expect(call.html).toContain("following your travel enquiry");
+    expect(call.html).not.toContain('class="ct-hero-title"');
+    expect(call.html).not.toMatch(/Compass Tools|CRM|Business Flights/i);
   });
 
   it("two concurrent invocations processing the SAME due enrollment send exactly once, not twice", async () => {

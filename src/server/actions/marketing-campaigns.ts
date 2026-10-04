@@ -10,6 +10,7 @@ import { sendEmail } from "@/server/email/service";
 import { buildMarketingCampaignEmail } from "@/server/email/templates";
 import { getCompanyForAccountId } from "@/server/queries/company";
 import { resolveBaseUrl } from "@/lib/company-config";
+import { firstUnfilledPlaceholder } from "@/lib/campaign-starters";
 
 /** Admin or Marketing Agent — the two roles Part 11 grants Subscriptions
  * access to. Every action below re-asserts this independently of the page
@@ -132,6 +133,13 @@ export async function sendMarketingCampaign(campaignId: string) {
   }
 
   if (campaign.status === "DRAFT") {
+    // A starter's [[placeholder]] left in the subject or body must never reach
+    // subscribers. Checked before anything is claimed or sent.
+    const unfilled = firstUnfilledPlaceholder(campaign.subject, campaign.htmlContent);
+    if (unfilled) {
+      throw new Error(`Complete the [[${unfilled}]] placeholder before sending this campaign.`);
+    }
+
     // Checked BEFORE claiming DRAFT->SENDING, deliberately — a campaign
     // with nothing to send to must stay in DRAFT (still editable, still
     // re-attemptable once subscribers exist) rather than being claimed

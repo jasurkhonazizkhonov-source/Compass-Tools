@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RichTextEditor } from "@/components/subscriptions/rich-text-editor";
+import { CAMPAIGN_STARTERS, firstUnfilledPlaceholder } from "@/lib/campaign-starters";
 import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import {
   createMarketingCampaign,
@@ -56,6 +57,9 @@ export function CampaignForm({
   const [name, setName] = useState(initialName);
   const [subject, setSubject] = useState(initialSubject);
   const [html, setHtml] = useState(initialHtml);
+  // Bumped when a starter replaces the (empty) content, so the editor — which
+  // only reads its content prop on mount — remounts with the new text.
+  const [editorKey, setEditorKey] = useState(0);
   const [preview, setPreview] = useState(false);
   const [previewWidth, setPreviewWidth] = useState<"desktop" | "mobile">("desktop");
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
@@ -83,6 +87,14 @@ export function CampaignForm({
     });
   }
 
+  function applyStarter(starterId: string) {
+    const starter = CAMPAIGN_STARTERS.find((s) => s.id === starterId);
+    if (!starter) return;
+    setSubject((current) => current.trim() || starter.subject);
+    setHtml(starter.html);
+    setEditorKey((k) => k + 1);
+  }
+
   function sendTest() {
     if (!campaignId) {
       toast.error("Save the campaign first");
@@ -100,6 +112,11 @@ export function CampaignForm({
 
   function send() {
     if (!campaignId) return;
+    const unfilled = firstUnfilledPlaceholder(subject, html);
+    if (unfilled) {
+      toast.error(`Complete the [[${unfilled}]] placeholder before sending.`);
+      return;
+    }
     startTransition(async () => {
       try {
         const result = await sendMarketingCampaign(campaignId);
@@ -135,13 +152,29 @@ export function CampaignForm({
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
           <Label>Campaign Name *</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Summer Fare Sale" disabled={readOnly} />
+          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="e.g. Winter schedule 2026" disabled={readOnly} />
         </div>
         <div className="space-y-1.5">
           <Label>Subject Line *</Label>
-          <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Fares from $299 — book by Friday" disabled={readOnly} />
+          <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="e.g. Business class to Lisbon from $2,950, travel by 30 November" disabled={readOnly} />
         </div>
       </div>
+
+      {!readOnly && !campaignId && !html.trim() && (
+        <div className="space-y-2 rounded-md border bg-muted/30 p-3" data-testid="campaign-starters">
+          <div>
+            <p className="text-sm font-medium">Start from a template</p>
+            <p className="text-xs text-muted-foreground">Written in a calm, specific house style. Complete the [[bracketed]] parts — a campaign with any left cannot be sent.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {CAMPAIGN_STARTERS.map((starter) => (
+              <Button key={starter.id} type="button" variant="outline" size="sm" title={starter.description} onClick={() => applyStarter(starter.id)}>
+                {starter.label}
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="space-y-1.5">
         <div className="flex items-center justify-between flex-wrap gap-2">
@@ -172,14 +205,17 @@ export function CampaignForm({
             <div className={previewWidth === "mobile" ? "w-[375px] max-w-full" : "w-full"}>
               <div className="rounded-md border p-4 prose prose-sm max-w-none min-h-[240px] bg-background" dangerouslySetInnerHTML={{ __html: html || "<p class='text-muted-foreground'>Nothing to preview yet.</p>" }} />
               <p className="text-[11px] text-muted-foreground mt-2 px-1">
-                Every marketing email also includes an unsubscribe link in the footer below your content — not shown here since it&apos;s added automatically when the campaign is sent.
+                Sent emails are laid out in the company&apos;s branded design — logo header, your subject as the headline, then your content — with an unsubscribe link in the footer. Use Send Test to see the exact result in your inbox.
               </p>
             </div>
           </div>
         ) : readOnly ? (
           <div className="rounded-md border p-4 prose prose-sm max-w-none min-h-[240px]" dangerouslySetInnerHTML={{ __html: html }} />
         ) : (
-          <RichTextEditor value={html} onChange={setHtml} />
+          <RichTextEditor key={editorKey} value={html} onChange={setHtml} />
+        )}
+        {!readOnly && !preview && (
+          <p className="text-[11px] text-muted-foreground">Tip: a paragraph that contains only a short link — for example &ldquo;Request an itinerary&rdquo; — is sent as a button.</p>
         )}
       </div>
 

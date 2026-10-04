@@ -23,7 +23,7 @@ let subscribers: Map<string, FakeSubscriber>;
 let campaigns: Map<string, FakeCampaign>;
 let sends: FakeSend[];
 let emailLogs: Array<Record<string, unknown>>;
-let sendEmailCalls: Array<{ to: string }>;
+let sendEmailCalls: Array<{ to: string; subject: string; html: string }>;
 /** Emails (by `to` address) that should fail on their NEXT send attempt —
  * consumed (removed) once used, so a retry on a later batch can succeed. */
 let failNextAttemptFor: Set<string>;
@@ -131,8 +131,8 @@ vi.mock("@/server/queries/company", () => ({
   getCompanyForAccountId: vi.fn(async () => ({ id: "company-1", name: "Test Travel Co", brandColor: "#1c3a5e", logoEmailUrl: null, logoWebUrl: "", logoIconUrl: "", website: null, phone: null, signatureTemplate: "" })),
 }));
 vi.mock("@/server/email/service", () => ({
-  sendEmail: vi.fn(async (args: { to: string }) => {
-    sendEmailCalls.push({ to: args.to });
+  sendEmail: vi.fn(async (args: { to: string; subject: string; html: string }) => {
+    sendEmailCalls.push({ to: args.to, subject: args.subject, html: args.html });
     if (failNextAttemptFor.has(args.to)) {
       failNextAttemptFor.delete(args.to);
       return { ok: false as const, error: "Simulated provider failure" };
@@ -190,6 +190,57 @@ describe("sendMarketingCampaign — small campaign (fits in one batch)", () => {
     expect(sendEmailCalls.some((c) => c.to === "sub0@example.com")).toBe(false);
     const skipped = sends.find((s) => s.status === "SKIPPED_UNSUBSCRIBED");
     expect(skipped).toBeTruthy();
+  });
+});
+
+describe("sendMarketingCampaign — premium design and the placeholder guard", () => {
+  it("every recipient gets the branded layout (subject as headline) with THEIR OWN one-click unsubscribe link", async () => {
+    makeSubscribers(2);
+    const { sendMarketingCampaign } = await import("../marketing-campaigns");
+    await sendMarketingCampaign("campaign-1");
+    expect(sendEmailCalls).toHaveLength(2);
+    for (const [i, call] of sendEmailCalls.entries()) {
+      expect(call.html).toMatch(/<h1 class="ct-hero-title"[^>]*>Sale!<\/h1>/);
+      expect(call.html).toContain("<p>Hello</p>");
+      expect(call.html).toContain(`https://example.com/api/public/unsubscribe?token=token-sub-company-1-${i}`);
+      expect(call.html).not.toMatch(/Compass Tools|CRM|Business Flights/i);
+    }
+    expect(sendEmailCalls[0].html).not.toContain("token-sub-company-1-1");
+  });
+
+  it("a campaign that still contains a starter [[placeholder]] cannot be sent: nothing is emailed and it stays an editable DRAFT", async () => {
+    makeSubscribers(2);
+    campaigns.get("campaign-1")!.htmlContent = "<p>Fares to [[Destination]] from [[Fare]].</p>";
+    const { sendMarketingCampaign } = await import("../marketing-campaigns");
+    await expect(sendMarketingCampaign("campaign-1")).rejects.toThrow(/Complete the \[\[Destination\]\] placeholder/);
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(campaigns.get("campaign-1")!.status).toBe("DRAFT");
+  });
+
+  it("the same guard applies to the subject line", async () => {
+    makeSubscribers(1);
+    campaigns.get("campaign-1")!.subject = "[[Origin]] to Lisbon";
+    const { sendMarketingCampaign } = await import("../marketing-campaigns");
+    await expect(sendMarketingCampaign("campaign-1")).rejects.toThrow(/placeholder/);
+    expect(sendEmailCalls).toHaveLength(0);
+  });
+
+  it("a legitimate bracketed word such as [URGENT] is not mistaken for a placeholder", async () => {
+    makeSubscribers(1);
+    campaigns.get("campaign-1")!.subject = "[URGENT] Schedule change";
+    const { sendMarketingCampaign } = await import("../marketing-campaigns");
+    await expect(sendMarketingCampaign("campaign-1")).resolves.toMatchObject({ sent: 1 });
+  });
+
+  it("a test send goes only to the sending admin and shows the real design without the [TEST] marker in the headline", async () => {
+    makeSubscribers(3);
+    const { sendTestMarketingCampaign } = await import("../marketing-campaigns");
+    await sendTestMarketingCampaign("campaign-1");
+    expect(sendEmailCalls).toHaveLength(1);
+    expect(sendEmailCalls[0].to).toBe("admin@example.com");
+    expect(sendEmailCalls[0].subject).toBe("[TEST] Sale!");
+    expect(sendEmailCalls[0].html).toMatch(/<h1 class="ct-hero-title"[^>]*>Sale!<\/h1>/);
+    expect(campaigns.get("campaign-1")!.status).toBe("DRAFT");
   });
 });
 

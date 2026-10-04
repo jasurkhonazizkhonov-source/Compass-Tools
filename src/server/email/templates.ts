@@ -21,6 +21,15 @@ import { CURRENCY_SYMBOLS, type SupportedCurrency } from "@/lib/currency";
 import { resolveSignature, splitFullName } from "@/lib/email-signature";
 import { calculateJourneyDuration, type JourneyLegInput } from "@/lib/flight-duration";
 import { customerGreeting, firstNameGreeting } from "@/lib/customer-name";
+import {
+  EMAIL_TOKENS,
+  escapeAttr,
+  escapeHtml,
+  promoteLoneLinksToButtons,
+  renderContactLine,
+  renderPremiumShell,
+  summarizeForPreheader,
+} from "@/server/email/design-system";
 
 // Timezone used to render internal-notification date/times (e.g. task due
 // dates) consistently regardless of what timezone the server process
@@ -182,6 +191,33 @@ function renderSignatureHtml(company: ResolvedCompanyBranding, agent?: EmailAgen
   </table>`;
 }
 
+/**
+ * The signature for the personal (one-to-one) and sequence variants: the same
+ * resolved Company.signatureTemplate text as renderSignatureHtml (so an admin
+ * edit still changes every future email), set as a refined block — a
+ * brand-coloured rule on the left, the agent's lines, their e-mail, then the
+ * company and its contact line. No logo here: those variants already carry it
+ * in their header.
+ */
+function renderRefinedSignatureHtml(company: ResolvedCompanyBranding, agent?: EmailAgent): string {
+  const { firstName, lastName } = agent ? splitFullName(agent.fullName) : { firstName: company.name, lastName: "" };
+  const phone = (agent?.phone || company.phone) ?? "";
+  const resolvedText = resolveSignature(company.signatureTemplate, { firstName, lastName, phone });
+  const signatureLines = escapeHtml(resolvedText).replace(/\n/g, "<br/>");
+  const rule =/^#[0-9a-f]{3,6}$/i.test(company.brandColor) ? company.brandColor : EMAIL_TOKENS.ink;
+  const contactLine = renderContactLine(company);
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="table-layout:fixed;">
+    <tr>
+      <td style="border-left:3px solid ${rule}; padding:2px 0 2px 16px; font-family:${EMAIL_TOKENS.fontFamily};">
+        <p style="margin:0 0 6px; font-size:15px; line-height:1.65; color:${EMAIL_TOKENS.bodyText};">${signatureLines}</p>
+        ${agent ? `<p style="margin:0 0 10px; font-size:13px; line-height:1.6;"><a href="mailto:${escapeAttr(agent.email)}" style="color:${EMAIL_TOKENS.textMuted}; text-decoration:none; word-break:break-all; overflow-wrap:anywhere;">${escapeHtml(agent.email)}</a></p>` : ""}
+        <p style="margin:0 0 2px; font-size:13px; font-weight:700; color:${EMAIL_TOKENS.ink};">${escapeHtml(company.name)}</p>
+        ${contactLine ? `<p style="margin:0; font-size:13px; line-height:1.6; color:${EMAIL_TOKENS.textSubtle};">${contactLine}</p>` : ""}
+      </td>
+    </tr>
+  </table>`;
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 // Pass 12 §2-§7/§36 — Compass Tools Professional Email Design System.
 // ONE shared shell every outbound email routes through (customerWrapper
@@ -199,33 +235,8 @@ function renderSignatureHtml(company: ResolvedCompanyBranding, agent?: EmailAgen
 // particular), so these are plain TS constants interpolated at render
 // time — the email-safe equivalent of a token file.
 // ═══════════════════════════════════════════════════════════════════════
-const EMAIL_TOKENS = {
-  // A soft, restrained blue-gray page background (§3/§4) — not a plain
-  // flat gray, not a gradient (explicitly avoided per §3's "do not overuse
-  // gradients" — a gradient here would read as a generic SaaS/marketing
-  // template, not a premium travel document), and never so dark it
-  // competes with the white content card for attention.
-  pageBackground: "#eef1f6",
-  cardBackground: "#ffffff",
-  cardBorder: "#e2e5eb",
-  border: "#e5e7eb",
-  mutedBackground: "#f9fafb",
-  text: "#111827",
-  textMuted: "#4b5563",
-  textSubtle: "#6b7280",
-  textFaint: "#9ca3af",
-  success: "#15803d",
-  successBackground: "#ecfdf5",
-  successBorder: "#a7f3d0",
-  warning: "#92400e",
-  warningBackground: "#fffbeb",
-  warningBorder: "#fde68a",
-  danger: "#b91c1c",
-  dangerBackground: "#fef2f2",
-  dangerBorder: "#fecaca",
-  radius: "14px",
-  fontFamily: "-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif",
-} as const;
+// EMAIL_TOKENS now lives in ./design-system (shared with the premium shell).
+
 
 /**
  * §33/§34/§35 — mobile responsive stacking for the itinerary segment row.
@@ -354,7 +365,7 @@ ${EMAIL_RESPONSIVE_STYLE}
 </head>
 <body style="margin:0; padding:0; background:${EMAIL_TOKENS.pageBackground};">
 ${preheader ? renderPreheader(preheader) : ""}
-<div style="font-family:${EMAIL_TOKENS.fontFamily}; background:${EMAIL_TOKENS.pageBackground}; padding:32px 12px;">
+<div style="font-family:${EMAIL_TOKENS.fontFamily}; background:${EMAIL_TOKENS.pageBackground}; background-image:linear-gradient(180deg, ${EMAIL_TOKENS.pageBackground} 0%, ${EMAIL_TOKENS.pageBackgroundDeep} 100%); padding:32px 12px;">
   ${!isInternal ? `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:${maxWidth}px; margin:0 auto 14px;"><tr><td style="height:4px; background:${company.brandColor}; border-radius:4px; font-size:0; line-height:0;">&nbsp;</td></tr></table>` : ""}
   <!-- Pass 15 §19 — table-layout:fixed found and fixed live (Browser pane,
        375px viewport, a real HTTP-served render of the actual builder
@@ -1253,9 +1264,6 @@ export function buildBookingConfirmationEmail(params: {
   return { subject, html };
 }
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
 
 // Recognizes a bare URL so an agent's plain-text sequence copy (e.g. a quote
 // link they pasted in) still renders as a clickable, styled link rather
@@ -1292,16 +1300,55 @@ function linkify(escapedText: string, brandColor: string): string {
  * member manually unenrolling the lead — a real, non-hypothetical gap for
  * unattended commercial email, fixed here.
  */
-export function buildSequenceEmail(params: { subject: string; bodyText: string; agent?: EmailAgent; company: ResolvedCompanyBranding; unsubscribeUrl?: string }) {
+export function buildSequenceEmail(params: {
+  subject: string;
+  bodyText: string;
+  agent?: EmailAgent;
+  company: ResolvedCompanyBranding;
+  unsubscribeUrl?: string;
+  /**
+   * "personal" — a deliberate one-to-one message (Lead/Contact composer, Get
+   * in Touch reply): quiet header, the agent's own words, refined signature,
+   * no unsubscribe line. "sequence" — unattended automated correspondence:
+   * the same layout plus the footer note and one-click unsubscribe. Defaults
+   * to "sequence" exactly when an unsubscribeUrl is supplied (that is what
+   * makes a send automated), otherwise "personal", so every existing call
+   * site keeps its meaning.
+   */
+  variant?: "personal" | "sequence";
+}) {
+  const variant = params.variant ?? (params.unsubscribeUrl ? "sequence" : "personal");
   const paragraphs = params.bodyText
     .split(/\n{2,}/)
     .filter((p) => p.trim().length > 0)
-    .map((para) => `<p style="margin:0 0 16px; font-size:14px; color:#374151; line-height:1.7;">${linkify(escapeHtml(para), params.company.brandColor).replace(/\n/g, "<br/>")}</p>`)
+    .map((para) => `<p style="margin:0 0 18px; font-size:15px; color:${EMAIL_TOKENS.bodyText}; line-height:1.75;">${linkify(escapeHtml(para), params.company.brandColor).replace(/\n/g, "<br/>")}</p>`)
     .join("");
 
-  const html = customerWrapper(`
-    ${paragraphs}
-  `, params.company, params.agent, { unsubscribeUrl: params.unsubscribeUrl });
+  const contactLine = renderContactLine(params.company);
+  // A one-to-one message already carries the company and its contact line in
+  // the signature, so its footer stays a single quiet line rather than repeat it.
+  const footerBase =
+    variant === "personal"
+      ? `<p style="margin:0; font-size:12px; line-height:1.6; color:${EMAIL_TOKENS.textFaint};">${escapeHtml(params.company.name)}</p>`
+      : `
+    <p style="margin:0 0 4px; font-size:12px; font-weight:600; color:${EMAIL_TOKENS.text};">${escapeHtml(params.company.name)}</p>
+    ${contactLine ? `<p style="margin:0; font-size:12px; line-height:1.6; color:${EMAIL_TOKENS.textSubtle};">${contactLine}</p>` : ""}`;
+  const footerHtml =
+    variant === "sequence" && params.unsubscribeUrl
+      ? `${footerBase}
+    <p style="margin:12px 0 0; font-size:11px; line-height:1.6; color:${EMAIL_TOKENS.textFaint};">
+      You are receiving this message following your travel enquiry with ${escapeHtml(params.company.name)}.
+      Don't want these updates? <a href="${escapeAttr(params.unsubscribeUrl)}" style="color:${EMAIL_TOKENS.textFaint}; text-decoration:underline;">Unsubscribe</a>
+    </p>`
+      : footerBase;
+
+  const html = renderPremiumShell({
+    variant,
+    company: params.company,
+    bodyHtml: paragraphs,
+    signatureHtml: renderRefinedSignatureHtml(params.company, params.agent),
+    footerHtml,
+  });
   return { subject: params.subject, html };
 }
 
@@ -2029,23 +2076,27 @@ export function buildMarketingCampaignEmail(params: {
   htmlContent: string;
   unsubscribeUrl: string;
   company: ResolvedCompanyBranding;
-  /** §7 — optional hidden preheader summary; campaigns don't have one
-   * generated automatically (there's no single "route"/"confirmation
-   * number" to summarize from free-form marketing content), so this is
-   * left to the caller to supply if desired. */
+  /** Optional hidden preheader summary. Defaults to a plain-text summary of
+   * the campaign's own opening words, so the inbox preview line is never the
+   * header chrome. */
   preheader?: string;
 }) {
+  const contactLine = renderContactLine(params.company);
   const footerHtml = `
-    <p style="margin:0 0 6px; font-size:12px; font-weight:600; color:${EMAIL_TOKENS.text};">${escapeHtml(params.company.name)}</p>
-    <p style="margin:0; font-size:11px; color:${EMAIL_TOKENS.textFaint};">
+    <p style="margin:0 0 4px; font-size:13px; font-weight:700; color:${EMAIL_TOKENS.ink};">${escapeHtml(params.company.name)}</p>
+    ${contactLine ? `<p style="margin:0 0 14px; font-size:12px; line-height:1.6; color:${EMAIL_TOKENS.textSubtle};">${contactLine}</p>` : '<p style="margin:0 0 14px; font-size:0; line-height:0;">&nbsp;</p>'}
+    <p style="margin:0; font-size:11px; line-height:1.7; color:${EMAIL_TOKENS.textFaint};">
       You're receiving this because you subscribed to updates from ${escapeHtml(params.company.name)}.
-      <a href="${params.unsubscribeUrl}" style="color:${EMAIL_TOKENS.textFaint}; text-decoration:underline;">Unsubscribe</a>
+      <a href="${escapeAttr(params.unsubscribeUrl)}" style="color:${EMAIL_TOKENS.textFaint}; text-decoration:underline;">Unsubscribe</a>
     </p>`;
-  const html = renderEmailCard({
-    bodyHtml: params.htmlContent,
-    company: params.company,
+  const html = renderPremiumShell({
     variant: "marketing",
-    preheader: params.preheader,
+    company: params.company,
+    // The subject is the campaign's headline; the "[TEST]" marker added to a
+    // test send's subject line is not part of the design.
+    title: params.subject.replace(/^\[TEST\]\s*/, ""),
+    bodyHtml: promoteLoneLinksToButtons(params.htmlContent, params.company.brandColor),
+    preheader: params.preheader ?? (summarizeForPreheader(params.htmlContent) || undefined),
     footerHtml,
   });
   return { subject: params.subject, html };

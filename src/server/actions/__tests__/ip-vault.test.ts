@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 const ENCRYPTION_KEY = Buffer.alloc(32, 0x22).toString("base64"); // deliberately synthetic (repeating fill byte)
 const HASH_KEY = Buffer.alloc(32, 0x33).toString("base64"); // deliberately synthetic (repeating fill byte)
 
-type FakeAccount = { id: string; role: string; status: string; companyId: string; bookingPermissions: string[] };
+type FakeAccount = { id: string; role: string; status: string; companyId: string; bookingPermissions: string[]; sessionCreatedAt?: Date | null };
 type FakeBooking = { id: string; companyId: string; quoteAgentId?: string; leadAssignedAgentId?: string; contactOwnerId?: string };
 type FakeCapture = {
   id: string;
@@ -151,6 +151,7 @@ describe("getIpHistoryForBooking", () => {
     await seedCapture({ id: "capture-2", formType: "CANCELLATION_CONFIRMATION", capturedAt: new Date("2026-02-01") });
     const { getIpHistoryForBooking } = await import("../ip-vault");
     const history = await getIpHistoryForBooking("booking-1");
+    if (!Array.isArray(history)) throw new Error("expected entries");
     expect(history).toHaveLength(2);
     expect(history.map((h) => h.formType)).toEqual(["NEW_BOOKING", "CANCELLATION_CONFIRMATION"]);
   });
@@ -168,6 +169,26 @@ describe("getIpHistoryForBooking", () => {
     currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1", bookingPermissions: [] };
     const { getIpHistoryForBooking } = await import("../ip-vault");
     await expect(getIpHistoryForBooking("booking-1")).rejects.toThrow(/not authorized/i);
+  });
+});
+
+describe("getIpHistoryForBooking — recent sign-in step-up", () => {
+  it("in production a stale session gets a RETURNED actionable error (not a masked throw), audited, with no IP data", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    await seedCapture();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1", bookingPermissions: [], sessionCreatedAt: new Date(Date.now() - 30 * 60 * 1000) };
+    const { getIpHistoryForBooking } = await import("../ip-vault");
+    const result = await getIpHistoryForBooking("booking-1");
+    expect(result).toEqual({ error: expect.stringMatching(/sign-in within the last 15 minutes/i) });
+    expect(JSON.stringify(result)).not.toContain("203.0.113");
+  });
+
+  it("in production a recent sign-in can view the history", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    await seedCapture();
+    currentActor = { id: "admin-1", role: "ADMIN", status: "ACTIVE", companyId: "company-1", bookingPermissions: [], sessionCreatedAt: new Date() };
+    const { getIpHistoryForBooking } = await import("../ip-vault");
+    expect(Array.isArray(await getIpHistoryForBooking("booking-1"))).toBe(true);
   });
 });
 

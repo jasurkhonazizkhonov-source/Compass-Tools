@@ -755,7 +755,7 @@ describe("Pass 12 — shared premium shell (§2-§7/§36)", () => {
       company: TEST_COMPANY,
     });
     expect(html).toContain("@media only screen and (max-width: 480px)");
-    expect(html).toContain("max-width:700px"); // bounded container — content can't overflow horizontally
+    expect(html).toContain("max-width:640px"); // bounded container — content can't overflow horizontally
   });
 
   it("every itinerary-bearing email (quote/booking/cancellation) includes the mobile-responsive stacking style", () => {
