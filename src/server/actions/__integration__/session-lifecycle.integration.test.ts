@@ -409,6 +409,45 @@ describe.skipIf(!enabled)("session lifecycle — real PostgreSQL", () => {
   });
 
   // ------------------------------------------------------------------------------------------------------------------------------
+  describe("a deactivated account has no session on ANY path", () => {
+    it("even if the token is still stored, getCurrentAccount and the proxy refuse an inactive account", async () => {
+      const t = await signInAs(agentId, PC_HEADERS);
+      asBrowser(t);
+      expect((await getCurrentAccount())?.id).toBe(agentId);
+      await prisma.$executeRaw`UPDATE "Account" SET "status" = 'INACTIVE' WHERE "id" = ${agentId}`;
+      try {
+        expect(await getCurrentAccount()).toBeNull();
+        const r = await proxyStatus(t);
+        expect(r.status).toBe(307);
+        expect(r.location).toBe("http://localhost/login");
+      } finally {
+        await prisma.$executeRaw`UPDATE "Account" SET "status" = 'ACTIVE' WHERE "id" = ${agentId}`;
+      }
+    });
+
+    it("an Admin removing a user ends that user's session in the same transaction (and leaves everyone else's alone)", async () => {
+      const victim = await signInAs(agentId, PHONE_HEADERS);
+      const bystander = await signInAs(colleagueId, PC_HEADERS);
+      const adminToken = await signInAs(adminId, PC_HEADERS);
+      asBrowser(adminToken);
+      const { setAccountStatus } = await import("../accounts");
+      await setAccountStatus(agentId, "INACTIVE");
+      try {
+        const r = await raw(agentId);
+        expect([r.activeSessionId, r.sessionCreatedAt]).toEqual([null, null]);
+        asBrowser(victim);
+        expect(await getCurrentAccount()).toBeNull();
+        asBrowser(bystander);
+        expect((await getCurrentAccount())?.id).toBe(colleagueId);
+        asBrowser(adminToken);
+        expect((await getCurrentAccount())?.id).toBe(adminId);
+      } finally {
+        await prisma.$executeRaw`UPDATE "Account" SET "status" = 'ACTIVE' WHERE "id" = ${agentId}`;
+      }
+    });
+  });
+
+  // ------------------------------------------------------------------------------------------------------------------------------
   describe("Sign out all users", () => {
     const adminActsAs = async (ageMs = 30_000) => {
       const t = await signInAs(adminId, PC_HEADERS);

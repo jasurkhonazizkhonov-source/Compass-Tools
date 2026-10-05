@@ -16,6 +16,8 @@ type FakeBooking = {
   status: string;
   profitAmount: number | null;
   updatedAt: Date;
+  /** When the booking was last moved to CONFIRMED (BookingStatusHistory). Absent = a legacy booking with no history row. */
+  confirmedAt?: Date;
   companyId: string;
   sentByAgentId: string | null;
 };
@@ -25,12 +27,27 @@ let bookings: FakeBooking[];
 let agents: Map<string, FakeAgent>;
 
 const fakePrisma = {
-  $queryRaw: vi.fn(async (strings: TemplateStringsArray, companyId: string, start?: Date) => {
+  // getSalesboard passes one Prisma.Sql: its text and its bind values (company first, then the date bounds that are present).
+  $queryRaw: vi.fn(async (query: { sql: string; values: unknown[] }) => {
     // The fake honours the visibility predicate only if the real SQL carries it,
     // so removing it from the query makes the hidden-account tests below fail.
-    const filtersHidden = strings.join("?").includes('a."accountsVisible" = true');
+    const filtersHidden = query.sql.includes('a."accountsVisible" = true');
+    const companyId = query.values[0] as string;
+    const dates = query.values.filter((v): v is Date => v instanceof Date);
+    const hasStart = />= (\$\d+|\?)/.test(query.sql);
+    const hasEnd = /< (\$\d+|\?)/.test(query.sql);
+    const start = hasStart ? dates[0] : undefined;
+    const endExclusive = hasEnd ? dates[hasStart ? 1 : 0] : undefined;
+    // The sale date is the confirmation event, falling back to updatedAt only for a booking with no history row.
+    const saleAt = (b: FakeBooking) => b.confirmedAt ?? b.updatedAt;
     const eligible = bookings.filter(
-      (b) => b.status === "CONFIRMED" && b.profitAmount !== null && b.companyId === companyId && b.sentByAgentId != null && (!start || b.updatedAt >= start)
+      (b) =>
+        b.status === "CONFIRMED" &&
+        b.profitAmount !== null &&
+        b.companyId === companyId &&
+        b.sentByAgentId != null &&
+        (!start || saleAt(b) >= start) &&
+        (!endExclusive || saleAt(b) < endExclusive)
     );
     const byAgent = new Map<string, { agentId: string; fullName: string; role: string; profit: number; bookingCount: number }>();
     for (const b of eligible) {
@@ -197,7 +214,7 @@ describe("getSalesboard — hidden accounts are not shown as current salespeople
     await getSalesboard(VIEWER, "all");
     await getSalesboard(VIEWER, "month");
     for (const call of fakePrisma.$queryRaw.mock.calls) {
-      expect((call[0] as unknown as TemplateStringsArray).join("?")).toContain('a."accountsVisible" = true');
+      expect((call[0] as unknown as { sql: string }).sql).toContain('a."accountsVisible" = true');
     }
   });
 });

@@ -1,8 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import type { AccountRole, Prisma } from "@/generated/prisma/client";
+import { Prisma, type AccountRole } from "@/generated/prisma/client";
 import type { Viewer } from "@/server/visibility";
 import { resolveExchangeRate, convertToUsd } from "@/lib/currency";
 import { resolvePageSize } from "@/lib/pagination";
+import { SALE_AT_SQL, saleDateConditions, type SalesRange } from "@/server/queries/sales-range";
 
 // Part 16 — only Admin sees every commission company-wide now; Manager is
 // row-scoped to their own sales just like Travel Agent. Distinct from
@@ -13,8 +14,9 @@ function canViewAllCommissions(role: AccountRole) {
 }
 
 export type CommissionFilters = {
-  from?: Date;
-  to?: Date;
+  /** The date window (see sales-range.ts) — a pay period, a month or any custom From/To. Narrows the report; it is never an
+   * authorization filter: the viewer's row scope below is applied regardless of what range is asked for. */
+  range?: SalesRange;
   /** Part 16 — "Specific User" filter. Only ever honored for a viewer who
    * already has company-wide visibility (canViewAllCommissions) — a
    * row-scoped viewer (Manager/Travel Agent) is ALWAYS restricted to their
@@ -55,10 +57,29 @@ function commissionsWhere(viewer: Viewer, filters: CommissionFilters): Prisma.Bo
     profitAmount: { not: null },
     contact: { companyId: viewer?.companyId },
     ...(scopedAgentId ? { quote: { sentByAgentId: scopedAgentId } } : {}),
-    ...(filters.from || filters.to
-      ? { updatedAt: { ...(filters.from ? { gte: filters.from } : {}), ...(filters.to ? { lte: filters.to } : {}) } }
-      : {}),
   };
+}
+
+/**
+ * The bookings that count in a report, newest sale first, each with the date it counts on. ONE query decides both the viewer's
+ * row scope (company, and for non-Admins their own sales) and the date window, so the page rows, the totals and any "vs previous"
+ * comparison can never disagree about what is in a period. The sale date is the confirmation event (sales-range.ts) — a later
+ * edit to a booking can no longer move it into another pay period.
+ */
+async function eligibleBookings(viewer: NonNullable<Viewer>, filters: CommissionFilters): Promise<{ id: string; saleAt: Date }[]> {
+  const canViewAll = canViewAllCommissions(viewer.role);
+  const scopedAgentId = canViewAll ? filters.userId : viewer.id;
+  return prisma.$queryRaw<{ id: string; saleAt: Date }[]>(Prisma.sql`
+    SELECT b."id" AS "id", ${SALE_AT_SQL} AS "saleAt"
+    FROM "Booking" b
+    JOIN "Contact" c ON c."id" = b."contactId"
+    JOIN "Quote" q ON q."id" = b."quoteId"
+    WHERE b."status" = 'CONFIRMED' AND b."profitAmount" IS NOT NULL
+      AND c."companyId" = ${viewer.companyId}
+      ${scopedAgentId ? Prisma.sql`AND q."sentByAgentId" = ${scopedAgentId}` : Prisma.empty}
+      ${saleDateConditions(filters.range ?? {})}
+    ORDER BY "saleAt" DESC, b."id" DESC
+  `);
 }
 
 /**
@@ -85,11 +106,16 @@ export async function getCommissions(viewer: Viewer, filters: CommissionFilters 
 
   const resolvedPage = Math.max(1, Math.trunc(page) || 1);
   const resolvedPageSize = resolvePageSize(pageSize);
-  const where = commissionsWhere(viewer, filters);
+  const eligible = await eligibleBookings(viewer, filters);
+  const total = eligible.length;
+  const pageEntries = eligible.slice((resolvedPage - 1) * resolvedPageSize, resolvedPage * resolvedPageSize);
+  const saleAtById = new Map(pageEntries.map((e) => [e.id, e.saleAt]));
+  const pageIds = pageEntries.map((e) => e.id);
 
-  const [bookings, total] = await Promise.all([
+  const unordered = pageIds.length === 0 ? [] : await (
     prisma.booking.findMany({
-      where,
+      // The row scope is applied again here (defence in depth) on top of the id list the eligibility query produced.
+      where: { ...commissionsWhere(viewer, filters), id: { in: pageIds } },
       include: {
         contact: { select: { firstName: true, lastName: true } },
         quote: {
@@ -129,16 +155,12 @@ export async function getCommissions(viewer: Viewer, filters: CommissionFilters 
           select: { changedBy: { select: { id: true, fullName: true } } },
         },
       },
-      // `id` tiebreaker — same Pass 7 §25 reasoning as contacts.ts's own
-      // paginated list: several bookings can share the exact same
-      // updatedAt, which without a deterministic secondary key could let a
-      // row appear on two pages or be skipped between page loads.
-      orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
-      skip: (resolvedPage - 1) * resolvedPageSize,
-      take: resolvedPageSize,
-    }),
-    prisma.booking.count({ where }),
-  ]);
+    })
+  );
+  // Presented in the eligibility query's order: newest sale first, `id` as the deterministic tiebreaker (several bookings can
+  // share an instant; without it a row could appear on two pages or be skipped between page loads — Pass 7 §25).
+  const byId = new Map(unordered.map((b) => [b.id, b]));
+  const bookings = pageIds.map((id) => byId.get(id)).filter((b): b is NonNullable<typeof b> => !!b);
 
   const rows = bookings.map((b) => {
     const math = computeCommissionMath({
@@ -183,7 +205,7 @@ export async function getCommissions(viewer: Viewer, filters: CommissionFilters 
       ticketingAgentName: ticketingAgent?.fullName ?? "Unknown",
       destination: lastSegment ? `${lastSegment.arrivalAirport.city}, ${lastSegment.arrivalAirport.country}` : "—",
       status: b.status,
-      confirmedAt: b.updatedAt,
+      confirmedAt: saleAtById.get(b.id) ?? b.updatedAt,
     };
   });
 
@@ -226,15 +248,27 @@ export type CommissionSummary = {
 export async function getCommissionsSummary(viewer: Viewer, filters: CommissionFilters = {}): Promise<CommissionSummary> {
   if (!viewer) return { bookingCount: 0, totalProfit: 0, totalCommission: 0, totalTips: 0, tipEarnings: 0, totalEarnings: 0, uniformTipPercent: null };
 
+  const eligible = await eligibleBookings(viewer, filters);
   const where = commissionsWhere(viewer, filters);
-  const bookings = await prisma.booking.findMany({
-    where,
-    select: {
-      profitAmount: true,
-      gratuityAmount: true,
-      quote: { select: { currency: true, exchangeRate: true, sentByAgent: { select: { commissionPercent: true, tipPercent: true } } } },
-    },
-  });
+  // Fetched in chunks so a very long all-time list never exceeds the database's bind-parameter limit.
+  const bookings: {
+    profitAmount: Prisma.Decimal | null;
+    gratuityAmount: Prisma.Decimal;
+    quote: { currency: string; exchangeRate: Prisma.Decimal | null; sentByAgent: { commissionPercent: Prisma.Decimal | null; tipPercent: Prisma.Decimal | null } | null };
+  }[] = [];
+  for (let i = 0; i < eligible.length; i += 5000) {
+    const ids = eligible.slice(i, i + 5000).map((e) => e.id);
+    bookings.push(
+      ...(await prisma.booking.findMany({
+        where: { ...where, id: { in: ids } },
+        select: {
+          profitAmount: true,
+          gratuityAmount: true,
+          quote: { select: { currency: true, exchangeRate: true, sentByAgent: { select: { commissionPercent: true, tipPercent: true } } } },
+        },
+      }))
+    );
+  }
 
   let totalProfit = 0;
   let totalCommission = 0;

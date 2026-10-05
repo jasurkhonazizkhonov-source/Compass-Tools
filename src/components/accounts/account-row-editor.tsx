@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Loader2, Pencil, Trash2 } from "lucide-react";
 import {
@@ -17,15 +17,6 @@ import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-  DialogFooter,
-  DialogTrigger,
-} from "@/components/ui/dialog";
 import {
   ROLE_LABELS,
   PAYMENT_PERMISSIONS,
@@ -585,40 +576,22 @@ export function AccountStatusSwitch({
 }) {
   const [isPending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const switchRef = useRef<HTMLButtonElement>(null);
-  const wasConfirmOpen = useRef(false);
 
-  // The confirm dialog's trigger is the Switch itself, but it can't be a
-  // <DialogTrigger> (matching every other dialog in this app) because the
-  // Switch has conditional behavior: turning ON calls setAccountStatus
-  // directly with no dialog at all, turning OFF opens this confirmation
-  // first. So DialogTrigger's automatic focus-restoration-on-close doesn't
-  // apply here — restore focus manually instead, on every path that closes
-  // the dialog (Escape, outside click, Cancel, or a successful Deactivate).
-  useEffect(() => {
-    if (wasConfirmOpen.current && !confirmOpen) {
-      switchRef.current?.focus();
+  // Deactivating asks first in the shared ConfirmDialog (focus returns to the switch that opened it); turning ON needs no
+  // confirmation. The dialog owns the pending state and shows a server refusal inline.
+  async function deactivate() {
+    try {
+      await setAccountStatus(accountId, "INACTIVE");
+    } catch (err) {
+      return { error: safeActionMessage(err, "Failed to update status") };
     }
-    wasConfirmOpen.current = confirmOpen;
-  }, [confirmOpen]);
-
-  function deactivate() {
-    startTransition(async () => {
-      try {
-        await setAccountStatus(accountId, "INACTIVE");
-        toast.success("Account deactivated");
-        setConfirmOpen(false);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to update status");
-      }
-    });
+    toast.success("Account deactivated");
   }
 
   return (
     <>
       <div className="flex items-center gap-2">
         <Switch
-          ref={switchRef}
           checked={status === "ACTIVE"}
           disabled={!canEdit || isPending || (isSelf && status === "ACTIVE")}
           title={isSelf && status === "ACTIVE" ? "You cannot disable your own account" : undefined}
@@ -640,25 +613,14 @@ export function AccountStatusSwitch({
         <span className="text-xs text-muted-foreground">{status === "ACTIVE" ? "Active" : "Inactive"}</span>
       </div>
 
-      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Deactivate {accountName}?</DialogTitle>
-            <DialogDescription>
-              They will immediately lose access to the CRM. You can reactivate their account at any time.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={isPending}>
-              Cancel
-            </Button>
-            <Button variant="destructive" onClick={deactivate} disabled={isPending}>
-              {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Deactivate
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Deactivate ${accountName}?`}
+        description="They will immediately lose access to the CRM and any session they hold ends. You can reactivate their account at any time."
+        confirmLabel="Deactivate"
+        onConfirm={deactivate}
+      />
     </>
   );
 }
@@ -734,7 +696,6 @@ export function RemoveUserButton({
   isSelf: boolean;
   isLastActiveAdmin?: boolean;
 }) {
-  const [isPending, startTransition] = useTransition();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   if (!canRemove || status !== "ACTIVE") return null;
@@ -745,57 +706,37 @@ export function RemoveUserButton({
       ? "This account is protected because it is currently the only active administrator"
       : undefined;
 
-  function remove() {
-    startTransition(async () => {
-      try {
-        await setAccountStatus(accountId, "INACTIVE");
-        toast.success(`${accountName} removed`);
-        setConfirmOpen(false);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to remove user");
-      }
-    });
+  async function remove() {
+    try {
+      await setAccountStatus(accountId, "INACTIVE");
+    } catch (err) {
+      return { error: safeActionMessage(err, "Failed to remove user") };
+    }
+    toast.success(`${accountName} removed`);
   }
 
   return (
-    <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
-      {/* Unlike AccountStatusSwitch's Switch trigger, this button always
-          opens the dialog unconditionally — no branching logic — so it can
-          safely use DialogTrigger (matching every other dialog in this app)
-          for automatic focus-restoration-on-close instead of a manual ref. */}
-      <DialogTrigger asChild>
-        <Button
-          size="icon-sm"
-          variant="ghost"
-          className="text-muted-foreground hover:text-destructive"
-          disabled={!!blockedReason || isPending}
-          title={blockedReason ?? "Remove user"}
-          aria-label="Remove user"
-        >
-          {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-        </Button>
-      </DialogTrigger>
-
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Remove {accountName}?</DialogTitle>
-          <DialogDescription>
-            They will immediately lose access to Compass Tools — their next sign-in and any current session will
-            both be rejected. Their historical leads, quotes, bookings, and activity are preserved and not
-            deleted. This can be undone at any time from their Status toggle.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setConfirmOpen(false)} disabled={isPending}>
-            Cancel
-          </Button>
-          <Button variant="destructive" onClick={remove} disabled={isPending}>
-            {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-            Remove
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <>
+      <Button
+        size="icon-sm"
+        variant="ghost"
+        className="text-muted-foreground hover:text-destructive"
+        disabled={!!blockedReason}
+        title={blockedReason ?? "Remove user"}
+        aria-label="Remove user"
+        onClick={() => setConfirmOpen(true)}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </Button>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={setConfirmOpen}
+        title={`Remove ${accountName}?`}
+        description="They will immediately lose access to Compass Tools — their next sign-in and any current session will both be rejected. Their historical leads, quotes, bookings, and activity are preserved and not deleted. This can be undone at any time from their Status toggle."
+        confirmLabel="Remove"
+        onConfirm={remove}
+      />
+    </>
   );
 }
 

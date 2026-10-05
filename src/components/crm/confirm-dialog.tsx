@@ -17,7 +17,8 @@ import {
  * The one confirmation dialog for the whole CRM — it replaces every browser window.confirm / alert / prompt.
  *
  * - `role="alertdialog"` with a title and description wired up for assistive technology; focus is trapped inside while it is
- *   open, Escape and Cancel close it, and focus returns to the control that opened it (Radix Dialog behaviour).
+ *   open, Escape and Cancel close it, and focus returns to the control that opened it (DialogContent's
+ *   useReturnFocus — Radix only does this for a <DialogTrigger>, and these dialogs are opened from handlers).
  * - Focus starts on Cancel, so a stray Enter / Space never fires the destructive action.
  * - While the action runs the dialog cannot be dismissed (Escape, overlay click, the close button and Cancel are all inert),
  *   both buttons are disabled and the confirm button shows a spinner. A second click while pending is ignored.

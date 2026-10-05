@@ -72,6 +72,10 @@ export const getCurrentAccount = cache(async () => {
 
   const account = await prisma.account.findUnique({ where: { activeSessionId: token } });
   if (!account) return null; // token doesn't match any account's current session (never issued, signed out, or superseded by a newer login elsewhere)
+  // A deactivated account has no session, whatever token it still holds. proxy.ts already refuses it on every page; checking here
+  // too means server actions and API routes (which authenticate through this function and are not always reached through the
+  // proxy's matcher) apply the SAME rule — one definition of "signed in" for every path.
+  if (account.status !== "ACTIVE") return null;
   if (isSessionExpired(account.sessionCreatedAt)) {
     // Lazily-detected expiry — the same "next request notices it" model
     // proxy.ts already relies on for redirecting an expired session (there

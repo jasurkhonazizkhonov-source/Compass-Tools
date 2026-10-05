@@ -37,20 +37,22 @@ function makeBooking(overrides: { id?: string; originalQuoteId?: string | null; 
 
 let bookings: ReturnType<typeof makeBooking>[];
 
-// Models real Prisma skip/take/orderBy-by-updatedAt-desc-then-id-desc
-// pagination against the shared `bookings` fixture, so a test asserting
-// "page 2 shows rows 26-50" is actually exercising slicing logic, not just
-// returning whatever's in the array. getCommissionsSummary's own (unpaginated,
-// lighter-select) findMany call never passes skip/take, so it always gets
-// every matching row regardless of what page getCommissions was asked for.
+// Models the two-step read getCommissions / getCommissionsSummary now do: (1) ONE raw eligibility query returns the matching
+// booking ids with their sale date, newest first (id as the tiebreaker); (2) the heavy rows are loaded for just the ids asked
+// for. Pagination slicing happens between the two, so "page 2 shows rows 26-50" exercises real slicing logic, and the summary
+// (which never paginates) always sees every eligible booking regardless of which page was requested. The sale date here is the
+// fixture's updatedAt (no confirmation history rows in this fake); the real SQL's COALESCE is proven against real PostgreSQL in
+// pay-period-reporting.integration.test.ts.
 const fakePrisma = {
+  $queryRaw: vi.fn(async () => {
+    const sorted = [...bookings].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || b.id.localeCompare(a.id));
+    return sorted.map((b) => ({ id: b.id, saleAt: b.updatedAt }));
+  }),
   booking: {
-    findMany: vi.fn(async (args: { skip?: number; take?: number }) => {
-      const sorted = [...bookings].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime() || b.id.localeCompare(a.id));
-      if (args.skip === undefined && args.take === undefined) return sorted;
-      return sorted.slice(args.skip ?? 0, (args.skip ?? 0) + (args.take ?? sorted.length));
+    findMany: vi.fn(async (args: { where?: { id?: { in?: string[] } } }) => {
+      const ids = args.where?.id?.in;
+      return ids ? bookings.filter((b) => ids.includes(b.id)) : bookings;
     }),
-    count: vi.fn(async () => bookings.length),
   },
 };
 

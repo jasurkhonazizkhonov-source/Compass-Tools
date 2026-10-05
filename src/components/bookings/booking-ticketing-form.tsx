@@ -549,7 +549,7 @@ function ReadOnlyField({ label, value, className }: { label: string; value: stri
  * actions are always available whenever their own preconditions are met,
  * regardless of edit-mode), so this is factored out once rather than
  * duplicated. */
-function BookingTicketingActionButtons({
+export function BookingTicketingActionButtons({
   sendDisabledReason,
   bookingId,
   canSendConfirmation,

@@ -408,6 +408,9 @@ export async function setAccountStatus(accountId: string, status: "ACTIVE" | "IN
           // not deleted, matching the same "deactivate, don't destroy"
           // policy applied to the Account itself.
           await tx.leadQueueEntry.updateMany({ where: { accountId }, data: { isActive: false } });
+          // …and end any session they hold right now (single statement, same transaction), so removal takes effect on their very
+          // next request rather than only when the status is next consulted. Their own sign-in is separately refused while inactive.
+          await tx.account.update({ where: { id: accountId }, data: { activeSessionId: null, sessionCreatedAt: null } });
         }
 
         await tx.account.update({ where: { id: accountId }, data: { status } });

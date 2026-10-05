@@ -72,6 +72,13 @@ describe("getCurrentAccount — real session validation, no fallback-to-admin", 
     expect(await getCurrentAccount()).toBeNull();
   });
 
+  it("returns null for a deactivated account even though its token and 24h window are still valid (same rule as the route gate)", async () => {
+    accounts.set("admin-1", { id: "admin-1", activeSessionId: "tok-abc", sessionCreatedAt: new Date(), status: "INACTIVE" });
+    cookieValue = "tok-abc";
+    const { getCurrentAccount } = await import("../dev-session");
+    expect(await getCurrentAccount()).toBeNull();
+  });
+
   it("never silently falls back to any other account when the presented session is invalid", async () => {
     accounts.set("admin-1", { id: "admin-1", activeSessionId: "tok-real", sessionCreatedAt: new Date(), status: "ACTIVE" });
     cookieValue = "tok-fake";

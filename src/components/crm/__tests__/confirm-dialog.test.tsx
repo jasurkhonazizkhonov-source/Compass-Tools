@@ -72,6 +72,45 @@ describe("ConfirmDialog — the CRM replacement for window.confirm", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
+  it("focus RETURNS to the control that opened it — on Escape, on Cancel and after a confirmed action (Radix only does this for a DialogTrigger)", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    render(<Harness onConfirm={() => undefined} />);
+    const opener = screen.getByText("Open");
+
+    await user.click(opener);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus());
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    await user.click(opener);
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    await user.click(opener);
+    await user.click(screen.getByRole("button", { name: "Delete lead" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("if the opener was removed while the dialog was open (its row was deleted), closing does not throw or focus a detached node", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    function Row() {
+      const [open, setOpen] = useState(false);
+      const [gone, setGone] = useState(false);
+      return (
+        <>
+          {!gone && <button onClick={() => setOpen(true)}>Row action</button>}
+          <ConfirmDialog open={open} onOpenChange={setOpen} title="Delete row?" description="x" confirmLabel="Delete row" onConfirm={() => setGone(true)} />
+        </>
+      );
+    }
+    render(<Row />);
+    await user.click(screen.getByText("Row action"));
+    await user.click(screen.getByRole("button", { name: "Delete row" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    expect(screen.queryByText("Row action")).not.toBeInTheDocument();
+  });
+
   it("supports a custom cancel label and the non-destructive variant", async () => {
     const user = userEvent.setup();
     render(<Harness onConfirm={() => undefined} variant="default" cancelLabel="Keep quote" />);

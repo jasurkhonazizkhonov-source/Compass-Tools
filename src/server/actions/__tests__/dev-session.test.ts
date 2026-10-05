@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // In-memory fake cookie jar + Account table, same convention as the other
 // server-action test files in this project (payment-methods.test.ts etc.).
 
-type FakeAccount = { id: string; activeSessionId: string | null; sessionCreatedAt: Date | null; lastSeenAt: Date | null };
+type FakeAccount = { id: string; activeSessionId: string | null; sessionCreatedAt: Date | null; lastSeenAt: Date | null; status?: string };
 
 let accounts: Map<string, FakeAccount>;
 let cookieJar: Map<string, string>;
@@ -62,8 +62,8 @@ vi.mock("@/lib/prisma", () => ({
 
 beforeEach(() => {
   accounts = new Map([
-    ["admin-1", { id: "admin-1", activeSessionId: null, sessionCreatedAt: null, lastSeenAt: null }],
-    ["agent-1", { id: "agent-1", activeSessionId: null, sessionCreatedAt: null, lastSeenAt: null }],
+    ["admin-1", { id: "admin-1", activeSessionId: null, sessionCreatedAt: null, lastSeenAt: null, status: "ACTIVE" }],
+    ["agent-1", { id: "agent-1", activeSessionId: null, sessionCreatedAt: null, lastSeenAt: null, status: "ACTIVE" }],
   ]);
   cookieJar = new Map();
   redirectedTo = undefined;

@@ -1,67 +1,95 @@
 import { notFound } from "next/navigation";
 import { Trophy } from "lucide-react";
-import { getSalesboard, type SalesboardPeriod } from "@/server/queries/salesboard";
+import { getSalesboard, summarizeSalesboard } from "@/server/queries/salesboard";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSalesboard } from "@/lib/permissions";
 import { EmptyState } from "@/components/crm/empty-state";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ReportRangeControls, rangeHeading, DEFAULT_RANGE_OPTIONS } from "@/components/crm/report-range-controls";
+import { PeriodKpi } from "@/components/crm/period-kpi";
 import { formatMoney } from "@/lib/currency";
-import { cn } from "@/lib/utils";
-import Link from "next/link";
+import { previousEquivalentRange, resolveReportRange } from "@/lib/pay-period";
+import { salesRangeForDays, toSalesRange } from "@/server/queries/sales-range";
 
 export const dynamic = "force-dynamic";
 
-const PERIODS: { value: SalesboardPeriod; label: string }[] = [
-  { value: "today", label: "Today" },
-  { value: "week", label: "This Week" },
-  { value: "month", label: "This Month" },
-  { value: "year", label: "This Year" },
-  { value: "all", label: "All Time" },
-];
-
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+
+// This Year / All Time stay available on the Salesboard (they were there before pay periods existed).
+const SALESBOARD_OPTIONS = [...DEFAULT_RANGE_OPTIONS, { value: "year", label: "This Year" }, { value: "all", label: "All Time" }];
 
 /**
- * Part 18 — leaderboard of confirmed-booking profit by user, sorted
- * highest to lowest. Timezone-aware date-range filtering (America/
- * Los_Angeles, same convention as the Pacific clock — see getSalesboard's
- * doc comment for why).
+ * Part 18 — leaderboard of confirmed-booking profit by user, sorted highest to lowest.
+ *
+ * The default view is the CURRENT OFFICIAL PAY PERIOD (Period 1 = 21st → 5th, Period 2 = 6th → 20th; lib/pay-period.ts). It
+ * flips on its own at the start of the 6th and the 21st in the business time zone — nothing is reset or deleted, an older
+ * period is simply another date range. Any other period or a custom From/To goes through the SAME resolver and the SAME
+ * query. Who may see the board is unchanged (every signed-in role, company-wide, hidden accounts left off): choosing dates
+ * narrows the numbers and never widens access.
  */
 export default async function SalesboardPage({ searchParams }: { searchParams: SearchParams }) {
   const current = await getCurrentAccount();
   if (!canViewSalesboard(current?.role)) notFound();
 
   const sp = await searchParams;
-  const period: SalesboardPeriod = PERIODS.some((p) => p.value === sp.period) ? (sp.period as SalesboardPeriod) : "all";
+  const range = resolveReportRange({ period: one(sp.period), from: one(sp.from), to: one(sp.to), payPeriod: one(sp.payPeriod) });
+  const previous = previousEquivalentRange(range);
 
-  const rows = await getSalesboard(current, period);
+  const [rows, previousRows] = await Promise.all([
+    getSalesboard(current, toSalesRange(range)),
+    previous ? getSalesboard(current, salesRangeForDays(previous.from, previous.to)) : Promise.resolve(null),
+  ]);
+  const totals = summarizeSalesboard(rows);
+  const previousTotals = previousRows ? summarizeSalesboard(previousRows) : null;
+  const heading = rangeHeading(range);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Salesboard</h1>
-          <p className="text-sm text-muted-foreground">Profit generated from confirmed bookings, highest to lowest</p>
+      <div className="space-y-3">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">Salesboard</h1>
+            <p className="text-sm text-muted-foreground">Profit generated from confirmed bookings, highest to lowest</p>
+          </div>
+          <div className="sm:text-right" data-testid="salesboard-period">
+            <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{heading.title}</p>
+            <p className="text-sm font-semibold">{heading.dates}</p>
+          </div>
         </div>
-        <div className="flex gap-1 rounded-md border bg-card p-1 w-full max-w-full overflow-x-auto sm:w-fit">
-          {PERIODS.map((p) => (
-            <Link
-              key={p.value}
-              href={`/salesboard?period=${p.value}`}
-              className={cn(
-                "shrink-0 rounded px-2.5 py-1 text-xs font-medium transition-colors",
-                period === p.value ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"
-              )}
-            >
-              {p.label}
-            </Link>
-          ))}
-        </div>
+        <ReportRangeControls basePath="/salesboard" selected={range} options={SALESBOARD_OPTIONS} />
       </div>
 
+      <Card className="shadow-none">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">{heading.title} totals</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+            <PeriodKpi
+              label="Profit Generated"
+              value={formatMoney(totals.totalProfit, "USD")}
+              current={totals.totalProfit}
+              previous={previousTotals?.totalProfit}
+              previousLabel={previous?.label}
+              emphasize
+            />
+            <PeriodKpi
+              label="Confirmed Bookings"
+              value={String(totals.bookingCount)}
+              current={totals.bookingCount}
+              previous={previousTotals?.bookingCount}
+              previousLabel={previous?.label}
+            />
+            <PeriodKpi label="Average Profit per Booking" value={totals.averageProfit === null ? "—" : formatMoney(totals.averageProfit, "USD")} />
+          </div>
+        </CardContent>
+      </Card>
+
       {rows.length === 0 ? (
-        <EmptyState icon={Trophy} title="No confirmed bookings in this period" description="The leaderboard fills in as bookings are confirmed." />
+        <EmptyState icon={Trophy} title="No confirmed bookings in this period" description="The leaderboard fills in as bookings are confirmed. Earlier periods are still available above." />
       ) : (
         <div className="rounded-lg border bg-card overflow-x-auto">
           <Table>
