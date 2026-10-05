@@ -26,6 +26,7 @@ vi.mock("next/cache", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    auditLog: { create: vi.fn(async ({ data }: { data: unknown }) => data) },
     account: {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => {
         const row = accounts.get(where.id);

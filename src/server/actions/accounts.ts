@@ -2,6 +2,7 @@
 
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
+import { isSerializationConflict } from "@/server/serialization-conflict";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
@@ -62,6 +63,21 @@ async function assertAdmin() {
  * without this, an admin could disable/promote/demote another company's
  * user simply by guessing their account id. Never trust the client's
  * navigation/UI to have only ever shown same-company accounts. */
+/**
+ * An administrator's change to who someone is, what they may do, or whether they are active is a
+ * security event — recorded as an ordinary audit row (who, which account, what kind of change). The
+ * metadata carries ONLY roles, field NAMES and flags: never a value such as an email address or a
+ * commission rate, and never anything about card data.
+ */
+async function auditAccountEvent(
+  client: Prisma.TransactionClient | typeof prisma,
+  params: { actorId: string; action: string; accountId: string; metadata: Record<string, unknown> }
+) {
+  await client.auditLog.create({
+    data: { actorId: params.actorId, action: params.action, entityType: "Account", entityId: params.accountId, metadata: params.metadata as Prisma.InputJsonValue },
+  });
+}
+
 async function assertSameCompany(tx: Prisma.TransactionClient | typeof prisma, accountId: string, callerCompanyId: string) {
   const target = await tx.account.findUnique({ where: { id: accountId }, select: { companyId: true } });
   if (!target || target.companyId !== callerCompanyId) {
@@ -88,9 +104,6 @@ async function countOtherActiveAdmins(tx: Prisma.TransactionClient | typeof pris
 /** Translates a Postgres SERIALIZABLE conflict (two concurrent admin-safety
  * transactions racing each other) into a message worth retrying, rather
  * than a raw/confusing database error reaching the UI. */
-function isSerializationConflict(err: unknown): boolean {
-  return err instanceof Prisma.PrismaClientKnownRequestError && (err.code === "P2034" || err.meta?.code === "40001");
-}
 async function withSerializableRetryMessage<T>(fn: () => Promise<T>): Promise<T> {
   // A serialization failure is Postgres telling us the transaction lost a race with another
   // one and is safe to run again unchanged — so it is retried (the same idiom the lead and
@@ -115,7 +128,8 @@ export async function createAccount(input: z.infer<typeof createAccountSchema>) 
   // Decimal fields (commissionPercent/tipPercent) that cannot cross the
   // Server Action -> Client Component boundary. No caller today reads this
   // return value; narrow it explicitly if one ever needs to.
-  await prisma.account.create({ data: { ...data, companyId: current!.companyId } });
+  const created = await prisma.account.create({ data: { ...data, companyId: current!.companyId }, select: { id: true } });
+  await auditAccountEvent(prisma, { actorId: current!.id, action: "ACCOUNT_CREATED", accountId: created.id, metadata: { role: data.role, status: data.status ?? "ACTIVE" } });
   revalidatePath("/accounts");
   revalidatePath("/users");
 }
@@ -158,7 +172,15 @@ export async function updateAccount(accountId: string, patch: z.infer<typeof upd
           }
         }
 
+        const before = await tx.account.findUniqueOrThrow({ where: { id: accountId }, select: { role: true } });
         await tx.account.update({ where: { id: accountId }, data });
+        const changedFields = Object.entries(data).filter(([, v]) => v !== undefined).map(([k]) => k);
+        await auditAccountEvent(tx, {
+          actorId: current!.id,
+          action: data.role && data.role !== before.role ? "ACCOUNT_ROLE_CHANGED" : "ACCOUNT_UPDATED",
+          accountId,
+          metadata: { changedFields, ...(data.role && data.role !== before.role ? { roleFrom: before.role, roleTo: data.role } : {}) },
+        });
 
         // Team membership follows role. Only a Manager can have team members and
         // only a Travel Agent can be one, so a role change that breaks either
@@ -363,6 +385,7 @@ export async function setAccountStatus(accountId: string, status: "ACTIVE" | "IN
         }
 
         await tx.account.update({ where: { id: accountId }, data: { status } });
+        await auditAccountEvent(tx, { actorId: current!.id, action: "ACCOUNT_STATUS_CHANGED", accountId, metadata: { status } });
       },
       { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
     )
@@ -394,6 +417,7 @@ export async function setAccountsVisibility(accountId: string, visible: boolean)
     where: { id: accountId },
     data: { accountsVisible: visible },
   });
+  await auditAccountEvent(prisma, { actorId: current!.id, action: "ACCOUNT_VISIBILITY_CHANGED", accountId, metadata: { accountsVisible: visible } });
 
   revalidatePath("/accounts");
   revalidatePath("/users");
@@ -479,9 +503,21 @@ export async function updateBookingPermissions(accountId: string, permissions: s
 
   // Deliberately not returning the updated row — see createAccount's
   // comment.
+  const before = await prisma.account.findUnique({ where: { id: accountId }, select: { bookingPermissions: true } });
   await prisma.account.update({
     where: { id: accountId },
     data: { bookingPermissions: requested },
+  });
+  // Who may reveal a signer's IP is a security setting — audited like the payment grants above.
+  await auditAccountEvent(prisma, {
+    actorId: current!.id,
+    action: "BOOKING_PERMISSIONS_CHANGED",
+    accountId,
+    metadata: {
+      targetRole: target.role,
+      granted: requested.filter((p) => !before?.bookingPermissions.includes(p)),
+      revoked: (before?.bookingPermissions ?? []).filter((p) => !requested.includes(p)),
+    },
   });
   revalidatePath("/users");
 }

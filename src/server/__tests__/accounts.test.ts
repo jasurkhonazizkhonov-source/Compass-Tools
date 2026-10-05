@@ -16,6 +16,7 @@ type FakeAccount = {
 };
 
 let accounts: Map<string, FakeAccount>;
+let auditRows: Array<{ actorId: string; action: string; entityType: string; entityId: string; metadata: Record<string, unknown> }>;
 let currentActor: { id: string; role: string } | null;
 
 vi.mock("@/lib/dev-session", () => ({
@@ -84,6 +85,12 @@ vi.mock("@/lib/prisma", () => {
     // same query API — the fake mirrors that by handing back this same
     // mock object, since it already operates on the single shared in-memory
     // `accounts` Map. The isolation-level option is a no-op here.
+    auditLog: {
+      create: vi.fn(async ({ data }: { data: (typeof auditRows)[number] }) => {
+        auditRows.push(data);
+        return data;
+      }),
+    },
     $transaction: vi.fn(async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma)),
   };
   return { prisma: mockPrisma };
@@ -94,6 +101,7 @@ function seed(...rows: FakeAccount[]) {
 }
 
 beforeEach(() => {
+  auditRows = [];
   accounts = new Map();
   currentActor = { id: "admin-1", role: "ADMIN" };
   vi.clearAllMocks();
@@ -275,5 +283,45 @@ describe("setAccountStatus — self-protection + last-admin protection", () => {
     expect(account.fullName).toBe("Agent With History");
     expect(account.phone).toBe("555-1234");
     expect(account.hiredAt).toEqual(new Date("2026-01-01"));
+  });
+});
+
+// An administrator's change to who someone is / what they may do / whether they are active is a
+// security event: recorded with the actor and the kind of change, never with values.
+describe("account administration is audited", () => {
+  const AGENT = { id: "agent-1", fullName: "Agent", email: "secret.address@x.com", phone: null, role: "TRAVEL_AGENT", status: "ACTIVE", hiredAt: null };
+
+  it("creating an account records ACCOUNT_CREATED with the role only", async () => {
+    const { createAccount } = await import("../actions/accounts");
+    await createAccount({ fullName: "New Agent", email: "new@x.com", role: "TRAVEL_AGENT" });
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({ actorId: "admin-1", action: "ACCOUNT_CREATED", entityType: "Account", metadata: { role: "TRAVEL_AGENT" } });
+    expect(JSON.stringify(auditRows)).not.toContain("new@x.com");
+  });
+
+  it("changing a role records ACCOUNT_ROLE_CHANGED with from/to; other edits record ACCOUNT_UPDATED with field NAMES only", async () => {
+    seed({ ...AGENT });
+    const { updateAccount } = await import("../actions/accounts");
+    await updateAccount("agent-1", { role: "TICKETING_AGENT" });
+    expect(auditRows[0]).toMatchObject({ action: "ACCOUNT_ROLE_CHANGED", entityId: "agent-1", metadata: { roleFrom: "TRAVEL_AGENT", roleTo: "TICKETING_AGENT", changedFields: ["role"] } });
+    await updateAccount("agent-1", { email: "changed.secret@x.com", phone: "555-0000" });
+    expect(auditRows[1]).toMatchObject({ action: "ACCOUNT_UPDATED", metadata: { changedFields: ["email", "phone"] } });
+    expect(JSON.stringify(auditRows)).not.toMatch(/changed\.secret|555-0000|secret\.address/);
+  });
+
+  it("enabling/disabling and (un)hiding are recorded", async () => {
+    seed({ ...AGENT });
+    const { setAccountStatus } = await import("../actions/accounts");
+    await setAccountStatus("agent-1", "INACTIVE");
+    expect(auditRows.at(-1)).toMatchObject({ action: "ACCOUNT_STATUS_CHANGED", metadata: { status: "INACTIVE" } });
+  });
+
+  it("a refused change (non-Admin) writes no audit row and changes nothing", async () => {
+    seed({ ...AGENT });
+    currentActor = { id: "agent-9", role: "TRAVEL_AGENT" };
+    const { updateAccount } = await import("../actions/accounts");
+    await expect(updateAccount("agent-1", { role: "ADMIN" })).rejects.toThrow(/only admins/i);
+    expect(auditRows).toHaveLength(0);
+    expect(accounts.get("agent-1")!.role).toBe("TRAVEL_AGENT");
   });
 });

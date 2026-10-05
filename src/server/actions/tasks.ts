@@ -71,7 +71,9 @@ export async function createTask(params: z.infer<typeof createTaskSchema>) {
     // assigning them one would be a dead-end nobody could ever see or
     // complete, so it's rejected here the same way an outside-company or
     // inactive account is.
-    const assignee = await prisma.account.findFirst({ where: { id: data.assigneeId, companyId: actor.companyId, status: "ACTIVE", role: { not: "MARKETING_AGENT" } }, select: { id: true } });
+    // An account an Admin has hidden is not part of the current team (see accountsVisible), so
+    // it cannot be handed new work through a direct request either — the pickers already omit it.
+    const assignee = await prisma.account.findFirst({ where: { id: data.assigneeId, companyId: actor.companyId, status: "ACTIVE", role: { not: "MARKETING_AGENT" }, OR: [{ accountsVisible: true }, { id: actor.id }] }, select: { id: true } });
     if (!assignee) throw new Error("Assignee must be an active account in your own company that has access to Tasks");
   }
 
@@ -117,7 +119,18 @@ export async function updateTask(params: z.infer<typeof updateTaskSchema>) {
   // check above — previously this reassignment path had no validation at
   // all, accepting any string as the new assignee.
   if (data.assigneeId) {
-    const assignee = await prisma.account.findFirst({ where: { id: data.assigneeId, companyId: actor!.companyId, status: "ACTIVE", role: { not: "MARKETING_AGENT" } }, select: { id: true } });
+    // Hidden accounts cannot be newly assigned (the task's CURRENT assignee may stay, so editing
+    // other fields of an existing task never fails); the actor may always assign to themselves.
+    const assignee = await prisma.account.findFirst({
+      where: {
+        id: data.assigneeId,
+        companyId: actor!.companyId,
+        status: "ACTIVE",
+        role: { not: "MARKETING_AGENT" },
+        OR: [{ accountsVisible: true }, { id: actor!.id }, ...(existing.assigneeId ? [{ id: existing.assigneeId }] : [])],
+      },
+      select: { id: true },
+    });
     if (!assignee) throw new Error("Assignee must be an active account in your own company that has access to Tasks");
   }
 
@@ -156,7 +169,16 @@ export async function reassignTask(taskId: string, assigneeId: string) {
   // company — same cross-tenant guard as reassignLead/reassignContact.
   // Marketing Agent is excluded too: that role has no access to Tasks at
   // all (canViewTasks), so reassigning to them would be a dead-end.
-  const newAssignee = await prisma.account.findFirst({ where: { id: assigneeId, companyId: actor?.companyId, status: "ACTIVE", role: { not: "MARKETING_AGENT" } } });
+  // A hidden account cannot be handed the task (it may already hold it, or be the actor).
+  const newAssignee = await prisma.account.findFirst({
+    where: {
+      id: assigneeId,
+      companyId: actor?.companyId,
+      status: "ACTIVE",
+      role: { not: "MARKETING_AGENT" },
+      OR: [{ accountsVisible: true }, ...(actor ? [{ id: actor.id }] : []), ...(existing.assigneeId ? [{ id: existing.assigneeId }] : [])],
+    },
+  });
   if (!newAssignee) throw new Error("Assignee must be an active account in your own company that has access to Tasks");
 
   await prisma.task.update({ where: { id: taskId }, data: { assigneeId } });

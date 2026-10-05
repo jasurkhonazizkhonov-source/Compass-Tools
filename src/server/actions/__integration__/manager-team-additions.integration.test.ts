@@ -305,6 +305,51 @@ describe.skipIf(!enabled)("Manager team additions — real PostgreSQL", () => {
     expect((await prisma.account.findUniqueOrThrow({ where: { id: hidden.id } })).accountsVisible).toBe(false); // still hidden
   });
 
+  it("AUDIT: role, status, visibility, team and IP-reveal-grant changes each leave an audit row naming the actor — with no values, no emails", async () => {
+    const mgr = await makeAccount("AuditMgr", "MANAGER");
+    const agent = await makeAccount("AuditAgent", "TRAVEL_AGENT");
+    as("Admin");
+    await accountActions.changeManagerTeam(mgr.id, { add: [agent.id] });
+    await accountActions.updateAccount(agent.id, { email: `changed-${TAG}@example.test` });
+    await accountActions.updateAccount(agent.id, { role: "TICKETING_AGENT" });
+    await accountActions.setAccountsVisibility(agent.id, false);
+    await accountActions.setAccountStatus(agent.id, "INACTIVE");
+    await accountActions.updateBookingPermissions(mgr.id, ["bookings.reveal_ip"]);
+    await accountActions.updateBookingPermissions(mgr.id, []);
+
+    const rows = await prisma.auditLog.findMany({ where: { entityType: "Account", entityId: { in: [mgr.id, agent.id] } }, orderBy: { createdAt: "asc" } });
+    const actions = rows.map((r) => r.action);
+    for (const expected of ["MANAGER_TEAM_CHANGED", "ACCOUNT_UPDATED", "ACCOUNT_ROLE_CHANGED", "ACCOUNT_VISIBILITY_CHANGED", "ACCOUNT_STATUS_CHANGED", "BOOKING_PERMISSIONS_CHANGED"]) {
+      expect(actions, expected).toContain(expected);
+    }
+    expect(rows.every((r) => r.actorId === accounts.Admin.id)).toBe(true);
+    const role = rows.find((r) => r.action === "ACCOUNT_ROLE_CHANGED")!;
+    expect(role.metadata).toMatchObject({ roleFrom: "TRAVEL_AGENT", roleTo: "TICKETING_AGENT" });
+    const grants = rows.filter((r) => r.action === "BOOKING_PERMISSIONS_CHANGED");
+    expect(grants[0].metadata).toMatchObject({ granted: ["bookings.reveal_ip"], revoked: [] });
+    expect(grants[1].metadata).toMatchObject({ granted: [], revoked: ["bookings.reveal_ip"] });
+    expect(JSON.stringify(rows)).not.toContain(`changed-${TAG}`); // the new e-mail address is never recorded
+  });
+
+  it("CONCURRENCY: simultaneous team changes never corrupt it — different agents to the same Manager both land; the SAME agent claimed by two Managers ends on exactly one", async () => {
+    const m1 = await makeAccount("CcMgr1", "MANAGER");
+    const m2 = await makeAccount("CcMgr2", "MANAGER");
+    const a1 = await makeAccount("CcAgent1", "TRAVEL_AGENT");
+    const a2 = await makeAccount("CcAgent2", "TRAVEL_AGENT");
+    const a3 = await makeAccount("CcAgent3", "TRAVEL_AGENT");
+    as("Admin");
+    const both = await Promise.all([accountActions.changeManagerTeam(m1.id, { add: [a1.id] }), accountActions.changeManagerTeam(m1.id, { add: [a2.id] })]);
+    expect(both.map((r) => r.added)).toEqual([1, 1]);
+    expect(await prisma.account.count({ where: { managerId: m1.id, id: { in: [a1.id, a2.id] } } })).toBe(2);
+
+    const race = await Promise.allSettled([accountActions.changeManagerTeam(m1.id, { add: [a3.id] }), accountActions.changeManagerTeam(m2.id, { add: [a3.id] })]);
+    expect(race.every((r) => r.status === "fulfilled")).toBe(true); // a serialization conflict is retried, never surfaced
+    const final = await prisma.account.findUniqueOrThrow({ where: { id: a3.id } });
+    expect([m1.id, m2.id]).toContain(final.managerId); // exactly one Manager owns the agent
+    const owners = await prisma.account.count({ where: { id: a3.id, managerId: { not: null } } });
+    expect(owners).toBe(1);
+  });
+
   it("the old replace-the-whole-team action still works for callers that use it", async () => {
     as("Admin");
     await accountActions.setManagerTeam(accounts.MgrB.id, [accounts.Bystander.id]);

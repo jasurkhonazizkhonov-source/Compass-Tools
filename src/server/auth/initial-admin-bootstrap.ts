@@ -16,6 +16,7 @@
 // over for every subsequent sign-in, including the bootstrap email itself
 // if it's ever used again.
 import { Prisma } from "@/generated/prisma/client";
+import { isSerializationConflict } from "@/server/serialization-conflict";
 import type { Account } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 import { normalizeEmail } from "@/server/auth/google-authorization";
@@ -151,9 +152,9 @@ export async function bootstrapInitialAdminIfEligible(verifiedEmail: string, ver
       // (the conflict is inherently transient), then fall back to a fresh
       // emptiness check rather than surfacing a raw serialization error to
       // a signing-in user.
-      const isSerializationConflict = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
-      if (isSerializationConflict && attempt < MAX_ATTEMPTS) continue;
-      if (isSerializationConflict) {
+      const conflicted = isSerializationConflict(err);
+      if (conflicted && attempt < MAX_ATTEMPTS) continue;
+      if (conflicted) {
         const finalCount = await prisma.account.count();
         if (finalCount > 0) return { outcome: "not_applicable" };
       }

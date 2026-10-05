@@ -11,6 +11,7 @@
 // implementations that could drift and create duplicate Contacts.
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@/generated/prisma/client";
+import { isSerializationConflict } from "@/server/serialization-conflict";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { duplicateContactWhere } from "@/lib/contact-matching";
 
@@ -67,8 +68,7 @@ export async function resolveContactForNewLead(
         { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
       );
     } catch (err) {
-      const isSerializationConflict = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
-      if (isSerializationConflict && attempt < MAX_ATTEMPTS) continue;
+      if (isSerializationConflict(err) && attempt < MAX_ATTEMPTS) continue;
       throw err;
     }
   }

@@ -11,7 +11,7 @@ const CustomerThemeContext = createContext<{
   portalContainer: HTMLElement | null;
 } | null>(null);
 
-const STORAGE_KEY = "bft-customer-theme";
+const STORAGE_KEY = "ct-customer-theme";
 
 /**
  * Independent from the CRM's app-wide ThemeProvider (@/components/theme-provider — which

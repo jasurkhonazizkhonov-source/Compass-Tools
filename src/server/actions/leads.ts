@@ -19,6 +19,7 @@ import { duplicateContactWhere } from "@/lib/contact-matching";
 import { leadSegmentsSchema, mirrorFromSegments } from "@/lib/lead-itinerary";
 import { resolveContactForNewLead } from "@/server/contact-resolution";
 import { Prisma, type LeadStatus } from "@/generated/prisma/client";
+import { isSerializationConflict } from "@/server/serialization-conflict";
 
 const createLeadSchema = z
   .object({
@@ -457,8 +458,7 @@ export async function updateLeadStatus(leadId: string, toStatus: LeadStatus, not
       );
       break;
     } catch (err) {
-      const isSerializationConflict = err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2034";
-      if (isSerializationConflict && attempt < MAX_ATTEMPTS) continue;
+      if (isSerializationConflict(err) && attempt < MAX_ATTEMPTS) continue;
       throw err;
     }
   }

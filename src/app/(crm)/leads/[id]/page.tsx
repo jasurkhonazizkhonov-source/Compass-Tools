@@ -6,7 +6,7 @@ import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getApplicableSequences } from "@/server/queries/sequences";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads } from "@/lib/permissions";
+import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads, canRevealBookingIp } from "@/lib/permissions";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { deleteLead } from "@/server/actions/leads";
 import { LeadSequencesPanel } from "@/components/leads/lead-sequences-panel";
@@ -276,7 +276,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
               <TabsContent value="activity" className="pt-4">
                 <LeadCapturedEvent createdAt={lead.createdAt} source={lead.source} />
-                <LeadSubmissionInformation createdAt={lead.createdAt} info={submissionInfo} fromWebsite={lead.source === "WEBSITE"} />
+                <LeadSubmissionInformation leadId={lead.id} createdAt={lead.createdAt} info={submissionInfo} fromWebsite={lead.source === "WEBSITE"} canRevealIp={canRevealBookingIp(currentAccount)} />
                 <ActivityTimeline activities={lead.activities} leadId={lead.id} />
               </TabsContent>
 

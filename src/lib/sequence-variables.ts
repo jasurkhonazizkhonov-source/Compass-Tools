@@ -71,8 +71,8 @@ const SAMPLE_VALUES: Record<keyof SequenceVariableContext, string> = {
   senderFirstName: "Alex",
   senderLastName: "Rivera",
   senderPhone: "(800) 555-0199",
-  senderEmail: "alex.rivera@businessflightstravel.com",
-  companyName: "Business Flights Travel",
+  senderEmail: "alex.rivera@example.com",
+  companyName: "Example Travel Co",
 };
 
 /** Keyed by the raw snake_case token name (no braces) for quick lookup while rendering chips. */

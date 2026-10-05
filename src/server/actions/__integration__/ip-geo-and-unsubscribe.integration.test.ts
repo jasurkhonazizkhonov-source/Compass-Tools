@@ -123,7 +123,9 @@ describe.skipIf(!enabled)("IP/geo capture and unsubscribe — real PostgreSQL", 
       await prisma.contact.update({ where: { id: lead.contactId }, data: { ownerId: accounts.Agent.id } });
 
       for (const who of ["Admin", "Mgr", "Agent"]) {
-        expect(await getLeadSubmissionInfo(id, as(who)), who).toMatchObject({ ipAddress: "203.0.113.42", city: "Los Angeles" });
+        const info = await getLeadSubmissionInfo(id, as(who));
+        expect(info, who).toMatchObject({ hasIp: true, ipMasked: "203.x.x.x", ipVersion: "v4", city: "Los Angeles" });
+        expect(JSON.stringify(info), who).not.toContain("203.0.113.42"); // the page query never carries the full address
       }
       for (const who of ["Mgr2", "Stranger", "Marketer"]) {
         expect(await getLeadSubmissionInfo(id, as(who)), who).toBeNull();
@@ -134,6 +136,48 @@ describe.skipIf(!enabled)("IP/geo capture and unsubscribe — real PostgreSQL", 
       expect(await getLeadSubmissionInfo(id, as("Mgr"))).toBeNull();
       expect(await getLeadSubmissionInfo(id, as("Mgr2"))).not.toBeNull();
       await prisma.account.update({ where: { id: accounts.Agent.id }, data: { managerId: accounts.Mgr.id } });
+    });
+
+    it("the FULL IP only comes from the audited Reveal: Admin yes; a Travel Agent no (even on their own lead); a Manager only with the grant and only for their team; the audit never holds the address", async () => {
+      const { revealLeadSubmissionIp } = await import("../lead-submission");
+      const id = await capture("0007", EDGE);
+      const lead = await prisma.lead.findUniqueOrThrow({ where: { id }, select: { contactId: true } });
+      await prisma.lead.update({ where: { id }, data: { assignedAgentId: accounts.Agent.id } });
+      await prisma.contact.update({ where: { id: lead.contactId }, data: { ownerId: accounts.Agent.id } });
+
+      as("Admin");
+      expect(await revealLeadSubmissionIp(id)).toEqual({ ipAddress: "203.0.113.42", ipVersion: "v4" });
+
+      as("Agent");
+      await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
+      as("Marketer");
+      await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
+
+      as("Mgr"); // on the agent's team but WITHOUT the grant
+      await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
+      accounts.Mgr.bookingPermissions = ["bookings.reveal_ip"];
+      expect(await revealLeadSubmissionIp(id)).toMatchObject({ ipAddress: "203.0.113.42" });
+      accounts.Mgr2.bookingPermissions = ["bookings.reveal_ip"];
+      as("Mgr2"); // has the grant, but not this lead's team
+      await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
+
+      const audit = await prisma.auditLog.findMany({ where: { entityType: "Lead", entityId: id } });
+      expect(audit.filter((a) => a.action === "LEAD_IP_REVEALED")).toHaveLength(2);
+      expect(audit.filter((a) => a.action === "LEAD_IP_REVEAL_DENIED").length).toBeGreaterThanOrEqual(4);
+      expect(JSON.stringify(audit)).not.toContain("203.0.113.42");
+    });
+
+    it("the Reveal is rate limited per account (real counter table)", async () => {
+      const { revealLeadSubmissionIp } = await import("../lead-submission");
+      const id = await capture("0008", EDGE);
+      as("Admin");
+      let limited: unknown = null;
+      for (let i = 0; i < 30 && !limited; i++) {
+        const r = await revealLeadSubmissionIp(id);
+        if ("error" in r) limited = r;
+      }
+      expect(limited).toEqual({ error: expect.stringMatching(/Too many Reveal attempts/) });
+      await prisma.rateLimitCounter.deleteMany({ where: { key: { startsWith: `acct:${accounts.Admin.id}|IP_REVEAL|` } } });
     });
 
     it("the ordinary lead queries never load it", async () => {

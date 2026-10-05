@@ -24,6 +24,16 @@ vi.mock("@/lib/dev-session", () => ({
   getCurrentAccount: vi.fn(async () => currentActor),
 }));
 
+let rateResult: { allowed: true } | { allowed: false; retryAfterSeconds: number } = { allowed: true };
+let rateCalls: Array<{ id: string; endpoint: string }> = [];
+vi.mock("@/server/security/rate-limit", () => ({
+  checkAccountRateLimit: vi.fn(async (id: string, endpoint: string) => {
+    rateCalls.push({ id, endpoint });
+    return rateResult;
+  }),
+  RATE_LIMITS: { IP_REVEAL: { windowMs: 1, maxAttempts: 1 } },
+}));
+
 vi.mock("next/headers", () => ({
   headers: vi.fn(async () => new Headers()),
 }));
@@ -60,6 +70,8 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 beforeEach(() => {
+  rateResult = { allowed: true };
+  rateCalls = [];
   captureRow = null;
   bookings = new Map();
   auditLogs = [];
@@ -289,6 +301,30 @@ describe("revealBookingIp — approximate IP-derived location and signing time",
     const result = await revealBookingIp("booking-1");
     expect(result).toEqual({ error: expect.any(String) });
     expect(JSON.stringify(result)).not.toMatch(/203.0.113|Los Angeles/);
+  });
+});
+
+describe("revealBookingIp — per-account rate limit", () => {
+  it("every attempt is counted against the account (IP_REVEAL), including a refused one", async () => {
+    seedBooking();
+    const { revealBookingIp } = await import("../booking-security");
+    await revealBookingIp("booking-1");
+    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", bookingPermissions: [] };
+    await expect(revealBookingIp("booking-1")).rejects.toThrow(/not authorized/i);
+    expect(rateCalls).toEqual([{ id: "admin-1", endpoint: "IP_REVEAL" }, { id: "agent-1", endpoint: "IP_REVEAL" }]);
+  });
+
+  it("a limited account gets a RETURNED message (not a masked throw), an audit row, and no IP — the booking is not even read", async () => {
+    seedBooking();
+    rateResult = { allowed: false, retryAfterSeconds: 300 };
+    const { revealBookingIp } = await import("../booking-security");
+    const result = await revealBookingIp("booking-1");
+    expect(result).toEqual({ error: expect.stringMatching(/Too many Reveal attempts.*5 minute/) });
+    expect(JSON.stringify(result)).not.toContain("203.0.113.42");
+    expect(auditLogs).toHaveLength(1);
+    expect(auditLogs[0]).toMatchObject({ action: "BOOKING_IP_REVEAL_DENIED", metadata: { reason: "RATE_LIMITED" } });
+    const prismaMock = (await import("@/lib/prisma")).prisma as unknown as { booking: { findFirst: ReturnType<typeof vi.fn> } };
+    expect(prismaMock.booking.findFirst).not.toHaveBeenCalled();
   });
 });
 

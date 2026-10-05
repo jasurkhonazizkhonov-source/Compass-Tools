@@ -9,7 +9,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // leadAssignedAgentId (or contactOwnerId when there's no Lead at all), not
 // on who the task happens to be assigned to.
 
-type FakeAccount = { id: string; role: string; companyId: string; status?: string };
+type FakeAccount = { id: string; role: string; companyId: string; status?: string; accountsVisible?: boolean };
 type FakeTask = {
   id: string;
   title: string;
@@ -140,9 +140,11 @@ const fakePrismaClient: any = {
   contact: { findFirst: vi.fn(async () => null) },
   lead: { findFirst: vi.fn(async () => null) },
   account: {
-    findFirst: vi.fn(async ({ where }: { where: { id: string; companyId?: string; status?: string; role?: { not?: string } } }) => {
+    findFirst: vi.fn(async ({ where }: { where: { id: string; companyId?: string; status?: string; role?: { not?: string }; OR?: Array<{ accountsVisible?: boolean; id?: string }> } }) => {
       const acc = accounts.get(where.id);
       if (!acc) return null;
+      // Interprets the hidden-account guard the actions add: visible, or one of the explicitly allowed ids.
+      if (where.OR && !where.OR.some((c) => (c.accountsVisible !== undefined ? (acc.accountsVisible !== false) === c.accountsVisible : c.id === acc.id))) return null;
       if (where.companyId && acc.companyId !== where.companyId) return null;
       if (where.status && acc.status !== where.status) return null;
       if (where.role?.not && acc.role === where.role.not) return null;
@@ -250,6 +252,43 @@ describe("Tasks — IDOR/ownership fix (previously zero authorization check at a
     const { reassignTask } = await import("../tasks");
     await reassignTask("task-1", "agent-1");
     expect(tasks.get("task-1")!.assigneeId).toBe("agent-1");
+  });
+
+  describe("a HIDDEN account cannot be handed a task through a direct request", () => {
+    const hidden = { id: "hidden-1", role: "TRAVEL_AGENT", companyId: "company-1", status: "ACTIVE", accountsVisible: false };
+
+    it("createTask, updateTask and reassignTask all reject a hidden assignee", async () => {
+      accounts.set("hidden-1", hidden);
+      seedTask("task-1", { assigneeId: "admin-1", leadAssignedAgentId: "admin-1" });
+      currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+      const { createTask, updateTask, reassignTask } = await import("../tasks");
+      await expect(createTask({ title: "x", assigneeId: "hidden-1" } as never)).rejects.toThrow(/active account in your own company/i);
+      await expect(updateTask({ taskId: "task-1", assigneeId: "hidden-1" })).rejects.toThrow(/active account in your own company/i);
+      await expect(reassignTask("task-1", "hidden-1")).rejects.toThrow(/active account in your own company/i);
+      expect(tasks.get("task-1")!.assigneeId).toBe("admin-1");
+    });
+
+    it("a visible account is still assignable, and a hidden account that ALREADY holds the task can stay on it while other fields are edited", async () => {
+      accounts.set("agent-1", { id: "agent-1", role: "TRAVEL_AGENT", companyId: "company-1", status: "ACTIVE" });
+      accounts.set("hidden-1", hidden);
+      seedTask("task-1", { assigneeId: "hidden-1", leadAssignedAgentId: "admin-1" });
+      currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+      const { updateTask, reassignTask } = await import("../tasks");
+      await expect(updateTask({ taskId: "task-1", title: "renamed", assigneeId: "hidden-1" })).resolves.toBeDefined();
+      await reassignTask("task-1", "agent-1");
+      expect(tasks.get("task-1")!.assigneeId).toBe("agent-1");
+      // …but once moved off, a hidden account is not a valid new target.
+      await expect(reassignTask("task-1", "hidden-1")).rejects.toThrow(/active account in your own company/i);
+    });
+
+    it("a hidden user may still assign a task to themselves", async () => {
+      accounts.set("hidden-1", hidden);
+      seedTask("task-1", { assigneeId: "someone", leadAssignedAgentId: "hidden-1" });
+      currentActor = { ...hidden };
+      const { reassignTask } = await import("../tasks");
+      await reassignTask("task-1", "hidden-1");
+      expect(tasks.get("task-1")!.assigneeId).toBe("hidden-1");
+    });
   });
 
   // Marketing Agent has no access to Tasks at all (canViewTasks) — assigning

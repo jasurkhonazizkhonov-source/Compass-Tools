@@ -7,6 +7,7 @@ import { canRevealBookingIp } from "@/lib/permissions";
 import { bookingVisibilityWhere } from "@/server/visibility";
 import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
 import { getClientIp } from "@/lib/request-ip";
+import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 
 const GENERIC_DENIAL = "You are not authorized to reveal this booking's submission IP";
 
@@ -109,6 +110,13 @@ export async function revealBookingIp(bookingId: string): Promise<BookingIpRevea
   if (!actor || actor.status !== "ACTIVE") {
     await auditBookingIpAccess({ actorId: actor?.id, bookingId, success: false, reason: "NO_ACTIVE_SESSION" });
     throw new Error(GENERIC_DENIAL);
+  }
+  // Per-account throttle, counting every attempt (like the card Reveal): a stolen session or a script
+  // cannot harvest addresses. Returned, not thrown, so the user sees why.
+  const limit = await checkAccountRateLimit(actor.id, "IP_REVEAL", RATE_LIMITS.IP_REVEAL);
+  if (!limit.allowed) {
+    await auditBookingIpAccess({ actorId: actor.id, bookingId, success: false, reason: "RATE_LIMITED" });
+    return { error: `Too many Reveal attempts. Please wait ${Math.max(1, Math.ceil(limit.retryAfterSeconds / 60))} minute(s) and try again.` };
   }
   if (!canRevealBookingIp(actor)) {
     await auditBookingIpAccess({ actorId: actor.id, bookingId, success: false, reason: "MISSING_PERMISSION" });

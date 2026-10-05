@@ -1,10 +1,14 @@
 import { MapPin } from "lucide-react";
 import { formatCapturedAt } from "@/components/leads/lead-captured-event";
 import { hasIpLocation } from "@/components/security/ip-location";
+import { LeadIpReveal } from "@/components/leads/lead-ip-reveal";
 
 export type LeadSubmissionDetails = {
-  ipAddress: string | null;
-  ipVersion: string | null;
+  /** Whether an IP address was captured — the address itself never reaches this component. */
+  hasIp: boolean;
+  ipVersion: "v4" | "v6" | null;
+  /** "203.x.x.x" — first octet / hextet only. */
+  ipMasked: string | null;
   city: string | null;
   region: string | null;
   country: string | null;
@@ -13,6 +17,14 @@ export type LeadSubmissionDetails = {
   /** ISO 4217 code the customer chose for their budget — only set when they entered one. */
   budgetCurrency?: string | null;
 };
+
+/** A website lead younger than this may simply not have had its submission details written yet. */
+const RECENT_LEAD_MS = 10 * 60 * 1000;
+
+/** Kept out of the component body: it reads the clock, and a render must stay pure. */
+export function isRecentlyCaptured(createdAt: Date, now: number = Date.now()): boolean {
+  return now - createdAt.getTime() < RECENT_LEAD_MS;
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -28,7 +40,8 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * created the lead. "Submitted" is the lead row's own creation time (the same
  * canonical, never-rewritten timestamp the Lead Captured entry above uses), not an
  * acceptance, reassignment or update time. The IP address is what the server's
- * trusted request path received; the city/country/region/time zone are the
+ * trusted request path received — shown MASKED, with a permission-gated, audited Reveal for the
+ * full value (it is sensitive personal data); the city/country/region/time zone are the
  * platform's APPROXIMATE, IP-derived estimate of where that network is — never the
  * visitor's exact position — and each is shown only when it exists (nothing is
  * invented for a missing one).
@@ -37,9 +50,20 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
  * (queries/lead-submission-info.ts); it is a separate query so these values are
  * never part of a list or an ordinary lead payload.
  */
-export function LeadSubmissionInformation({ createdAt, info, fromWebsite }: { createdAt: Date; info: LeadSubmissionDetails | null; fromWebsite: boolean }) {
+export function LeadSubmissionInformation({ leadId, createdAt, info, fromWebsite, canRevealIp }: { leadId: string; createdAt: Date; info: LeadSubmissionDetails | null; fromWebsite: boolean; canRevealIp: boolean }) {
   if (!info) {
     if (!fromWebsite) return null;
+    // The website records this a moment AFTER it saves the lead (best-effort, after its response), so
+    // a brand-new lead can legitimately have no row yet. Say that neutrally instead of claiming nothing
+    // was recorded; an older lead without one really has none.
+    if (isRecentlyCaptured(createdAt)) {
+      return (
+        <div className="mb-5 rounded-lg border border-dashed px-4 py-3" data-testid="lead-submission-information">
+          <p className="text-sm font-medium">Lead Submission Information</p>
+          <p className="text-xs text-muted-foreground">Submission information is not available yet — it may still be being recorded. Refresh in a moment.</p>
+        </div>
+      );
+    }
     return (
       <div className="mb-5 rounded-lg border border-dashed px-4 py-3" data-testid="lead-submission-information">
         <p className="text-sm font-medium">Lead Submission Information</p>
@@ -58,10 +82,9 @@ export function LeadSubmissionInformation({ createdAt, info, fromWebsite }: { cr
         <Field label="Submitted">
           <time dateTime={createdAt.toISOString()}>{formatCapturedAt(createdAt)}</time>
         </Field>
-        {info.ipAddress && (
+        {info.hasIp && info.ipMasked && (
           <Field label="IP Address">
-            <span className="font-mono break-all">{info.ipAddress}</span>
-            {info.ipVersion && <span className="ml-2 rounded border px-1 text-[10px] uppercase text-muted-foreground">{info.ipVersion}</span>}
+            <LeadIpReveal leadId={leadId} masked={info.ipMasked} version={info.ipVersion} canReveal={canRevealIp} />
           </Field>
         )}
         {info.city && <Field label="Approximate City">{info.city}</Field>}

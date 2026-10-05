@@ -458,6 +458,10 @@ The minimum change to take bookings is therefore **one new variable**:
 surrounding whitespace is ignored, any other spelling — `true`, `staging`, wrong
 case — leaves the vault closed).
 
+### Live production status (read from the public `/api/health`, 2026-10-05 — no secret is exposed there)
+
+`environment: production`, `cardVaultState: available_risk_accepted`, `cardVaultEnabled: true`, `bookingCardStorage: available`, `cardVaultKey: configured`, `cardVaultKeyVersion: v1`, `databaseTls: verified`, `signerIpCapture: enabled`, `schema: current`, `pendingMigrations: 0`. So `CARD_VAULT_MODE` **is** set in production, the current key is the legacy key `v1` (no ring in use), database TLS verification is on (a CA is configured) and the trusted proxy resolves. The "Now" column below describes the state at the time this section was written.
+
 ### Exact Vercel table (production)
 
 | Variable | Now | Action | Value | Why |

@@ -531,6 +531,34 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
       expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
       expect(await prisma.paymentMethod.count({ where: { booking: { quoteId: quote.id } } })).toBe(1);
     });
+
+    it("CARD_ENCRYPTION_KEY malformed (not a 32-byte base64 key): refuses cleanly — never a booking without a stored card — and recovers on retry", async () => {
+      const { quote, lead } = await makeQuote();
+      await withEnv({ CARD_ENCRYPTION_KEY: "not-a-valid-key" }, () => expectRefusedCleanly(quote, lead.id));
+      expect((await submitBooking(input(quote.secureToken))).ok).toBe(true);
+    });
+
+    it("a key ring that names a current key id which is NOT in the ring refuses cleanly (a half-configured rotation can never book)", async () => {
+      const { quote, lead } = await makeQuote();
+      await withEnv({ CARD_ENCRYPTION_KEYS: undefined, CARD_ENCRYPTION_KEY_ID: "v9" }, () => expectRefusedCleanly(quote, lead.id));
+      expect((await submitBooking(input(quote.secureToken))).ok).toBe(true);
+    });
+
+    it("a key ring set WITHOUT an explicit current key id refuses cleanly (the id used for new cards is never guessed)", async () => {
+      const { quote, lead } = await makeQuote();
+      await withEnv({ CARD_ENCRYPTION_KEYS: `v2:${Buffer.alloc(32, 7).toString("base64")}`, CARD_ENCRYPTION_KEY_ID: undefined }, () => expectRefusedCleanly(quote, lead.id));
+      expect((await submitBooking(input(quote.secureToken))).ok).toBe(true);
+    });
+
+    it("with a rotated ring (new key current, legacy key kept) a booking succeeds and stores the card under the NEW key id", async () => {
+      const { quote } = await makeQuote();
+      await withEnv({ CARD_ENCRYPTION_KEYS: `v2:${Buffer.alloc(32, 9).toString("base64")}`, CARD_ENCRYPTION_KEY_ID: "v2" }, async () => {
+        expect((await submitBooking(input(quote.secureToken))).ok).toBe(true);
+        const rows = await prisma.$queryRaw<{ encryptedPan: string }[]>`SELECT "encryptedPan" FROM "PaymentMethod" WHERE "bookingId" = (SELECT "id" FROM "Booking" WHERE "quoteId" = ${quote.id})`;
+        expect(rows).toHaveLength(1);
+        expect(rows[0].encryptedPan.startsWith("cv2.v2.")).toBe(true);
+      });
+    });
   });
 
   it("the plaintext PAN never reaches the database: no PaymentMethod (or AuditLog / HealthEvent) column contains it", async () => {
