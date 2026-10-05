@@ -26,18 +26,27 @@ beforeEach(() => {
 describe("LeadSubmissionInformation", () => {
   it("shows the canonical submission time (Pacific), the MASKED IP, approximate city/country, region, timezone and budget currency", () => {
     view(FULL);
-    expect(screen.getByText("Lead Submission Information")).toBeInTheDocument();
+    expect(screen.getByText("Submission & IP Information")).toBeInTheDocument();
     expect(screen.getByText("August 21, 2026, 2:32 PM PDT")).toBeInTheDocument();
     expect(screen.getByText("203.x.x.x")).toBeInTheDocument();
-    expect(screen.getByText("v4")).toBeInTheDocument();
+    expect(screen.getByText("IP Address (masked)")).toBeInTheDocument();
+    expect(screen.getByText("IP Version")).toBeInTheDocument();
+    expect(screen.getByText("IPv4")).toBeInTheDocument();
     expect(screen.getByText("Approximate City")).toBeInTheDocument();
     expect(screen.getByText("Los Angeles")).toBeInTheDocument();
-    expect(screen.getByText("United States (US)")).toBeInTheDocument();
+    expect(screen.getByText("Approximate Country")).toBeInTheDocument();
+    expect(screen.getByText("United States")).toBeInTheDocument();
+    expect(screen.getByText("Country Code")).toBeInTheDocument();
+    expect(screen.getByText("US")).toBeInTheDocument();
+    expect(screen.getByText("Approximate Region")).toBeInTheDocument();
     expect(screen.getByText("California")).toBeInTheDocument();
+    expect(screen.getByText("Time Zone")).toBeInTheDocument();
     expect(screen.getByText("America/Los_Angeles")).toBeInTheDocument();
     expect(screen.getByText("AUD")).toBeInTheDocument();
-    expect(screen.getByText(/estimated from the IP address/i)).toBeInTheDocument();
+    expect(screen.getByText("Location is approximate and derived from the submitting IP address.")).toBeInTheDocument();
     expect(pageHas(FULL_IP)).toBe(false);
+    // never mislabelled as a customer / exact / physical location, never a placeholder
+    expect(document.body.textContent).not.toMatch(/Customer Location|Exact Location|Physical Location|undefined|null|Unknown/);
   });
 
   it("the full address is never in the rendered output, and a viewer without the IP-reveal permission gets no Reveal button", () => {
@@ -55,7 +64,7 @@ describe("LeadSubmissionInformation", () => {
   it("an IPv6 address is masked to its first hextet", () => {
     view({ ...FULL, ipMasked: "2001:x:x:x:x:x:x:x", ipVersion: "v6" });
     expect(screen.getByText("2001:x:x:x:x:x:x:x").className).toMatch(/break-all/);
-    expect(screen.getByText("v6")).toBeInTheDocument();
+    expect(screen.getByText("IPv6")).toBeInTheDocument();
   });
 
   it("long place names wrap", () => {
@@ -65,8 +74,9 @@ describe("LeadSubmissionInformation", () => {
 
   it("shows ONLY fields that exist — city unavailable means no city row", () => {
     view({ hasIp: true, ipVersion: "v4", ipMasked: "198.x.x.x", city: null, region: null, country: "United Kingdom", countryCode: "GB", timeZone: null });
-    expect(screen.getByText("United Kingdom (GB)")).toBeInTheDocument();
-    for (const label of ["Approximate City", "Region", "Timezone", "Budget currency"]) expect(screen.queryByText(label)).not.toBeInTheDocument();
+    expect(screen.getByText("United Kingdom")).toBeInTheDocument();
+    expect(screen.getByText("GB")).toBeInTheDocument();
+    for (const label of ["Approximate City", "Approximate Region", "Time Zone", "Budget currency"]) expect(screen.queryByText(label)).not.toBeInTheDocument();
   });
 
   it("IP known but no location: the note says no location could be determined", () => {
@@ -106,7 +116,7 @@ describe("Reveal (permission-gated, audited, recent sign-in)", () => {
     fireEvent.click(screen.getByRole("button", { name: /reveal/i }));
     await waitFor(() => expect(pageHas(FULL_IP)).toBe(true));
     expect(revealMock).toHaveBeenCalledWith("lead-1");
-    expect(screen.getByText(/Privileged view — auto-hides in/)).toBeInTheDocument();
+    expect(screen.getByText(/Full IP address — privileged view, auto-hides in/)).toBeInTheDocument();
   });
 
   it("Hide conceals it again, and window blur and unmount conceal it too", async () => {

@@ -360,6 +360,22 @@ export async function updateBookingTicketing(input: z.infer<typeof ticketingSche
   return { id: booking.id, status: booking.status };
 }
 
+/**
+ * Audit trail for the customer / team email actions on a booking: who did it, to which booking, and the outcome. Metadata
+ * holds ids, counts and fixed reason codes only — never an email address, the message, a card or any customer detail.
+ * Best effort by design: the email has already been decided/sent, so a failure to write this row is logged and must never
+ * turn a successful send into an error (the EmailLog and Activity rows are written separately and unconditionally).
+ */
+async function auditBookingEmailAction(params: { actorId: string | undefined; action: string; bookingId: string; metadata: Record<string, string | number | boolean | null> }) {
+  try {
+    await prisma.auditLog.create({
+      data: { actorId: params.actorId, action: params.action, entityType: "Booking", entityId: params.bookingId, metadata: params.metadata },
+    });
+  } catch {
+    console.error(`[audit] could not record ${params.action}`);
+  }
+}
+
 const SEND_AIRLINE_CONFIRMATION_DENIAL = "You are not authorized to send this confirmation";
 
 /**
@@ -378,6 +394,7 @@ const SEND_AIRLINE_CONFIRMATION_DENIAL = "You are not authorized to send this co
 async function authorizeAirlineConfirmation(bookingId: string) {
   const actor = await getCurrentAccount();
   if (!actor || actor.status !== "ACTIVE" || !canSendAirlineConfirmation(actor.role)) {
+    await auditBookingEmailAction({ actorId: actor?.id, action: "AIRLINE_CONFIRMATION_DENIED", bookingId, metadata: { reason: "ROLE_OR_SESSION" } });
     throw new Error(SEND_AIRLINE_CONFIRMATION_DENIAL);
   }
   const accessible = await prisma.booking.findFirst({
@@ -385,6 +402,7 @@ async function authorizeAirlineConfirmation(bookingId: string) {
     select: { id: true },
   });
   if (!accessible) {
+    await auditBookingEmailAction({ actorId: actor.id, action: "AIRLINE_CONFIRMATION_DENIED", bookingId, metadata: { reason: "NOT_ACCESSIBLE" } });
     throw new Error(SEND_AIRLINE_CONFIRMATION_DENIAL);
   }
   return actor;
@@ -675,6 +693,20 @@ export async function sendAirlineConfirmationEmail(
 
   if (!result.ok) await releaseFirstSendClaim();
 
+  await auditBookingEmailAction({
+    actorId: actor.id,
+    action: result.ok ? "AIRLINE_CONFIRMATION_SENT" : "AIRLINE_CONFIRMATION_FAILED",
+    bookingId,
+    metadata: {
+      resend: !!options?.resend,
+      recipientCount: recipients.length,
+      // the quote's creator: the account the email was sent as (not necessarily the one who clicked)
+      sentAsAccountId: sender?.id ?? null,
+      result: result.ok ? "SENT" : "FAILED",
+      ...(result.ok ? {} : { reason: result.error }),
+    },
+  });
+
   await logActivity({
     bookingId,
     leadId: existing.leadId,
@@ -860,6 +892,7 @@ const SEND_NEW_SALE_DENIAL = "You are not authorized to send this notification";
 export async function sendNewSaleNotification(bookingId: string) {
   const actor = await getCurrentAccount();
   if (!actor || actor.status !== "ACTIVE" || !canEnterTicketingInfo(actor.role)) {
+    await auditBookingEmailAction({ actorId: actor?.id, action: "NEW_SALE_NOTIFICATION_DENIED", bookingId, metadata: { kind: "NEW_SALE", reason: "ROLE_OR_SESSION" } });
     throw new Error(SEND_NEW_SALE_DENIAL);
   }
 
@@ -868,6 +901,7 @@ export async function sendNewSaleNotification(bookingId: string) {
     select: { id: true },
   });
   if (!accessible) {
+    await auditBookingEmailAction({ actorId: actor.id, action: "NEW_SALE_NOTIFICATION_DENIED", bookingId, metadata: { kind: "NEW_SALE", reason: "NOT_ACCESSIBLE" } });
     throw new Error(SEND_NEW_SALE_DENIAL);
   }
 
@@ -950,6 +984,12 @@ export async function sendNewSaleNotification(bookingId: string) {
     segments: toEmailSegments(finalSegments.filter((s) => !s.isExtraLeg)),
     isExchange: quote.originalQuoteId != null,
   });
+  await auditBookingEmailAction({
+    actorId: actor.id,
+    action: outcome.ok ? "NEW_SALE_NOTIFICATION_SENT" : "NEW_SALE_NOTIFICATION_FAILED",
+    bookingId,
+    metadata: { kind: "NEW_SALE", result: outcome.ok ? (outcome.alreadySent ? "ALREADY_SENT" : "SENT") : "FAILED", ...(outcome.ok ? {} : { reason: outcome.error ?? "UNKNOWN" }) },
+  });
   if (!outcome.ok) {
     throw new Error(outcome.error ?? "Failed to notify the team — please try again or check Gmail connections.");
   }
@@ -991,6 +1031,7 @@ export async function sendNewSaleNotification(bookingId: string) {
 export async function sendCancellationNotification(bookingId: string) {
   const actor = await getCurrentAccount();
   if (!actor || actor.status !== "ACTIVE" || !canEnterTicketingInfo(actor.role)) {
+    await auditBookingEmailAction({ actorId: actor?.id, action: "CANCELLATION_NOTIFICATION_DENIED", bookingId, metadata: { kind: "CANCELLATION", reason: "ROLE_OR_SESSION" } });
     throw new Error(SEND_NEW_SALE_DENIAL);
   }
 
@@ -999,6 +1040,7 @@ export async function sendCancellationNotification(bookingId: string) {
     select: { id: true },
   });
   if (!accessible) {
+    await auditBookingEmailAction({ actorId: actor.id, action: "CANCELLATION_NOTIFICATION_DENIED", bookingId, metadata: { kind: "CANCELLATION", reason: "NOT_ACCESSIBLE" } });
     throw new Error(SEND_NEW_SALE_DENIAL);
   }
 
@@ -1067,6 +1109,12 @@ export async function sendCancellationNotification(bookingId: string) {
     sellingCost: totalSellingPrice,
     segments: toEmailSegments(finalSegments.filter((s) => !s.isExtraLeg)),
     transactionLabel: "CANCELLATION",
+  });
+  await auditBookingEmailAction({
+    actorId: actor.id,
+    action: outcome.ok ? "CANCELLATION_NOTIFICATION_SENT" : "CANCELLATION_NOTIFICATION_FAILED",
+    bookingId,
+    metadata: { kind: "CANCELLATION", result: outcome.ok ? (outcome.alreadySent ? "ALREADY_SENT" : "SENT") : "FAILED", ...(outcome.ok ? {} : { reason: outcome.error ?? "UNKNOWN" }) },
   });
   if (!outcome.ok) {
     throw new Error(outcome.error ?? "Failed to notify the team — please try again or check Gmail connections.");

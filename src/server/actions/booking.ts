@@ -1,7 +1,6 @@
 "use server";
 
 import { z } from "zod";
-import { customAlphabet } from "nanoid";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
@@ -27,8 +26,7 @@ import { checkPublicRateLimitFromRequest, RATE_LIMITS } from "@/server/security/
 import { BOOKABLE_QUOTE_STATUSES, isQuoteBookable } from "@/lib/exchange-proposal";
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { runAfterResponse } from "@/lib/run-after-response";
-
-const bookingRefAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 7);
+import { generateBookingReference } from "@/lib/booking-reference";
 
 /** Called when the customer opens the secure quote page. Advances SENT to
  * READ once — the `if` guard is what prevents a duplicate transition (and
@@ -340,7 +338,7 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
     return { ok: false, error: "Payment allocation does not match the booking total" };
   }
 
-  const bookingReference = `BFT-${bookingRefAlphabet()}`;
+  const bookingReference = generateBookingReference();
   const headerList = await headers();
   // Server-determined only — never accepts a client-submitted IP field.
   // See request-ip.ts for the trusted-proxy assumption and IPv4/IPv6

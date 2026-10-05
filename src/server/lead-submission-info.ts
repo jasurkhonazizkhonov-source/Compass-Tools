@@ -11,12 +11,23 @@
 // when neither is known no row is written at all.
 import { getClientIp } from "@/lib/request-ip";
 import { GEO_SOURCE, getRequestLocation } from "@/lib/request-geo";
+import { resolveVisitorContext } from "@/server/lead-ingest-context";
 import type { Prisma } from "@/generated/prisma/client";
 
-export function buildLeadSubmissionInfoCreate(headerList: Headers, now: Date = new Date()): Prisma.LeadSubmissionInfoCreateWithoutLeadInput | undefined {
-  const ip = getClientIp(headerList);
-  const location = getRequestLocation(headerList);
-  if (!ip && !location) return undefined;
+export function buildLeadSubmissionInfoCreate(
+  headerList: Headers,
+  now: Date = new Date(),
+  options: { budgetCurrency?: string } = {}
+): Prisma.LeadSubmissionInfoCreateWithoutLeadInput | undefined {
+  // A server-to-server call (the website's server posting on a visitor's behalf) carries a SIGNED visitor context
+  // (lead-ingest-context.ts). When one is present it is the only source: verified -> its IP/location; present but not
+  // verifiable -> none (never the connection headers, which would describe the website's own server). With no context the
+  // request is a direct visitor and the trusted-proxy headers apply, exactly as before.
+  const visitor = resolveVisitorContext(headerList, now.getTime());
+  const ip = visitor.state === "verified" ? visitor.ip : visitor.state === "invalid" ? undefined : getClientIp(headerList);
+  const location = visitor.state === "verified" ? visitor.location : visitor.state === "invalid" ? undefined : getRequestLocation(headerList);
+  const budgetCurrency = options.budgetCurrency;
+  if (!ip && !location && !budgetCurrency) return undefined;
   return {
     ipAddress: ip ?? null,
     ipVersion: ip ? (ip.includes(":") ? "v6" : "v4") : null,
@@ -26,6 +37,7 @@ export function buildLeadSubmissionInfoCreate(headerList: Headers, now: Date = n
     countryCode: location?.countryCode ?? null,
     timeZone: location?.timeZone ?? null,
     geoSource: location ? GEO_SOURCE : null,
+    ...(budgetCurrency ? { budgetCurrency } : {}),
     capturedAt: now,
   };
 }

@@ -4,13 +4,17 @@
 //
 //   # dry run (default): counts rows per key id, changes nothing, needs no key
 //   DATABASE_URL=... CARD_ENCRYPTION_KEYS=... CARD_ENCRYPTION_KEY_ID=... npm run cards:rotate
-//   # perform the rotation
-//   ... npm run cards:rotate -- --apply
+//   # perform the rotation (needs BOTH flags; optionally a canary batch first: --ids=<id>,<id>)
+//   ... npm run cards:rotate -- --apply --confirm
+//   # AFTER a rotation, BEFORE retiring any old key: read-only proof that every card decrypts under its own key and which
+//   # ring keys no row depends on any more (only those may be retired)
+//   ... npm run cards:rotate -- --verify
 //
 // It prints ids and counts only — never a card number, key or ciphertext.
 import pg from "pg";
 import { resolveDatabaseSsl } from "../src/lib/db-tls";
-import { rotateCardKeys } from "../src/server/security/card-key-rotation";
+import { rotateCardKeys, verifyCardKeys } from "../src/server/security/card-key-rotation";
+import { parseRotationArgs } from "../src/server/security/card-key-rotation-cli";
 
 async function main() {
   const raw = process.env.DATABASE_URL;
@@ -18,15 +22,33 @@ async function main() {
     console.error("DATABASE_URL is not set.");
     process.exit(1);
   }
-  const apply = process.argv.includes("--apply");
+  const command = parseRotationArgs(process.argv.slice(2));
+  if ("error" in command) {
+    console.error(command.error);
+    process.exit(1);
+  }
+  const apply = command.mode === "apply";
   const u = new URL(raw);
   u.searchParams.delete("sslmode");
   const client = new pg.Client({ connectionString: u.toString(), ssl: resolveDatabaseSsl() });
   await client.connect();
   try {
-    const summary = await rotateCardKeys(client, { apply });
+    if (command.mode === "verify") {
+      const verified = await verifyCardKeys(client);
+      console.log(JSON.stringify(verified, null, 2));
+      console.log(
+        verified.safeToRetireListedKeys
+          ? verified.retirableKeyIds.length > 0
+            ? `Verified. Keys no stored card depends on (retirable): ${verified.retirableKeyIds.join(", ")}. Keep every other key.`
+            : "Verified. No old key is unused yet — do not retire any key."
+          : "NOT verified: some cards failed to decrypt. Do NOT retire any key; investigate the listed ids."
+      );
+      if (!verified.safeToRetireListedKeys) process.exitCode = 2;
+      return;
+    }
+    const summary = await rotateCardKeys(client, { apply, ids: command.ids });
     console.log(JSON.stringify(summary, null, 2));
-    console.log(apply ? (summary.failed.length === 0 ? "Rotation complete." : "Rotation finished WITH FAILURES — investigate the listed ids before retiring any key.") : "Dry run only. Re-run with --apply to rotate.");
+    console.log(apply ? (summary.failed.length === 0 ? "Rotation complete." : "Rotation finished WITH FAILURES — investigate the listed ids before retiring any key.") : "Dry run only. To rotate, re-run with --apply --confirm.");
     if (summary.failed.length > 0) process.exitCode = 2;
   } finally {
     await client.end();

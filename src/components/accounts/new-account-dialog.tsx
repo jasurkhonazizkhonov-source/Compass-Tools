@@ -44,7 +44,8 @@ export function NewAccountDialog() {
     }
     startTransition(async () => {
       try {
-        await createAccount({ fullName, email, phone: phone || undefined, role, status: enabled ? "ACTIVE" : "INACTIVE" });
+        const refusal = await createAccount({ fullName, email, phone: phone || undefined, role, status: enabled ? "ACTIVE" : "INACTIVE" });
+        if (refusal) throw new Error(refusal.error);
         toast.success("User created");
         setOpen(false);
         setFullName("");

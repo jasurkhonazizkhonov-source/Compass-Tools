@@ -36,7 +36,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /**
- * "Lead Submission Information": what the server learned about the request that
+ * "Submission & IP Information": what the server learned about the request that
  * created the lead. "Submitted" is the lead row's own creation time (the same
  * canonical, never-rewritten timestamp the Lead Captured entry above uses), not an
  * acceptance, reassignment or update time. The IP address is what the server's
@@ -59,42 +59,43 @@ export function LeadSubmissionInformation({ leadId, createdAt, info, fromWebsite
     if (isRecentlyCaptured(createdAt)) {
       return (
         <div className="mb-5 rounded-lg border border-dashed px-4 py-3" data-testid="lead-submission-information">
-          <p className="text-sm font-medium">Lead Submission Information</p>
+          <p className="text-sm font-medium">Submission &amp; IP Information</p>
           <p className="text-xs text-muted-foreground">Submission information is not available yet — it may still be being recorded. Refresh in a moment.</p>
         </div>
       );
     }
     return (
       <div className="mb-5 rounded-lg border border-dashed px-4 py-3" data-testid="lead-submission-information">
-        <p className="text-sm font-medium">Lead Submission Information</p>
+        <p className="text-sm font-medium">Submission &amp; IP Information</p>
         <p className="text-xs text-muted-foreground">No IP address or location was recorded for this submission.</p>
       </div>
     );
   }
-  const country = info.country ? (info.countryCode ? `${info.country} (${info.countryCode})` : info.country) : info.countryCode;
   const located = hasIpLocation({ city: info.city, region: info.region, country: info.country, countryCode: info.countryCode, timeZone: info.timeZone });
   return (
     <section className="mb-5 rounded-lg border px-4 py-3" aria-labelledby="lead-submission-heading" data-testid="lead-submission-information">
       <h3 id="lead-submission-heading" className="mb-2 flex items-center gap-2 text-sm font-medium">
-        <MapPin className="h-3.5 w-3.5 text-primary" /> Lead Submission Information
+        <MapPin className="h-3.5 w-3.5 text-primary" /> Submission &amp; IP Information
       </h3>
       <dl className="grid grid-cols-1 gap-x-6 gap-y-2.5 sm:grid-cols-2">
         <Field label="Submitted">
           <time dateTime={createdAt.toISOString()}>{formatCapturedAt(createdAt)}</time>
         </Field>
         {info.hasIp && info.ipMasked && (
-          <Field label="IP Address">
-            <LeadIpReveal leadId={leadId} masked={info.ipMasked} version={info.ipVersion} canReveal={canRevealIp} />
+          <Field label="IP Address (masked)">
+            <LeadIpReveal leadId={leadId} masked={info.ipMasked} canReveal={canRevealIp} />
           </Field>
         )}
+        {info.hasIp && info.ipVersion && <Field label="IP Version">{info.ipVersion === "v6" ? "IPv6" : "IPv4"}</Field>}
         {info.city && <Field label="Approximate City">{info.city}</Field>}
-        {country && <Field label="Approximate Country">{country}</Field>}
-        {info.region && <Field label="Region">{info.region}</Field>}
-        {info.timeZone && <Field label="Timezone">{info.timeZone}</Field>}
+        {info.region && <Field label="Approximate Region">{info.region}</Field>}
+        {info.country && <Field label="Approximate Country">{info.country}</Field>}
+        {info.countryCode && <Field label="Country Code">{info.countryCode}</Field>}
+        {info.timeZone && <Field label="Time Zone">{info.timeZone}</Field>}
         {info.budgetCurrency && <Field label="Budget currency">{info.budgetCurrency}</Field>}
       </dl>
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-        {located ? "Location is estimated from the IP address and shows roughly where the network is, not the customer's exact position." : "No location could be determined for this IP address."}
+        {located ? "Location is approximate and derived from the submitting IP address." : "No location could be determined for this IP address."}
       </p>
     </section>
   );

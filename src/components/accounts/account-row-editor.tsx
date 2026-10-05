@@ -77,7 +77,8 @@ export function AccountRoleSelect({
       onValueChange={(v) =>
         startTransition(async () => {
           try {
-            await updateAccount(accountId, { role: v as AccountRole });
+            const refusal = await updateAccount(accountId, { role: v as AccountRole });
+            if (refusal) throw new Error(refusal.error);
             toast.success("Role updated");
           } catch (err) {
             toast.error(err instanceof Error ? err.message : "Failed to update role");
@@ -264,7 +265,8 @@ export function AccountEmailEditor({
   function save() {
     startTransition(async () => {
       try {
-        await updateAccount(accountId, { email: value });
+        const refusal = await updateAccount(accountId, { email: value });
+        if (refusal) throw new Error(refusal.error);
         toast.success("Email updated");
         setEditing(false);
       } catch (err) {
@@ -802,7 +804,8 @@ export function AccountPaymentPermissionsEditor({
     setCurrent(next);
     startTransition(async () => {
       try {
-        await updatePaymentPermissions(accountId, next);
+        const refusal = await updatePaymentPermissions(accountId, next);
+        if (refusal) throw new Error(refusal.error);
         toast.success("Payment permissions updated");
       } catch (err) {
         setCurrent(current);
@@ -827,7 +830,8 @@ export function AccountPaymentPermissionsEditor({
     setCurrent(next);
     startTransition(async () => {
       try {
-        await updatePaymentPermissions(accountId, next);
+        const refusal = await updatePaymentPermissions(accountId, next);
+        if (refusal) throw new Error(refusal.error);
         toast.success("Payment permissions updated");
       } catch (err) {
         setCurrent(current);
@@ -922,7 +926,8 @@ export function AccountBookingPermissionsEditor({
     setCurrent(next);
     startTransition(async () => {
       try {
-        await updateBookingPermissions(accountId, next);
+        const refusal = await updateBookingPermissions(accountId, next);
+        if (refusal) throw new Error(refusal.error);
         toast.success("Booking permissions updated");
       } catch (err) {
         setCurrent(current);

@@ -28,6 +28,7 @@ let bookings: Map<string, FakeBooking>;
 let currentActor: { id: string; role: string; status: string; companyId: string } | null;
 let emailLogs: Array<Record<string, unknown>>;
 let sendEmailCalls: Array<Record<string, unknown>>;
+let auditRows: Array<Record<string, unknown>>;
 // Part 16 — sendCancellationNotification gates on Quote.status rather than
 // Booking.status; overridable per-test so the same shared QUOTE fixture can
 // exercise both the "not yet confirmed" rejection and the success path.
@@ -153,6 +154,8 @@ beforeEach(() => {
     findMany: vi.fn(async () => [{ id: "agent-1", email: "andrew@example.com", fullName: "Andrew Kent" }]),
   };
   fakePrisma.gmailConnection = { findUnique: vi.fn(async () => ({ status: "CONNECTED" })) };
+  auditRows = [];
+  fakePrisma.auditLog = { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { auditRows.push(data); return {}; }) };
   vi.clearAllMocks();
 });
 
@@ -351,5 +354,37 @@ describe("sendCancellationNotification — authorization + preconditions", () =>
     fakePrisma.account = { findMany: vi.fn(async () => []) };
     const { sendCancellationNotification } = await import("../bookings");
     await expect(sendCancellationNotification("booking-1")).rejects.toThrow(/no active/i);
+  });
+});
+
+describe("New Sale / Cancellation notification — audit trail (booking id, actor, outcome; no recipients)", () => {
+  it("a send writes NEW_SALE_NOTIFICATION_SENT; a repeat is recorded as ALREADY_SENT; recipients are never in the record", async () => {
+    const { sendNewSaleNotification } = await import("../bookings");
+    await sendNewSaleNotification("booking-1");
+    await sendNewSaleNotification("booking-1");
+    expect(auditRows.map((r) => [r.action, (r.metadata as { result: string }).result])).toEqual([
+      ["NEW_SALE_NOTIFICATION_SENT", "SENT"],
+      ["NEW_SALE_NOTIFICATION_SENT", "ALREADY_SENT"],
+    ]);
+    expect(auditRows[0]).toMatchObject({ actorId: "ticketing-1", entityType: "Booking", entityId: "booking-1" });
+    expect(JSON.stringify(auditRows)).not.toContain("@");
+  });
+
+  it("a failed send writes NEW_SALE_NOTIFICATION_FAILED with the reason, and still throws", async () => {
+    fakePrisma.gmailConnection = { findUnique: vi.fn(async () => ({ status: "NOT_CONNECTED" })) };
+    const { sendNewSaleNotification } = await import("../bookings");
+    await expect(sendNewSaleNotification("booking-1")).rejects.toThrow();
+    expect(auditRows[0]).toMatchObject({ action: "NEW_SALE_NOTIFICATION_FAILED", metadata: { kind: "NEW_SALE", result: "FAILED" } });
+  });
+
+  it("a denial is audited with a reason code for both notification actions", async () => {
+    const { sendNewSaleNotification, sendCancellationNotification } = await import("../bookings");
+    currentActor = { id: "agent-9", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" };
+    await expect(sendNewSaleNotification("booking-1")).rejects.toThrow(/not authorized/i);
+    await expect(sendCancellationNotification("booking-1")).rejects.toThrow(/not authorized/i);
+    expect(auditRows.map((r) => [r.action, (r.metadata as { reason: string }).reason])).toEqual([
+      ["NEW_SALE_NOTIFICATION_DENIED", "ROLE_OR_SESSION"],
+      ["CANCELLATION_NOTIFICATION_DENIED", "ROLE_OR_SESSION"],
+    ]);
   });
 });

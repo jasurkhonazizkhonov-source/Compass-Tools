@@ -16,6 +16,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { updateBookingTicketing, sendNewSaleNotification, sendCancellationConfirmationEmail, sendCancellationNotification } from "@/server/actions/bookings";
+import { safeActionMessage } from "@/lib/safe-action-message";
 import { AirlineConfirmationDialog } from "@/components/bookings/airline-confirmation-dialog";
 import { computeTotalSellingPriceUsd, computeBookingProfitUsd, formatMoney } from "@/lib/currency";
 import type { BookingStatus, QuoteStatus } from "@/generated/prisma/client";
@@ -222,7 +223,7 @@ export function BookingTicketingForm({
         setSaved({ pnr: pnrValue, confirmations, status: statusValue, fare, tax, issuingFee, notes });
         setEditing(false);
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to update booking");
+        toast.error(safeActionMessage(err, "Failed to update booking"));
       }
     });
   }
@@ -268,7 +269,7 @@ export function BookingTicketingForm({
         await sendNewSaleNotification(bookingId);
         toast.success("Team notified of the new sale");
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to send the new-sale notification");
+        toast.error(safeActionMessage(err, "Failed to send the new-sale notification — check that a team member has Gmail connected, then try again"));
       }
     });
   }
@@ -287,7 +288,7 @@ export function BookingTicketingForm({
         await sendCancellationConfirmationEmail(bookingId);
         toast.success("Cancellation confirmation sent to customer");
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to send the cancellation confirmation");
+        toast.error(safeActionMessage(err, "Failed to send the cancellation confirmation — check that the sender's Gmail is connected, then try again"));
       }
     });
   }
@@ -305,7 +306,7 @@ export function BookingTicketingForm({
         await sendCancellationNotification(bookingId);
         toast.success("Team notified of the cancellation");
       } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to send the cancellation notification");
+        toast.error(safeActionMessage(err, "Failed to send the cancellation notification — check that a team member has Gmail connected, then try again"));
       }
     });
   }

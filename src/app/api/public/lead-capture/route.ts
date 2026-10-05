@@ -9,6 +9,7 @@ import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { MAX_LEAD_SEGMENTS } from "@/lib/lead-itinerary";
 import { buildLeadSubmissionInfoCreate } from "@/server/lead-submission-info";
+import { deriveWebsiteLeadId } from "@/server/website-lead-id";
 import type { LeadStatus } from "@/generated/prisma/client";
 
 // Part 12/25 — the public company website's flight-request form posts
@@ -57,6 +58,12 @@ const leadCaptureSchema = z
     datesFlexible: z.boolean().optional(),
     preferredAirline: z.string().max(200).optional(),
     approximateBudget: z.number().positive().optional(),
+    // ISO 4217 code of the currency the budget was entered in — kept with the submission details, never mixed into the amount.
+    budgetCurrency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/).optional(),
+    // The form's per-submission key (random, minted by the website per mounted form). The Lead id is derived from it, so
+    // a retry or repeat of the SAME submission — through this endpoint or the website's direct write — is a no-op that
+    // returns the existing lead instead of creating a second one.
+    submissionId: z.string().trim().min(8).max(200).regex(/^[A-Za-z0-9._-]+$/).optional(),
     additionalNotes: z.string().max(5000).optional(),
   })
   .superRefine((data, ctx) => {
@@ -154,7 +161,15 @@ export async function POST(req: Request) {
   // The submitting connection's IP and approximate location, from the request's own
   // trusted headers only (see lead-submission-info.ts) — written in the SAME insert as
   // the lead, so it can never be lost or detached from it.
-  const submissionInfo = buildLeadSubmissionInfoCreate(req.headers);
+  const submissionInfo = buildLeadSubmissionInfoCreate(req.headers, new Date(), { budgetCurrency: data.approximateBudget !== undefined ? data.budgetCurrency : undefined });
+
+  // Idempotency: a submission key fixes the Lead's primary key. An already-saved submission returns that lead before
+  // anything else is written (no second contact, lead, segments, submission row, activity or queue entry).
+  const derivedLeadId = data.submissionId ? deriveWebsiteLeadId(data.submissionId) : undefined;
+  if (derivedLeadId) {
+    const existing = await prisma.lead.findUnique({ where: { id: derivedLeadId }, select: { id: true } });
+    if (existing) return NextResponse.json({ ok: true, id: existing.id, duplicate: true });
+  }
 
   let leadId: string;
   try {
@@ -184,6 +199,7 @@ export async function POST(req: Request) {
 
     const lead = await prisma.lead.create({
       data: {
+        ...(derivedLeadId ? { id: derivedLeadId } : {}),
         contactId,
         departureAirportId: departureAirport?.id,
         arrivalAirportId: arrivalAirport?.id,
@@ -243,6 +259,11 @@ export async function POST(req: Request) {
       await distributeNewWebsiteLead(leadId).catch(() => undefined);
     }
   } catch {
+    // A concurrent duplicate of the same submission loses on the primary key: that is success, not an error.
+    if (derivedLeadId) {
+      const existing = await prisma.lead.findUnique({ where: { id: derivedLeadId }, select: { id: true } }).catch(() => null);
+      if (existing) return NextResponse.json({ ok: true, id: existing.id, duplicate: true });
+    }
     // Do NOT silently lose the lead's raw information on an unexpected
     // failure — but also never leak internal error detail to a public
     // caller. The website should show its own generic error state; the

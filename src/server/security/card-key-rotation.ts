@@ -14,7 +14,7 @@
 //   • Purged (tombstone) rows are skipped; no plaintext is logged or returned.
 //   • Old keys stay in the ring until you retire them (docs/CARD_VAULT_SECURITY.md).
 import { CardVaultError, decryptPan, encryptPan, inspectReference } from "./card-encryption";
-import { getKeyringStatus } from "./card-keyring";
+import { getKeyringStatus, LEGACY_KEY_ID } from "./card-keyring";
 
 /** The minimal database surface needed — satisfied by `pg.Client`. */
 export interface Queryable {
@@ -98,5 +98,66 @@ export async function rotateCardKeys(db: Queryable, options: { apply: boolean; b
       [crypto.randomUUID(), JSON.stringify({ currentKeyId: ring.currentKeyId, total: summary.total, rotated: summary.rotated, raced: summary.raced, failed: summary.failed.length, result: summary.failed.length === 0 ? "SUCCESS" : "PARTIAL" })]
     );
   }
+  return summary;
+}
+
+export type VerifySummary = {
+  currentKeyId: string;
+  total: number;
+  purged: number;
+  /** Rows by the key id they are encrypted under ("legacy" = an unversioned blob, which is decrypted with key id v1). */
+  byKey: Record<string, number>;
+  /** Rows that decrypted successfully under their own key (the value is discarded immediately). */
+  decryptable: number;
+  failed: Array<{ id: string; code: string }>;
+  /** Ring key ids, other than the current one, that NO stored row still depends on — only these may be retired. */
+  retirableKeyIds: string[];
+  /** True only when every non-purged row decrypts, so retiring the keys listed above cannot strand a card. */
+  safeToRetireListedKeys: boolean;
+};
+
+/**
+ * READ-ONLY check run after a rotation and BEFORE any old key is retired from the ring: every stored card is decrypted
+ * under its own key (the plaintext is dropped at once and nothing is written), the rows are counted per key id, and the
+ * key ids no row depends on are reported. A key id that still has rows — or a single row that fails to decrypt — means
+ * the key must stay. Never prints or returns a card number, key or ciphertext.
+ */
+export async function verifyCardKeys(db: Queryable, options: { batchSize?: number } = {}): Promise<VerifySummary> {
+  const ring = getKeyringStatus();
+  if (ring.state !== "configured" || !ring.currentKeyId) throw new CardVaultError("NOT_CONFIGURED");
+  const summary: VerifySummary = { currentKeyId: ring.currentKeyId, total: 0, purged: 0, byKey: {}, decryptable: 0, failed: [], retirableKeyIds: [], safeToRetireListedKeys: false };
+  const batchSize = options.batchSize ?? 200;
+  let after = "";
+  for (;;) {
+    const { rows } = await db.query(`SELECT "id", "encryptedPan" FROM "PaymentMethod" WHERE "id" > $1 ORDER BY "id" LIMIT $2`, [after, batchSize]);
+    if (rows.length === 0) break;
+    for (const row of rows) {
+      const id = String(row.id);
+      const ref = String(row.encryptedPan);
+      after = id;
+      summary.total++;
+      const info = inspectReference(ref);
+      if (!info) {
+        summary.failed.push({ id, code: "MALFORMED" });
+        continue;
+      }
+      if (info.format === "purged") {
+        summary.purged++;
+        continue;
+      }
+      const label = info.format === "legacy" ? "legacy" : info.keyId;
+      summary.byKey[label] = (summary.byKey[label] ?? 0) + 1;
+      try {
+        decryptPan(ref, id); // authenticates the row under its own key; the plaintext is not kept
+        summary.decryptable++;
+      } catch (err) {
+        summary.failed.push({ id, code: err instanceof CardVaultError ? err.code : "UNKNOWN" });
+      }
+    }
+  }
+  // Unversioned blobs are decrypted with the legacy key id, so they keep that id in use.
+  const inUse = new Set(Object.keys(summary.byKey).map((k) => (k === "legacy" ? LEGACY_KEY_ID : k)));
+  summary.retirableKeyIds = ring.keyIds.filter((id) => id !== ring.currentKeyId && !inUse.has(id));
+  summary.safeToRetireListedKeys = summary.failed.length === 0;
   return summary;
 }

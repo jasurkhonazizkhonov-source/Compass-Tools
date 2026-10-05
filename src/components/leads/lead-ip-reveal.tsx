@@ -8,10 +8,6 @@ import { revealLeadSubmissionIp } from "@/server/actions/lead-submission";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import { useTimedReveal } from "@/components/bookings/use-timed-reveal";
 
-function VersionBadge({ v }: { v: "v4" | "v6" | null }) {
-  return v ? <span className="ml-2 rounded border px-1 text-[10px] uppercase text-muted-foreground">{v}</span> : null;
-}
-
 /**
  * The submitting IP of a lead: masked by default for everyone ("203.x.x.x"), with a Reveal only for
  * accounts that hold the IP-reveal permission. The full address is fetched on click through the
@@ -20,7 +16,7 @@ function VersionBadge({ v }: { v: "v4" | "v6" | null }) {
  * pattern as the booking signer's IP. A refusal is shown inline (a returned message), never as an
  * opaque thrown error.
  */
-export function LeadIpReveal({ leadId, masked, version, canReveal }: { leadId: string; masked: string; version: "v4" | "v6" | null; canReveal: boolean }) {
+export function LeadIpReveal({ leadId, masked, canReveal }: { leadId: string; masked: string; canReveal: boolean }) {
   const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ ip: string; version: "v4" | "v6" }>(30);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,11 +45,10 @@ export function LeadIpReveal({ leadId, masked, version, canReveal }: { leadId: s
     return (
       <div className="space-y-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-2 dark:border-amber-800 dark:bg-amber-950/30" data-testid="lead-ip-revealed">
         <p className="flex items-center gap-1.5 text-xs font-medium text-amber-700 dark:text-amber-400">
-          <ShieldAlert className="h-3.5 w-3.5" /> Privileged view — auto-hides in {secondsLeft}s
+          <ShieldAlert className="h-3.5 w-3.5" /> Full IP address — privileged view, auto-hides in {secondsLeft}s
         </p>
         <p className="text-sm font-medium">
           <span className="font-mono break-all">{revealed.ip}</span>
-          <VersionBadge v={revealed.version} />
         </p>
         <Button size="sm" variant="outline" onClick={hide} className="h-6 gap-1.5 px-2 text-xs">
           <EyeOff className="h-3 w-3" /> Hide
@@ -66,7 +61,6 @@ export function LeadIpReveal({ leadId, masked, version, canReveal }: { leadId: s
     <div>
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-sm font-medium font-mono break-all">{masked}</span>
-        <VersionBadge v={version} />
         {canReveal && (
           <Button size="sm" variant="outline" onClick={reveal} disabled={pending} className="h-6 gap-1.5 px-2 text-xs">
             {pending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Eye className="h-3 w-3" />}

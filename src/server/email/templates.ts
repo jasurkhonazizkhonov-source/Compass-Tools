@@ -13,6 +13,7 @@
 // Tools" for their chrome (see internalWrapper) since only CRM users ever
 // see them, but still show the relevant Company's own logo where useful.
 
+import { maskIp } from "@/server/security/ip-encryption";
 import { PRODUCT_NAME, type ResolvedCompanyBranding } from "@/lib/company-config";
 import { LEAD_STATUS_META, leadSourceLabel } from "@/lib/status-meta";
 import type { LeadSource, LeadStatus } from "@/generated/prisma/client";
@@ -1446,7 +1447,8 @@ export function buildBookingSignedNotificationEmail(params: {
           <p style="margin:0 0 4px; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Signature Audit</p>
           <strong>Signed name:</strong> ${escapeHtml(params.signedName)}<br/>
           <strong>Signed at:</strong> ${params.signedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE })}<br/>
-          <strong>IP address:</strong> ${params.ipAddress ? escapeHtml(params.ipAddress) : "Not captured"}
+          <strong>IP address (masked):</strong> ${params.ipAddress ? escapeHtml(maskIp(params.ipAddress, params.ipAddress.includes(":") ? "v6" : "v4")) : "Not captured"}<br/>
+          <span style="color:#6b7280;">The full address is available in the CRM to users with IP access.</span>
         </td>
       </tr>
     </table>

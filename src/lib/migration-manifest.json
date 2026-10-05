@@ -67,6 +67,7 @@
     "20261003000200_lead_segments",
     "20261004000100_lead_submission_info",
     "20261004000200_unsubscribe_reason_and_booking_geo",
-    "20261005000100_airline_reference_refresh"
+    "20261005000100_airline_reference_refresh",
+    "20261005000200_audit_log_append_only"
   ]
 }

@@ -30,6 +30,7 @@ let findFirstWheres: Array<Record<string, unknown>>;
 let hiddenBookingIds: Set<string>;
 let contactPrimaryEmail: string | null;
 let contactEmails: Array<{ email: string; isPrimary: boolean }>;
+let auditRows: Array<Record<string, unknown>>;
 let sendEmailResult: { ok: true; messageId: string } | { ok: false; error: string };
 
 const AGENT = { id: "sender-1", fullName: "Andrew Kent", email: "andrew@example.com", location: null, hiredAt: new Date(), commissionPercent: 10 };
@@ -111,6 +112,12 @@ const fakePrisma: Record<string, unknown> = {
   },
   paymentCharge: {
     findMany: vi.fn(async () => []),
+  },
+  auditLog: {
+    create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+      auditRows.push(data);
+      return {};
+    }),
   },
   emailLog: {
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
@@ -209,6 +216,7 @@ beforeEach(() => {
   bookingUpdateManyCalls = [];
   recentSentLogs = [];
   findFirstWheres = [];
+  auditRows = [];
   hiddenBookingIds = new Set();
   contactPrimaryEmail = "jane@example.com";
   contactEmails = [{ email: "jane@example.com", isPrimary: true }];
@@ -576,5 +584,48 @@ describe("getAirlineConfirmationRecipients — what the dialog shows", () => {
     const res = await getAirlineConfirmationRecipients("booking-1");
     expect(res.recipients.map((r) => r.email)).toEqual(["other@example.com"]);
     expect(res.defaultSelected).toEqual([]);
+  });
+});
+
+describe("sendAirlineConfirmationEmail — audit trail (ids, counts and reason codes only)", () => {
+  it("a successful send writes AIRLINE_CONFIRMATION_SENT: who clicked, which booking, who it was sent AS, how many recipients — and no address", async () => {
+    currentActor = { id: "clicker-1", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" };
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    expect(auditRows).toHaveLength(1);
+    expect(auditRows[0]).toMatchObject({ actorId: "clicker-1", action: "AIRLINE_CONFIRMATION_SENT", entityType: "Booking", entityId: "booking-1", metadata: { resend: false, recipientCount: 1, sentAsAccountId: "sender-1", result: "SENT" } });
+    expect(JSON.stringify(auditRows)).not.toMatch(/jane@example|@/);
+  });
+
+  it("a Resend is marked as such; a Gmail failure writes AIRLINE_CONFIRMATION_FAILED with a reason, still no address", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    auditRows = [];
+    recentSentLogs = [];
+    sendEmailResult = { ok: false, error: "Gmail is not connected. Connect Gmail to send emails from your account." };
+    await sendAirlineConfirmationEmail("booking-1", { resend: true, recipients: ["jane@example.com"] });
+    expect(auditRows[0]).toMatchObject({ action: "AIRLINE_CONFIRMATION_FAILED", metadata: { resend: true, result: "FAILED", reason: expect.stringMatching(/Gmail is not connected/) } });
+    expect(JSON.stringify(auditRows)).not.toContain("jane@example.com");
+  });
+
+  it("a denial (wrong role, or a booking outside the viewer's scope) is audited with a reason code and still throws the generic message", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    currentActor = { id: "m-1", role: "MARKETING_AGENT", status: "ACTIVE", companyId: "company-1" };
+    await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/not authorized/i);
+    currentActor = { id: "t-1", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" };
+    hiddenBookingIds = new Set(["booking-1"]);
+    await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/not authorized/i);
+    expect(auditRows.map((r) => [r.action, (r.metadata as { reason: string }).reason])).toEqual([
+      ["AIRLINE_CONFIRMATION_DENIED", "ROLE_OR_SESSION"],
+      ["AIRLINE_CONFIRMATION_DENIED", "NOT_ACCESSIBLE"],
+    ]);
+    expect(sendEmailCalls).toHaveLength(0);
+  });
+
+  it("an audit-write failure never turns a successful send into an error", async () => {
+    (fakePrisma.auditLog as { create: ReturnType<typeof vi.fn> }).create.mockRejectedValueOnce(new Error("db down"));
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const res = await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    expect(res.ok).toBe(true);
   });
 });

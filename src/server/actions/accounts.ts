@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { Prisma } from "@/generated/prisma/client";
 import { isSerializationConflict } from "@/server/serialization-conflict";
+import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
@@ -78,6 +79,22 @@ async function auditAccountEvent(
   });
 }
 
+/**
+ * Step-up for changes that GIVE someone more reach: a role change, a changed login email (the email is the identity
+ * Google sign-in matches, so changing it can hand an account to someone else), a newly granted payment / booking
+ * permission, and creating an Admin. These are Admin-only already; on top of that the Admin must have signed in within the last
+ * 15 minutes (the same real step-up as card and IP Reveal), so a stolen or left-open older session cannot quietly escalate
+ * anyone. It is a returned message — never a thrown error, which production masks — and the refusal is audited without
+ * any values. Revocations and ordinary profile edits are not blocked.
+ */
+const ADMIN_STEP_UP_MESSAGE = `For security, this change requires a sign-in within the last ${RECENT_LOGIN_WINDOW_MS / 60000} minutes. Sign out, sign back in, then try again.`;
+async function stepUpOrRefuse(current: NonNullable<Awaited<ReturnType<typeof assertAdmin>>>, accountId: string, attempted: string): Promise<{ error: string } | null> {
+  const stepUp = requireRecentLogin(current.sessionCreatedAt);
+  if (stepUp.ok) return null;
+  await auditAccountEvent(prisma, { actorId: current.id, action: "ACCOUNT_PRIVILEGE_CHANGE_DENIED", accountId, metadata: { attempted, reason: stepUp.reason } });
+  return { error: ADMIN_STEP_UP_MESSAGE };
+}
+
 async function assertSameCompany(tx: Prisma.TransactionClient | typeof prisma, accountId: string, callerCompanyId: string) {
   const target = await tx.account.findUnique({ where: { id: accountId }, select: { companyId: true } });
   if (!target || target.companyId !== callerCompanyId) {
@@ -124,6 +141,10 @@ async function withSerializableRetryMessage<T>(fn: () => Promise<T>): Promise<T>
 export async function createAccount(input: z.infer<typeof createAccountSchema>) {
   const current = await assertAdmin();
   const data = createAccountSchema.parse(input);
+  if (data.role === "ADMIN") {
+    const refused = await stepUpOrRefuse(current!, "new", "new-admin");
+    if (refused) return refused;
+  }
   // Deliberately not returning the created row — a raw Account carries
   // Decimal fields (commissionPercent/tipPercent) that cannot cross the
   // Server Action -> Client Component boundary. No caller today reads this
@@ -137,6 +158,10 @@ export async function createAccount(input: z.infer<typeof createAccountSchema>) 
 export async function updateAccount(accountId: string, patch: z.infer<typeof updateAccountSchema>) {
   const current = await assertAdmin();
   const data = updateAccountSchema.parse(patch);
+  if (data.role !== undefined || data.email !== undefined) {
+    const refused = await stepUpOrRefuse(current!, accountId, [data.role !== undefined ? "role" : null, data.email !== undefined ? "email" : null].filter(Boolean).join("+"));
+    if (refused) return refused;
+  }
 
   // Deliberately not returning the updated row (see createAccount's same
   // comment) — no caller reads it today, and it would carry raw Decimal
@@ -204,6 +229,7 @@ export async function updateAccount(accountId: string, patch: z.infer<typeof upd
   revalidatePath("/users");
   revalidatePath("/leads");
   revalidatePath("/contacts");
+  return undefined;
 }
 
 /**
@@ -455,6 +481,10 @@ export async function updatePaymentPermissions(accountId: string, permissions: s
   // comment on why a raw Account (Decimal fields included) must never be
   // handed back to the "use client" caller.
   const before = await prisma.account.findUnique({ where: { id: accountId }, select: { paymentPermissions: true } });
+  if (requested.some((p) => !before?.paymentPermissions.includes(p))) {
+    const refused = await stepUpOrRefuse(current!, accountId, "grant-payment-permission");
+    if (refused) return refused;
+  }
   await prisma.account.update({
     where: { id: accountId },
     data: { paymentPermissions: requested },
@@ -473,6 +503,7 @@ export async function updatePaymentPermissions(accountId: string, permissions: s
     },
   });
   revalidatePath("/users");
+  return undefined;
 }
 
 const bookingPermissionsSchema = z.array(z.string());
@@ -504,6 +535,10 @@ export async function updateBookingPermissions(accountId: string, permissions: s
   // Deliberately not returning the updated row — see createAccount's
   // comment.
   const before = await prisma.account.findUnique({ where: { id: accountId }, select: { bookingPermissions: true } });
+  if (requested.some((p) => !before?.bookingPermissions.includes(p))) {
+    const refused = await stepUpOrRefuse(current!, accountId, "grant-booking-permission");
+    if (refused) return refused;
+  }
   await prisma.account.update({
     where: { id: accountId },
     data: { bookingPermissions: requested },
@@ -520,4 +555,5 @@ export async function updateBookingPermissions(accountId: string, permissions: s
     },
   });
   revalidatePath("/users");
+  return undefined;
 }

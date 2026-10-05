@@ -163,12 +163,14 @@ version label. Any problem closes the vault (fail closed).
    "N stored cards are not encrypted under the current key version".
 3. Dry run against production (changes nothing, needs no key to count):
    `DATABASE_URL=… npm run cards:rotate`
-4. Rotate: `DATABASE_URL=… CARD_ENCRYPTION_KEY=… CARD_ENCRYPTION_KEYS=… CARD_ENCRYPTION_KEY_ID=k2 npm run cards:rotate -- --apply`
+4. Rotate: `DATABASE_URL=… CARD_ENCRYPTION_KEY=… CARD_ENCRYPTION_KEYS=… CARD_ENCRYPTION_KEY_ID=k2 npm run cards:rotate -- --apply --confirm`
+   (`--apply` alone is refused: the tool insists on `--confirm` and prints the preconditions — a verified database backup, every old key kept in the ring, a dry run reviewed. A canary batch is possible first with `--ids=<id>,<id>`.)
    Each row is decrypted under its own key, re-encrypted under `k2`, verified by
    decrypting the result, and written with a compare-and-swap so a concurrent edit
    is never overwritten. Failures are listed by id + code and left untouched.
    An audit row `CARD_KEYS_ROTATED` records counts (no data). Safe to re-run.
-5. Confirm System Health reports 0 cards on older keys.
+5. Confirm System Health reports 0 cards on older keys, then run the read-only proof:
+   `DATABASE_URL=… <same key variables> npm run cards:rotate -- --verify`. It decrypts every stored card under its own key (discarding the value, writing nothing), counts rows per key id, and lists `retirableKeyIds` — the ring keys that **no row depends on any more**. A single undecryptable row makes it exit non-zero with `safeToRetireListedKeys: false`; then **no key may be retired**.
 6. **Do not delete the old key yet.** Database backups still contain ciphertext
    under it. Keep the old key (offline) until every backup that used it has
    expired, or you lose the ability to restore those backups' cards. Only then
@@ -503,7 +505,7 @@ existing cards stay encrypted. Never roll back by changing or deleting
    Redeploy. New cards use `k2`; old cards still decrypt.
 3. **Rotate cards:** run from a trusted machine with the same variables and
    `DATABASE_URL`: `npm run cards:rotate` (dry run — prints counts per key id, writes
-   nothing), then `npm run cards:rotate -- --apply`. Verified properties:
+   nothing), then `npm run cards:rotate -- --apply --confirm`. Verified properties:
    - *dry-run default*; *idempotent* (a second run rotates 0 rows);
    - *interruption-safe*: each row is its own compare-and-swap write, so an
      interrupted run leaves every row either fully old or fully new; re-run to finish;
@@ -543,7 +545,7 @@ DATABASE_URL=<production DATABASE_URL> CARD_ENCRYPTION_KEY=<production key> npm 
 
 Confirm the dry-run output before doing anything else: `currentKeyId: "v1"`,
 `toRotate: { "legacy": N }` (no `k2` or other id — only `CARD_ENCRYPTION_KEY` is
-set), `failed: []`. Then re-run with `-- --apply`. Verify with
+set), `failed: []`. Then re-run with `-- --apply --confirm`. Verify with
 `npm run cards:rotate` again (dry run): `alreadyCurrent` now covers those rows,
 `toRotate: {}`. System Health → "Card vault & booking readiness" should show
 "Cards on an older key / legacy format: 0" on the next load.

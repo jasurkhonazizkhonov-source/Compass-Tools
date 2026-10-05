@@ -62,3 +62,20 @@ GROUP BY a.id, a.name, a.icao ORDER BY segments DESC;
 - The picker's "no query" list is the first ten active airlines alphabetically (unchanged).
 - Logo coverage depends on a third-party CDN; the fallback is the boxed IATA code.
 - Production's own `Airline` contents and its historical references could not be inspected from this repository — run the query above.
+
+## Historical segments that still point at a recycled-code row (operator tool)
+
+Evidence available in the data: `FlightSegment.airlineId` (the row it was saved with) and `FlightSegment.airlineCodeRaw` (the code as entered / pasted — populated for GDS pastes and some manual entries, so **partial**). No schema change was made: no snapshot columns are needed because the stored raw code already records what the agent entered, and booking airline confirmations store the IATA code itself and resolve it live.
+
+`npm run airlines:history` (needs `DATABASE_URL`; run by an operator, never from a web request):
+
+```
+npm run airlines:history                                   # report only (read-only): counts, airline pairs, what cannot be inferred
+npm run airlines:history -- --since=2025-01-01             # limit to flights departing on/after a date
+npm run airlines:history -- --apply --confirm --undo-file=airline-undo.json   # repair; the undo list is written BEFORE any change
+npm run airlines:history -- --undo=airline-undo.json --confirm                # reverse exactly
+```
+
+A segment is a candidate only when it points at a **retired row** (inactive, no IATA) **and** its own stored raw code is exactly a 2-character IATA code that an **active** airline holds today. Segments with no raw code, an unheld code or a 3-letter code are reported as not inferable and left alone. Only `FlightSegment.airlineId` ever changes (no time, price, flight number, quote, booking or already-sent email); each write is a compare-and-swap; a second run finds nothing; undo restores the exact references (a segment edited since is skipped). REAL PG: `airline-history.integration.test.ts`. **Never run against production without a backup and a reviewed dry run** — whether historical commercial records should be re-pointed at all is a business decision; the default (and what has been done) is to change nothing.
+
+`scripts/migration-safety-check.ts --verify` will report the airline ids whose code was deliberately removed from a retired row; that is expected.

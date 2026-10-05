@@ -1367,3 +1367,43 @@ describe("Pass 24 — company.name/agentFullName HTML-escaping fix", () => {
     expect(html).toContain("&lt;img");
   });
 });
+
+// Privacy: the internal "Booking Form Signed" email goes to the creating agent (a role with no IP-reveal access),
+// so the signer's address must be masked there — the full value is only available through the audited CRM Reveal.
+describe("buildBookingSignedNotificationEmail — signer IP is masked", () => {
+  const build = (ipAddress: string | null) =>
+    buildBookingSignedNotificationEmail({
+      customerFullName: "Jane Doe",
+      contactEmail: "jane@example.com",
+      contactPhone: "+15551234567",
+      bookingReference: "BK-TEST",
+      signedName: "Jane Doe",
+      signedAt: new Date("2026-01-01T00:00:00Z"),
+      ipAddress,
+      segments: [makeSegment({})],
+      passengers: [],
+      pricing: PRICING,
+      paymentMethods: [],
+      paymentPaid: true,
+      bookingUrl: "https://example.com/bookings/1",
+      company: TEST_COMPANY,
+    }).html;
+
+  it("an IPv4 address appears only as first-octet.x.x.x — never in full", () => {
+    const html = build("203.0.113.42");
+    expect(html).toContain("203.x.x.x");
+    expect(html).not.toContain("203.0.113.42");
+    expect(html).not.toContain("0.113.42");
+  });
+
+  it("an IPv6 address appears only as its first group", () => {
+    const html = build("2001:db8:85a3::8a2e:370:7334");
+    expect(html).toContain("2001:x:x:x:x:x:x:x");
+    expect(html).not.toContain("8a2e");
+    expect(html).not.toContain("db8");
+  });
+
+  it("no captured address says so", () => {
+    expect(build(null)).toContain("Not captured");
+  });
+});

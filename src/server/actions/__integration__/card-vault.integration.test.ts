@@ -116,9 +116,11 @@ describe.skipIf(!enabled)("card vault storage guarantees — real PostgreSQL", (
       await expect(prisma.auditLog.delete({ where: { id: permRow.id } })).rejects.toThrow(/append-only/);
       const decryptFail = await prisma.auditLog.create({ data: { action: "CARD_DECRYPTION_FAILED", entityType: "PaymentMethod", entityId: `${TAG}-c` } });
       await expect(prisma.auditLog.update({ where: { id: decryptFail.id }, data: { metadata: { edited: true } } })).rejects.toThrow(/append-only/);
+      // Since migration 20261005000200 EVERY audit row is append-only, not just card-vault rows (see audit-log-integrity.integration.test.ts).
       const ordinary = await prisma.auditLog.create({ data: { action: "SOMETHING_ELSE", entityType: "Lead", entityId: `${TAG}-d` } });
-      await prisma.auditLog.delete({ where: { id: ordinary.id } });
-      expect(await prisma.auditLog.count({ where: { id: ordinary.id } })).toBe(0);
+      await expect(prisma.auditLog.delete({ where: { id: ordinary.id } })).rejects.toThrow(/append-only/);
+      await expect(prisma.auditLog.update({ where: { id: ordinary.id }, data: { entityId: "tampered" } })).rejects.toThrow(/append-only/);
+      expect(await prisma.auditLog.count({ where: { id: ordinary.id } })).toBe(1);
     });
   });
 

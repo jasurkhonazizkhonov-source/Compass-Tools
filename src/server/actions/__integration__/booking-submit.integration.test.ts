@@ -349,6 +349,8 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     if (first.ok && second.ok) {
       expect(second.bookingId).toBe(first.bookingId);
       expect(second.bookingReference).toBe(first.bookingReference);
+      expect(first.bookingReference).toMatch(/^BFT-[A-Z0-9]{7}$/); // issued through the single generator (see lib/booking-reference.ts)
+      expect((await prisma.booking.findUniqueOrThrow({ where: { id: first.bookingId } })).bookingReference).toBe(first.bookingReference); // internal lookup by id is unchanged
       expect(second.alreadyCompleted).toBe(true);
     }
     expect(await prisma.booking.count({ where: { quoteId: quote.id } })).toBe(1);
