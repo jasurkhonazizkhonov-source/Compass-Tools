@@ -1,0 +1,3953 @@
+{
+ "_about": "Curated corrections and additions to the bundled OpenFlights airline data. Applied to a fresh database by applyCuratedAirlines() (prisma/seed-data/parse.ts) and to an existing one by migration 20261005000100_airline_reference_refresh. IATA = 2-character designator, ICAO = 3-letter; neither is ever inferred from a name.",
+ "_sources": [
+  "OpenFlights airlines.dat (ODbL) - baseline and the existing row state that was audited",
+  "Wikipedia 'List of airline codes' (A-Z + 0-9), IATA+ICAO pair must match for every entry",
+  "Wikipedia per-airline infobox (IATA/ICAO) for the entries the code list lacked",
+  "Logos: images.kiwi.com/airlines/64x64/<IATA>.png, HTTP 200 image verified per code (the app's existing logo CDN)"
+ ],
+ "modes": {
+  "update": "the row already holding this IATA is the same airline (same ICAO): set the canonical name and active flag",
+  "relabel": "the row holding this IATA is the same company renamed / its successor: relabelled in place, previous identity kept as an inactive record without an IATA code",
+  "adopt": "the IATA was held by an unrelated (recycled) airline: that row keeps its identity but loses the code; the airline's own existing ICAO-only row gains it",
+  "insert": "no existing row for this airline: a new one is added (a recycled code is freed from its previous holder first)"
+ },
+ "airlines": [
+  {
+   "iata": "EC",
+   "icao": "EJU",
+   "name": "easyJet Europe",
+   "country": "Austria",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Avialeasing Aviation Company",
+    "icao": "TWN"
+   }
+  },
+  {
+   "iata": "BY",
+   "icao": "TOM",
+   "name": "TUI Airways",
+   "country": "United Kingdom",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "TB",
+   "icao": "JAF",
+   "name": "TUI fly Belgium",
+   "country": "Belgium",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": true,
+   "holder": {
+    "name": "TUI Airlines Belgium",
+    "icao": "TUB"
+   }
+  },
+  {
+   "iata": "X3",
+   "icao": "TUI",
+   "name": "TUIfly",
+   "country": "Germany",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "TUIfly",
+    "icao": "HLX"
+   }
+  },
+  {
+   "iata": "OR",
+   "icao": "TFL",
+   "name": "TUI fly Netherlands",
+   "country": "Netherlands",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "LM",
+   "icao": "LOG",
+   "name": "Loganair",
+   "country": "United Kingdom",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Linhas A",
+    "icao": "LAM"
+   },
+   "own": {
+    "name": "Logan Air",
+    "icao": "LOG",
+    "iata": null
+   }
+  },
+  {
+   "iata": "RK",
+   "icao": "RUK",
+   "name": "Ryanair UK",
+   "country": "United Kingdom",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Afrique",
+    "icao": "RKA"
+   }
+  },
+  {
+   "iata": "SN",
+   "icao": "BEL",
+   "name": "Brussels Airlines",
+   "country": "Belgium",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Brussels Airlines",
+    "icao": "DAT"
+   }
+  },
+  {
+   "iata": "4Y",
+   "icao": "OCN",
+   "name": "Discover Airlines",
+   "country": "Germany",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Airbus France",
+    "icao": "RBU"
+   }
+  },
+  {
+   "iata": "WK",
+   "icao": "EDW",
+   "name": "Edelweiss Air",
+   "country": "Switzerland",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "American Falcon",
+    "icao": "AFB"
+   }
+  },
+  {
+   "iata": "TO",
+   "icao": "TVF",
+   "name": "Transavia France",
+   "country": "France",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "President Airlines",
+    "icao": "PSD"
+   }
+  },
+  {
+   "iata": "SS",
+   "icao": "CRL",
+   "name": "Corsair International",
+   "country": "France",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "BF",
+   "icao": "FBU",
+   "name": "French Bee",
+   "country": "France",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aero-Service",
+    "icao": "RSR"
+   }
+  },
+  {
+   "iata": "VY",
+   "icao": "VLG",
+   "name": "Vueling",
+   "country": "Spain",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Formosa Airlines",
+    "icao": "FOS"
+   }
+  },
+  {
+   "iata": "V7",
+   "icao": "VOE",
+   "name": "Volotea",
+   "country": "Spain",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Senegal International",
+    "icao": "SNG"
+   }
+  },
+  {
+   "iata": "TP",
+   "icao": "TAP",
+   "name": "TAP Air Portugal",
+   "country": "Portugal",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "S4",
+   "icao": "RZO",
+   "name": "SATA Azores Airlines",
+   "country": "Portugal",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "AZ",
+   "icao": "ITY",
+   "name": "ITA Airways",
+   "country": "Italy",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": true,
+   "holder": {
+    "name": "Alitalia",
+    "icao": "AZA"
+   }
+  },
+  {
+   "iata": "NO",
+   "icao": "NOS",
+   "name": "Neos",
+   "country": "Italy",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aus-Air",
+    "icao": "AUS"
+   }
+  },
+  {
+   "iata": "GQ",
+   "icao": "SEH",
+   "name": "Sky Express",
+   "country": "Greece",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Big Sky Airlines",
+    "icao": "BSY"
+   }
+  },
+  {
+   "iata": "QS",
+   "icao": "TVS",
+   "name": "Smartwings",
+   "country": "Czech Republic",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "African Safari Airways",
+    "icao": "QSC"
+   }
+  },
+  {
+   "iata": "JU",
+   "icao": "ASL",
+   "name": "Air Serbia",
+   "country": "Serbia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": true,
+   "holder": {
+    "name": "Jat Airways",
+    "icao": "JAT"
+   }
+  },
+  {
+   "iata": "ZB",
+   "icao": "ABN",
+   "name": "Air Albania",
+   "country": "Albania",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Bourbon",
+    "icao": "BUB"
+   }
+  },
+  {
+   "iata": "DY",
+   "icao": "NOZ",
+   "name": "Norwegian Air Shuttle",
+   "country": "Norway",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Norwegian Air Shuttle",
+    "icao": "NAX"
+   }
+  },
+  {
+   "iata": "N0",
+   "icao": "NBT",
+   "name": "Norse Atlantic Airways",
+   "country": "Norway",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Norte Lineas Aereas",
+    "icao": null
+   }
+  },
+  {
+   "iata": "PC",
+   "icao": "PGT",
+   "name": "Pegasus Airlines",
+   "country": "Turkey",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Fiji",
+    "icao": "FAJ"
+   }
+  },
+  {
+   "iata": "VF",
+   "icao": "TKJ",
+   "name": "AJet",
+   "country": "Turkey",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Valuair",
+    "icao": "VLU"
+   }
+  },
+  {
+   "iata": "XC",
+   "icao": "CAI",
+   "name": "Corendon Airlines",
+   "country": "Turkey",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Corendon Airlines",
+    "icao": "CAI",
+    "iata": null
+   }
+  },
+  {
+   "iata": "DP",
+   "icao": "PBD",
+   "name": "Pobeda",
+   "country": "Russia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "First Choice Airways",
+    "icao": "FCA"
+   },
+   "own": {
+    "name": "Pobeda",
+    "icao": "PBD",
+    "iata": null
+   }
+  },
+  {
+   "iata": "PS",
+   "icao": "AUI",
+   "name": "Ukraine International Airlines",
+   "country": "Ukraine",
+   "isActive": false,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Pacific Southwest Airlines",
+    "icao": "PSX"
+   }
+  },
+  {
+   "iata": "DV",
+   "icao": "VSV",
+   "name": "SCAT Airlines",
+   "country": "Kazakhstan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Lufttaxi Fluggesellschaft",
+    "icao": "LTF"
+   }
+  },
+  {
+   "iata": "XY",
+   "icao": "KNE",
+   "name": "flynas",
+   "country": "Saudi Arabia",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "F3",
+   "icao": "FAD",
+   "name": "flyadeal",
+   "country": "Saudi Arabia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Faso Airways",
+    "icao": "FSW"
+   }
+  },
+  {
+   "iata": "RX",
+   "icao": "RXI",
+   "name": "Riyadh Air",
+   "country": "Saudi Arabia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aviaexpress",
+    "icao": "AEH"
+   }
+  },
+  {
+   "iata": "GF",
+   "icao": "GFA",
+   "name": "Gulf Air",
+   "country": "Bahrain",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Gulf Air Bahrain",
+    "icao": "GBA"
+   }
+  },
+  {
+   "iata": "J9",
+   "icao": "JZR",
+   "name": "Jazeera Airways",
+   "country": "Kuwait",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Guinee Airlines",
+    "icao": "GIF"
+   }
+  },
+  {
+   "iata": "OV",
+   "icao": "OMS",
+   "name": "SalamAir",
+   "country": "Oman",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Estonian Air",
+    "icao": "ELL"
+   }
+  },
+  {
+   "iata": "IZ",
+   "icao": "AIZ",
+   "name": "Arkia Israeli Airlines",
+   "country": "Israel",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "RB",
+   "icao": "SYR",
+   "name": "Syrian Air",
+   "country": "Syria",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Srpska",
+    "icao": "SBK"
+   }
+  },
+  {
+   "iata": "TR",
+   "icao": "TGW",
+   "name": "Scoot",
+   "country": "Singapore",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "HB",
+   "icao": "HGB",
+   "name": "Greater Bay Airlines",
+   "country": "Hong Kong",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Harbor Airlines",
+    "icao": "HAR"
+   }
+  },
+  {
+   "iata": "9C",
+   "icao": "CQH",
+   "name": "Spring Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "China SSS",
+    "icao": null
+   },
+   "own": {
+    "name": "Spring Airlines",
+    "icao": "CQH",
+    "iata": "9S"
+   }
+  },
+  {
+   "iata": "HO",
+   "icao": "DKH",
+   "name": "Juneyao Air",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Antinea Airlines",
+    "icao": "DJA"
+   }
+  },
+  {
+   "iata": "GS",
+   "icao": "GCR",
+   "name": "Tianjin Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Air Foyle",
+    "icao": "UPA"
+   },
+   "own": {
+    "name": "Tianjin Airlines",
+    "icao": "GCR",
+    "iata": null
+   }
+  },
+  {
+   "iata": "8L",
+   "icao": "LKE",
+   "name": "Lucky Air",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Cargo Plus Aviation",
+    "icao": "CGP"
+   },
+   "own": {
+    "name": "Lucky Air",
+    "icao": "LKE",
+    "iata": null
+   }
+  },
+  {
+   "iata": "GJ",
+   "icao": "CDC",
+   "name": "Loong Air",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Compania Mexicargo",
+    "icao": "MXC"
+   }
+  },
+  {
+   "iata": "BK",
+   "icao": "OKA",
+   "name": "Okay Airways",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Potomac Air",
+    "icao": "PDC"
+   },
+   "own": {
+    "name": "Okay Airways",
+    "icao": "OKA",
+    "iata": null
+   }
+  },
+  {
+   "iata": "JD",
+   "icao": "CBJ",
+   "name": "Beijing Capital Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Japan Air System",
+    "icao": "JAS"
+   }
+  },
+  {
+   "iata": "G5",
+   "icao": "HXA",
+   "name": "China Express Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Huaxia",
+    "icao": null
+   }
+  },
+  {
+   "iata": "TV",
+   "icao": "TBA",
+   "name": "Tibet Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Virgin Express",
+    "icao": "VEX"
+   }
+  },
+  {
+   "iata": "KN",
+   "icao": "CUA",
+   "name": "China United Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "China United",
+    "icao": null
+   }
+  },
+  {
+   "iata": "JX",
+   "icao": "SJX",
+   "name": "Starlux Airlines",
+   "country": "Taiwan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Jett8 Airlines Cargo",
+    "icao": "JEC"
+   }
+  },
+  {
+   "iata": "IT",
+   "icao": "TTW",
+   "name": "Tigerair Taiwan",
+   "country": "Taiwan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Kingfisher Airlines",
+    "icao": "KFR"
+   }
+  },
+  {
+   "iata": "MM",
+   "icao": "APJ",
+   "name": "Peach Aviation",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Peach Aviation",
+    "icao": null
+   }
+  },
+  {
+   "iata": "ZG",
+   "icao": "TZP",
+   "name": "ZIPAIR Tokyo",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Viva Macau",
+    "icao": "VVM"
+   }
+  },
+  {
+   "iata": "6J",
+   "icao": "SNJ",
+   "name": "Solaseed Air",
+   "country": "Japan",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "HD",
+   "icao": "ADO",
+   "name": "Air Do",
+   "country": "Japan",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "GK",
+   "icao": "JJP",
+   "name": "Jetstar Japan",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Go One Airways",
+    "icao": null
+   },
+   "own": {
+    "name": "Jetstar Japan",
+    "icao": "JJP",
+    "iata": null
+   }
+  },
+  {
+   "iata": "IJ",
+   "icao": "SJO",
+   "name": "Spring Airlines Japan",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Great Wall Airlines",
+    "icao": "GWL"
+   }
+  },
+  {
+   "iata": "LJ",
+   "icao": "JNA",
+   "name": "Jin Air",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Sierra National Airlines",
+    "icao": "SLA"
+   }
+  },
+  {
+   "iata": "TW",
+   "icao": "TWB",
+   "name": "T'way Air",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Trans World Airlines",
+    "icao": "TWA"
+   }
+  },
+  {
+   "iata": "BX",
+   "icao": "ABL",
+   "name": "Air Busan",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Coast Air",
+    "icao": "CST"
+   }
+  },
+  {
+   "iata": "RS",
+   "icao": "ASV",
+   "name": "Air Seoul",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Intercontinental de Aviaci",
+    "icao": "ICT"
+   }
+  },
+  {
+   "iata": "ZE",
+   "icao": "ESR",
+   "name": "Eastar Jet",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Arcus-Air Logistic",
+    "icao": "AZE"
+   }
+  },
+  {
+   "iata": "YP",
+   "icao": "APZ",
+   "name": "Air Premia",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aero Lloyd (YP)",
+    "icao": "AEF"
+   }
+  },
+  {
+   "iata": "RF",
+   "icao": "EOK",
+   "name": "Aero K",
+   "country": "South Korea",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Florida West International Airways",
+    "icao": "FWL"
+   }
+  },
+  {
+   "iata": "SL",
+   "icao": "TLM",
+   "name": "Thai Lion Air",
+   "country": "Thailand",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Rio Sul Servi",
+    "icao": "RSL"
+   }
+  },
+  {
+   "iata": "VZ",
+   "icao": "TVJ",
+   "name": "Thai VietJet Air",
+   "country": "Thailand",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "MyTravel Airways",
+    "icao": "MYT"
+   },
+   "own": {
+    "name": "Thai Vietjet Air",
+    "icao": "TVJ",
+    "iata": null
+   }
+  },
+  {
+   "iata": "VJ",
+   "icao": "VJC",
+   "name": "VietJet Air",
+   "country": "Vietnam",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Jatayu Airlines",
+    "icao": "JTY"
+   },
+   "own": {
+    "name": "VietJet Air",
+    "icao": "VJC",
+    "iata": null
+   }
+  },
+  {
+   "iata": "QH",
+   "icao": "BAV",
+   "name": "Bamboo Airways",
+   "country": "Vietnam",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Florida",
+    "icao": "FLZ"
+   }
+  },
+  {
+   "iata": "VU",
+   "icao": "VAG",
+   "name": "Vietravel Airlines",
+   "country": "Vietnam",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Ivoire",
+    "icao": "VUN"
+   }
+  },
+  {
+   "iata": "BL",
+   "icao": "PIC",
+   "name": "Pacific Airlines",
+   "country": "Vietnam",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "2P",
+   "icao": "GAP",
+   "name": "PAL Express",
+   "country": "Philippines",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "Z2",
+   "icao": "APG",
+   "name": "AirAsia Philippines",
+   "country": "Philippines",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Zest Air",
+    "icao": null
+   }
+  },
+  {
+   "iata": "D7",
+   "icao": "XAX",
+   "name": "AirAsia X",
+   "country": "Malaysia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Dinar",
+    "icao": "RDN"
+   }
+  },
+  {
+   "iata": "OD",
+   "icao": "MXD",
+   "name": "Batik Air Malaysia",
+   "country": "Malaysia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Zuliana de Aviacion",
+    "icao": "ULA"
+   }
+  },
+  {
+   "iata": "JT",
+   "icao": "LNI",
+   "name": "Lion Air",
+   "country": "Indonesia",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "ID",
+   "icao": "BTK",
+   "name": "Batik Air",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Interlink Airlines",
+    "icao": "ITK"
+   }
+  },
+  {
+   "iata": "QG",
+   "icao": "CTV",
+   "name": "Citilink",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Citilink Indonesia",
+    "icao": null
+   }
+  },
+  {
+   "iata": "IU",
+   "icao": "SJV",
+   "name": "Super Air Jet",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert"
+  },
+  {
+   "iata": "K6",
+   "icao": "KHV",
+   "name": "Cambodia Angkor Air",
+   "country": "Cambodia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Bravo Air Congo",
+    "icao": "BRV"
+   }
+  },
+  {
+   "iata": "UB",
+   "icao": "UBA",
+   "name": "Myanmar National Airlines",
+   "country": "Myanmar",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "SG",
+   "icao": "SEJ",
+   "name": "SpiceJet",
+   "country": "India",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "JetsGo",
+    "icao": "JGO"
+   }
+  },
+  {
+   "iata": "QP",
+   "icao": "AKJ",
+   "name": "Akasa Air",
+   "country": "India",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Kenya (Priv)",
+    "icao": null
+   }
+  },
+  {
+   "iata": "9I",
+   "icao": "LLR",
+   "name": "Alliance Air",
+   "country": "India",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Thai Sky Airlines",
+    "icao": "TKY"
+   },
+   "own": {
+    "name": "Alliance Air",
+    "icao": "LLR",
+    "iata": "CD"
+   }
+  },
+  {
+   "iata": "S5",
+   "icao": "SDG",
+   "name": "Star Air",
+   "country": "India",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Shuttle America",
+    "icao": "TCF"
+   }
+  },
+  {
+   "iata": "BS",
+   "icao": "UBG",
+   "name": "US-Bangla Airlines",
+   "country": "Bangladesh",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "British International Helicopters",
+    "icao": "BIH"
+   },
+   "own": {
+    "name": "US-Bangla Airlines",
+    "icao": "UBG",
+    "iata": null
+   }
+  },
+  {
+   "iata": "VQ",
+   "icao": "NVQ",
+   "name": "Novoair",
+   "country": "Bangladesh",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Viking Hellas",
+    "icao": "VKH"
+   }
+  },
+  {
+   "iata": "U4",
+   "icao": "BHA",
+   "name": "Buddha Air",
+   "country": "Nepal",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "PMTair",
+    "icao": "PMT"
+   },
+   "own": {
+    "name": "Buddha Air",
+    "icao": "BHA",
+    "iata": null
+   }
+  },
+  {
+   "iata": "YT",
+   "icao": "NYT",
+   "name": "Yeti Airlines",
+   "country": "Nepal",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Air Togo",
+    "icao": "TGA"
+   },
+   "own": {
+    "name": "Yeti Airlines",
+    "icao": "NYT",
+    "iata": null
+   }
+  },
+  {
+   "iata": "H9",
+   "icao": "HIM",
+   "name": "Himalaya Airlines",
+   "country": "Nepal",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air D'Ayiti",
+    "icao": "HAD"
+   }
+  },
+  {
+   "iata": "PA",
+   "icao": "ABQ",
+   "name": "Airblue",
+   "country": "Pakistan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Florida Coastal Airlines",
+    "icao": "FCL"
+   },
+   "own": {
+    "name": "Airblue",
+    "icao": "ABQ",
+    "iata": "ED"
+   }
+  },
+  {
+   "iata": "PF",
+   "icao": "SIF",
+   "name": "AirSial",
+   "country": "Pakistan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Palestinian Airlines",
+    "icao": "PNW"
+   }
+  },
+  {
+   "iata": "9P",
+   "icao": "FJL",
+   "name": "Fly Jinnah",
+   "country": "Pakistan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Pelangi",
+    "icao": null
+   }
+  },
+  {
+   "iata": "Q2",
+   "icao": "DQA",
+   "name": "Maldivian",
+   "country": "Maldives",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Maldivian",
+    "icao": null
+   }
+  },
+  {
+   "iata": "NR",
+   "icao": "MAV",
+   "name": "Manta Air",
+   "country": "Maldives",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Pamir Airways",
+    "icao": "PIR"
+   }
+  },
+  {
+   "iata": "VA",
+   "icao": "VOZ",
+   "name": "Virgin Australia",
+   "country": "Australia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": true,
+   "holder": {
+    "name": "V Australia Airlines",
+    "icao": "VAU"
+   }
+  },
+  {
+   "iata": "FJ",
+   "icao": "FJI",
+   "name": "Fiji Airways",
+   "country": "Fiji",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "SB",
+   "icao": "ACI",
+   "name": "Aircalin",
+   "country": "New Caledonia",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "F8",
+   "icao": "FLE",
+   "name": "Flair Airlines",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Air2there",
+    "icao": null
+   },
+   "own": {
+    "name": "Flair Airlines",
+    "icao": "FLE",
+    "iata": null
+   }
+  },
+  {
+   "iata": "MX",
+   "icao": "MXY",
+   "name": "Breeze Airways",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": false,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Mexicana de Aviaci",
+    "icao": "MXA"
+   }
+  },
+  {
+   "iata": "XP",
+   "icao": "VXP",
+   "name": "Avelo Airlines",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Xtra Airways",
+    "icao": "CXP"
+   }
+  },
+  {
+   "iata": "9X",
+   "icao": "SOU",
+   "name": "Southern Airways Express",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Itali Airlines",
+    "icao": "ACL"
+   },
+   "own": {
+    "name": "Southern Airways",
+    "icao": "SOU",
+    "iata": null
+   }
+  },
+  {
+   "iata": "YX",
+   "icao": "RPA",
+   "name": "Republic Airways",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Midwest Airlines",
+    "icao": "MEP"
+   },
+   "own": {
+    "name": "Republic Airlines",
+    "icao": "RPA",
+    "iata": "RW"
+   }
+  },
+  {
+   "iata": "MQ",
+   "icao": "ENY",
+   "name": "Envoy Air",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": true,
+   "holder": {
+    "name": "American Eagle Airlines",
+    "icao": "EGF"
+   }
+  },
+  {
+   "iata": "OH",
+   "icao": "JIA",
+   "name": "PSA Airlines",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Comair",
+    "icao": "COM"
+   },
+   "own": {
+    "name": "PSA Airlines",
+    "icao": "JIA",
+    "iata": null
+   }
+  },
+  {
+   "iata": "9E",
+   "icao": "EDV",
+   "name": "Endeavor Air",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": true,
+   "holder": {
+    "name": "Pinnacle Airlines",
+    "icao": "FLG"
+   }
+  },
+  {
+   "iata": "G7",
+   "icao": "GJS",
+   "name": "GoJet Airlines",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Gandalf Airlines",
+    "icao": "GNF"
+   }
+  },
+  {
+   "iata": "C5",
+   "icao": "UCA",
+   "name": "CommuteAir",
+   "country": "United States",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "VB",
+   "icao": "VIV",
+   "name": "Viva Aerobus",
+   "country": "Mexico",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Birmingham European",
+    "icao": null
+   }
+  },
+  {
+   "iata": "LA",
+   "icao": "LAN",
+   "name": "LATAM Airlines",
+   "country": "Chile",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "JJ",
+   "icao": "TAM",
+   "name": "LATAM Airlines Brasil",
+   "country": "Brazil",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "G3",
+   "icao": "GLO",
+   "name": "GOL Linhas Aereas",
+   "country": "Brazil",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "City Connexion Airlines",
+    "icao": "CIX"
+   }
+  },
+  {
+   "iata": "AD",
+   "icao": "AZU",
+   "name": "Azul Brazilian Airlines",
+   "country": "Brazil",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Paradise International",
+    "icao": "PRZ"
+   }
+  },
+  {
+   "iata": "FO",
+   "icao": "FBZ",
+   "name": "Flybondi",
+   "country": "Argentina",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Airlines Of Tasmania",
+    "icao": "ATM"
+   }
+  },
+  {
+   "iata": "JA",
+   "icao": "JAT",
+   "name": "JetSMART",
+   "country": "Chile",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Bosna",
+    "icao": "BON"
+   }
+  },
+  {
+   "iata": "WJ",
+   "icao": "JES",
+   "name": "JetSMART Argentina",
+   "country": "Argentina",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "WebJet Linhas A",
+    "icao": "WEB"
+   }
+  },
+  {
+   "iata": "P5",
+   "icao": "RPB",
+   "name": "Wingo",
+   "country": "Colombia",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "DM",
+   "icao": "DWI",
+   "name": "Arajet",
+   "country": "Dominican Republic",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Maersk",
+    "icao": null
+   }
+  },
+  {
+   "iata": "OB",
+   "icao": "BOV",
+   "name": "Boliviana de Aviación",
+   "country": "Bolivia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Astrakhan Airlines",
+    "icao": "ASZ"
+   },
+   "own": {
+    "name": "Boliviana de Aviacion (OB)",
+    "icao": "BOV",
+    "iata": null
+   }
+  },
+  {
+   "iata": "JY",
+   "icao": "IWY",
+   "name": "interCaribbean Airways",
+   "country": "Turks and Caicos Islands",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Turks and Caicos",
+    "icao": "TCI"
+   }
+  },
+  {
+   "iata": "SM",
+   "icao": "MSC",
+   "name": "Air Cairo",
+   "country": "Egypt",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Swedline Express",
+    "icao": "SRL"
+   },
+   "own": {
+    "name": "Air Cairo",
+    "icao": "MSC",
+    "iata": null
+   }
+  },
+  {
+   "iata": "4Z",
+   "icao": "LNK",
+   "name": "Airlink",
+   "country": "South Africa",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Airlink (SAA)",
+    "icao": null
+   }
+  },
+  {
+   "iata": "FA",
+   "icao": "SFR",
+   "name": "Safair",
+   "country": "South Africa",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "HC",
+   "icao": "SZN",
+   "name": "Air Senegal",
+   "country": "Senegal",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aero-Tropics Air Services",
+    "icao": "ATI"
+   }
+  },
+  {
+   "iata": "KP",
+   "icao": "SKK",
+   "name": "ASKY Airlines",
+   "country": "Togo",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Kiwi International Air Lines",
+    "icao": "KIA"
+   }
+  },
+  {
+   "iata": "HF",
+   "icao": "VRE",
+   "name": "Air Côte d'Ivoire",
+   "country": "Cote d'Ivoire",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Hapagfly",
+    "icao": "HLF"
+   }
+  },
+  {
+   "iata": "P4",
+   "icao": "APK",
+   "name": "Air Peace",
+   "country": "Nigeria",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Patriot Airways",
+    "icao": null
+   }
+  },
+  {
+   "iata": "UR",
+   "icao": "UGD",
+   "name": "Uganda Airlines",
+   "country": "Uganda",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "UTair-Express",
+    "icao": null
+   }
+  },
+  {
+   "iata": "TM",
+   "icao": "LAM",
+   "name": "LAM Mozambique Airlines",
+   "country": "Mozambique",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Air Mozambique",
+    "icao": null
+   }
+  },
+  {
+   "iata": "A2",
+   "icao": "AZI",
+   "name": "Astra Airlines",
+   "country": "Greece",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Cielos Airlines",
+    "icao": "CIU"
+   }
+  },
+  {
+   "iata": "AP",
+   "icao": "LAV",
+   "name": "AlbaStar",
+   "country": "Spain",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Airbus Industrie",
+    "icao": "AIB"
+   },
+   "own": {
+    "name": "AlbaStar",
+    "icao": "LAV",
+    "iata": null
+   }
+  },
+  {
+   "iata": "AW",
+   "icao": "AFW",
+   "name": "Africa World Airlines",
+   "country": "Ghana",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "CHC Airways",
+    "icao": "SCH"
+   }
+  },
+  {
+   "iata": "E4",
+   "icao": "ENT",
+   "name": "Enter Air",
+   "country": "Poland",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aero Asia International",
+    "icao": "RSO"
+   }
+  },
+  {
+   "iata": "FH",
+   "icao": "FHY",
+   "name": "Freebird Airlines",
+   "country": "Turkey",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Futura International Airways",
+    "icao": "FUA"
+   },
+   "own": {
+    "name": "Free Bird Airlines",
+    "icao": "FHY",
+    "iata": null
+   }
+  },
+  {
+   "iata": "E5",
+   "icao": "RBG",
+   "name": "Air Arabia Egypt",
+   "country": "Egypt",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Samara Airlines",
+    "icao": "BRZ"
+   }
+  },
+  {
+   "iata": "3O",
+   "icao": "MAC",
+   "name": "Air Arabia Maroc",
+   "country": "Morocco",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Air Arabia Maroc",
+    "icao": null
+   }
+  },
+  {
+   "iata": "3L",
+   "icao": "ADY",
+   "name": "Air Arabia Abu Dhabi",
+   "country": "United Arab Emirates",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Intersky",
+    "icao": "ISK"
+   }
+  },
+  {
+   "iata": "CJ",
+   "icao": "CFE",
+   "name": "BA CityFlyer",
+   "country": "United Kingdom",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "China Northern Airlines",
+    "icao": "CBF"
+   }
+  },
+  {
+   "iata": "QC",
+   "icao": "CRC",
+   "name": "Camair-Co",
+   "country": "Cameroon",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Corridor",
+    "icao": "CRD"
+   }
+  },
+  {
+   "iata": "C7",
+   "icao": "CIN",
+   "name": "Cinnamon Air",
+   "country": "Sri Lanka",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Rico Linhas A",
+    "icao": "RLE"
+   }
+  },
+  {
+   "iata": "CD",
+   "icao": "CND",
+   "name": "Corendon Dutch Airlines",
+   "country": "Netherlands",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Alliance Air",
+    "icao": "LLR"
+   }
+  },
+  {
+   "iata": "F6",
+   "icao": "VAW",
+   "name": "Fly2Sky",
+   "country": "Bulgaria",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Faroejet",
+    "icao": "RCK"
+   }
+  },
+  {
+   "iata": "5F",
+   "icao": "FIA",
+   "name": "FlyOne",
+   "country": "Moldova",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Arctic Circle Air Service",
+    "icao": "CIR"
+   }
+  },
+  {
+   "iata": "H4",
+   "icao": "HYS",
+   "name": "HiSky",
+   "country": "Romania",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Héli Sécurité Helicopter Airlines",
+    "icao": null
+   }
+  },
+  {
+   "iata": "HJ",
+   "icao": "USW",
+   "name": "HumoAir",
+   "country": "Uzbekistan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": false,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Asian Express Airlines",
+    "icao": "AXF"
+   }
+  },
+  {
+   "iata": "K9",
+   "icao": "TEZ",
+   "name": "TezJet",
+   "country": "Kyrgyzstan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Krylo Airlines",
+    "icao": "KRI"
+   },
+   "own": {
+    "name": "Tez Jet Airlines",
+    "icao": "TEZ",
+    "iata": null
+   }
+  },
+  {
+   "iata": "TI",
+   "icao": "TWI",
+   "name": "Tailwind Airlines",
+   "country": "Turkey",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Tol-Air Services",
+    "icao": "TOL"
+   }
+  },
+  {
+   "iata": "PQ",
+   "icao": "SQP",
+   "name": "SkyUp Airlines",
+   "country": "Ukraine",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Panafrican Airways",
+    "icao": "PNF"
+   }
+  },
+  {
+   "iata": "N4",
+   "icao": "NWS",
+   "name": "Nordwind Airlines",
+   "country": "Russia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Mountain Air Company",
+    "icao": "MTC"
+   },
+   "own": {
+    "name": "NordWind Airlines",
+    "icao": "NWS",
+    "iata": null
+   }
+  },
+  {
+   "iata": "MR",
+   "icao": "MML",
+   "name": "Hunnu Air",
+   "country": "Mongolia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Mauritanie",
+    "icao": "MRT"
+   }
+  },
+  {
+   "iata": "3H",
+   "icao": "AIE",
+   "name": "Air Inuit",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Air Inuit",
+    "icao": "AIE",
+    "iata": null
+   }
+  },
+  {
+   "iata": "YN",
+   "icao": "CRQ",
+   "name": "Air Creebec",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Air Creebec",
+    "icao": "CRQ",
+    "iata": null
+   }
+  },
+  {
+   "iata": "9M",
+   "icao": "GLR",
+   "name": "Central Mountain Air",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Central Mountain Air",
+    "icao": "GLR",
+    "iata": null
+   }
+  },
+  {
+   "iata": "WT",
+   "icao": "WSG",
+   "name": "Wasaya Airways",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Wasaya Airways",
+    "icao": "WSG",
+    "iata": null
+   }
+  },
+  {
+   "iata": "PB",
+   "icao": "PVL",
+   "name": "PAL Airlines",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert"
+  },
+  {
+   "iata": "P6",
+   "icao": "PSC",
+   "name": "Pascan Aviation",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Pascan Aviation",
+    "icao": "PSC",
+    "iata": null
+   }
+  },
+  {
+   "iata": "QK",
+   "icao": "JZA",
+   "name": "Jazz Aviation",
+   "country": "Canada",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "WR",
+   "icao": "WEN",
+   "name": "WestJet Encore",
+   "country": "Canada",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Royal Tongan Airlines",
+    "icao": "HRH"
+   }
+  },
+  {
+   "iata": "LF",
+   "icao": "VTE",
+   "name": "Contour Airlines",
+   "country": "United States",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "FlyNordic",
+    "icao": "NDC"
+   }
+  },
+  {
+   "iata": "5R",
+   "icao": "RUC",
+   "name": "Rutaca",
+   "country": "Venezuela",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "own": {
+    "name": "Rutas Aereas",
+    "icao": "RUC",
+    "iata": null
+   }
+  },
+  {
+   "iata": "QL",
+   "icao": "LER",
+   "name": "Laser Airlines",
+   "country": "Venezuela",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Aero Lanka",
+    "icao": "RLN"
+   },
+   "own": {
+    "name": "Linea Aerea de Servicio Ejecutivo Regional",
+    "icao": "LER",
+    "iata": "8z"
+   }
+  },
+  {
+   "iata": "9R",
+   "icao": "NSE",
+   "name": "Satena",
+   "country": "Colombia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Phuket Air",
+    "icao": "VAP"
+   }
+  },
+  {
+   "iata": "VE",
+   "icao": "EFY",
+   "name": "EasyFly",
+   "country": "Colombia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Avensa",
+    "icao": "AVE"
+   },
+   "own": {
+    "name": "EasyFly",
+    "icao": "EFY",
+    "iata": null
+   }
+  },
+  {
+   "iata": "LP",
+   "icao": "LPE",
+   "name": "LATAM Airlines Peru",
+   "country": "Peru",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "4C",
+   "icao": "ARE",
+   "name": "LATAM Airlines Colombia",
+   "country": "Colombia",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "XL",
+   "icao": "LNE",
+   "name": "LATAM Airlines Ecuador",
+   "country": "Ecuador",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "5D",
+   "icao": "SLI",
+   "name": "Aeromexico Connect",
+   "country": "Mexico",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "YQ",
+   "icao": "LCT",
+   "name": "TAR Aerolineas",
+   "country": "Mexico",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Polet Airlines (Priv)",
+    "icao": null
+   }
+  },
+  {
+   "iata": "Q9",
+   "icao": "WAN",
+   "name": "Wataniya Airways",
+   "country": "Kuwait",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Afrinat International Airlines",
+    "icao": "AFU"
+   }
+  },
+  {
+   "iata": "IF",
+   "icao": "FBA",
+   "name": "Fly Baghdad",
+   "country": "Iraq",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Islas Airways",
+    "icao": "ISW"
+   }
+  },
+  {
+   "iata": "QB",
+   "icao": "QSM",
+   "name": "Qeshm Air",
+   "country": "Iran",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Georgian National Airlines",
+    "icao": "GFG"
+   }
+  },
+  {
+   "iata": "B9",
+   "icao": "IRB",
+   "name": "Iran Airtour",
+   "country": "Iran",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": false,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Air Bangladesh",
+    "icao": "BGD"
+   },
+   "own": {
+    "name": "Iranair Tours",
+    "icao": "IRB",
+    "iata": null
+   }
+  },
+  {
+   "iata": "JM",
+   "icao": "JMA",
+   "name": "Jambojet",
+   "country": "Kenya",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air Jamaica",
+    "icao": "AJM"
+   }
+  },
+  {
+   "iata": "5Z",
+   "icao": "KEM",
+   "name": "CemAir",
+   "country": "South Africa",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Bismillah Airlines",
+    "icao": "BML"
+   }
+  },
+  {
+   "iata": "LN",
+   "icao": "LAA",
+   "name": "Libyan Airlines",
+   "country": "Libya",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "OF",
+   "icao": "OLA",
+   "name": "Overland Airways",
+   "country": "Nigeria",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Air Finland",
+    "icao": "FIF"
+   },
+   "own": {
+    "name": "Overland Airways",
+    "icao": "OLA",
+    "iata": "OJ"
+   }
+  },
+  {
+   "iata": "W3",
+   "icao": "ARA",
+   "name": "Arik Air",
+   "country": "Nigeria",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "SZ",
+   "icao": "SMR",
+   "name": "Somon Air",
+   "country": "Tajikistan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Salzburg arrows",
+    "icao": null
+   },
+   "own": {
+    "name": "Somon Air",
+    "icao": "SMR",
+    "iata": null
+   }
+  },
+  {
+   "iata": "7J",
+   "icao": "TJK",
+   "name": "Tajik Air",
+   "country": "Tajikistan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "relabel",
+   "keepPrevious": false,
+   "holder": {
+    "name": "Tajik Air",
+    "icao": null
+   }
+  },
+  {
+   "iata": "XJ",
+   "icao": "TAX",
+   "name": "Thai AirAsia X",
+   "country": "Thailand",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Mesaba Airlines",
+    "icao": "MES"
+   }
+  },
+  {
+   "iata": "NS",
+   "icao": "HBH",
+   "name": "Hebei Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Caucasus Airlines",
+    "icao": null
+   },
+   "own": {
+    "name": "Hebei Airlines",
+    "icao": "HBH",
+    "iata": null
+   }
+  },
+  {
+   "iata": "QW",
+   "icao": "QDA",
+   "name": "Qingdao Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes",
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Blue Wings",
+    "icao": "BWG"
+   }
+  },
+  {
+   "iata": "EU",
+   "icao": "UEA",
+   "name": "Chengdu Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Empresa Ecuatoriana De Aviacion",
+    "icao": "EEA"
+   },
+   "own": {
+    "name": "United Eagle Airlines",
+    "icao": "UEA",
+    "iata": null
+   }
+  },
+  {
+   "iata": "FU",
+   "icao": "FZA",
+   "name": "Fuzhou Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Felix Airways",
+    "icao": "FXX"
+   },
+   "own": {
+    "name": "Fuzhou Airlines",
+    "icao": "FZA",
+    "iata": null
+   }
+  },
+  {
+   "iata": "KY",
+   "icao": "KNA",
+   "name": "Kunming Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Air S",
+    "icao": "EQL"
+   }
+  },
+  {
+   "iata": "GY",
+   "icao": "CGZ",
+   "name": "Colorful Guizhou Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Guyana Airways 2000",
+    "icao": null
+   }
+  },
+  {
+   "iata": "DZ",
+   "icao": "EPA",
+   "name": "Donghai Airlines",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Starline.kz",
+    "icao": null
+   },
+   "own": {
+    "name": "Shenzhen Donghai Airlines",
+    "icao": "EPA",
+    "iata": null
+   }
+  },
+  {
+   "iata": "JR",
+   "icao": "JOY",
+   "name": "Joy Air",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Aero California",
+    "icao": "SER"
+   }
+  },
+  {
+   "iata": "UQ",
+   "icao": "CUH",
+   "name": "Urumqi Air",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "O'Connor Airlines",
+    "icao": "OCM"
+   }
+  },
+  {
+   "iata": "9H",
+   "icao": "CGN",
+   "name": "Air Changan",
+   "country": "China",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "MDLR Airlines",
+    "icao": null
+   },
+   "own": {
+    "name": "Changan Airlines",
+    "icao": "CGN",
+    "iata": "2Z"
+   }
+  },
+  {
+   "iata": "XK",
+   "icao": "CCM",
+   "name": "Air Corsica",
+   "country": "France",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "PM",
+   "icao": "CNF",
+   "name": "Canaryfly",
+   "country": "Spain",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Tropic Air",
+    "icao": "TOS"
+   },
+   "own": {
+    "name": "Canaryfly",
+    "icao": "CNF",
+    "iata": null
+   }
+  },
+  {
+   "iata": "SR",
+   "icao": "SDR",
+   "name": "Sundair",
+   "country": "Germany",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Swissair",
+    "icao": "SWR"
+   }
+  },
+  {
+   "iata": "P9",
+   "icao": "PVN",
+   "name": "Peruvian Airlines",
+   "country": "Peru",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Nas Air",
+    "icao": null
+   }
+  },
+  {
+   "iata": "5K",
+   "icao": "HFY",
+   "name": "Hi Fly",
+   "country": "Portugal",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "ZT",
+   "icao": "AWC",
+   "name": "Titan Airways",
+   "country": "United Kingdom",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "SF",
+   "icao": "DTH",
+   "name": "Tassili Airlines",
+   "country": "Algeria",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "SX",
+   "icao": "SRK",
+   "name": "Sky Work Airlines",
+   "country": "Switzerland",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "JH",
+   "icao": "FDA",
+   "name": "Fuji Dream Airlines",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Nordeste Linhas Aereas Regionais",
+    "icao": "NES"
+   }
+  },
+  {
+   "iata": "OC",
+   "icao": "ORC",
+   "name": "Oriental Air Bridge",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Catovair",
+    "icao": null
+   }
+  },
+  {
+   "iata": "3X",
+   "icao": "JAC",
+   "name": "Japan Air Commuter",
+   "country": "Japan",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": false,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Aguilar Connect",
+    "icao": "GUI"
+   },
+   "own": {
+    "name": "Japan Air Commuter",
+    "icao": "JAC",
+    "iata": null
+   }
+  },
+  {
+   "iata": "EH",
+   "icao": "AKX",
+   "name": "ANA Wings",
+   "country": "Japan",
+   "isActive": true,
+   "mode": "update",
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true
+  },
+  {
+   "iata": "0V",
+   "icao": "VFC",
+   "name": "Vietnam Air Services Company",
+   "country": "Vietnam",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert"
+  },
+  {
+   "iata": "ZA",
+   "icao": "SWM",
+   "name": "Sky Angkor Airlines",
+   "country": "Cambodia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Access Air",
+    "icao": "CYD"
+   },
+   "own": {
+    "name": "Sky Angkor Airlines (ZA)",
+    "icao": "SWM",
+    "iata": null
+   }
+  },
+  {
+   "iata": "8M",
+   "icao": "MMA",
+   "name": "Myanmar Airways International",
+   "country": "Myanmar",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Maxair",
+    "icao": "MXL"
+   }
+  },
+  {
+   "iata": "7Y",
+   "icao": "MYP",
+   "name": "Mann Yadanarpon Airlines",
+   "country": "Myanmar",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Med Airways",
+    "icao": null
+   },
+   "own": {
+    "name": "Mann Yadanarpon Airlines",
+    "icao": "MYP",
+    "iata": null
+   }
+  },
+  {
+   "iata": "IW",
+   "icao": "WON",
+   "name": "Wings Air",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "AOM French Airlines",
+    "icao": "AOM"
+   }
+  },
+  {
+   "iata": "8B",
+   "icao": "TNU",
+   "name": "TransNusa",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-airline-codes"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "Caribbean Star Airlines",
+    "icao": "GFI"
+   }
+  },
+  {
+   "iata": "IN",
+   "icao": "LKN",
+   "name": "NAM Air",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "insert",
+   "frees": true,
+   "holder": {
+    "name": "MAT Macedonian Airlines",
+    "icao": "MAK"
+   }
+  },
+  {
+   "iata": "IP",
+   "icao": "PAS",
+   "name": "Pelita Air",
+   "country": "Indonesia",
+   "isActive": true,
+   "sources": [
+    "wikipedia-infobox"
+   ],
+   "logo": true,
+   "mode": "adopt",
+   "frees": true,
+   "holder": {
+    "name": "Atyrau Air Ways",
+    "icao": "JOL"
+   },
+   "own": {
+    "name": "Pelita Air Service",
+    "icao": "PAS",
+    "iata": null
+   }
+  }
+ ],
+ "deactivate": [
+  {
+   "iata": "AN",
+   "icao": "AAA",
+   "name": "Ansett Australia"
+  },
+  {
+   "iata": "AQ",
+   "icao": "AAH",
+   "name": "Aloha Airlines"
+  },
+  {
+   "iata": "JP",
+   "icao": "ADR",
+   "name": "Adria Airways"
+  },
+  {
+   "iata": "PE",
+   "icao": "AEL",
+   "name": "Air Europe"
+  },
+  {
+   "iata": "5W",
+   "icao": "AEU",
+   "name": "Astraeus"
+  },
+  {
+   "iata": "VV",
+   "icao": "AEW",
+   "name": "Aerosvit Airlines"
+  },
+  {
+   "iata": "SW",
+   "icao": "NMB",
+   "name": "Air Namibia"
+  },
+  {
+   "iata": "PL",
+   "icao": "PLI",
+   "name": "Aeroper"
+  },
+  {
+   "iata": "8A",
+   "icao": "BMM",
+   "name": "Atlas Blue"
+  },
+  {
+   "iata": "AB",
+   "icao": "BER",
+   "name": "Air Berlin"
+  },
+  {
+   "iata": "GV",
+   "icao": "ARF",
+   "name": "Aero Flight"
+  },
+  {
+   "iata": "JW",
+   "icao": "APW",
+   "name": "Arrow Air"
+  },
+  {
+   "iata": "IQ",
+   "icao": "AUB",
+   "name": "Augsburg Airways"
+  },
+  {
+   "iata": "6G",
+   "icao": "AWW",
+   "name": "Air Wales"
+  },
+  {
+   "iata": "XT",
+   "icao": "AXL",
+   "name": "Air Exel"
+  },
+  {
+   "iata": "3G",
+   "icao": "AYZ",
+   "name": "Atlant-Soyuz Airlines"
+  },
+  {
+   "iata": "NM",
+   "icao": "DRD",
+   "name": "Air Madrid"
+  },
+  {
+   "iata": "TD",
+   "icao": "LUR",
+   "name": "Atlantis European Airways"
+  },
+  {
+   "iata": "U8",
+   "icao": "RNV",
+   "name": "Armavia"
+  },
+  {
+   "iata": "FL",
+   "icao": "TRS",
+   "name": "AirTran Airways"
+  },
+  {
+   "iata": "BD",
+   "icao": "BMA",
+   "name": "bmi"
+  },
+  {
+   "iata": "WW",
+   "icao": "BMI",
+   "name": "bmibaby"
+  },
+  {
+   "iata": "KJ",
+   "icao": "LAJ",
+   "name": "British Mediterranean Airways"
+  },
+  {
+   "iata": "CP",
+   "icao": "CDN",
+   "name": "Canadian Airlines"
+  },
+  {
+   "iata": "3Q",
+   "icao": "CYH",
+   "name": "Yunnan Airlines"
+  },
+  {
+   "iata": "C9",
+   "icao": "RUS",
+   "name": "Cirrus Airlines"
+  },
+  {
+   "iata": "DO",
+   "icao": "DOA",
+   "name": "Dominicana de Aviaci"
+  },
+  {
+   "iata": "E3",
+   "icao": "DMO",
+   "name": "Domodedovo Airlines"
+  },
+  {
+   "iata": "KA",
+   "icao": "HDA",
+   "name": "Dragonair"
+  },
+  {
+   "iata": "EO",
+   "icao": "LHN",
+   "name": "Express One International"
+  },
+  {
+   "iata": "B5",
+   "icao": "FLT",
+   "name": "Flightline"
+  },
+  {
+   "iata": "TE",
+   "icao": "LIL",
+   "name": "FlyLal"
+  },
+  {
+   "iata": "EG",
+   "icao": "JAA",
+   "name": "Japan Asia Airways"
+  },
+  {
+   "iata": "7B",
+   "icao": "KJC",
+   "name": "Krasnojarsky Airlines"
+  },
+  {
+   "iata": "4M",
+   "icao": "DSM",
+   "name": "LAN Argentina"
+  },
+  {
+   "iata": "MJ",
+   "icao": "LPR",
+   "name": "L"
+  },
+  {
+   "iata": "MA",
+   "icao": "MAH",
+   "name": "Malév"
+  },
+  {
+   "iata": "JI",
+   "icao": "MDW",
+   "name": "Midway Airlines"
+  },
+  {
+   "iata": "NW",
+   "icao": "NWA",
+   "name": "Northwest Airlines"
+  },
+  {
+   "iata": "O8",
+   "icao": "OHK",
+   "name": "Oasis Hong Kong Airlines"
+  },
+  {
+   "iata": "RD",
+   "icao": "RYN",
+   "name": "Ryan International Airlines"
+  },
+  {
+   "iata": "NL",
+   "icao": "SAI",
+   "name": "Shaheen Air International"
+  },
+  {
+   "iata": "FT",
+   "icao": "SRH",
+   "name": "Siem Reap Airways"
+  },
+  {
+   "iata": "5G",
+   "icao": "SSV",
+   "name": "Skyservice Airlines"
+  },
+  {
+   "iata": "A4",
+   "icao": "SWD",
+   "name": "Southern Winds Airlines"
+  },
+  {
+   "iata": "NE",
+   "icao": "ESK",
+   "name": "SkyEurope"
+  },
+  {
+   "iata": "JK",
+   "icao": "JKK",
+   "name": "Spanair"
+  },
+  {
+   "iata": "JZ",
+   "icao": "SKX",
+   "name": "Skyways Express"
+  },
+  {
+   "iata": "NB",
+   "icao": "SNB",
+   "name": "Sterling Airlines"
+  },
+  {
+   "iata": "GE",
+   "icao": "TNA",
+   "name": "TransAsia Airways"
+  },
+  {
+   "iata": "LC",
+   "icao": "VLO",
+   "name": "Varig Log"
+  },
+  {
+   "iata": "VP",
+   "icao": "VSP",
+   "name": "VASP"
+  },
+  {
+   "iata": "VG",
+   "icao": "VLM",
+   "name": "VLM Airlines"
+  },
+  {
+   "iata": "Z4",
+   "icao": "OOM",
+   "name": "Zoom Airlines"
+  },
+  {
+   "iata": null,
+   "icao": "VOO",
+   "name": "Volotea"
+  },
+  {
+   "iata": null,
+   "icao": "GFA",
+   "name": "Gulf Air"
+  },
+  {
+   "iata": "TZ",
+   "icao": "SCO",
+   "name": "Scoot"
+  },
+  {
+   "iata": "HR",
+   "icao": "CUA",
+   "name": "China United Airlines"
+  },
+  {
+   "iata": null,
+   "icao": "LTD",
+   "name": "Southern Airways Express"
+  },
+  {
+   "iata": null,
+   "icao": "ENY",
+   "name": "Envoy Air"
+  },
+  {
+   "iata": null,
+   "icao": "QQQ",
+   "name": "ENTERair"
+  },
+  {
+   "iata": null,
+   "icao": null,
+   "name": "Wataniya Airways"
+  },
+  {
+   "iata": "UG",
+   "icao": "TUI",
+   "name": "Tuninter"
+  },
+  {
+   "iata": "JF",
+   "icao": "JAF",
+   "name": "Jetairfly"
+  },
+  {
+   "iata": "OI",
+   "icao": "ORC",
+   "name": "Orchid Airlines"
+  },
+  {
+   "iata": "CF",
+   "icao": "SDR",
+   "name": "City Airline"
+  }
+ ]
+}

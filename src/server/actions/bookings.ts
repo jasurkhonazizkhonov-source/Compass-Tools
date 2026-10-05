@@ -11,7 +11,9 @@ import { toEmailSegments } from "@/server/email/segment-mapper";
 import { reconcileQuoteStatus } from "@/server/quote-status";
 import { getCompanyForAccountId, getCompanyForContactId } from "@/server/queries/company";
 import { SEGMENT_SELECT } from "@/server/queries/segment-select";
-import { canDeleteBooking, canEnterTicketingInfo } from "@/lib/permissions";
+import { canDeleteBooking, canEnterTicketingInfo, canSendAirlineConfirmation } from "@/lib/permissions";
+import { buildRecipientOptions, resolveSelectedRecipients } from "@/server/airline-confirmation-recipients";
+import { deriveNotificationDestination } from "@/server/booking-destination";
 import { bookingVisibilityWhere } from "@/server/visibility";
 import { SUPPORTED_CURRENCIES, buildPricingSnapshot, computeTotalSellingPriceUsd, computeBookingProfitUsd } from "@/lib/currency";
 import { sendBookingProfitNotification } from "@/server/booking-notification";
@@ -361,25 +363,23 @@ export async function updateBookingTicketing(input: z.infer<typeof ticketingSche
 const SEND_AIRLINE_CONFIRMATION_DENIAL = "You are not authorized to send this confirmation";
 
 /**
- * Part 16/17 — manually sends the customer-facing "airline confirmation"
- * email (flight itinerary, airline, flight number, airline confirmation
- * number). No longer fires automatically from updateBookingTicketing —
- * this is the only place that sends it now, triggered explicitly by a
- * staff member from the Booking detail page's "Send Airline Confirmation"
- * button. Reuses the exact same email-building/sending logic that used to
- * run inline inside the ticketing save (segments, pricing snapshot,
- * payment methods, `sender = quote.sentByAgent` fail-closed-if-null
- * behavior, BCC to active Admin/Manager, EmailLog write) — only the
- * trigger moved, not the behavior. Re-fetches the booking fresh rather
- * than reusing a `patch`/`existing` merge, since this runs independently
- * of any particular save.
+ * Role + active session + row-level access to THIS booking, in one place, shared by the recipient
+ * lookup and the send. Anything that fails here is a genuine authorization denial (a forged call,
+ * or a booking the viewer cannot open), so it THROWS the one generic message — the UI never reaches
+ * it for a booking the viewer can see. Actionable problems (nothing to send yet, no address
+ * selected, Gmail rejected it) are RETURNED instead: in production a thrown server-action error
+ * reaches the browser as the opaque "Minified React error #441", which is exactly what Travel
+ * Agents used to see here.
+ *
+ * Every role with the Quotes area may use this (see canSendAirlineConfirmation); which bookings
+ * each can reach is bookingVisibilityWhere's job — own quotes for a Travel Agent, the team's for a
+ * Manager, everything for Admin / Ticketing Agent / Flight Expert.
  */
-export async function sendAirlineConfirmationEmail(bookingId: string, options?: { resend?: boolean }) {
+async function authorizeAirlineConfirmation(bookingId: string) {
   const actor = await getCurrentAccount();
-  if (!actor || actor.status !== "ACTIVE" || !canEnterTicketingInfo(actor.role)) {
+  if (!actor || actor.status !== "ACTIVE" || !canSendAirlineConfirmation(actor.role)) {
     throw new Error(SEND_AIRLINE_CONFIRMATION_DENIAL);
   }
-
   const accessible = await prisma.booking.findFirst({
     where: { id: bookingId, ...bookingVisibilityWhere(actor) },
     select: { id: true },
@@ -387,11 +387,70 @@ export async function sendAirlineConfirmationEmail(bookingId: string, options?: 
   if (!accessible) {
     throw new Error(SEND_AIRLINE_CONFIRMATION_DENIAL);
   }
+  return actor;
+}
+
+/**
+ * The customer addresses the Send / Resend dialog offers for a booking: the email on the signed
+ * Booking Form plus every address stored on the Contact, deduplicated (see
+ * airline-confirmation-recipients.ts). Derived from the database on every call — the browser
+ * supplies nothing but the booking id — and never includes a CRM user's address.
+ */
+export async function getAirlineConfirmationRecipients(bookingId: string) {
+  await authorizeAirlineConfirmation(bookingId);
+  const booking = await prisma.booking.findUniqueOrThrow({
+    where: { id: bookingId },
+    select: {
+      contactEmail: true,
+      airlineConfirmationFirstSentAt: true,
+      contact: { select: { primaryEmail: true, emails: { select: { email: true, isPrimary: true } } } },
+      quote: { select: { sentByAgent: { select: { fullName: true, email: true } } } },
+    },
+  });
+  const { options, defaultSelected } = buildRecipientOptions({
+    bookingFormEmail: booking.contactEmail,
+    contactPrimaryEmail: booking.contact.primaryEmail,
+    contactEmails: booking.contact.emails,
+  });
+  return {
+    ok: true as const,
+    recipients: options,
+    defaultSelected,
+    hasSentBefore: booking.airlineConfirmationFirstSentAt != null,
+    // The mailbox the email will come FROM — the quote's creator, never the person clicking.
+    sender: booking.quote.sentByAgent ? { fullName: booking.quote.sentByAgent.fullName, email: booking.quote.sentByAgent.email } : null,
+  };
+}
+
+export type SendAirlineConfirmationResult = { ok: true; sentTo: string[] } | { ok: false; error: string };
+
+/**
+ * Part 16/17 — manually sends the customer-facing "airline confirmation"
+ * email (flight itinerary, airline, flight number, airline confirmation
+ * number) from the Quote or Booking page. No longer fires automatically from
+ * updateBookingTicketing. Re-fetches the booking fresh rather than reusing a
+ * `patch`/`existing` merge, since this runs independently of any save.
+ *
+ * COMPLETELY SEPARATE from "Notify Team of a New Sale" (booking-notification.ts): this is a
+ * customer email. It is addressed ONLY to the customer addresses the user selected — each
+ * validated server-side against the booking's own verified addresses — with NO Cc and NO Bcc: no
+ * Manager, no Admin, no CRM user is ever copied. The sender is always the quote's own creator
+ * (quote.sentByAgent), derived from the database; if their Gmail is not connected the send fails
+ * with a clear message rather than quietly going out under someone else's name.
+ *
+ * Returns `{ ok: false, error }` for every actionable refusal or failure (never thrown — see
+ * authorizeAirlineConfirmation); only an authorization denial throws.
+ */
+export async function sendAirlineConfirmationEmail(
+  bookingId: string,
+  options?: { resend?: boolean; recipients?: string[] }
+): Promise<SendAirlineConfirmationResult> {
+  const actor = await authorizeAirlineConfirmation(bookingId);
 
   const existing = await prisma.booking.findUniqueOrThrow({
     where: { id: bookingId },
     include: {
-      contact: true,
+      contact: { include: { emails: { select: { email: true, isPrimary: true } } } },
       passengers: true,
       paymentMethods: {
         select: { id: true, cardBrand: true, last4: true, expiryMonth: true, expiryYear: true, amountAllocated: true },
@@ -415,47 +474,27 @@ export async function sendAirlineConfirmationEmail(bookingId: string, options?: 
 
   const confirmationEntries = resolveAirlineConfirmations(existing);
   if (!(existing.status === "TICKETED" || existing.status === "CONFIRMED") || confirmationEntries.length === 0) {
-    throw new Error("Save the booking as Ticketed or Confirmed with an Airline Confirmation Number before sending this email");
-  }
-  if (!existing.contactEmail) {
-    throw new Error("This booking has no customer email on file");
+    return { ok: false, error: "Save the booking as Ticketed or Confirmed with an Airline Confirmation Number before sending this email" };
   }
 
-  // Pass 23 §21-23 — first-send vs. resend, deliberately NOT a copy of
-  // cancellation.ts's one-way-status claim (that pattern fits a status
-  // that only ever moves forward once; Booking.status here stays
-  // TICKETED/CONFIRMED across any number of legitimate resends, so there
-  // is no status transition to claim against). Instead: the FIRST send is
-  // protected by a genuine atomic claim (conditional updateMany, same
-  // idiom as Lead.queueDistributedAt/SequenceEnrollment.nextSendAt) so two
-  // near-simultaneous first clicks — a real double-click, or two agents
-  // both hitting Send — can never both succeed; only one wins the claim
-  // and proceeds, the other fails cleanly and can retry as a resend.
-  // Explicit resends (options.resend, the UI's separate "Resend
-  // Confirmation" action once a first send has already happened) skip
-  // this claim entirely — resending is a real, intended workflow (a
-  // corrected confirmation number, a customer asking again) — and are
-  // instead guarded only by a short recency check against the last SENT
-  // log, catching an accidental rapid double-click on Resend itself
-  // without blocking a deliberate later resend.
-  if (!options?.resend) {
-    const claim = await prisma.booking.updateMany({
-      where: { id: bookingId, airlineConfirmationFirstSentAt: null },
-      data: { airlineConfirmationFirstSentAt: new Date() },
-    });
-    if (claim.count === 0) {
-      throw new Error("A confirmation has already been sent for this booking. Use Resend Confirmation to send it again.");
-    }
-  } else {
-    const recentSend = await prisma.emailLog.findFirst({
-      where: { bookingId, type: "BOOKING_CONFIRMATION", status: "SENT", createdAt: { gte: new Date(Date.now() - 60_000) } },
-      orderBy: { createdAt: "desc" },
-      select: { id: true },
-    });
-    if (recentSend) {
-      throw new Error("A confirmation email was just sent for this booking. Wait a minute before sending another.");
-    }
+  // Who it goes to: ONLY addresses chosen from this booking's own verified customer addresses. A
+  // caller that names none (an older call site) gets the documented default — the signed Booking
+  // Form address — while a caller that names an empty or foreign list is refused, never defaulted.
+  const { options: recipientOptions, defaultSelected } = buildRecipientOptions({
+    bookingFormEmail: existing.contactEmail,
+    contactPrimaryEmail: existing.contact.primaryEmail,
+    contactEmails: existing.contact.emails,
+  });
+  if (recipientOptions.length === 0) {
+    return { ok: false, error: "This booking has no customer email on file" };
   }
+  const selection = resolveSelectedRecipients(options?.recipients ?? defaultSelected, recipientOptions);
+  if (!selection.ok) {
+    return { ok: false, error: selection.error };
+  }
+  const recipients = selection.recipients;
+  const toAddress = recipients.join(", ");
+
 
   const quote = existing.quote;
   const segments = toEmailSegments(quote.itinerary?.segments ?? []);
@@ -544,36 +583,87 @@ export async function sendAirlineConfirmationEmail(bookingId: string, options?: 
         : undefined,
   });
 
+  // Claim / recency guard comes AFTER the (side-effect-free) email build above, so an unexpected
+  // failure while building can never leave a first-send claim behind.
+  // Pass 23 §21-23 — first-send vs. resend, deliberately NOT a copy of
+  // cancellation.ts's one-way-status claim (that pattern fits a status
+  // that only ever moves forward once; Booking.status here stays
+  // TICKETED/CONFIRMED across any number of legitimate resends, so there
+  // is no status transition to claim against). Instead: the FIRST send is
+  // protected by a genuine atomic claim (conditional updateMany, same
+  // idiom as Lead.queueDistributedAt/SequenceEnrollment.nextSendAt) so two
+  // near-simultaneous first clicks — a real double-click, or two agents
+  // both hitting Send — can never both succeed; only one wins the claim
+  // and proceeds, the other fails cleanly and can retry as a resend.
+  // Explicit resends (options.resend, the UI's separate "Resend
+  // Confirmation" action once a first send has already happened) skip
+  // this claim entirely — resending is a real, intended workflow (a
+  // corrected confirmation number, a customer asking again) — and are
+  // instead guarded only by a short recency check against the last SENT
+  // log, catching an accidental rapid double-click on Resend itself
+  // without blocking a deliberate later resend.
+  let claimedFirstSend = false;
+  if (!options?.resend) {
+    const claim = await prisma.booking.updateMany({
+      where: { id: bookingId, airlineConfirmationFirstSentAt: null },
+      data: { airlineConfirmationFirstSentAt: new Date() },
+    });
+    if (claim.count === 0) {
+      return { ok: false, error: "A confirmation has already been sent for this booking. Use Resend Confirmation to send it again." };
+    }
+    claimedFirstSend = true;
+  } else {
+    const recentSend = await prisma.emailLog.findFirst({
+      where: { bookingId, type: "BOOKING_CONFIRMATION", status: "SENT", createdAt: { gte: new Date(Date.now() - 60_000) } },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
+    });
+    if (recentSend) {
+      return { ok: false, error: "A confirmation email was just sent for this booking. Wait a minute before sending another." };
+    }
+  }
+  // A first send that does not actually go out must give its claim back — otherwise the Send
+  // button would be stuck on "already been sent" for an email the customer never received.
+  const releaseFirstSendClaim = async () => {
+    if (!claimedFirstSend) return;
+    try {
+      await prisma.booking.updateMany({ where: { id: bookingId }, data: { airlineConfirmationFirstSentAt: null } });
+    } catch {
+      // Best effort — the caller is already returning the original failure.
+    }
+  };
+
   // Sent FROM the quote's own original sender — the agent who actually
   // created the itinerary and sent the quote to the customer, never the
-  // ticketing agent's own identity merely because they're the one clicking
-  // this button (matches sendEmail's "fails closed, never a fallback
-  // sender" contract).
+  // clicking user's own identity merely because they pressed this button
+  // (matches sendEmail's "fails closed, never a fallback sender" contract).
+  // TO is exactly the customer addresses the user selected; there is deliberately NO bcc and NO
+  // cc here — this is not the internal team announcement, and no CRM user is ever copied.
   const sender = quote.sentByAgent;
-  const bccStaff = await prisma.account.findMany({
-    where: { companyId: actor.companyId, status: "ACTIVE", role: { in: ["ADMIN", "MANAGER"] }, id: { not: sender?.id } },
-    select: { email: true },
-  });
-  const bcc = bccStaff.map((a) => a.email).join(", ") || undefined;
-
-  const result = sender
-    ? await sendEmail({
+  let result: Awaited<ReturnType<typeof sendEmail>>;
+  if (!sender) {
+    result = { ok: false, error: "This quote has no original sender to send it from." };
+  } else {
+    try {
+      result = await sendEmail({
         accountId: sender.id,
-        to: existing.contactEmail,
-        bcc,
+        to: toAddress,
         subject,
         html,
         senderName: sender.fullName,
         replyTo: sender.email,
-      })
-    : { ok: false as const, error: "This quote has no original sender to send it from." };
+      });
+    } catch {
+      result = { ok: false, error: "The email could not be sent. Please try again." };
+    }
+  }
 
   await prisma.emailLog.create({
     data: {
       type: "BOOKING_CONFIRMATION",
       subject,
       fromEmail: sender?.email ?? "unassigned",
-      toEmail: existing.contactEmail,
+      toEmail: toAddress,
       status: result.ok ? "SENT" : "FAILED",
       errorMessage: result.ok ? undefined : result.error,
       messageId: result.ok ? result.messageId : undefined,
@@ -583,21 +673,26 @@ export async function sendAirlineConfirmationEmail(bookingId: string, options?: 
     },
   });
 
+  if (!result.ok) await releaseFirstSendClaim();
+
   await logActivity({
     bookingId,
     leadId: existing.leadId,
     contactId: existing.contactId,
     actorId: actor.id,
     type: "BOOKING_UPDATED",
-    description: result.ok ? "Airline confirmation email sent to customer" : "Airline confirmation email failed to send",
+    description: result.ok
+      ? `Airline confirmation email ${options?.resend ? "resent" : "sent"} to customer (${recipients.length} recipient${recipients.length === 1 ? "" : "s"})`
+      : "Airline confirmation email failed to send",
   });
 
   revalidatePath(`/bookings/${bookingId}`);
+  revalidatePath(`/quotes/${quote.id}`);
 
   if (!result.ok) {
-    throw new Error(result.error);
+    return { ok: false, error: result.error };
   }
-  return { ok: true as const };
+  return { ok: true, sentTo: recipients };
 }
 
 const SEND_CANCELLATION_CONFIRMATION_DENIAL = "You are not authorized to send this confirmation";
@@ -821,10 +916,7 @@ export async function sendNewSaleNotification(bookingId: string) {
   }
 
   const finalSegments = quote.itinerary?.segments ?? [];
-  const lastRealSegment = [...finalSegments].reverse().find((s) => !s.isExtraLeg) ?? finalSegments[finalSegments.length - 1];
-  const destination = lastRealSegment
-    ? `${lastRealSegment.arrivalAirport.city}, ${lastRealSegment.arrivalAirport.country}`
-    : "an unspecified destination";
+  const destination = deriveNotificationDestination(finalSegments);
 
   // Pass 13 §8/§15 — the one real reliability fix: this now actually
   // CHECKS the outcome rather than assuming success merely because
@@ -955,10 +1047,7 @@ export async function sendCancellationNotification(bookingId: string) {
   }
 
   const finalSegments = quote.itinerary?.segments ?? [];
-  const lastRealSegment = [...finalSegments].reverse().find((s) => !s.isExtraLeg) ?? finalSegments[finalSegments.length - 1];
-  const destination = lastRealSegment
-    ? `${lastRealSegment.arrivalAirport.city}, ${lastRealSegment.arrivalAirport.country}`
-    : "an unspecified destination";
+  const destination = deriveNotificationDestination(finalSegments);
 
   const outcome = await sendBookingProfitNotification({
     bookingId,

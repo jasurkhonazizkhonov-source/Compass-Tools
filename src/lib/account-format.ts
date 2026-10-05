@@ -1,4 +1,4 @@
-import { differenceInCalendarMonths, differenceInCalendarYears } from "date-fns";
+import { differenceInCalendarMonths } from "date-fns";
 import type { AccountRole } from "@/generated/prisma/client";
 import type { SidebarAccount } from "@/components/layout/sidebar-user-panel";
 
@@ -43,19 +43,32 @@ export function formatTenure(hiredAt: Date | null): string {
  * age — null (hire date never set) returns null; the caller decides how to
  * degrade the subject line in that case. */
 export function formatHireAgeCompact(hiredAt: Date | null, now: Date = new Date()): string | null {
-  if (!hiredAt || hiredAt > now) return null;
+  if (!hiredAt || Number.isNaN(hiredAt.getTime())) return null;
 
-  const years = differenceInCalendarYears(now, hiredAt);
-  const afterYears = new Date(hiredAt);
-  afterYears.setFullYear(afterYears.getFullYear() + years);
+  // Hire dates are stored as UTC-midnight calendar dates (see AccountHiredAtEditor, and every
+  // display of the date uses timeZone "UTC"), so both sides are compared as UTC calendar days —
+  // the result never shifts with the server's or viewer's local zone, nor with the time of day.
+  const hireDay = Date.UTC(hiredAt.getUTCFullYear(), hiredAt.getUTCMonth(), hiredAt.getUTCDate());
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  if (hireDay > today) return null;
 
-  const totalMonthsAfterYears = differenceInCalendarMonths(now, afterYears);
-  const afterMonths = new Date(afterYears);
-  afterMonths.setMonth(afterMonths.getMonth() + totalMonthsAfterYears);
+  // The anniversary `monthsSinceHire` months after the hire date, clamped to the last day of a
+  // shorter month (hired Jan 31 -> Feb 28/29 -> Mar 31 ...).
+  const anniversary = (monthsSinceHire: number): number => {
+    const total = hiredAt.getUTCMonth() + monthsSinceHire;
+    const year = hiredAt.getUTCFullYear() + Math.floor(total / 12);
+    const month = ((total % 12) + 12) % 12;
+    const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+    return Date.UTC(year, month, Math.min(hiredAt.getUTCDate(), lastDay));
+  };
 
-  const days = Math.max(0, Math.floor((now.getTime() - afterMonths.getTime()) / (24 * 60 * 60 * 1000)));
+  // Largest whole number of months whose anniversary is not after today (an upper bound from the
+  // calendar-month difference, stepped down at most once), then the leftover days.
+  let months = (now.getUTCFullYear() - hiredAt.getUTCFullYear()) * 12 + (now.getUTCMonth() - hiredAt.getUTCMonth());
+  while (months > 0 && anniversary(months) > today) months--;
+  const days = Math.round((today - anniversary(months)) / (24 * 60 * 60 * 1000));
 
-  return `${years}Y${totalMonthsAfterYears}M${days}D`;
+  return `${Math.floor(months / 12)}Y${months % 12}M${days}D`;
 }
 
 /**

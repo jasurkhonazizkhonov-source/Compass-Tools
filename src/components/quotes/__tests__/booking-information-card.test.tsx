@@ -23,10 +23,17 @@ function renderCard(props: BookingInformationCardProps) {
 // of Send/Resend Airline Confirmation, which calls the same canonical
 // sendAirlineConfirmationEmail server action.
 
-const { sendAirlineConfirmationEmail } = vi.hoisted(() => ({
-  sendAirlineConfirmationEmail: vi.fn(async () => {}),
+const { sendAirlineConfirmationEmail, getAirlineConfirmationRecipients } = vi.hoisted(() => ({
+  sendAirlineConfirmationEmail: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({ ok: true as const, sentTo: ["jane@example.com"] })),
+  getAirlineConfirmationRecipients: vi.fn<(...args: unknown[]) => Promise<unknown>>(async () => ({
+    ok: true as const,
+    recipients: [{ email: "jane@example.com", sources: ["booking-form" as const, "contact" as const] }],
+    defaultSelected: ["jane@example.com"],
+    hasSentBefore: false,
+    sender: { fullName: "Andrew Kent", email: "andrew@example.com" },
+  })),
 }));
-vi.mock("@/server/actions/bookings", () => ({ sendAirlineConfirmationEmail }));
+vi.mock("@/server/actions/bookings", () => ({ sendAirlineConfirmationEmail, getAirlineConfirmationRecipients }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 beforeEach(() => {
@@ -96,28 +103,30 @@ describe("BookingInformationCard — Send/Resend Airline Confirmation", () => {
     confirmations: [{ id: "c1", airlineName: "Delta Air Lines", confirmationNumber: "XYZ123", eTicketNumbers: [] }],
   };
 
-  it("shows 'Send Airline Confirmation' (first-send) when no confirmation has been sent yet, and calls the action with no resend flag", async () => {
+  it("first send: the button opens a recipient dialog; sending passes the ticked addresses and no resend flag, then the button reads Resend", async () => {
     const user = userEvent.setup();
     renderCard({ ...ticketedWithConfirmation, hasSentConfirmationBefore: false });
 
-    const button = screen.getByRole("button", { name: "Send Airline Confirmation" });
-    expect(button).toBeEnabled();
-    await user.click(button);
+    await user.click(screen.getByRole("button", { name: "Send Airline Confirmation" }));
+    expect(await screen.findByRole("checkbox", { name: "jane@example.com" })).toBeChecked(); // the signed booking-form address is pre-selected
+    expect(sendAirlineConfirmationEmail).not.toHaveBeenCalled(); // opening the dialog sends nothing
 
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(sendAirlineConfirmationEmail).toHaveBeenCalledTimes(1);
-    expect(sendAirlineConfirmationEmail).toHaveBeenCalledWith("b1", undefined);
-    // Optimistic local flip — the button now reads "Resend" without a reload.
+    expect(sendAirlineConfirmationEmail).toHaveBeenCalledWith("b1", { resend: false, recipients: ["jane@example.com"] });
+    // Optimistic local flip — the trigger now reads "Resend" without a reload.
     expect(await screen.findByRole("button", { name: "Resend Airline Confirmation" })).toBeInTheDocument();
   });
 
-  it("shows 'Resend Airline Confirmation' when a confirmation was already sent, and calls the action with { resend: true }", async () => {
+  it("already sent once: the button reads Resend and the action is called with { resend: true }", async () => {
     const user = userEvent.setup();
     renderCard({ ...ticketedWithConfirmation, hasSentConfirmationBefore: true });
 
-    const button = screen.getByRole("button", { name: "Resend Airline Confirmation" });
-    await user.click(button);
+    await user.click(screen.getByRole("button", { name: "Resend Airline Confirmation" }));
+    await screen.findByRole("checkbox", { name: "jane@example.com" });
+    await user.click(screen.getByRole("button", { name: "Resend" }));
 
-    expect(sendAirlineConfirmationEmail).toHaveBeenCalledWith("b1", { resend: true });
+    expect(sendAirlineConfirmationEmail).toHaveBeenCalledWith("b1", { resend: true, recipients: ["jane@example.com"] });
   });
 
   it("disables the button (with an explanatory tooltip) when the ticket status isn't Ticketed/Confirmed", () => {
@@ -130,15 +139,33 @@ describe("BookingInformationCard — Send/Resend Airline Confirmation", () => {
     expect(screen.getByRole("button", { name: "Send Airline Confirmation" })).toBeDisabled();
   });
 
-  it("surfaces a failure from the server action as an error toast rather than throwing", async () => {
+  it("a RETURNED failure is shown inline and as a toast, the button stays Send (not optimistically flipped), and nothing throws", async () => {
     const { toast } = await import("sonner");
-    sendAirlineConfirmationEmail.mockRejectedValueOnce(new Error("This booking has no customer email on file"));
+    sendAirlineConfirmationEmail.mockResolvedValueOnce({ ok: false, error: "Gmail is not connected. Connect Gmail to send emails from your account." } as never);
     const user = userEvent.setup();
     renderCard({ ...ticketedWithConfirmation, hasSentConfirmationBefore: false });
 
     await user.click(screen.getByRole("button", { name: "Send Airline Confirmation" }));
+    await screen.findByRole("checkbox", { name: "jane@example.com" });
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
-    expect(await screen.findByRole("button", { name: "Send Airline Confirmation" })).toBeInTheDocument(); // stays "Send" — not optimistically flipped on failure
-    expect(toast.error).toHaveBeenCalledWith("This booking has no customer email on file");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Gmail is not connected");
+    expect(toast.error).toHaveBeenCalledWith("Gmail is not connected. Connect Gmail to send emails from your account.");
+    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
+  });
+
+  it("a masked thrown error (production digest / React #441) is never shown to the user", async () => {
+    const { toast } = await import("sonner");
+    sendAirlineConfirmationEmail.mockRejectedValueOnce(new Error("Minified React error #441; visit https://react.dev/errors/441"));
+    const user = userEvent.setup();
+    renderCard({ ...ticketedWithConfirmation, hasSentConfirmationBefore: false });
+
+    await user.click(screen.getByRole("button", { name: "Send Airline Confirmation" }));
+    await screen.findByRole("checkbox", { name: "jane@example.com" });
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to send the airline confirmation email.");
+    expect(document.body.textContent).not.toMatch(/Minified React error|#441/);
+    expect(toast.error).not.toHaveBeenCalledWith(expect.stringMatching(/#441/));
   });
 });

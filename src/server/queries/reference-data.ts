@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import airportsData from "@/data/reference/airports.json";
 import airlinesData from "@/data/reference/airlines.json";
+import { AIRLINE_FOLD_FROM, AIRLINE_FOLD_TO, escapeLike, foldAirlineText, rankAirlineMatches } from "@/lib/airline-search";
 import aircraftData from "@/data/reference/aircraft.json";
 
 type BundledAirport = { iata: string; icao: string | null; name: string; city: string; country: string; countryCode: string | null; latitude: number | null; longitude: number | null; timezone: string | null };
@@ -174,24 +175,30 @@ export async function searchAirlines(query: string): Promise<AirlineOption[]> {
     return popular;
   }
 
-  const results = await prisma.airline.findMany({
-    where: {
-      isActive: true,
-      OR: [
-        { iata: { equals: q, mode: "insensitive" } },
-        { icao: { equals: q, mode: "insensitive" } },
-        { name: { contains: q, mode: "insensitive" } },
-      ],
-    },
-    select: { id: true, iata: true, icao: true, name: true, logoUrl: true },
-    take: 20,
-  });
-
-  return results.sort((a, b) => {
-    const aExact = a.iata?.toLowerCase() === q.toLowerCase() || a.icao?.toLowerCase() === q.toLowerCase() ? 0 : 1;
-    const bExact = b.iata?.toLowerCase() === q.toLowerCase() || b.icao?.toLowerCase() === q.toLowerCase() ? 0 : 1;
-    return aExact - bExact;
-  });
+  // Candidates: an exact IATA/ICAO code, or the typed text inside the name. The name comparison folds accents on
+  // both sides (typing "Aeromexico" finds "Aeroméxico", "Air Algerie" finds "Air Algérie"); rankAirlineMatches then
+  // puts the most certain match first — exact IATA, exact name, exact ICAO, then prefix / word-start / contains — so a
+  // vague fragment can never push a precise match down or be mistaken for it.
+  const folded = foldAirlineText(q);
+  const like = "%" + escapeLike(folded) + "%";
+  const upper = q.toUpperCase();
+  const candidates = await prisma.$queryRaw<Array<{ id: number; iata: string | null; icao: string | null; name: string; logoUrl: string | null }>>`
+    SELECT id, iata, icao, name, "logoUrl"
+      FROM "Airline"
+     WHERE "isActive" = true
+       AND (
+         upper(iata) = ${upper}
+         OR upper(icao) = ${upper}
+         OR lower(translate(name, ${AIRLINE_FOLD_FROM}, ${AIRLINE_FOLD_TO})) LIKE ${like} ESCAPE '!'
+       )
+     ORDER BY (upper(iata) = ${upper}) DESC,
+              (lower(translate(name, ${AIRLINE_FOLD_FROM}, ${AIRLINE_FOLD_TO})) = ${folded}) DESC,
+              (iata IS NOT NULL) DESC,
+              length(name) ASC,
+              name ASC
+     LIMIT 200
+  `;
+  return rankAirlineMatches(candidates, q).slice(0, 20);
 }
 
 export type AircraftOption = {

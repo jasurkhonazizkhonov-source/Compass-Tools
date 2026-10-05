@@ -27,6 +27,17 @@ export function canEnterTicketingInfo(role: AccountRole | undefined) {
   return role === "ADMIN" || role === "TICKETING_AGENT";
 }
 
+/**
+ * Send / Resend the customer-facing "Airline Confirmation Numbers" email from the Quote or Booking
+ * page. Every role that has the Quotes area (all but Marketing Agent) — the creator of the quote
+ * (Travel Agent / Flight Expert), their Manager, Admin and the Ticketing Agent. Row-level access to
+ * the specific booking is enforced separately (bookingVisibilityWhere), so this only says which
+ * ROLES may use the action at all.
+ */
+export function canSendAirlineConfirmation(role: AccountRole | undefined) {
+  return role === "ADMIN" || role === "MANAGER" || role === "TRAVEL_AGENT" || role === "TICKETING_AGENT" || role === "FLIGHT_EXPERT";
+}
+
 export function canChargePayments(role: AccountRole | undefined) {
   return role === "ADMIN" || role === "TICKETING_AGENT";
 }

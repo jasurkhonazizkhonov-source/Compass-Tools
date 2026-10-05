@@ -1,15 +1,14 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { toast } from "sonner";
-import { Loader2, Send } from "lucide-react";
+import { useState } from "react";
+import { Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { BOOKING_STATUS_META } from "@/lib/status-meta";
 import { formatMoney } from "@/lib/currency";
-import { sendAirlineConfirmationEmail } from "@/server/actions/bookings";
+import { AirlineConfirmationDialog } from "@/components/bookings/airline-confirmation-dialog";
 import type { BookingStatus } from "@/generated/prisma/client";
 
 type ConfirmationDisplay = {
@@ -66,32 +65,18 @@ export function BookingInformationCard({
   hasSentConfirmationBefore,
 }: BookingInformationCardProps) {
   const meta = BOOKING_STATUS_META[status];
-  const [sendPending, startSendTransition] = useTransition();
   // Optimistic local flip so a follow-up click in the same session reads as
   // "Resend" immediately after a successful first send, without needing a
   // full page reload — same pattern as booking-ticketing-form.tsx's own
   // `sentBefore` state.
   const [sentBefore, setSentBefore] = useState(hasSentConfirmationBefore);
 
-  const canSendConfirmation = (status === "TICKETED" || status === "CONFIRMED") && confirmations.length > 0;
   const sendDisabledReason =
     status !== "TICKETED" && status !== "CONFIRMED"
       ? "Ticket status must be Ticketed or Confirmed"
       : confirmations.length === 0
         ? "At least one Airline Confirmation # is required"
         : null;
-
-  function sendConfirmation() {
-    startSendTransition(async () => {
-      try {
-        await sendAirlineConfirmationEmail(bookingId, sentBefore ? { resend: true } : undefined);
-        toast.success(sentBefore ? "Airline confirmation email resent to customer" : "Airline confirmation email sent to customer");
-        setSentBefore(true);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to send airline confirmation email");
-      }
-    });
-  }
 
   return (
     <Card className="shadow-none">
@@ -150,10 +135,7 @@ export function BookingInformationCard({
               <TooltipContent>{sendDisabledReason}</TooltipContent>
             </Tooltip>
           ) : (
-            <Button variant="outline" onClick={sendConfirmation} disabled={sendPending || !canSendConfirmation} className="gap-2">
-              {sendPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-              {sentBefore ? "Resend Airline Confirmation" : "Send Airline Confirmation"}
-            </Button>
+            <AirlineConfirmationDialog bookingId={bookingId} sentBefore={sentBefore} onSent={() => setSentBefore(true)} />
           )}
         </div>
       </CardContent>

@@ -15,7 +15,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { updateBookingTicketing, sendAirlineConfirmationEmail, sendNewSaleNotification, sendCancellationConfirmationEmail, sendCancellationNotification } from "@/server/actions/bookings";
+import { updateBookingTicketing, sendNewSaleNotification, sendCancellationConfirmationEmail, sendCancellationNotification } from "@/server/actions/bookings";
+import { AirlineConfirmationDialog } from "@/components/bookings/airline-confirmation-dialog";
 import { computeTotalSellingPriceUsd, computeBookingProfitUsd, formatMoney } from "@/lib/currency";
 import type { BookingStatus, QuoteStatus } from "@/generated/prisma/client";
 import { AirlineSearchField } from "@/components/crm/airline-search";
@@ -126,7 +127,6 @@ export function BookingTicketingForm({
   const [issuingFee, setIssuingFee] = useState(serviceFeeAmount != null ? String(serviceFeeAmount) : "");
   const [notes, setNotes] = useState(bookingNotes ?? "");
   const [isPending, startTransition] = useTransition();
-  const [sendPending, startSendTransition] = useTransition();
   const [notifyPending, startNotifyTransition] = useTransition();
   const [cancelConfirmPending, startCancelConfirmTransition] = useTransition();
   const [cancelNotifyPending, startCancelNotifyTransition] = useTransition();
@@ -243,18 +243,6 @@ export function BookingTicketingForm({
       : !hasAnyConfirmation
         ? "At least one Airline Confirmation # is required"
         : null;
-
-  function sendConfirmation() {
-    startSendTransition(async () => {
-      try {
-        await sendAirlineConfirmationEmail(bookingId, sentBefore ? { resend: true } : undefined);
-        toast.success(sentBefore ? "Airline confirmation email resent to customer" : "Airline confirmation email sent to customer");
-        setSentBefore(true);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to send airline confirmation email");
-      }
-    });
-  }
 
   // The internal "new sale" team announcement is no longer sent
   // automatically when ticketing is saved as Confirmed — it's a deliberate,
@@ -376,9 +364,9 @@ export function BookingTicketingForm({
           )}
           <BookingTicketingActionButtons
             sendDisabledReason={sendDisabledReason}
-            sendPending={sendPending}
+            bookingId={bookingId}
             canSendConfirmation={canSendConfirmation}
-            sendConfirmation={sendConfirmation}
+            onConfirmationSent={() => setSentBefore(true)}
             sentBefore={sentBefore}
             notifyDisabledReason={notifyDisabledReason}
             notifyPending={notifyPending}
@@ -518,9 +506,9 @@ export function BookingTicketingForm({
 
         <BookingTicketingActionButtons
           sendDisabledReason={sendDisabledReason}
-          sendPending={sendPending}
+          bookingId={bookingId}
           canSendConfirmation={canSendConfirmation}
-          sendConfirmation={sendConfirmation}
+          onConfirmationSent={() => setSentBefore(true)}
           sentBefore={sentBefore}
           notifyDisabledReason={notifyDisabledReason}
           notifyPending={notifyPending}
@@ -561,9 +549,9 @@ function ReadOnlyField({ label, value, className }: { label: string; value: stri
  * duplicated. */
 function BookingTicketingActionButtons({
   sendDisabledReason,
-  sendPending,
+  bookingId,
   canSendConfirmation,
-  sendConfirmation,
+  onConfirmationSent,
   sentBefore,
   notifyDisabledReason,
   notifyPending,
@@ -577,9 +565,10 @@ function BookingTicketingActionButtons({
   notifyCancellation,
 }: {
   sendDisabledReason: string | null;
-  sendPending: boolean;
+  bookingId: string;
   canSendConfirmation: boolean;
-  sendConfirmation: () => void;
+  /** Called once a confirmation email actually went out, so the label flips to Resend. */
+  onConfirmationSent: () => void;
   /** Pass 23 §21-23 — swaps the button's label/copy between the atomically-
    * claimed first send and an explicit, always-available resend once a
    * first send has already happened. */
@@ -610,10 +599,7 @@ function BookingTicketingActionButtons({
           <TooltipContent>{sendDisabledReason}</TooltipContent>
         </Tooltip>
       ) : (
-        <Button variant="outline" onClick={sendConfirmation} disabled={sendPending || !canSendConfirmation} className="gap-2">
-          {sendPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-          {sentBefore ? "Resend Airline Confirmation" : "Send Airline Confirmation"}
-        </Button>
+        canSendConfirmation && <AirlineConfirmationDialog bookingId={bookingId} sentBefore={sentBefore} onSent={onConfirmationSent} />
       )}
 
       {notifyDisabledReason ? (

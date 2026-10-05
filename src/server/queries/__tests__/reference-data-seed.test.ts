@@ -62,6 +62,8 @@ const fakePrisma = {
     }),
     findMany: vi.fn(async () => []),
   },
+  // searchAirlines now runs one folded-name SQL query (accent-insensitive search); these tests only care about seeding.
+  $queryRaw: vi.fn(async () => []),
 };
 
 vi.mock("@/lib/prisma", () => ({ prisma: fakePrisma }));

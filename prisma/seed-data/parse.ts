@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import tzlookup from "tz-lookup";
+import { applyCuratedAirlines, loadCuratedAirlines, sanitizeAirlineRows } from "./curated-airlines";
 
 export type ParsedAirport = {
   iata: string;
@@ -183,7 +184,9 @@ export function parseAirlinesDat(): ParsedAirline[] {
       isActive: activeRaw === "Y",
     });
   }
-  return rows;
+  // The OpenFlights file is years old and holds placeholder codes: drop non-designators, then apply the
+  // curated, source-verified corrections and additions (see curated-airlines.ts).
+  return applyCuratedAirlines(sanitizeAirlineRows(rows), loadCuratedAirlines());
 }
 
 export function parseAircraftDat(): ParsedAircraft[] {

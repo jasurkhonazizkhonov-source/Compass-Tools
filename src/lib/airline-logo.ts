@@ -14,8 +14,18 @@
 // logo miss that degrades to the same fallback as before this existed.
 const IATA_CODE_PATTERN = /^[A-Za-z0-9]{2}$/;
 
+/**
+ * IATA codes the logo CDN was checked for and has NO usable image: a request for them returns a blank
+ * placeholder (Breeze) or a redirect to a resizer rather than a logo. For these the app uses its existing
+ * fallback — the boxed IATA code on screen, no <img> in an email — rather than a blank or broken image.
+ * Kept in step with prisma/seed-data/airlines-curated.json (entries with `logo: false`) by
+ * src/lib/__tests__/airline-reference-data.test.ts.
+ */
+export const IATA_CODES_WITHOUT_CDN_LOGO: ReadonlySet<string> = new Set(["MX", "HJ", "B9", "3X"]);
+
 export function airlineLogoUrl(iata: string | null | undefined): string | null {
   if (!iata || !IATA_CODE_PATTERN.test(iata)) return null;
+  if (IATA_CODES_WITHOUT_CDN_LOGO.has(iata.toUpperCase())) return null;
   // Matches the exact URL shape already stored (correctly) on ~1,100
   // Airline rows in this database — standardizing on the pattern already
   // proven to work here rather than a differently-shaped guess.

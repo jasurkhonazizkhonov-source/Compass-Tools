@@ -118,6 +118,35 @@ function fmtSignedMoney(symbol: string, n: number): string {
 }
 
 /**
+ * The ONE place the internal "Notify Team of a New Sale" subject is built, for a plain sale, an
+ * exchange and a cancellation alike:
+ *
+ *   {Full Name} ({Location}, hire age: {Y}Y{M}M{D}D) made ${Amount} to {City}, {Country}[ on Exchange| on Cancellation]
+ *
+ * Location and hire age are each shown only when actually known — never invented — and the whole
+ * parenthetical disappears when neither is. Header-injection safe: any line break in a free-text
+ * part (a name or location) collapses to a space. Never used for the customer-facing airline
+ * confirmation email (that workflow has its own subject).
+ */
+export function buildNewSaleSubject(params: {
+  agentFullName: string;
+  agentLocation: string | null;
+  hireAgeCompact: string | null;
+  /** Already formatted with currency symbol and two decimals, e.g. "$287.00" or "-$12.50". */
+  amount: string;
+  /** "{city}, {country}" */
+  destination: string;
+  label?: "EXCHANGE" | "CANCELLATION";
+}): string {
+  const clean = (s: string) => s.replace(/\s+/g, " ").trim();
+  const location = params.agentLocation ? clean(params.agentLocation) : "";
+  const metaParts = [location || null, params.hireAgeCompact ? `hire age: ${params.hireAgeCompact}` : null].filter(Boolean);
+  const meta = metaParts.length > 0 ? ` (${metaParts.join(", ")})` : "";
+  const labelSuffix = params.label === "EXCHANGE" ? " on Exchange" : params.label === "CANCELLATION" ? " on Cancellation" : "";
+  return `${clean(params.agentFullName)}${meta} made ${params.amount} to ${clean(params.destination)}${labelSuffix}`;
+}
+
+/**
  * Shared "| {Company Name}" suffix for every CUSTOMER-facing email subject
  * — the one place that owns this formatting so every customer subject
  * builder below stays consistent instead of each hand-rolling its own
@@ -2004,10 +2033,14 @@ export function buildBookingProfitNotificationEmail(params: {
   // audit. Location/hire-age are each included only when actually known —
   // never fabricated (see formatHireAgeCompact's own null-safe contract).
   // No booking/quote/internal ID anywhere in the subject.
-  const metaParts = [params.agentLocation, params.hireAgeCompact ? `hire age: ${params.hireAgeCompact}` : null].filter(Boolean);
-  const meta = metaParts.length > 0 ? ` (${metaParts.join(", ")})` : "";
-  const labelSuffix = label === "EXCHANGE" ? " on Exchange" : label === "CANCELLATION" ? " on Cancellation" : "";
-  const subject = `${params.agentFullName}${meta} made ${fmtSignedMoney(symbol, params.profit)} to ${params.destination}${labelSuffix}`;
+  const subject = buildNewSaleSubject({
+    agentFullName: params.agentFullName,
+    agentLocation: params.agentLocation,
+    hireAgeCompact: params.hireAgeCompact,
+    amount: fmtSignedMoney(symbol, params.profit),
+    destination: params.destination,
+    label,
+  });
   // Pass 17 §15/§36 — a short, at-a-glance CATEGORY label (matching the
   // task's own requested example: "NEW SALE" / "EXCHANGE" / "CANCELLATION"),
   // not a full sentence — this is an internal ops inbox a staff member

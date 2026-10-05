@@ -26,6 +26,11 @@ let emailLogs: Array<Record<string, unknown>>;
 let sendEmailCalls: Array<Record<string, unknown>>;
 let bookingUpdateManyCalls: Array<Record<string, unknown>>;
 let recentSentLogs: Array<{ bookingId: string; createdAt: Date }>;
+let findFirstWheres: Array<Record<string, unknown>>;
+let hiddenBookingIds: Set<string>;
+let contactPrimaryEmail: string | null;
+let contactEmails: Array<{ email: string; isPrimary: boolean }>;
+let sendEmailResult: { ok: true; messageId: string } | { ok: false; error: string };
 
 const AGENT = { id: "sender-1", fullName: "Andrew Kent", email: "andrew@example.com", location: null, hiredAt: new Date(), commissionPercent: 10 };
 
@@ -55,8 +60,9 @@ function fakeQuote(overrides: Partial<{ sentByAgent: typeof AGENT | null; agent:
 const fakePrisma: Record<string, unknown> = {
   booking: {
     findFirst: vi.fn(async ({ where }: { where: { id: string } }) => {
+      findFirstWheres.push(where);
       const b = bookings.get(where.id);
-      return b ? { id: b.id } : null;
+      return b && !hiddenBookingIds.has(b.id) ? { id: b.id } : null;
     }),
     findUniqueOrThrow: vi.fn(async ({ where }: { where: { id: string } }) => {
       const b = bookings.get(where.id);
@@ -73,7 +79,9 @@ const fakePrisma: Record<string, unknown> = {
         gratuityAmount: 0,
         totalAmount: 500,
         bookingReference: "BK-1",
-        contact: { firstName: "Jane", lastName: "Traveler" },
+        contact: { firstName: "Jane", lastName: "Traveler", primaryEmail: contactPrimaryEmail, emails: contactEmails },
+        airlineConfirmationFirstSentAt: b.airlineConfirmationFirstSentAt,
+        contactPhone: "555",
         passengers: [],
         paymentMethods: [],
         quote: fakeQuote(),
@@ -84,10 +92,15 @@ const fakePrisma: Record<string, unknown> = {
     // Map, so two genuinely concurrent Promise.all callers each get a
     // faithful "only one can match" result — exactly what makes the real
     // race-safety test below meaningful rather than vacuous.
-    updateMany: vi.fn(async (args: { where: { id: string; airlineConfirmationFirstSentAt: null }; data: { airlineConfirmationFirstSentAt: Date } }) => {
+    updateMany: vi.fn(async (args: { where: { id: string; airlineConfirmationFirstSentAt?: null }; data: { airlineConfirmationFirstSentAt: Date | null } }) => {
       bookingUpdateManyCalls.push(args);
       const b = bookings.get(args.where.id);
       if (!b) return { count: 0 };
+      // An unconditional write (the claim being given back after a failed first send).
+      if (!("airlineConfirmationFirstSentAt" in args.where)) {
+        b.airlineConfirmationFirstSentAt = args.data.airlineConfirmationFirstSentAt;
+        return { count: 1 };
+      }
       if (b.airlineConfirmationFirstSentAt !== null) return { count: 0 };
       b.airlineConfirmationFirstSentAt = args.data.airlineConfirmationFirstSentAt;
       return { count: 1 };
@@ -132,7 +145,7 @@ vi.mock("@/server/email/templates", () => ({
 vi.mock("@/server/email/service", () => ({
   sendEmail: vi.fn(async (args: Record<string, unknown>) => {
     sendEmailCalls.push(args);
-    return { ok: true as const, messageId: "msg-1" };
+    return sendEmailResult;
   }),
 }));
 
@@ -195,6 +208,11 @@ beforeEach(() => {
   sendEmailCalls = [];
   bookingUpdateManyCalls = [];
   recentSentLogs = [];
+  findFirstWheres = [];
+  hiddenBookingIds = new Set();
+  contactPrimaryEmail = "jane@example.com";
+  contactEmails = [{ email: "jane@example.com", isPrimary: true }];
+  sendEmailResult = { ok: true, messageId: "msg-1" };
   vi.clearAllMocks();
 });
 
@@ -205,10 +223,13 @@ describe("sendAirlineConfirmationEmail — authorization + preconditions", () =>
     await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/not authorized/i);
   });
 
-  it("rejects a role that cannot enter ticketing info", async () => {
-    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" };
+  it("rejects a role without the Quotes area (Marketing Agent) and an inactive account", async () => {
     const { sendAirlineConfirmationEmail } = await import("../bookings");
+    currentActor = { id: "m-1", role: "MARKETING_AGENT", status: "ACTIVE", companyId: "company-1" };
     await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/not authorized/i);
+    currentActor = { id: "t-1", role: "TICKETING_AGENT", status: "INACTIVE", companyId: "company-1" };
+    await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/not authorized/i);
+    expect(sendEmailCalls).toHaveLength(0);
   });
 
   it("rejects a booking not visible to the actor (IDOR) as not-found, never leaking existence", async () => {
@@ -218,12 +239,15 @@ describe("sendAirlineConfirmationEmail — authorization + preconditions", () =>
 
   it("rejects when there is no confirmation number at all (legacy field null, new array null)", async () => {
     const { sendAirlineConfirmationEmail } = await import("../bookings");
-    await expect(sendAirlineConfirmationEmail("booking-no-confirmation")).rejects.toThrow(/Ticketed or Confirmed/i);
+    expect(await sendAirlineConfirmationEmail("booking-no-confirmation")).toEqual({ ok: false, error: expect.stringMatching(/Ticketed or Confirmed/i) });
   });
 
-  it("rejects when the booking has no customer email on file", async () => {
+  it("returns (not throws) when the booking has no customer email on file at all", async () => {
+    contactPrimaryEmail = null;
+    contactEmails = [];
     const { sendAirlineConfirmationEmail } = await import("../bookings");
-    await expect(sendAirlineConfirmationEmail("booking-no-email")).rejects.toThrow(/no customer email/i);
+    expect(await sendAirlineConfirmationEmail("booking-no-email")).toEqual({ ok: false, error: expect.stringMatching(/no customer email/i) });
+    expect(sendEmailCalls).toHaveLength(0);
   });
 });
 
@@ -256,28 +280,32 @@ describe("sendAirlineConfirmationEmail — first-send atomic claim", () => {
       gratuityAmount: 0,
       totalAmount: 500,
       bookingReference: "BK-1",
-      contact: { firstName: "Jane", lastName: "Traveler" },
+      contact: { firstName: "Jane", lastName: "Traveler", primaryEmail: "jane@example.com", emails: [] },
+      airlineConfirmationFirstSentAt: null,
       passengers: [],
       paymentMethods: [],
       quote: fakeQuote({ sentByAgent: null }),
     }));
     const { sendAirlineConfirmationEmail } = await import("../bookings");
-    await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/no original sender/i);
+    expect(await sendAirlineConfirmationEmail("booking-1")).toEqual({ ok: false, error: expect.stringMatching(/no original sender/i) });
     expect(sendEmailCalls).toHaveLength(0);
     expect(emailLogs).toHaveLength(1);
     expect(emailLogs[0].status).toBe("FAILED");
     expect(emailLogs[0].fromEmail).toBe("unassigned");
+    // the first-send claim is given back: nothing went out, so Send must work again
+    expect(bookings.get("booking-1")!.airlineConfirmationFirstSentAt).toBeNull();
   });
 
   it("Pass 23 §22 — a genuine race: two truly concurrent first-send calls (real Promise.all) result in exactly ONE customer email, never two", async () => {
     const { sendAirlineConfirmationEmail } = await import("../bookings");
     const [first, second] = await Promise.allSettled([sendAirlineConfirmationEmail("booking-1"), sendAirlineConfirmationEmail("booking-1")]);
     const results = [first, second];
-    const succeeded = results.filter((r) => r.status === "fulfilled");
-    const failed = results.filter((r) => r.status === "rejected");
+    const values = results.map((r) => (r as PromiseFulfilledResult<{ ok: boolean; error?: string }>).value);
+    const succeeded = values.filter((v) => v.ok);
+    const failed = values.filter((v) => !v.ok);
     expect(succeeded).toHaveLength(1);
     expect(failed).toHaveLength(1);
-    expect((failed[0] as PromiseRejectedResult).reason.message).toMatch(/already been sent/i);
+    expect(failed[0].error).toMatch(/already been sent/i);
     // The real assertion: only one call ever reached sendEmail, regardless
     // of which one won the claim.
     expect(sendEmailCalls).toHaveLength(1);
@@ -289,7 +317,7 @@ describe("sendAirlineConfirmationEmail — first-send atomic claim", () => {
     sendEmailCalls = [];
     emailLogs = [];
 
-    await expect(sendAirlineConfirmationEmail("booking-1")).rejects.toThrow(/already been sent/i);
+    expect(await sendAirlineConfirmationEmail("booking-1")).toEqual({ ok: false, error: expect.stringMatching(/already been sent/i) });
     expect(sendEmailCalls).toHaveLength(0);
   });
 });
@@ -310,7 +338,7 @@ describe("sendAirlineConfirmationEmail — explicit resend", () => {
     recentSentLogs = [{ bookingId: "booking-1", createdAt: new Date() }];
     bookings.get("booking-1")!.airlineConfirmationFirstSentAt = new Date();
     const { sendAirlineConfirmationEmail } = await import("../bookings");
-    await expect(sendAirlineConfirmationEmail("booking-1", { resend: true })).rejects.toThrow(/just sent/i);
+    expect(await sendAirlineConfirmationEmail("booking-1", { resend: true })).toEqual({ ok: false, error: expect.stringMatching(/just sent/i) });
     expect(sendEmailCalls).toHaveLength(0);
   });
 });
@@ -325,5 +353,228 @@ describe("sendAirlineConfirmationEmail — multiple confirmations", () => {
     expect(call.confirmations).toHaveLength(2);
     expect(call.confirmations[0].confirmationNumber).toBe("AA123");
     expect(call.confirmations[1].confirmationNumber).toBe("BB456");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Customer airline-confirmation email — roles, recipients, sender, and strict separation from the
+// internal "Notify Team of a New Sale" email.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+const ROLES_WITH_QUOTES = ["TRAVEL_AGENT", "TICKETING_AGENT", "MANAGER", "ADMIN", "FLIGHT_EXPERT"] as const;
+
+describe("sendAirlineConfirmationEmail — every role that has the Quotes area can use it", () => {
+  it.each(ROLES_WITH_QUOTES)("%s: gets the recipient list and can send — a RETURNED ok result, never a thrown (masked #441) error", async (role) => {
+    currentActor = { id: `${role}-1`, role, status: "ACTIVE", companyId: "company-1" };
+    const { sendAirlineConfirmationEmail, getAirlineConfirmationRecipients } = await import("../bookings");
+    const list = await getAirlineConfirmationRecipients("booking-1");
+    expect(list.ok).toBe(true);
+    expect(list.recipients.map((r) => r.email)).toEqual(["jane@example.com"]);
+    const res = await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    expect(res).toEqual({ ok: true, sentTo: ["jane@example.com"] });
+    expect(sendEmailCalls).toHaveLength(1);
+  });
+
+  it("a booking outside the viewer's row-level scope is refused for every role (IDOR), using the shared visibility filter", async () => {
+    hiddenBookingIds = new Set(["booking-1"]);
+    const { sendAirlineConfirmationEmail, getAirlineConfirmationRecipients } = await import("../bookings");
+    for (const role of ROLES_WITH_QUOTES) {
+      currentActor = { id: `${role}-1`, role, status: "ACTIVE", companyId: "company-1" };
+      await expect(sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] })).rejects.toThrow(/not authorized/i);
+      await expect(getAirlineConfirmationRecipients("booking-1")).rejects.toThrow(/not authorized/i);
+    }
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(emailLogs).toHaveLength(0);
+    // the filter handed to the database is the viewer-scoped bookingVisibilityWhere, not just the id
+    expect(findFirstWheres.some((w) => Array.isArray((w as { OR?: unknown }).OR))).toBe(true);
+  });
+});
+
+describe("sendAirlineConfirmationEmail — the email goes ONLY to the selected customer addresses (no Cc, no Bcc)", () => {
+  it("To = exactly the selected addresses; no bcc/cc key at all; Manager/Admin/all staff are never copied", async () => {
+    // Staff exist and would have been the old Bcc audience — prove none of them is queried or used.
+    (fakePrisma.account as { findMany: ReturnType<typeof vi.fn> }).findMany.mockImplementation(async () => [{ email: "admin@company.test" }, { email: "manager@company.test" }]);
+    contactPrimaryEmail = "jane@example.com";
+    contactEmails = [
+      { email: "jane@example.com", isPrimary: true },
+      { email: "alt@example.com", isPrimary: false },
+    ];
+    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" };
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const res = await sendAirlineConfirmationEmail("booking-1", { recipients: ["alt@example.com", "jane@example.com"] });
+    expect(res).toEqual({ ok: true, sentTo: ["jane@example.com", "alt@example.com"] });
+
+    expect(sendEmailCalls).toHaveLength(1);
+    const call = sendEmailCalls[0];
+    expect(call.to).toBe("jane@example.com, alt@example.com");
+    expect("bcc" in call).toBe(false);
+    expect("cc" in call).toBe(false);
+    expect(JSON.stringify(call)).not.toContain("admin@company.test");
+    expect(JSON.stringify(call)).not.toContain("manager@company.test");
+    expect((fakePrisma.account as { findMany: ReturnType<typeof vi.fn> }).findMany).not.toHaveBeenCalled();
+    expect(emailLogs[0].toEmail).toBe("jane@example.com, alt@example.com");
+  });
+
+  it("sends to a single selected address when only one is ticked", async () => {
+    contactEmails = [
+      { email: "jane@example.com", isPrimary: true },
+      { email: "alt@example.com", isPrimary: false },
+    ];
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    await sendAirlineConfirmationEmail("booking-1", { recipients: ["alt@example.com"] });
+    expect(sendEmailCalls[0].to).toBe("alt@example.com");
+  });
+
+  it("an omitted recipient list uses the documented default: the signed Booking Form address only", async () => {
+    contactEmails = [
+      { email: "jane@example.com", isPrimary: true },
+      { email: "alt@example.com", isPrimary: false },
+    ];
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const res = await sendAirlineConfirmationEmail("booking-1");
+    expect(res).toEqual({ ok: true, sentTo: ["jane@example.com"] });
+    expect(sendEmailCalls[0].to).toBe("jane@example.com");
+  });
+
+  it("an EMPTY selection is refused with a clear message and nothing is claimed, sent or logged", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    expect(await sendAirlineConfirmationEmail("booking-1", { recipients: [] })).toEqual({ ok: false, error: "Select at least one email address." });
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(emailLogs).toHaveLength(0);
+    expect(bookingUpdateManyCalls).toHaveLength(0);
+    expect(bookings.get("booking-1")!.airlineConfirmationFirstSentAt).toBeNull();
+  });
+
+  it("a hand-typed / foreign address, a CRM user's address, or a manipulated list is rejected — never passed to the mail transport", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const attempts: unknown[] = [
+      ["attacker@evil.test"],
+      ["jane@example.com", "attacker@evil.test"],
+      ["admin@company.test"],
+      ["jane@example.com\r\nBcc: x@evil.test"],
+      [123],
+      "jane@example.com",
+    ];
+    for (const bad of attempts) {
+      const res = await sendAirlineConfirmationEmail("booking-1", { recipients: bad as string[] });
+      expect(res.ok).toBe(false);
+    }
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(bookings.get("booking-1")!.airlineConfirmationFirstSentAt).toBeNull();
+  });
+
+  it("case and whitespace differences resolve to the same stored address (and duplicates collapse)", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const res = await sendAirlineConfirmationEmail("booking-1", { recipients: ["  JANE@Example.COM ", "jane@example.com"] });
+    expect(res).toEqual({ ok: true, sentTo: ["jane@example.com"] });
+    expect(sendEmailCalls[0].to).toBe("jane@example.com");
+  });
+
+  it("Resend uses the CURRENT selection, not the earlier send's recipients", async () => {
+    contactEmails = [
+      { email: "jane@example.com", isPrimary: true },
+      { email: "alt@example.com", isPrimary: false },
+    ];
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    sendEmailCalls = [];
+    const res = await sendAirlineConfirmationEmail("booking-1", { resend: true, recipients: ["alt@example.com"] });
+    expect(res).toEqual({ ok: true, sentTo: ["alt@example.com"] });
+    expect(sendEmailCalls[0].to).toBe("alt@example.com");
+  });
+});
+
+describe("sendAirlineConfirmationEmail — sender", () => {
+  it("is always the quote's own creator (sentByAgent), whoever clicked — and the client cannot choose it", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    for (const role of ROLES_WITH_QUOTES) {
+      currentActor = { id: `clicker-${role}`, role, status: "ACTIVE", companyId: "company-1" };
+      sendEmailCalls = [];
+      bookings.get("booking-1")!.airlineConfirmationFirstSentAt = null;
+      // forged extra options are simply ignored: the action reads only `resend` and `recipients`
+      await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"], accountId: "someone-else", from: "x@evil.test", bcc: "y@evil.test" } as never);
+      expect(sendEmailCalls[0].accountId).toBe("sender-1");
+      expect(sendEmailCalls[0].replyTo).toBe("andrew@example.com");
+      expect(sendEmailCalls[0].senderName).toBe("Andrew Kent");
+      expect("bcc" in sendEmailCalls[0]).toBe(false);
+    }
+  });
+
+  it("the recipient lookup shows who it will be sent from (the creator), never the clicking user", async () => {
+    currentActor = { id: "ticketing-9", role: "TICKETING_AGENT", status: "ACTIVE", companyId: "company-1" };
+    const { getAirlineConfirmationRecipients } = await import("../bookings");
+    const res = await getAirlineConfirmationRecipients("booking-1");
+    expect(res.sender).toEqual({ fullName: "Andrew Kent", email: "andrew@example.com" });
+  });
+});
+
+describe("sendAirlineConfirmationEmail — Gmail failures are reported honestly and don't burn the first send", () => {
+  it("a Gmail rejection returns the error, logs FAILED, never claims success, and the next Send works", async () => {
+    sendEmailResult = { ok: false, error: "Gmail is not connected. Connect Gmail to send emails from your account." };
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const res = await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    expect(res).toEqual({ ok: false, error: expect.stringMatching(/Gmail is not connected/) });
+    expect(emailLogs).toHaveLength(1);
+    expect(emailLogs[0].status).toBe("FAILED");
+    expect(emailLogs[0].errorMessage).toMatch(/Gmail is not connected/);
+    expect(bookings.get("booking-1")!.airlineConfirmationFirstSentAt).toBeNull();
+
+    sendEmailResult = { ok: true, messageId: "msg-2" };
+    const retry = await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    expect(retry.ok).toBe(true);
+  });
+
+  it("an unexpected exception inside the mail transport is also a returned failure, not a crash", async () => {
+    const service = await import("@/server/email/service");
+    vi.mocked(service.sendEmail).mockRejectedValueOnce(new Error("socket hang up"));
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    const res = await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    expect(res.ok).toBe(false);
+    expect(emailLogs[0].status).toBe("FAILED");
+    expect(bookings.get("booking-1")!.airlineConfirmationFirstSentAt).toBeNull();
+  });
+
+  it("the log and the customer-facing payload carry no card data", async () => {
+    const { sendAirlineConfirmationEmail } = await import("../bookings");
+    await sendAirlineConfirmationEmail("booking-1", { recipients: ["jane@example.com"] });
+    const blob = JSON.stringify({ emailLogs, sendEmailCalls });
+    expect(blob).not.toMatch(/cvv|cvc|encryptedPan/i);
+  });
+});
+
+describe("getAirlineConfirmationRecipients — what the dialog shows", () => {
+  it("lists the Booking Form address and every valid Contact address once, never a CRM user, and pre-selects the Booking Form address", async () => {
+    (fakePrisma.account as { findMany: ReturnType<typeof vi.fn> }).findMany.mockImplementation(async () => [{ email: "admin@company.test" }]);
+    contactPrimaryEmail = "JANE@example.com";
+    contactEmails = [
+      { email: "jane@example.com", isPrimary: true },
+      { email: " alt@example.com ", isPrimary: false },
+      { email: "not-an-email", isPrimary: false },
+    ];
+    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1" };
+    const { getAirlineConfirmationRecipients } = await import("../bookings");
+    const res = await getAirlineConfirmationRecipients("booking-1");
+    expect(res.recipients).toEqual([
+      { email: "jane@example.com", sources: ["booking-form", "contact"] },
+      { email: "alt@example.com", sources: ["contact"] },
+    ]);
+    expect(res.defaultSelected).toEqual(["jane@example.com"]);
+    expect(res.hasSentBefore).toBe(false);
+    expect(JSON.stringify(res)).not.toContain("admin@company.test");
+  });
+
+  it("without a Booking Form address the Contact's primary address is the default; with nothing valid, nothing is pre-selected", async () => {
+    bookings.get("booking-1")!.contactEmail = null;
+    contactPrimaryEmail = "primary@example.com";
+    contactEmails = [
+      { email: "primary@example.com", isPrimary: true },
+      { email: "other@example.com", isPrimary: false },
+    ];
+    const { getAirlineConfirmationRecipients } = await import("../bookings");
+    expect((await getAirlineConfirmationRecipients("booking-1")).defaultSelected).toEqual(["primary@example.com"]);
+    contactPrimaryEmail = null;
+    contactEmails = [{ email: "other@example.com", isPrimary: false }];
+    const res = await getAirlineConfirmationRecipients("booking-1");
+    expect(res.recipients.map((r) => r.email)).toEqual(["other@example.com"]);
+    expect(res.defaultSelected).toEqual([]);
   });
 });
