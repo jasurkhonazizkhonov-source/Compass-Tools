@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Plus, Trash2, Pencil, Check, X, Loader2, Variable, Clock, Eye, PenLine } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -248,7 +249,7 @@ function ExistingStep({ step }: { step: Step }) {
   const [body, setBody] = useState(step.body);
   const [delayDays, setDelayDays] = useState(step.delayMinutes / (24 * 60));
   const [isPending, startTransition] = useTransition();
-  const [deleting, startDeleteTransition] = useTransition();
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const subjectRef = useRef<HTMLInputElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
 
@@ -262,10 +263,7 @@ function ExistingStep({ step }: { step: Step }) {
 
   return (
     <div
-      className={cn(
-        "rounded-lg border p-4 space-y-3 transition-opacity duration-150",
-        deleting && "opacity-40 pointer-events-none"
-      )}
+      className={cn("rounded-lg border p-4 space-y-3")}
     >
       <div className="flex items-center justify-between">
         <p className="text-xs font-semibold text-muted-foreground">Step {step.order + 1} · {DelayLabel(step.delayMinutes)}</p>
@@ -285,7 +283,7 @@ function ExistingStep({ step }: { step: Step }) {
             size="icon-sm"
             title="Remove step"
             aria-label="Remove step"
-            onClick={() => startDeleteTransition(() => deleteStep(step.id))}
+            onClick={() => setConfirmingDelete(true)}
           >
             <Trash2 className="h-3.5 w-3.5 text-destructive" />
           </Button>
@@ -318,6 +316,14 @@ function ExistingStep({ step }: { step: Step }) {
           </div>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmingDelete}
+        onOpenChange={setConfirmingDelete}
+        title="Remove this step?"
+        description="The step is removed from the sequence. This cannot be undone."
+        confirmLabel="Remove step"
+        onConfirm={async () => { await deleteStep(step.id); }}
+      />
     </div>
   );
 }

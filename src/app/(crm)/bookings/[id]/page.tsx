@@ -97,6 +97,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
             <DeleteButton
               variant="full"
               confirmTitle="Delete this booking?"
+              confirmLabel="Delete booking"
               confirmMessage="This will permanently delete this booking, including its passenger, payment, and ticketing records. The quote, lead, and contact are not affected. This action cannot be undone."
               deleteAction={deleteBooking.bind(null, booking.id)}
               redirectTo="/bookings"

@@ -4,6 +4,8 @@ import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Loader2, Upload, Trash2, CheckCircle2, XCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
+import { safeActionMessage } from "@/lib/safe-action-message";
 import { Badge } from "@/components/ui/badge";
 import { uploadCompanyLogo, removeCompanyLogo } from "@/server/actions/company";
 import type { LogoProcessingStatus } from "@/generated/prisma/client";
@@ -49,15 +51,15 @@ export function CompanyLogoPanel({
     });
   };
 
-  const onRemove = () => {
-    startTransition(async () => {
-      try {
-        await removeCompanyLogo();
-        toast.success("Logo removed — back to the default placeholder");
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : "Failed to remove logo");
-      }
-    });
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  // Runs from the confirmation dialog (pending state and the error message live there).
+  const onRemove = async () => {
+    try {
+      await removeCompanyLogo();
+    } catch (err) {
+      return { error: safeActionMessage(err, "Failed to remove the logo") };
+    }
+    toast.success("Logo removed — back to the default placeholder");
   };
 
   return (
@@ -94,7 +96,7 @@ export function CompanyLogoPanel({
           {status === "NONE" ? "Upload logo" : "Replace logo"}
         </Button>
         {status !== "NONE" && (
-          <Button type="button" variant="ghost" size="sm" disabled={isPending} onClick={onRemove}>
+          <Button type="button" variant="ghost" size="sm" disabled={isPending} onClick={() => setConfirmingRemove(true)}>
             <Trash2 className="h-3.5 w-3.5" />
             Remove
           </Button>
@@ -105,6 +107,14 @@ export function CompanyLogoPanel({
         flat background is removed automatically when it can be done safely — your logo&apos;s colors, text, and
         proportions are never altered, and the original upload is always kept as a fallback.
       </p>
+      <ConfirmDialog
+        open={confirmingRemove}
+        onOpenChange={setConfirmingRemove}
+        title="Remove the company logo?"
+        description="Emails and booking pages go back to the default placeholder until a new logo is uploaded."
+        confirmLabel="Remove logo"
+        onConfirm={onRemove}
+      />
     </div>
   );
 }

@@ -13,6 +13,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -40,6 +41,7 @@ import {
   type BookingPermission,
 } from "@/lib/permissions";
 import { updateAccount, setAccountStatus, setAccountsVisibility, updatePaymentPermissions, updateBookingPermissions } from "@/server/actions/accounts";
+import { safeActionMessage } from "@/lib/safe-action-message";
 import type { AccountRole, AccountStatus } from "@/generated/prisma/client";
 
 export function AccountRoleSelect({
@@ -56,7 +58,9 @@ export function AccountRoleSelect({
    * signal) since demoting it would leave the CRM with no active admin. */
   isLastActiveAdmin?: boolean;
 }) {
-  const [isPending, startTransition] = useTransition();
+  // A role decides what an account may see and do, so changing it is confirmed first (the server still enforces who may do it,
+  // and a privilege grant additionally needs a recent sign-in — its refusal is shown inside the dialog).
+  const [pendingRole, setPendingRole] = useState<AccountRole | null>(null);
 
   if (!canEdit) return <span className="text-sm">{ROLE_LABELS[role]}</span>;
 
@@ -72,23 +76,31 @@ export function AccountRoleSelect({
   }
 
   return (
+    <>
+    <ConfirmDialog
+      open={pendingRole !== null}
+      onOpenChange={(o) => { if (!o) setPendingRole(null); }}
+      title="Change this user's role?"
+      description={pendingRole ? `Their role changes from ${ROLE_LABELS[role]} to ${ROLE_LABELS[pendingRole]}, which changes what they can see and do in the CRM.` : ""}
+      confirmLabel="Change role"
+      variant="default"
+      onConfirm={async () => {
+        if (!pendingRole) return;
+        try {
+          const refusal = await updateAccount(accountId, { role: pendingRole });
+          if (refusal) return { error: refusal.error };
+        } catch (err) {
+          return { error: err instanceof Error ? safeActionMessage(err, "Failed to update role") : "Failed to update role" };
+        }
+        toast.success("Role updated");
+      }}
+    />
     <Select
       value={role}
-      onValueChange={(v) =>
-        startTransition(async () => {
-          try {
-            const refusal = await updateAccount(accountId, { role: v as AccountRole });
-            if (refusal) throw new Error(refusal.error);
-            toast.success("Role updated");
-          } catch (err) {
-            toast.error(err instanceof Error ? err.message : "Failed to update role");
-          }
-        })
-      }
-      disabled={isPending}
+      onValueChange={(v) => { if (v !== role) setPendingRole(v as AccountRole); }}
     >
       <SelectTrigger className="h-8 w-[150px]">
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <SelectValue />}
+        <SelectValue />
       </SelectTrigger>
       <SelectContent>
         {Object.entries(ROLE_LABELS).map(([value, label]) => (
@@ -96,6 +108,7 @@ export function AccountRoleSelect({
         ))}
       </SelectContent>
     </Select>
+    </>
   );
 }
 
@@ -798,8 +811,16 @@ export function AccountPaymentPermissionsEditor({
   const [isPending, startTransition] = useTransition();
   const [current, setCurrent] = useState<string[]>(permissions);
   const [open, setOpen] = useState(false);
+  // GRANTING a payment permission is confirmed first (revoking is not: it only reduces access). The server still requires a
+  // recent sign-in for a grant and refuses otherwise.
+  const [grantRequest, setGrantRequest] = useState<{ label: string; run: () => void } | null>(null);
 
   function toggle(permission: PaymentPermission, checked: boolean) {
+    if (checked) setGrantRequest({ label: PAYMENT_PERMISSION_LABELS[permission], run: () => applyToggle(permission, true) });
+    else applyToggle(permission, false);
+  }
+
+  function applyToggle(permission: PaymentPermission, checked: boolean) {
     const next = checked ? [...current, permission] : current.filter((p) => p !== permission);
     setCurrent(next);
     startTransition(async () => {
@@ -826,6 +847,11 @@ export function AccountPaymentPermissionsEditor({
   // never disagree again. Unchecking now clears BOTH values (a full, clean
   // revoke) rather than leaving a legacy grant silently still in effect.
   function toggleReveal(checked: boolean) {
+    if (checked) setGrantRequest({ label: PAYMENT_PERMISSION_LABELS["payments.reveal"], run: () => applyReveal(true) });
+    else applyReveal(false);
+  }
+
+  function applyReveal(checked: boolean) {
     const next = checked ? [...current.filter((p) => p !== "payments.manual_supplier_payment"), "payments.reveal"] : current.filter((p) => p !== "payments.reveal" && p !== "payments.manual_supplier_payment");
     setCurrent(next);
     startTransition(async () => {
@@ -853,6 +879,16 @@ export function AccountPaymentPermissionsEditor({
   const revealGranted = hasEffectiveRevealGrant(current);
 
   return (
+    <>
+      <ConfirmDialog
+        open={grantRequest !== null}
+        onOpenChange={(o) => { if (!o) setGrantRequest(null); }}
+        title="Grant this permission?"
+        description={`This gives the user: "${grantRequest?.label ?? ""}". It extends what they can see or do, and is recorded in the audit log.`}
+        confirmLabel="Grant permission"
+        variant="default"
+        onConfirm={() => { grantRequest?.run(); }}
+      />
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" className="flex flex-wrap items-center gap-1 max-w-[220px] text-left">
@@ -905,6 +941,7 @@ export function AccountPaymentPermissionsEditor({
         </div>
       </PopoverContent>
     </Popover>
+    </>
   );
 }
 
@@ -920,8 +957,14 @@ export function AccountBookingPermissionsEditor({
   const [isPending, startTransition] = useTransition();
   const [current, setCurrent] = useState<string[]>(permissions);
   const [open, setOpen] = useState(false);
+  const [grantRequest, setGrantRequest] = useState<{ label: string; run: () => void } | null>(null);
 
   function toggle(permission: BookingPermission, checked: boolean) {
+    if (checked) setGrantRequest({ label: BOOKING_PERMISSION_LABELS[permission], run: () => applyToggle(permission, true) });
+    else applyToggle(permission, false);
+  }
+
+  function applyToggle(permission: BookingPermission, checked: boolean) {
     const next = checked ? [...current, permission] : current.filter((p) => p !== permission);
     setCurrent(next);
     startTransition(async () => {
@@ -948,6 +991,16 @@ export function AccountBookingPermissionsEditor({
   }
 
   return (
+    <>
+      <ConfirmDialog
+        open={grantRequest !== null}
+        onOpenChange={(o) => { if (!o) setGrantRequest(null); }}
+        title="Grant this permission?"
+        description={`This gives the user: "${grantRequest?.label ?? ""}". It extends what they can see or do, and is recorded in the audit log.`}
+        confirmLabel="Grant permission"
+        variant="default"
+        onConfirm={() => { grantRequest?.run(); }}
+      />
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" className="flex flex-wrap items-center gap-1 max-w-[220px] text-left">
@@ -989,5 +1042,6 @@ export function AccountBookingPermissionsEditor({
         </div>
       </PopoverContent>
     </Popover>
+    </>
   );
 }

@@ -74,15 +74,17 @@ describe("Contacts list actions", () => {
 
   it("Delete asks for confirmation (cancel = nothing happens) and then calls the existing deleteContact() with this contact's id", async () => {
     const user = userEvent.setup();
-    const confirm = vi.spyOn(window, "confirm");
     renderActions({ viewerRole: "MANAGER" });
-    confirm.mockReturnValueOnce(false);
+    // The CRM's own modal — no browser dialog is involved.
     await user.click(screen.getByRole("button", { name: "Delete Contact" }));
+    expect(screen.getByRole("alertdialog", { name: "Delete this contact?" })).toBeInTheDocument();
+    expect(deleteContact).not.toHaveBeenCalled(); // nothing happens until it is confirmed
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(deleteContact).not.toHaveBeenCalled();
-    confirm.mockReturnValueOnce(true);
     await user.click(screen.getByRole("button", { name: "Delete Contact" }));
+    await user.click(screen.getByRole("button", { name: "Delete contact" }));
     expect(deleteContact).toHaveBeenCalledTimes(1);
-    confirm.mockRestore();
   });
 
   it("Reassign opens the existing contact dialog", async () => {

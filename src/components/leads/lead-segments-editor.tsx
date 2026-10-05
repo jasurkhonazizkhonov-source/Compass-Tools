@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { ArrowDown, ArrowUp, Loader2, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { AirportSearchField } from "@/components/crm/airport-search";
 import { DatePicker } from "@/components/crm/date-picker";
 import { setLeadSegments } from "@/server/actions/leads";
@@ -53,9 +54,16 @@ export function LeadSegmentsEditor({ leadId, initialSegments }: { leadId: string
       return [...prev, { key: newKey(), from: last?.to ?? null, to: null, date: "" }];
     });
   }
-  function remove(index: number) {
+  // Asking first, in the CRM's own dialog. Removing only edits the draft in this form: nothing is saved (and no server call is
+  // made) until Save itinerary is pressed, and the dialog says so.
+  const [removeIndex, setRemoveIndex] = useState<number | null>(null);
+  function requestRemove(index: number) {
     if (segments.length <= 1) return;
-    if (!window.confirm(`Remove segment ${index + 1}?\n\nThe itinerary is only changed when you press Save itinerary.`)) return;
+    setRemoveIndex(index);
+  }
+  function confirmRemove() {
+    const index = removeIndex;
+    if (index === null) return;
     setSegments((prev) => prev.filter((_, i) => i !== index));
   }
   function move(index: number, delta: -1 | 1) {
@@ -107,7 +115,7 @@ export function LeadSegmentsEditor({ leadId, initialSegments }: { leadId: string
                   type="button"
                   size="icon-sm"
                   variant="ghost"
-                  onClick={() => remove(i)}
+                  onClick={() => requestRemove(i)}
                   disabled={segments.length <= 1 || isPending}
                   title={segments.length <= 1 ? "A multi-city request needs at least one flight segment" : undefined}
                   aria-label={`Remove segment ${i + 1}`}
@@ -144,6 +152,14 @@ export function LeadSegmentsEditor({ leadId, initialSegments }: { leadId: string
           Save itinerary
         </Button>
       </div>
+      <ConfirmDialog
+        open={removeIndex !== null}
+        onOpenChange={(o) => { if (!o) setRemoveIndex(null); }}
+        title={`Remove segment ${(removeIndex ?? 0) + 1}?`}
+        description="The itinerary is only changed when you press Save itinerary."
+        confirmLabel="Remove segment"
+        onConfirm={confirmRemove}
+      />
     </div>
   );
 }

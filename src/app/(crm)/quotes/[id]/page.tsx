@@ -144,6 +144,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
               <DeleteButton
                 variant="full"
                 confirmTitle="Delete this quote?"
+                confirmLabel="Delete quote"
                 confirmMessage={
                   quote.booking
                     ? "This quote has an associated booking — deleting the quote will also delete that booking and its payment/ticketing records. This action cannot be undone."

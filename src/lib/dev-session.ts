@@ -30,9 +30,14 @@ export function isPlausibleSessionToken(token: string | undefined): token is str
   return !!token && /^[A-Za-z0-9_-]{4,256}$/.test(token);
 }
 
-export function isSessionExpired(sessionCreatedAt: Date | null): boolean {
+/**
+ * ABSOLUTE lifetime: a session is valid for at most SESSION_MAX_AGE_MS from the sign-in that created it (sessionCreatedAt is
+ * written only by establishSession). Nothing ever moves that timestamp — not a page view, an API call, a poll or the
+ * presence heartbeat — so activity cannot extend a session; only a new sign-in starts a new 24 hours. Expired AT the boundary.
+ */
+export function isSessionExpired(sessionCreatedAt: Date | null, now: number = Date.now()): boolean {
   if (!sessionCreatedAt) return true;
-  return Date.now() - sessionCreatedAt.getTime() > SESSION_MAX_AGE_MS;
+  return now - sessionCreatedAt.getTime() >= SESSION_MAX_AGE_MS;
 }
 
 // Real, measured performance defect found and fixed: this session lookup

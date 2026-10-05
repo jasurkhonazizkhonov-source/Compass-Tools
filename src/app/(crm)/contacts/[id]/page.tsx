@@ -99,6 +99,7 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
               <DeleteButton
                 variant="full"
                 confirmTitle="Delete this contact?"
+                confirmLabel="Delete contact"
                 confirmMessage={`Deleting this contact will also delete all ${contact.leads.length} lead${contact.leads.length === 1 ? "" : "s"} associated with this customer, and any quotes or bookings under those leads. This action cannot be undone.`}
                 deleteAction={deleteContact.bind(null, contact.id)}
                 redirectTo="/contacts"

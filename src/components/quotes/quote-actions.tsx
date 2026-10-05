@@ -14,6 +14,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
+import { safeActionMessage } from "@/lib/safe-action-message";
 import { sendQuote, cancelQuote } from "@/server/actions/quotes";
 import { NON_CANCELABLE_QUOTE_STATUSES } from "@/lib/quote-cancelability";
 import type { QuoteStatus } from "@/generated/prisma/client";
@@ -77,13 +79,17 @@ export function QuoteActions({
     startTransition(async () => { await doSend(emails); });
   }
 
-  function handleCancel() {
-    startTransition(async () => {
+  // Runs from the confirmation dialog (pending state, double-click protection and the error message live there).
+  async function handleCancel() {
+    try {
       await cancelQuote(quoteId);
-      toast.success("Quote canceled");
-      router.refresh();
-    });
+    } catch (err) {
+      return { error: safeActionMessage(err, "Could not cancel the quote.") };
+    }
+    toast.success("Quote canceled");
+    router.refresh();
   }
+  const [confirmCancelOpen, setConfirmCancelOpen] = useState(false);
 
   function copyLink() {
     navigator.clipboard.writeText(viewDealUrl);
@@ -105,10 +111,19 @@ export function QuoteActions({
         </Button>
       )}
       {!NON_CANCELABLE_QUOTE_STATUSES.has(status) && (
-        <Button variant="destructive" size="sm" onClick={handleCancel} disabled={isPending} className="gap-1.5">
+        <Button variant="destructive" size="sm" onClick={() => setConfirmCancelOpen(true)} disabled={isPending} className="gap-1.5">
           <Ban className="h-3.5 w-3.5" /> Cancel Quote
         </Button>
       )}
+      <ConfirmDialog
+        open={confirmCancelOpen}
+        onOpenChange={setConfirmCancelOpen}
+        title="Cancel this quote?"
+        description="The quote is marked canceled and the customer can no longer accept it. This cannot be undone."
+        cancelLabel="Keep quote"
+        confirmLabel="Cancel quote"
+        onConfirm={handleCancel}
+      />
 
       <Dialog open={pickerOpen} onOpenChange={setPickerOpen}>
         <DialogContent className="sm:max-w-md">

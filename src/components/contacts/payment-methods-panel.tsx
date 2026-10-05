@@ -4,6 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Eye, EyeOff, Loader2, ShieldAlert, Pencil, Trash2, CreditCard } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { CardBrandLogo } from "@/components/ui/card-brand-logo";
 import { EmptyState } from "@/components/crm/empty-state";
 import { PaymentMethodDialog } from "./payment-method-dialog";
@@ -104,14 +105,15 @@ function PaymentMethodRow({
     }
   }
 
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
+  // Runs from the confirmation dialog, which shows the pending state and stays open with the message if this fails.
   async function remove() {
-    if (!window.confirm(`Remove ${paymentMethod.cardBrand ?? "card"} ending ${paymentMethod.last4}? Its stored card number will be permanently destroyed and can't be used for future charges.`)) return;
     setIsRemoving(true);
     try {
       await removePaymentMethod(paymentMethod.id);
       toast.success("Payment method removed");
     } catch (err) {
-      toast.error(safeActionMessage(err, "Unable to remove this payment method."));
+      return { error: safeActionMessage(err, "Unable to remove this payment method.") };
     } finally {
       setIsRemoving(false);
     }
@@ -142,12 +144,21 @@ function PaymentMethodRow({
                 </Button>
               }
             />
-            <Button size="icon-sm" variant="ghost" onClick={remove} disabled={isRemoving} className="text-muted-foreground hover:text-destructive" aria-label="Remove payment method">
+            <Button size="icon-sm" variant="ghost" onClick={() => setConfirmingRemove(true)} disabled={isRemoving} className="text-muted-foreground hover:text-destructive" aria-label="Remove payment method">
               {isRemoving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
             </Button>
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmingRemove}
+        onOpenChange={setConfirmingRemove}
+        title="Remove this payment method?"
+        description={`Remove ${paymentMethod.cardBrand ?? "card"} ending ${paymentMethod.last4}? Its stored card number will be permanently destroyed and can't be used for future charges.`}
+        confirmLabel="Remove card"
+        onConfirm={remove}
+      />
 
       {canReveal && (
         <div>

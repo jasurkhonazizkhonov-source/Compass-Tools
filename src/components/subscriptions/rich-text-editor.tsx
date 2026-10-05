@@ -5,7 +5,9 @@ import StarterKit from "@tiptap/starter-kit";
 import Link from "@tiptap/extension-link";
 import Image from "@tiptap/extension-image";
 import { Bold, Italic, List, ListOrdered, LinkIcon, ImageIcon, Undo, Redo, Heading2 } from "lucide-react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { InputDialog } from "@/components/crm/input-dialog";
 import { cn } from "@/lib/utils";
 
 /**
@@ -17,6 +19,8 @@ import { cn } from "@/lib/utils";
  * feature — never reused as a general-purpose CRM text field.
  */
 export function RichTextEditor({ value, onChange }: { value: string; onChange: (html: string) => void }) {
+  // Link / image URLs are asked for in the CRM's own dialog (it used to be the browser's window.prompt).
+  const [urlPrompt, setUrlPrompt] = useState<"link" | "image" | null>(null);
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -36,13 +40,11 @@ export function RichTextEditor({ value, onChange }: { value: string; onChange: (
   if (!editor) return null;
 
   function addLink() {
-    const url = window.prompt("Link URL");
-    if (url) editor!.chain().focus().setLink({ href: url }).run();
+    setUrlPrompt("link");
   }
 
   function addImage() {
-    const url = window.prompt("Image URL");
-    if (url) editor!.chain().focus().setImage({ src: url }).run();
+    setUrlPrompt("image");
   }
 
   return (
@@ -78,8 +80,28 @@ export function RichTextEditor({ value, onChange }: { value: string; onChange: (
         </ToolbarButton>
       </div>
       <EditorContent editor={editor} />
+      <InputDialog
+        open={urlPrompt !== null}
+        onOpenChange={(o) => { if (!o) setUrlPrompt(null); }}
+        title={urlPrompt === "image" ? "Add image" : "Add link"}
+        label={urlPrompt === "image" ? "Image URL" : "Link URL"}
+        placeholder="https://"
+        submitLabel={urlPrompt === "image" ? "Add image" : "Add link"}
+        validate={(v) => validateEditorUrl(v, urlPrompt === "image")}
+        onSubmit={(url) => {
+          if (urlPrompt === "image") editor.chain().focus().setImage({ src: url }).run();
+          else editor.chain().focus().setLink({ href: url }).run();
+        }}
+      />
     </div>
   );
+}
+
+/** http(s) only (plus mailto: for links) — never javascript:, data: or a bare string. */
+export function validateEditorUrl(value: string, imageOnly: boolean): string | null {
+  if (value.length === 0) return "Enter a URL.";
+  const ok = imageOnly ? /^https?:\/\/\S+$/i.test(value) : /^(https?:\/\/\S+|mailto:\S+@\S+)$/i.test(value);
+  return ok ? null : imageOnly ? "Enter a full image address starting with https://" : "Enter a full address starting with https:// (or mailto:).";
 }
 
 function ToolbarButton({ children, onClick, active, label }: { children: React.ReactNode; onClick: () => void; active?: boolean; label: string }) {

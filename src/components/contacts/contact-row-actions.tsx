@@ -86,6 +86,7 @@ export function ContactRowActions({
           <DeleteButton
             label="Delete Contact"
             confirmTitle="Delete this contact?"
+            confirmLabel="Delete contact"
             confirmMessage="Deleting this contact will also delete all of their leads, quotes, bookings, payment methods and activity history. This action cannot be undone."
             deleteAction={deleteContact.bind(null, contactId)}
           />

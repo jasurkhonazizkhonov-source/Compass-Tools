@@ -27,6 +27,11 @@ export const VISITOR_CONTEXT_MAX_SKEW_SECONDS = 300;
 const MAX_CONTEXT_BYTES = 2048;
 const MIN_SECRET_LENGTH = 32;
 
+/** Whether a usable LEAD_INGEST_SECRET is configured on THIS server (a boolean only — the value never leaves this module). */
+export function isLeadIngestSecretConfigured(secret: string | undefined = process.env.LEAD_INGEST_SECRET): boolean {
+  return typeof secret === "string" && secret.length >= MIN_SECRET_LENGTH;
+}
+
 export type VisitorContextPayload = {
   v: 1;
   /** Unix seconds when the website signed it. */

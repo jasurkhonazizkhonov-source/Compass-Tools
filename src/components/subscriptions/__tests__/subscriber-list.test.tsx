@@ -264,7 +264,7 @@ describe("SubscriberList — bulk-delete confirmation accessibility (Pass 8 §4)
     await user.click(screen.getByLabelText("Select all subscribers on this page"));
     await user.click(screen.getByRole("button", { name: /remove selected/i }));
 
-    expect(screen.getByRole("dialog", { name: "Remove 2 selected subscribers?" })).toBeInTheDocument();
+    expect(screen.getByRole("alertdialog", { name: "Remove 2 selected subscribers?" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Remove Selected" })).toBeInTheDocument();
   });
 
@@ -278,11 +278,11 @@ describe("SubscriberList — bulk-delete confirmation accessibility (Pass 8 §4)
     render(<SubscriberList subscribers={rows} counts={COUNTS} statusParam="all" filteredTotal={1} />);
     await user.click(screen.getByLabelText("Select all subscribers on this page"));
     await user.click(screen.getByRole("button", { name: /remove selected/i }));
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("alertdialog")).toBeInTheDocument();
 
     await user.keyboard("{Escape}");
 
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(deleteSubscribers).not.toHaveBeenCalled();
   });
 

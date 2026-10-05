@@ -1,12 +1,13 @@
 import { notFound } from "next/navigation";
 import { format, formatDistanceToNow } from "date-fns";
 import { UserCog } from "lucide-react";
-import { getAllAccounts } from "@/server/queries/accounts";
+import { getAccountSignInDetails, getAllAccounts } from "@/server/queries/accounts";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canManageAccounts, ROLE_LABELS } from "@/lib/permissions";
 import { OnlineIndicator } from "@/components/accounts/online-indicator";
 import { AccountFullNameEditor, AccountRoleSelect, AccountStatusSwitch, AccountVisibilityToggle, AccountPhoneEditor, AccountEmailEditor, AccountHiredAtEditor, AccountLocationEditor, AccountCommissionPercentEditor, AccountTipPercentEditor, AccountPaymentPermissionsEditor, AccountBookingPermissionsEditor, RemoveUserButton } from "@/components/accounts/account-row-editor";
 import { NewAccountDialog } from "@/components/accounts/new-account-dialog";
+import { SignOutAllUsersButton } from "@/components/accounts/sign-out-all-users-button";
 import { ManagerTeamEditor, type TeamCandidate } from "@/components/accounts/manager-team-editor";
 import { EmptyState } from "@/components/crm/empty-state";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -28,6 +29,8 @@ export default async function UsersPage() {
   if (!canManageAccounts(current?.role)) notFound();
 
   const accounts = await getAllAccounts(current!.companyId);
+  // Latest successful sign-in (time, full IP, approximate location) — Administrator-only, read through its own query.
+  const signIns = await getAccountSignInDetails(current);
   const activeAdminCount = accounts.filter((a) => a.role === "ADMIN" && a.status === "ACTIVE").length;
 
   // Manager teams. The editor offers every Travel Agent (hidden and inactive
@@ -47,7 +50,10 @@ export default async function UsersPage() {
             {accounts.length} user{accounts.length === 1 ? "" : "s"} · Manage CRM accounts, roles, and access
           </p>
         </div>
-        <NewAccountDialog />
+        <div className="flex items-center gap-2">
+          <SignOutAllUsersButton />
+          <NewAccountDialog />
+        </div>
       </div>
 
       {accounts.length === 0 ? (
@@ -67,9 +73,12 @@ export default async function UsersPage() {
                 <TableHead>Payment Permissions</TableHead>
                 <TableHead>Booking Security</TableHead>
                 <TableHead>Hired</TableHead>
-                <TableHead>Location</TableHead>
+                <TableHead title="The work location an Administrator assigned to this user">Location</TableHead>
                 <TableHead>Commission %</TableHead>
                 <TableHead>Tip %</TableHead>
+                <TableHead title="When this user last completed a successful CRM sign-in">Last Sign In</TableHead>
+                <TableHead title="The IP address of the latest successful sign-in">Last Sign In IP</TableHead>
+                <TableHead title="Approximate location derived from the sign-in IP — not a street address, and not the assigned Location">Last Sign In Location</TableHead>
                 <TableHead>Presence</TableHead>
                 <TableHead>Last Activity</TableHead>
                 <TableHead>Created</TableHead>
@@ -136,6 +145,23 @@ export default async function UsersPage() {
                   <TableCell><AccountLocationEditor accountId={a.id} location={a.location} canEdit /></TableCell>
                   <TableCell><AccountCommissionPercentEditor accountId={a.id} commissionPercent={a.commissionPercent != null ? Number(a.commissionPercent) : null} canEdit /></TableCell>
                   <TableCell><AccountTipPercentEditor accountId={a.id} tipPercent={a.tipPercent != null ? Number(a.tipPercent) : null} canEdit /></TableCell>
+                  {(() => {
+                    const si = signIns.get(a.id);
+                    return (
+                      <>
+                        <TableCell className="text-xs text-muted-foreground whitespace-nowrap" data-testid="last-sign-in-at" title={si?.lastSignInAt ? si.lastSignInAt.toISOString() : undefined}>
+                          {/* Shown in UTC with the zone named: the server's own time zone is not the viewer's, and an unlabelled local time would mislead. */}
+                          {si?.lastSignInAt ? `${si.lastSignInAt.toISOString().slice(0, 10)} ${si.lastSignInAt.toISOString().slice(11, 16)} UTC` : "Never"}
+                        </TableCell>
+                        <TableCell className="text-xs font-mono whitespace-nowrap" data-testid="last-sign-in-ip" title={si?.ip ?? undefined}>
+                          {si?.ip ?? <span className="text-muted-foreground font-sans">{si?.lastSignInAt ? "Not recorded" : "—"}</span>}
+                        </TableCell>
+                        <TableCell className="text-xs max-w-[14rem] truncate" data-testid="last-sign-in-location" title={si?.location ?? undefined}>
+                          {si?.location ?? <span className="text-muted-foreground">{si?.lastSignInAt ? "Location unavailable" : "—"}</span>}
+                        </TableCell>
+                      </>
+                    );
+                  })()}
                   <TableCell><OnlineIndicator lastSeenAt={a.lastSeenAt} /></TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {a.lastSeenAt ? formatDistanceToNow(a.lastSeenAt, { addSuffix: true }) : "Never"}

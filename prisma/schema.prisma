@@ -139,6 +139,21 @@ model Account {
   activeSessionId  String?   @unique
   sessionCreatedAt DateTime?
 
+  // The most recent SUCCESSFUL sign-in (session establishment) — unlike sessionCreatedAt it survives sign-out and
+  // expiry. Written only by establishSession(); never by activity, a heartbeat or a page view, and never by a failed
+  // attempt. The IP is what the server's trusted request path saw (never client-supplied) and the location is the
+  // platform's approximate, IP-derived estimate — both Admin-only (Users page) and omitted from ordinary queries (see the
+  // global omit in src/lib/prisma.ts). Entirely separate from `location` above, which an Admin types by hand.
+  lastSignInAt          DateTime?
+  lastSignInIp          String?
+  lastSignInCity        String?
+  lastSignInRegion      String?
+  lastSignInCountry     String?
+  lastSignInCountryCode String?
+  lastSignInTimeZone    String?
+
+  revokedSessions RevokedSession[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2168,4 +2183,26 @@ model HealthEvent {
   @@index([resolvedAt, severity, lastSeenAt])
   @@index([fingerprint])
   @@index([lastSeenAt])
+}
+
+enum SessionRevocationReason {
+  /** A newer sign-in by the same account replaced this session (single active device). */
+  SUPERSEDED
+  /** An Admin used "Sign out all users". */
+  SIGNED_OUT_ALL
+}
+
+/// Why a session token stopped working, so the next request from that browser can say so ("your session ended because this
+/// account signed in on another device") instead of a bare sign-in page. Holds ONLY a SHA-256 of the token — the raw value
+/// is never copied — and is pruned after the sessions it describes could no longer be valid anyway (24 h).
+model RevokedSession {
+  id        String                  @id @default(cuid())
+  tokenHash String                  @unique
+  accountId String
+  account   Account                 @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  reason    SessionRevocationReason
+  createdAt DateTime                @default(now())
+
+  @@index([createdAt])
+  @@index([accountId])
 }

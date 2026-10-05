@@ -90,6 +90,7 @@ export function LeadRowActions({
           <DeleteButton
             label="Delete Lead"
             confirmTitle="Delete this lead?"
+            confirmLabel="Delete lead"
             confirmMessage="Deleting this lead will also delete any quotes and bookings created under it. The customer's contact record and their other leads are not affected. This action cannot be undone."
             deleteAction={deleteLead.bind(null, leadId)}
           />

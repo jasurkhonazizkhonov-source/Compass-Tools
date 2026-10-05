@@ -70,52 +70,16 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-describe("establishSession — session issuance", () => {
-  it("issues a fresh, unguessable session token and stores it on the account", async () => {
-    const { establishSession } = await import("../dev-session");
-    await establishSession("admin-1");
+/** Stands in for a completed sign-in: the account holds a token and this "browser" carries the matching cookie. */
+async function establishSession(accountId: string) {
+  const token = `tok-${accountId}-${Math.random().toString(36).slice(2)}`;
+  Object.assign(accounts.get(accountId)!, { activeSessionId: token, sessionCreatedAt: new Date() });
+  cookieJar.set("compass_dev_account", token);
+}
 
-    const account = accounts.get("admin-1")!;
-    expect(account.activeSessionId).toBeTruthy();
-    expect(account.activeSessionId!.length).toBeGreaterThan(20);
-    expect(account.sessionCreatedAt).toBeInstanceOf(Date);
-  });
-
-  it("sets the session cookie to the token, never to the raw account id", async () => {
-    const { establishSession } = await import("../dev-session");
-    await establishSession("admin-1");
-
-    const account = accounts.get("admin-1")!;
-    const cookieValue = cookieJar.get("compass_dev_account");
-    expect(cookieValue).toBe(account.activeSessionId);
-    expect(cookieValue).not.toBe("admin-1");
-  });
-
-  it("a second login for the SAME account overwrites (invalidates) the previous token — single active device", async () => {
-    const { establishSession } = await import("../dev-session");
-    await establishSession("admin-1");
-    const firstToken = accounts.get("admin-1")!.activeSessionId;
-
-    await establishSession("admin-1");
-    const secondToken = accounts.get("admin-1")!.activeSessionId;
-
-    expect(secondToken).not.toBe(firstToken);
-    // The first token no longer matches any account's activeSessionId, so a
-    // lookup by it (what getCurrentAccount does) would now find nothing —
-    // that's the actual single-device enforcement mechanism.
-    expect([...accounts.values()].some((a) => a.activeSessionId === firstToken)).toBe(false);
-  });
-
-  it("logging in as a DIFFERENT account does not affect the first account's session", async () => {
-    const { establishSession } = await import("../dev-session");
-    await establishSession("admin-1");
-    const adminToken = accounts.get("admin-1")!.activeSessionId;
-
-    await establishSession("agent-1");
-
-    expect(accounts.get("admin-1")!.activeSessionId).toBe(adminToken);
-  });
-});
+// establishSession (session issuance, single active device, sign-in IP/location, the absolute 24h lifetime) now lives in
+// src/server/auth/establish-session.ts and is proven against a real PostgreSQL in
+// __integration__/session-lifecycle.integration.test.ts — it is one atomic SQL statement, which a fake table cannot honestly model.
 
 describe("heartbeat — session-derived, never a client-supplied accountId", () => {
   // PresenceHeartbeat is a Client Component that imports heartbeat()
@@ -124,7 +88,7 @@ describe("heartbeat — session-derived, never a client-supplied accountId", () 
   // heartbeat() must never trust a parameter for this reason (it takes
   // none). Proves it only ever touches the CALLER's own session account.
   it("updates lastSeenAt for the CALLER's own account, derived from the session cookie", async () => {
-    const { establishSession, heartbeat } = await import("../dev-session");
+    const { heartbeat } = await import("../dev-session");
     await establishSession("admin-1");
     expect(accounts.get("admin-1")!.lastSeenAt).toBeNull();
 
@@ -135,7 +99,7 @@ describe("heartbeat — session-derived, never a client-supplied accountId", () 
   });
 
   it("skips the database write when the previous heartbeat was under 30s ago (multiple tabs/devices no longer each write)", async () => {
-    const { establishSession, heartbeat } = await import("../dev-session");
+    const { heartbeat } = await import("../dev-session");
     await establishSession("admin-1");
     const recent = new Date(Date.now() - 5_000);
     accounts.get("admin-1")!.lastSeenAt = recent;
@@ -160,7 +124,7 @@ describe("heartbeat — session-derived, never a client-supplied accountId", () 
 
 describe("signOut — real server-side invalidation", () => {
   it("clears the account's activeSessionId/sessionCreatedAt, not just the cookie", async () => {
-    const { establishSession, signOut } = await import("../dev-session");
+    const { signOut } = await import("../dev-session");
     await establishSession("admin-1");
     expect(accounts.get("admin-1")!.activeSessionId).toBeTruthy();
 
@@ -171,14 +135,14 @@ describe("signOut — real server-side invalidation", () => {
   });
 
   it("clears the cookie", async () => {
-    const { establishSession, signOut } = await import("../dev-session");
+    const { signOut } = await import("../dev-session");
     await establishSession("admin-1");
     await signOut();
     expect(cookieJar.has("compass_dev_account")).toBe(false);
   });
 
   it("redirects to the sign-in bootstrap page", async () => {
-    const { establishSession, signOut } = await import("../dev-session");
+    const { signOut } = await import("../dev-session");
     await establishSession("admin-1");
     await signOut();
     expect(redirectedTo).toBe("/login");

@@ -49,18 +49,20 @@ describe("LeadSegmentsEditor", () => {
 
   it("removing a segment asks first; cancelling keeps it, confirming drops it (nothing is saved until Save)", async () => {
     const user = userEvent.setup();
-    const confirm = vi.spyOn(window, "confirm");
     render(<LeadSegmentsEditor leadId="lead-1" initialSegments={THREE} />);
 
-    confirm.mockReturnValueOnce(false);
     await user.click(screen.getByRole("button", { name: "Remove segment 2" }));
+    const dialog = screen.getByRole("alertdialog", { name: "Remove segment 2?" });
+    expect(dialog).toHaveTextContent("The itinerary is only changed when you press Save itinerary.");
+    expect(screen.getAllByRole("listitem", { name: /Segment \d/, hidden: true })).toHaveLength(3); // still there while asking (the page is inert behind the modal)
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getAllByRole("listitem", { name: /Segment \d/ })).toHaveLength(3);
 
-    confirm.mockReturnValueOnce(true);
     await user.click(screen.getByRole("button", { name: "Remove segment 2" }));
+    // The dialog's own button is the only one named exactly "Remove segment" (the row buttons carry the segment number).
+    await user.click(screen.getByRole("button", { name: "Remove segment" }));
     expect(screen.getAllByRole("listitem", { name: /Segment \d/ })).toHaveLength(2);
-    expect(setLeadSegments).not.toHaveBeenCalled();
-    confirm.mockRestore();
+    expect(setLeadSegments).not.toHaveBeenCalled(); // removing never saves the itinerary
   });
 
   it("the last remaining segment cannot be removed", async () => {

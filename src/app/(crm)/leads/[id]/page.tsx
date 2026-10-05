@@ -126,6 +126,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               <DeleteButton
                 variant="full"
                 confirmTitle="Delete this lead?"
+                confirmLabel="Delete lead"
                 confirmMessage="Deleting this lead will also delete any quotes and bookings created under it. The customer's contact record and their other leads are not affected. This action cannot be undone."
                 deleteAction={deleteLead.bind(null, lead.id)}
                 redirectTo="/leads"

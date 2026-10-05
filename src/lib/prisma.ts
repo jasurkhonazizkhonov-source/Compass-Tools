@@ -5,7 +5,7 @@ import { wrapPoolWithConnectRetry, type ConnectablePool } from "@/lib/db-connect
 import { resolveDatabaseSsl } from "@/lib/db-tls";
 
 // The client type INCLUDING the global omit config (see createPrismaClient), so
-// query result types correctly exclude PaymentMethod.encryptedPan.
+// query result types correctly exclude PaymentMethod.encryptedPan and the Account session / sign-in fields.
 type AppPrismaClient = ReturnType<typeof createPrismaClient>;
 
 declare global {
@@ -155,7 +155,26 @@ function createPrismaClient() {
     // encryptedPan: true }` — only revealPaymentMethod and the key-rotation
     // module do). A forgotten `select`, a generic `findMany`, or an object
     // passed to a client component can therefore never carry ciphertext.
-    omit: { paymentMethod: { encryptedPan: true } },
+    //
+    // The same idea for the Account row: the live session token and the last
+    // sign-in IP / approximate location are left out of every read unless a
+    // query opts in. Only the Admin-only sign-in query (queries/accounts.ts,
+    // getAccountSignInDetails) does, so a generic findMany/findUnique, the
+    // /accounts directory, or an Account handed to a client component can
+    // never carry them. (`where: { activeSessionId }` lookups are unaffected -
+    // omit only shapes what is returned.)
+    omit: {
+      paymentMethod: { encryptedPan: true },
+      account: {
+        activeSessionId: true,
+        lastSignInIp: true,
+        lastSignInCity: true,
+        lastSignInRegion: true,
+        lastSignInCountry: true,
+        lastSignInCountryCode: true,
+        lastSignInTimeZone: true,
+      },
+    },
   });
 }
 

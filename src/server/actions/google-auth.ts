@@ -3,7 +3,7 @@
 import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
 import { authorizeGoogleUser } from "@/server/auth/google-authorization";
 import { bootstrapInitialAdminIfEligible } from "@/server/auth/initial-admin-bootstrap";
-import { establishSession } from "@/server/actions/dev-session";
+import { establishSession } from "@/server/auth/establish-session";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 
 // Pass 37 — real bug found and fixed: this action used to call next/

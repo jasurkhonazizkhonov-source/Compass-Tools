@@ -24,8 +24,12 @@
 import { prisma } from "@/lib/prisma";
 import type { Account } from "@/generated/prisma/client";
 
+// What an ordinary read returns: the live session token and the last sign-in IP / location are omitted by the global omit
+// in lib/prisma.ts, so the type says so too (nothing downstream can rely on them being here).
+type AuthorizedAccount = Omit<Account, "activeSessionId" | "lastSignInIp" | "lastSignInCity" | "lastSignInRegion" | "lastSignInCountry" | "lastSignInCountryCode" | "lastSignInTimeZone">;
+
 export type GoogleAuthorizationResult =
-  | { ok: true; account: Account }
+  | { ok: true; account: AuthorizedAccount }
   | { ok: false; reason: "UNKNOWN_EMAIL" | "ACCOUNT_DISABLED" };
 
 /** Trim + lowercase — the minimum consistent normalization so

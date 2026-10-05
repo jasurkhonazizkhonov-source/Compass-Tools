@@ -6,6 +6,7 @@ import { GoogleSignInButton } from "@/components/layout/google-sign-in-button";
 import { CompassMark } from "@/components/brand/compass-mark";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { redirect } from "next/navigation";
+import { SESSION_END_MESSAGES, isSessionEndReason } from "@/lib/session-token";
 import { Users2, FileText, PlaneTakeoff, ShieldCheck } from "lucide-react";
 
 export const dynamic = "force-dynamic";
@@ -58,6 +59,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
   }
   const sp = await searchParams;
   const expired = sp.reason === "expired";
+  const endedReason = isSessionEndReason(sp.reason) ? sp.reason : null;
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
@@ -123,7 +125,11 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
           <div className="rounded-2xl border bg-background p-6 shadow-sm sm:p-8">
             <div className="space-y-2 text-center">
               <h1 className="text-xl font-semibold tracking-tight text-foreground">Sign in</h1>
-              {expired ? (
+              {endedReason ? (
+                <p role="status" className="text-sm text-muted-foreground" data-testid="session-ended-message">
+                  {SESSION_END_MESSAGES[endedReason]}
+                </p>
+              ) : expired ? (
                 <p className="text-sm text-muted-foreground">
                   Your session has expired for security reasons. Please sign in again.
                 </p>

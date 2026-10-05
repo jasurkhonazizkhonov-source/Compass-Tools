@@ -1,45 +1,12 @@
 "use server";
 
-import { randomBytes } from "crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
-import { DEV_ACCOUNT_COOKIE, SESSION_MAX_AGE_MS, getCurrentAccount } from "@/lib/dev-session";
+import { DEV_ACCOUNT_COOKIE, getCurrentAccount } from "@/lib/dev-session";
 
-const isProd = process.env.NODE_ENV === "production";
-
-/**
- * Issues a real CRM session for an already-authorized account — called
- * only after Google authentication succeeds AND the CRM's own
- * authorization check (src/server/auth/google-authorization.ts) has
- * confirmed this account exists and is ACTIVE. Never call this with an
- * accountId that hasn't just cleared both of those checks.
- *
- * Issues a fresh, unguessable session token and overwrites the account's
- * activeSessionId with it — this is what makes single-active-device
- * enforcement real: any cookie a different device is holding for this same
- * account now points at a superseded token and stops matching on its very
- * next request (see getCurrentAccount()/proxy.ts).
- */
-export async function establishSession(accountId: string) {
-  const token = randomBytes(32).toString("base64url");
-
-  await prisma.account.update({
-    where: { id: accountId },
-    data: { activeSessionId: token, sessionCreatedAt: new Date() },
-  });
-
-  const cookieStore = await cookies();
-  cookieStore.set(DEV_ACCOUNT_COOKIE, token, {
-    httpOnly: true,
-    secure: isProd,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_MS / 1000, // seconds; mirrors the server-side 24h absolute expiry as defense-in-depth, not the authoritative check
-  });
-  revalidatePath("/", "layout");
-}
+// Session ISSUANCE lives in src/server/auth/establish-session.ts — deliberately NOT here: everything exported from a
+// "use server" file is a network-callable Server Action, and issuing a session for an account id must never be one.
 
 /**
  * Real server-side sign-out: invalidates the session at its source

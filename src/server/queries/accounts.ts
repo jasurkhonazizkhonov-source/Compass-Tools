@@ -1,4 +1,7 @@
 import { prisma } from "@/lib/prisma";
+import type { AccountRole } from "@/generated/prisma/client";
+import { canManageAccounts } from "@/lib/permissions";
+import { formatSignInLocation } from "@/server/auth/sign-in-context";
 
 /**
  * Every field on every Account IN ONE COMPANY — the full, unfiltered
@@ -15,6 +18,38 @@ import { prisma } from "@/lib/prisma";
  */
 export async function getAllAccounts(companyId: string) {
   return prisma.account.findMany({ where: { companyId }, orderBy: { fullName: "asc" } });
+}
+
+export type AccountSignInDetails = {
+  lastSignInAt: Date | null;
+  /** The FULL address the latest successful sign-in came from. Administrator-only; never returned for any other role. */
+  ip: string | null;
+  /** "City, Region, Country" from the trusted proxy's geo headers (approximate); null when none was available. */
+  location: string | null;
+};
+
+/**
+ * Latest successful CRM sign-in per account (time, full IP, approximate location) for the Users page.
+ *
+ * Administrator-only AT THE QUERY: the viewer's role is checked here, so a caller that forgets to gate its page still gets
+ * an empty map, never data. These columns are omitted from every other Prisma read (see the global omit in lib/prisma.ts)
+ * and are opted into only below. Distinct from Account.location, which is the Admin-ASSIGNED work location.
+ */
+export async function getAccountSignInDetails(viewer: { role: AccountRole; companyId: string } | null | undefined): Promise<Map<string, AccountSignInDetails>> {
+  const out = new Map<string, AccountSignInDetails>();
+  if (!viewer || !canManageAccounts(viewer.role)) return out;
+  const rows = await prisma.account.findMany({
+    where: { companyId: viewer.companyId },
+    select: { id: true, lastSignInAt: true, lastSignInIp: true, lastSignInCity: true, lastSignInRegion: true, lastSignInCountry: true, lastSignInCountryCode: true },
+  });
+  for (const r of rows) {
+    out.set(r.id, {
+      lastSignInAt: r.lastSignInAt,
+      ip: r.lastSignInIp,
+      location: formatSignInLocation({ city: r.lastSignInCity, region: r.lastSignInRegion, country: r.lastSignInCountry, countryCode: r.lastSignInCountryCode }),
+    });
+  }
+  return out;
 }
 
 /**

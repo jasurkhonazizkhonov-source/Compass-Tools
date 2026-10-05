@@ -145,19 +145,19 @@ describe("Leads list — Delete (Admin and Manager only)", () => {
 
   it("asks for confirmation first — cancelling deletes nothing; confirming calls the existing deleteLead() with this lead's id", async () => {
     const user = userEvent.setup();
-    const confirm = vi.spyOn(window, "confirm");
     renderActions({ viewerRole: "ADMIN" });
 
-    confirm.mockReturnValueOnce(false);
     await user.click(screen.getByRole("button", { name: "Delete Lead" }));
-    expect(confirm).toHaveBeenCalledTimes(1);
-    expect(String(confirm.mock.calls[0][0])).toMatch(/Delete this lead\?/);
+    const dialog = screen.getByRole("alertdialog", { name: "Delete this lead?" });
+    expect(dialog).toHaveTextContent("also delete any quotes and bookings created under it");
+    expect(deleteLead).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(deleteLead).not.toHaveBeenCalled();
 
-    confirm.mockReturnValueOnce(true);
     await user.click(screen.getByRole("button", { name: "Delete Lead" }));
+    await user.click(screen.getByRole("button", { name: "Delete lead" }));
     expect(deleteLead).toHaveBeenCalledTimes(1);
-    confirm.mockRestore();
   });
 
   it("the phone-card variant captions it", () => {

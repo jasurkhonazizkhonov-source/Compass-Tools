@@ -30,6 +30,24 @@ describe("isSessionExpired", () => {
     expect(isSessionExpired(new Date(Date.now() - SESSION_MAX_AGE_MS - 1000))).toBe(true);
   });
 
+  it("the 24h lifetime is ABSOLUTE and exact: valid one millisecond before it, expired at it and after (no grace, no sliding)", () => {
+    const created = new Date("2026-10-05T10:00:00.000Z");
+    const t = created.getTime();
+    expect(isSessionExpired(created, t)).toBe(false);
+    expect(isSessionExpired(created, t + SESSION_MAX_AGE_MS - 1)).toBe(false);
+    expect(isSessionExpired(created, t + SESSION_MAX_AGE_MS)).toBe(true);
+    expect(isSessionExpired(created, t + SESSION_MAX_AGE_MS + 1)).toBe(true);
+    expect(SESSION_MAX_AGE_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it("a newer sessionCreatedAt (a new sign-in) starts a new full window", () => {
+    const first = new Date("2026-10-05T10:00:00.000Z");
+    const second = new Date("2026-10-06T09:59:00.000Z"); // signed in again just before the first window closed
+    const now = first.getTime() + SESSION_MAX_AGE_MS + 60_000;
+    expect(isSessionExpired(first, now)).toBe(true);
+    expect(isSessionExpired(second, now)).toBe(false);
+  });
+
   it("treats a session created many days ago as expired", () => {
     expect(isSessionExpired(new Date(Date.now() - 5 * 24 * 60 * 60 * 1000))).toBe(true);
   });

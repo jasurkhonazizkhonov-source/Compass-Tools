@@ -4,6 +4,7 @@ import { useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Phone, Mail, Plus, Star, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -32,6 +33,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
   const [newNumber, setNewNumber] = useState("");
   const [newType, setNewType] = useState("MOBILE");
   const [isPending, startTransition] = useTransition();
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   function submitAdd() {
     if (!newNumber.trim()) return;
@@ -88,7 +90,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
                   variant="ghost"
                   size="icon-sm"
                   aria-label="Delete phone number"
-                  onClick={() => startTransition(() => deleteContactPhone(contactId, p.id, leadId))}
+                  onClick={() => setConfirmDeleteId(p.id)}
                 >
                   <Trash2 className="h-3.5 w-3.5 text-destructive" />
                 </Button>
@@ -114,6 +116,14 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
           </Button>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDeleteId(null); }}
+        title="Delete this phone number?"
+        description="It is removed from this contact. This cannot be undone."
+        confirmLabel="Delete phone number"
+        onConfirm={async () => { if (confirmDeleteId) await deleteContactPhone(contactId, confirmDeleteId, leadId); }}
+      />
     </div>
   );
 }
@@ -123,6 +133,7 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
   const [newEmail, setNewEmail] = useState("");
   const [newType, setNewType] = useState("PERSONAL");
   const [isPending, startTransition] = useTransition();
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   function submitAdd() {
     if (!newEmail.trim()) return;
@@ -177,7 +188,7 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
                   variant="ghost"
                   size="icon-sm"
                   aria-label="Delete email address"
-                  onClick={() => startTransition(() => deleteContactEmail(contactId, e.id, leadId))}
+                  onClick={() => setConfirmDeleteId(e.id)}
                 >
                   <Trash2 className="h-3.5 w-3.5 text-destructive" />
                 </Button>
@@ -208,6 +219,14 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
           </Button>
         </div>
       )}
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDeleteId(null); }}
+        title="Delete this email address?"
+        description="It is removed from this contact. This cannot be undone."
+        confirmLabel="Delete email address"
+        onConfirm={async () => { if (confirmDeleteId) await deleteContactEmail(contactId, confirmDeleteId, leadId); }}
+      />
     </div>
   );
 }

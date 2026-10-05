@@ -63,3 +63,41 @@ Exists: `GET /api/health` (database reachability and latency, connection-pool st
 | Who can reach the database | **UNVERIFIED — INFRASTRUCTURE** | provider: IP allow-list / private networking; credential holders; rotation of `DATABASE_URL` |
 
 TLS to the database says nothing about backups or disk encryption; none of the unverified rows is claimed.
+
+## 7. Sessions — single active device, 24-hour lifetime, "Sign out all users"
+
+Model (SOURCE: `lib/dev-session.ts`, `server/auth/establish-session.ts`, `proxy.ts`): the browser holds one opaque random token (httpOnly, SameSite=Lax cookie `compass_dev_account`); the server matches it against `Account.activeSessionId` (unique) on **every** request — in `proxy.ts` for pages and in `getCurrentAccount()` for server actions and API routes. A token that matches no account, or whose account is not ACTIVE, or whose session is older than 24 hours, is refused.
+
+| Rule | How it is enforced | Proof |
+|---|---|---|
+| **One active device per account** | A new sign-in overwrites `activeSessionId` in a **single SQL statement** that first locks the account row (`FOR UPDATE`), so near-simultaneous sign-ins queue and exactly the last one to commit holds the only valid token. The replaced token is recorded by **SHA-256 only** in `RevokedSession`. | REAL PG: `session-lifecycle.integration.test.ts` — PC→phone→PC, and a race of 8 concurrent sign-ins × 5 rounds (exactly one valid token every round; removing the lock makes 4 of 5 rounds fail, i.e. the test is sensitive to it). |
+| **Message for the old device** | `proxy.ts` looks the dead token's hash up in `RevokedSession` and redirects to `/login?reason=superseded`, which shows "Your session ended because this account signed in on another device." — a fixed sentence: never the new device's IP, place or browser. An unknown/garbled token gets the plain sign-in page. | TEST: `login-page.test.tsx`, `session-token.test.ts`; REAL PG: proxy redirects. |
+| **24-hour ABSOLUTE lifetime** | `sessionCreatedAt` is set only when a session is established; nothing (heartbeat, page loads, API calls) ever moves it. `isSessionExpired` is true **at** 24h, not after. No sliding renewal. A new sign-in starts a new 24 hours. | TEST: `dev-session.test.ts` (1 ms before / exactly at / after); REAL PG: pages, proxy and heartbeat. |
+| **Server/API routes** | They authenticate through `getCurrentAccount()`, which returns `null` for an expired or superseded session — the same check as the page gate. | REAL PG. |
+| **Sign out all users** | Admin-only (`signOutAllUsers`, company-scoped), requires a sign-in within 15 minutes (returned message, refusal audited as `SESSIONS_SIGN_OUT_ALL_DENIED`). One statement locks the company's active accounts, records each token's hash as `SIGNED_OUT_ALL`, and clears the sessions; the Admin is redirected to `/login?reason=signed-out-all` ("You were signed out by an administrator."). Audited as `SESSIONS_SIGNED_OUT_ALL` with a count only. **One-shot**: there is no persistent "everyone is signed out" flag, so a sign-in made afterwards is valid immediately. Distinct from 24-hour expiry and single-device replacement. | REAL PG: ends every session, other company untouched, hash-only records, audit without tokens, non-Admin and stale-Admin refused, everyone can sign in again. |
+
+`RevokedSession` keeps a row only as long as the session it describes could still be valid (rows older than 25 hours are removed on the next sign-in). Raw tokens remain stored in `Account.activeSessionId` (they must be, to be matched); that column is **omitted from every Prisma read** unless a query opts in (global `omit` in `lib/prisma.ts`), so a generic query, the `/accounts` directory or an object passed to a client component cannot carry it. Storing only a hash of the token would be a stronger design but forces every signed-in user to sign in once and reworks every seed; **REQUIRES BUSINESS DECISION**, not done.
+
+## 8. Last sign-in IP and approximate location (Admin → Users)
+
+- **What is recorded** (only on a *successful* sign-in — `establishSession` is reached only after Google verified the identity **and** the CRM authorized the account): the time, the client IP and the approximate city / region / country / time zone. A failed or denied attempt never calls it and so never overwrites the last good record; activity never does either. The newest sign-in replaces the older record completely.
+- **Where the values come from:** the existing trusted-proxy rule (`getClientIp` / `getRequestLocation`): forwarded-for and Vercel geo headers are believed only when the platform is trusted (auto-detected on Vercel, otherwise explicit `TRUSTED_PROXY`). On an untrusted path nothing is stored (never the proxy's own address). Location is **approximate and may be wrong or absent** (VPNs, mobile networks, corporate gateways); when it is unavailable the Users page says "Location unavailable" — nothing is guessed. The Admin-**assigned** `Location` column is a different field and is never changed by a sign-in.
+- **Who can see it:** Administrators only, enforced **in the query** (`getAccountSignInDetails` returns nothing for any other role, a missing viewer, or an Admin of another company) and by the global Prisma `omit`. It is not in any list/search payload, public API, email or log line. REAL PG: `session-lifecycle.integration.test.ts` (Admin-only, cross-company, omit).
+- **Retention:** one record per account (the latest). Whether Administrators should see full addresses at all is a business/legal decision, as for lead IPs.
+
+## 9. Confirmations — no native browser dialogs
+
+Every `window.confirm` / `alert` / `prompt` was replaced by the CRM's own modal (`components/crm/confirm-dialog.tsx`, `input-dialog.tsx`): `role="alertdialog"` with title and description, focus trapped and starting on Cancel, Escape and Cancel close it, focus returns to the control that opened it, a specific destructive label (never "OK"), a pending state that blocks dismissal and double-clicks, and the server's refusal shown inside the dialog. **Server-side authorization is unchanged**: the dialog is a UX step, never a security control. A static regression test (`no-native-dialogs.test.ts`) fails the build if a native dialog call re-enters `src`. Consequential actions that used to fire on one click now ask first: delete lead/contact/quote/booking, remove a payment card, remove a flight segment (does **not** save the itinerary), cancel a quote, approve/disregard/send/resend a cancellation, delete a note / phone / email / sequence step, remove the company logo, notify the team of a sale/cancellation, send the cancellation confirmation, change a role, grant a payment/booking permission, and sign out all users. Routine, reversible actions (saving a field, sending a quote the agent just composed) do not.
+
+## 10. Items that are NOT closed by this code (status, no assumptions)
+
+| Item | Status |
+|---|---|
+| Website lead capture adopting the signed visitor-context contract | **REQUIRES EXTERNAL WEBSITE DEPLOYMENT** — the CRM side is live and tested; the website must send the signed headers. |
+| `LEAD_INGEST_SECRET` provisioning | **REQUIRES INFRASTRUCTURE ACTION** — `/api/health` reports `readiness.leadIngestSecret` (`configured` / `not_configured`, a category only). Until it is `configured` on the CRM *and* the website holds the same value, website leads are stored without a visitor IP (fail-safe). The value is never generated, logged or committed. |
+| Database backups, backup encryption, encryption at rest, retention, point-in-time recovery, disaster recovery, network allow-list | **UNVERIFIED — INFRASTRUCTURE** (see §6); nothing is claimed. |
+| Real MFA | **REQUIRES FUTURE SECURITY PROJECT** (§2). |
+| External monitoring / alerting | **REQUIRES INFRASTRUCTURE ACTION** (§5). |
+| Hash-only storage of the session token; WORM audit storage | **REQUIRES BUSINESS DECISION** (§7, §3). |
+| Re-pointing historical flight segments at corrected airlines | **REQUIRES BUSINESS DECISION**; the operator tool exists and changes nothing by default (`AIRLINE_REFERENCE_DATA.md`). |
+| `BFT-` booking-reference prefix | Verified **internal-only** (never printed on any customer-facing email; `booking-reference.test.ts`); unchanged. |

@@ -30,7 +30,7 @@ describe("GET /api/health", () => {
     expect(body.pool).toEqual({ max: 5, total: 2, idle: 1, waiting: 0 });
   });
 
-  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "CARD_ENCRYPTION_KEYS", "CARD_ENCRYPTION_KEY_ID", "CARD_VAULT_MODE", "VERCEL", "VERCEL_ENV", "NODE_ENV"];
+  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "CARD_ENCRYPTION_KEYS", "CARD_ENCRYPTION_KEY_ID", "CARD_VAULT_MODE", "VERCEL", "VERCEL_ENV", "NODE_ENV", "LEAD_INGEST_SECRET"];
   async function withEnv(vars: Record<string, string | undefined>, fn: (get: () => Promise<{ readiness: Record<string, unknown> }>) => Promise<void>) {
     const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
     for (const k of KEYS) delete process.env[k];
@@ -63,6 +63,7 @@ describe("GET /api/health", () => {
         cardVaultEnabled: true,
         environment: "test",
         databaseTls: "unverified",
+        leadIngestSecret: "not_configured",
         signerIpCapture: "enabled",
         schema: "current",
         pendingMigrations: 0,
@@ -78,6 +79,7 @@ describe("GET /api/health", () => {
         cardVaultEnabled: false,
         environment: "production",
         databaseTls: "unverified",
+        leadIngestSecret: "not_configured",
         signerIpCapture: "disabled",
         schema: "current",
         pendingMigrations: 0,
@@ -134,6 +136,19 @@ describe("GET /api/health", () => {
       const body = await get();
       expect(body.readiness).toMatchObject({ bookingCardStorage: "unavailable", cardVaultKey: "invalid" });
       expect(JSON.stringify(body)).not.toContain("short-and-wrong-value");
+    });
+  });
+
+  it("reports whether the website lead-ingest secret is configured — a category only, never the value; a too-short value counts as not configured", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const secret = "s".repeat(40);
+    await withEnv({ LEAD_INGEST_SECRET: secret }, async (get) => {
+      const body = await get();
+      expect(body.readiness.leadIngestSecret).toBe("configured");
+      expect(JSON.stringify(body)).not.toContain(secret);
+    });
+    await withEnv({ LEAD_INGEST_SECRET: "too-short" }, async (get) => {
+      expect((await get()).readiness.leadIngestSecret).toBe("not_configured");
     });
   });
 

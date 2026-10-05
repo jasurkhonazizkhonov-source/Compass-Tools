@@ -31,7 +31,7 @@ vi.mock("@/server/auth/initial-admin-bootstrap", () => ({
 }));
 
 const establishSession = vi.fn();
-vi.mock("@/server/actions/dev-session", () => ({
+vi.mock("@/server/auth/establish-session", () => ({
   establishSession: (...args: [string]) => establishSession(...args),
 }));
 

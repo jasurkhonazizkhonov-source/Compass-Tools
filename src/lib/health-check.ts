@@ -4,6 +4,7 @@ import { trustedProxyMode } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
 import { getCardVaultStatus } from "@/server/security/card-vault-status";
 import { getDatabaseTlsMode } from "@/lib/db-tls";
+import { isLeadIngestSecretConfigured } from "@/server/lead-ingest-context";
 
 // Database liveness/latency probe behind /api/health. Exposes numbers and a
 // safe error category only — never a hostname, credential, connection
@@ -39,6 +40,8 @@ export type HealthBody = {
     environment: "production" | "preview" | "development" | "test";
     /** Whether the database connection verifies the server's certificate and host name (DATABASE_SSL_CA / DATABASE_SSL_VERIFY=system) or is only encrypted. */
     databaseTls: "verified" | "unverified";
+    /** "not_configured" = signed website visitor context (IP / location of a website lead) cannot be verified, so website leads carry no visitor IP. A boolean category only — never the secret. */
+    leadIngestSecret: "configured" | "not_configured";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
     /** "pending" = this build expects a database migration the database has not applied (count only; names are Admin-only). */
@@ -61,6 +64,7 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
     cardVaultEnabled: !vault.productionClass || vault.modeAccepted,
     environment: vault.environment,
     databaseTls: getDatabaseTlsMode() === "unverified" ? "unverified" : "verified",
+    leadIngestSecret: isLeadIngestSecretConfigured() ? "configured" : "not_configured",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     schema: schema?.state ?? "unknown",
     pendingMigrations: schema && schema.state !== "unknown" ? schema.pending.length : 0,

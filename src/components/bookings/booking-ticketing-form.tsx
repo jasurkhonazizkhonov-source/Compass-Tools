@@ -4,6 +4,7 @@ import { useMemo, useState, useTransition } from "react";
 import { toast } from "sonner";
 import { Loader2, Save, Send, Megaphone, ShieldAlert, Pencil, X, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
@@ -585,8 +586,26 @@ function BookingTicketingActionButtons({
   cancelNotifyPending: boolean;
   notifyCancellation: () => void;
 }) {
+  // These three send an email that cannot be recalled (the customer, or the whole team), so each asks first. The dialog hands the
+  // work to the existing handler, whose own pending state and success / failure toasts are unchanged.
+  const [confirmKind, setConfirmKind] = useState<"new-sale" | "cancel-confirm" | "cancel-notify" | null>(null);
+  const CONFIRM_COPY = {
+    "new-sale": { title: "Notify the team of this new sale?", description: "An email announcing this sale is sent to the team. It cannot be recalled once sent.", confirmLabel: "Send notification", run: notifyNewSale },
+    "cancel-confirm": { title: "Send the cancellation confirmation to the customer?", description: "The customer is emailed that the flight is cancelled and the quote moves to Cancellation Confirmed. It cannot be recalled once sent.", confirmLabel: "Send confirmation", run: sendCancellationConfirmation },
+    "cancel-notify": { title: "Notify the team of this cancellation?", description: "An email announcing this cancellation is sent to the team. It cannot be recalled once sent.", confirmLabel: "Send notification", run: notifyCancellation },
+  } as const;
+  const confirmCopy = confirmKind ? CONFIRM_COPY[confirmKind] : null;
   return (
     <>
+      <ConfirmDialog
+        open={confirmKind !== null}
+        onOpenChange={(o) => { if (!o) setConfirmKind(null); }}
+        title={confirmCopy?.title ?? ""}
+        description={confirmCopy?.description ?? ""}
+        confirmLabel={confirmCopy?.confirmLabel ?? ""}
+        variant="default"
+        onConfirm={() => { confirmCopy?.run(); }}
+      />
       {sendDisabledReason ? (
         <Tooltip>
           <TooltipTrigger asChild>
@@ -615,7 +634,7 @@ function BookingTicketingActionButtons({
           <TooltipContent>{notifyDisabledReason}</TooltipContent>
         </Tooltip>
       ) : (
-        <Button variant="outline" onClick={notifyNewSale} disabled={notifyPending || !canSendNewSale} className="gap-2">
+        <Button variant="outline" onClick={() => setConfirmKind("new-sale")} disabled={notifyPending || !canSendNewSale} className="gap-2">
           {notifyPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Megaphone className="h-4 w-4" />}
           Notify Team of New Sale
         </Button>
@@ -624,7 +643,7 @@ function BookingTicketingActionButtons({
       {canSendCancellationConfirmation && (
         <Button
           variant="outline"
-          onClick={sendCancellationConfirmation}
+          onClick={() => setConfirmKind("cancel-confirm")}
           disabled={cancelConfirmPending}
           className="gap-2 border-destructive/40 text-destructive hover:text-destructive"
         >
@@ -636,7 +655,7 @@ function BookingTicketingActionButtons({
       {canNotifyCancellation && (
         <Button
           variant="outline"
-          onClick={notifyCancellation}
+          onClick={() => setConfirmKind("cancel-notify")}
           disabled={cancelNotifyPending}
           className="gap-2 border-destructive/40 text-destructive hover:text-destructive"
         >

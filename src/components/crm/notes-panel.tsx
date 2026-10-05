@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { StickyNote, Send, Pencil, Trash2, Loader2, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/crm/empty-state";
 import { addNote, updateNote, deleteNote } from "@/server/actions/leads";
@@ -29,6 +30,7 @@ export function NotesPanel({
   const [isPending, startTransition] = useTransition();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editBody, setEditBody] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   function submit() {
     if (!draft.trim()) return;
@@ -105,7 +107,7 @@ export function NotesPanel({
                         variant="ghost"
                         size="icon-sm"
                         aria-label="Delete note"
-                        onClick={() => startTransition(() => deleteNote(n.id, { contactId, leadId }))}
+                        onClick={() => setConfirmDeleteId(n.id)}
                       >
                         <Trash2 className="h-3.5 w-3.5 text-destructive" />
                       </Button>
@@ -117,6 +119,14 @@ export function NotesPanel({
           ))}
         </ul>
       )}
+      <ConfirmDialog
+        open={confirmDeleteId !== null}
+        onOpenChange={(o) => { if (!o) setConfirmDeleteId(null); }}
+        title="Delete this note?"
+        description="The note is permanently removed. This cannot be undone."
+        confirmLabel="Delete note"
+        onConfirm={async () => { if (confirmDeleteId) await deleteNote(confirmDeleteId, { contactId, leadId }); }}
+      />
     </div>
   );
 }

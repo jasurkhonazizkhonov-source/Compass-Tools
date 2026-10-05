@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { DEV_ACCOUNT_COOKIE, isPlausibleSessionToken, isSessionExpired } from "@/lib/dev-session";
+import { hashSessionToken, revocationToReason } from "@/lib/session-token";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 import {
   canViewDashboard,
@@ -126,6 +127,22 @@ export async function proxy(request: NextRequest) {
       const response = NextResponse.redirect(new URL("/login?reason=expired", request.url));
       response.cookies.delete(DEV_ACCOUNT_COOKIE);
       return response;
+    }
+    // No account holds this token any more. If it is one we deliberately ENDED — superseded by a newer sign-in on another
+    // device, or an Admin's "sign out all" — say so on the sign-in page (a fixed, non-sensitive sentence: never the new
+    // device, IP, place or browser). Only a SHA-256 of the token is ever looked up; any failure here just means the plain
+    // /login redirect below, never a way in.
+    if (!account) {
+      try {
+        const revoked = await prisma.revokedSession.findUnique({ where: { tokenHash: hashSessionToken(token) }, select: { reason: true } });
+        if (revoked) {
+          const response = NextResponse.redirect(new URL(`/login?reason=${revocationToReason(revoked.reason)}`, request.url));
+          response.cookies.delete(DEV_ACCOUNT_COOKIE);
+          return response;
+        }
+      } catch (err) {
+        console.error(`[proxy] REVOCATION_LOOKUP_FAILED (${safeErrorTag(err)})`);
+      }
     }
     if (account?.status === "ACTIVE" && !isSessionExpired(account.sessionCreatedAt)) {
       // /users is admin-only user management, distinct from the general
