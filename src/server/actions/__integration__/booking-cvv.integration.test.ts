@@ -31,7 +31,11 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => currentActor) }));
 vi.mock("@/lib/env", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/lib/env")>()), isProductionEnvironment: () => true }));
 const deferred: Promise<unknown>[] = [];
-vi.mock("next/server", async (orig) => ({ ...(await orig<typeof import("next/server")>()), after: (task: () => Promise<void>) => void deferred.push(task()) }));
+// While a test drives a FAKE clock, deferred tasks are not run: the Prisma pool's idle-connection hold (lib/prisma.ts) waits on Date.now(),
+// and a task started under a clock set to "Monday" would spin until the real clock catches up. (In production `after` is real and the
+// clock never jumps.)
+let fakeClock = false;
+vi.mock("next/server", async (orig) => ({ ...(await orig<typeof import("next/server")>()), after: (task: () => Promise<void>) => void (fakeClock || deferred.push(task())) }));
 const flushDeferred = async () => {
   while (deferred.length) await Promise.allSettled(deferred.splice(0));
 };
@@ -140,7 +144,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
     await prisma.company.upsert({ where: { id: "default-company" }, update: {}, create: { id: "default-company", name: "Test Co", signatureTemplate: "Regards" } });
     await prisma.company.create({ data: { id: companyB, name: "Other Co", signatureTemplate: "Regards" } });
     // one Admin per group below so the (strict) per-account rate limit is never shared
-    for (const n of ["AdminMain", "AdminIso", "AdminCompany", "AdminLifecycle", "AdminExpiry", "AdminRate", "AdminStale", "AdminAudit", "AdminDestroy"]) await makeActor(n, "ADMIN");
+    for (const n of ["AdminMain", "AdminIso", "AdminCompany", "AdminFriday", "AdminLifecycle", "AdminExpiry", "AdminRate", "AdminStale", "AdminAudit", "AdminDestroy"]) await makeActor(n, "ADMIN");
     await makeActor("AdminNoGrant", "ADMIN", { grant: false });
     await makeActor("AdminInactive", "ADMIN", { status: "INACTIVE" });
     await makeActor("AdminOtherCompany", "ADMIN", { company: companyB });
@@ -165,7 +169,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       const { quote, bookingId, pmId } = await signedBooking();
       const [row] = await cvvRow(pmId);
       expect(row.encryptedCvv).toMatch(/^cv2\.[A-Za-z0-9]{1,12}\.[A-Za-z0-9_-]{20,}$/);
-      expect(row.encryptedCvv).not.toContain(CODE);
+      expect(row.encryptedCvv).not.toBe(CODE); // (a 3-digit substring test on random base64 would be a coin-flip false alarm)
       // the 24-hour clock starts at THE signing instant (the one stored as the quote's signedAt and the booking's termsAcceptedAt)
       const q = await prisma.quote.findUniqueOrThrow({ where: { id: quote.id } });
       const b = await prisma.booking.findUniqueOrThrow({ where: { id: bookingId } });
@@ -253,7 +257,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       const rows = await audits(pmId, "CVV_REVEALED");
       expect(rows).toHaveLength(2);
       const dump = JSON.stringify(rows);
-      expect(dump).not.toContain(CODE);
+      expect(dump).not.toContain(`"${CODE}"`); // the quoted JSON value: random ids may contain the digits by chance
       expect(dump).not.toContain(before.encryptedCvv!);
       expect(rows[0].metadata).toMatchObject({ bookingId, result: "SUCCESS" });
     });
@@ -266,7 +270,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       }
       const denied = await audits(pmId, "CVV_REVEAL_DENIED");
       expect(denied.length).toBeGreaterThanOrEqual(8);
-      expect(JSON.stringify(denied)).not.toContain(CODE);
+      expect(JSON.stringify(denied)).not.toContain(`"${CODE}"`); // the quoted JSON value: random ids may contain the digits by chance
       expect(denied.map((d) => (d.metadata as { reason: string }).reason)).toEqual(expect.arrayContaining(["NOT_ADMIN", "MISSING_PERMISSION", "BOOKING_NOT_ACCESSIBLE", "NO_ACTIVE_SESSION"]));
     });
 
@@ -301,7 +305,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       as("AdminStaleNow");
       const r = await actions.revealBookingCvv(bookingId, pmId);
       expect(r).toEqual({ error: expect.stringMatching(/sign-in within the last 15 minutes/) });
-      expect(JSON.stringify(r)).not.toContain(CODE);
+      expect(JSON.stringify(r)).not.toContain(`"${CODE}"`); // the quoted JSON value: random ids may contain the digits by chance
       expect((await audits(pmId, "CVV_REVEAL_DENIED")).some((d) => (d.metadata as { reason: string }).reason === "RECENT_LOGIN_REQUIRED")).toBe(true);
       void stale;
     });
@@ -312,7 +316,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       for (let i = 0; i < 10; i++) expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ cvv: CODE });
       const limited = await actions.revealBookingCvv(bookingId, pmId);
       expect(limited).toEqual({ error: expect.stringMatching(/Too many attempts/) });
-      expect(JSON.stringify(limited)).not.toContain(CODE);
+      expect(JSON.stringify(limited)).not.toContain(`"${CODE}"`); // the quoted JSON value: random ids may contain the digits by chance
       expect(await audits(pmId, "CVV_REVEAL_RATE_LIMITED")).toHaveLength(1);
       // a different booking does not get a fresh budget (the key is the account, not the booking id)
       const other = await signedBooking();
@@ -342,7 +346,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       const late = await signedBooking();
       await setWindow(late.pmId, 30 * HOUR);
       expect(await actions.revealBookingCvv(late.bookingId, late.pmId)).toEqual({ error: expect.stringMatching(/24-hour retention period has expired/) });
-      expect(JSON.stringify([r1])).not.toContain(CODE);
+      expect(JSON.stringify([r1])).not.toContain(`"${CODE}"`); // the quoted JSON value: random ids may contain the digits by chance
     });
 
     it("nothing can extend it: the database refuses any expiry other than signedAt + 24 h, and a Booking edit, a failed payment and repeated reveals leave it untouched", async () => {
@@ -378,6 +382,54 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       expect((await cleanup.destroyExpiredCvvs()).deleted).toBe(0); // idempotent
       expect((await cleanup.destroyExpiredCvvs()).deleted).toBe(0);
       expect(await cvvRow(active.pmId)).toHaveLength(1);
+    });
+
+    it("FRIDAY-TO-MONDAY: signed Friday 17:00 it is available until Saturday 16:59, gone from Saturday 17:00 — through Sunday and Monday — and no reveal, failed payment, edit or reopen moves the deadline", async () => {
+      const { bookingId, pmId } = await signedBooking();
+      const FRI = new Date("2026-10-09T17:00:00.000Z");
+      const SAT = new Date(FRI.getTime() + 24 * HOUR); // Saturday 17:00
+      await prisma.$executeRaw`UPDATE "PaymentMethodCvv" SET "signedAt" = ${FRI}, "expiresAt" = ${SAT} WHERE "paymentMethodId" = ${pmId}`;
+      vi.useFakeTimers({ toFake: ["Date"] });
+      fakeClock = true;
+      try {
+        const at = (iso: string) => {
+          vi.setSystemTime(new Date(iso));
+          actors.AdminFriday.sessionCreatedAt = new Date(Date.now() - 60_000);
+          as("AdminFriday");
+        };
+        at("2026-10-09T18:00:00.000Z"); // Friday evening
+        expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ cvv: CODE });
+        // a FAILED payment attempt on Friday (retryable): the code stays and the deadline does not move
+        await payments.confirmPaymentReceived({ bookingId, paymentMethodId: pmId, amount: 570, status: "FAILED" });
+        // the Booking is edited and reopened on Saturday morning
+        at("2026-10-10T10:00:00.000Z");
+        await prisma.booking.update({ where: { id: bookingId }, data: { internalNotes: "edited on Saturday" } });
+        expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ cvv: CODE });
+        let [row] = await cvvRow(pmId);
+        expect(row.expiresAt.toISOString()).toBe(SAT.toISOString()); // still Saturday 17:00
+        expect(row.signedAt.toISOString()).toBe(FRI.toISOString());
+        at("2026-10-10T16:59:00.000Z");
+        expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ cvv: CODE });
+        // Saturday 17:00 — expired; refused, the stale record is destroyed, nothing is returned
+        at("2026-10-10T17:00:00.000Z");
+        const expired = { error: "CVV/CVC is no longer available because the 24-hour retention period has expired." };
+        expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual(expired);
+        expect(await cvvRow(pmId)).toHaveLength(0);
+        // Sunday and Monday: still gone — no weekend or Monday exception
+        at("2026-10-11T12:00:00.000Z");
+        expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ error: "CVV/CVC is no longer available." });
+        at("2026-10-12T09:00:00.000Z");
+        expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ error: "CVV/CVC is no longer available." });
+        [row] = await cvvRow(pmId);
+        expect(row).toBeUndefined();
+      } finally {
+        // A pool-hold task that began before the clock was faked had its deadline pushed to "Monday"; let the (fake) clock run past it so
+        // that task finishes, THEN restore the real clock.
+        vi.setSystemTime(new Date("2100-01-01T00:00:00.000Z"));
+        await flushDeferred();
+        fakeClock = false;
+        vi.useRealTimers();
+      }
     });
 
     it("the daily cron endpoint runs the cleanup", async () => {
@@ -445,7 +497,7 @@ describe.skipIf(!enabled)("temporary encrypted CVV/CVC retention — real Postgr
       expect(await actions.revealBookingCvv(bookingId, pmId)).toEqual({ error: "CVV/CVC is no longer available." });
       const rows = await audits(pmId, "CVV_DESTROYED");
       expect(rows).toHaveLength(1); // the second call had nothing left to destroy
-      expect(JSON.stringify(rows)).not.toContain(CODE);
+      expect(JSON.stringify(rows)).not.toContain(`"${CODE}"`); // the quoted JSON value: random ids may contain the digits by chance
     });
 
     it("removing the card destroys its code too", async () => {

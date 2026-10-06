@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // The Admin-only reveal / destroy of a booking card's retained security code — authorization order and fail-closed behaviour
 // against fakes (the same flows against a real database are in booking-cvv.integration.test.ts). SYNTHETIC code only.
@@ -171,5 +171,59 @@ describe("destroyBookingCvv", () => {
     actor = admin();
     await expect(destroyBookingCvv("other", "pm1")).rejects.toThrow("not authorized");
     expect(destroyCvv).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── Friday 17:00 signing: the reveal follows the clock and nothing else ──────────────────────────────────────────────────────
+// The deadline is exactly 24 elapsed hours after signing. These drive the REAL reveal action with a controlled clock: Saturday 16:59
+// still works, Saturday 17:00 and everything after (Sunday, Monday) is refused with the retention message, and no step ever writes
+// to the record (the fake has no update/upsert at all, so a write would throw) — i.e. revealing, a failed payment, an edit or a
+// reopen on any day cannot move the deadline.
+describe("a Booking Form signed Friday 17:00 expires Saturday 17:00 — no weekend or Monday exception", () => {
+  const SIGNED = new Date("2026-10-09T17:00:00.000Z"); // Friday (synthetic)
+  const EXPIRES = new Date("2026-10-10T17:00:00.000Z"); // Saturday 17:00
+
+  const setClock = (iso: string) => {
+    vi.setSystemTime(new Date(iso));
+    actor = admin({ sessionCreatedAt: new Date(Date.now() - 60_000) }); // a fresh sign-in at every step
+  };
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    prismaMock.paymentMethodCvv.findUnique.mockImplementation(async () => ({ paymentMethodId: "pm1", encryptedCvv: "cv2.v1.ciphertextciphertextcipher", expiresAt: EXPIRES, destroyedAt: null }));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("Friday (just signed, again later, after a failed payment) and Saturday up to 16:59:59 → permitted, and the stored deadline never changes", async () => {
+    const { revealBookingCvv } = await import("../booking-cvv");
+    for (const iso of ["2026-10-09T17:00:30.000Z", "2026-10-09T21:00:00.000Z", "2026-10-10T08:00:00.000Z", "2026-10-10T16:59:00.000Z", "2026-10-10T16:59:59.000Z"]) {
+      setClock(iso);
+      expect(await revealBookingCvv("b1", "pm1"), iso).toEqual({ cvv: CODE });
+      rate.mockClear();
+    }
+    expect(SIGNED.getTime() + 24 * 3_600_000).toBe(EXPIRES.getTime());
+    expect(prismaMock.paymentMethodCvv.deleteMany).not.toHaveBeenCalled(); // nothing destroyed early
+    expect(destroyCvv).not.toHaveBeenCalled();
+  });
+
+  it("Saturday 17:00, 17:01, Sunday, Monday (morning and at the business-hours mark) and later → refused with the retention message, never decrypted, stale record deleted", async () => {
+    const { revealBookingCvv } = await import("../booking-cvv");
+    for (const iso of ["2026-10-10T17:00:00.000Z", "2026-10-10T17:01:00.000Z", "2026-10-11T12:00:00.000Z", "2026-10-12T08:00:00.000Z", "2026-10-12T17:00:00.000Z", "2026-10-13T10:00:00.000Z"]) {
+      setClock(iso);
+      reveal.mockClear();
+      prismaMock.paymentMethodCvv.deleteMany.mockClear();
+      expect(await revealBookingCvv("b1", "pm1"), iso).toEqual({ error: "CVV/CVC is no longer available because the 24-hour retention period has expired." });
+      expect(reveal, iso).not.toHaveBeenCalled(); // the previous value is never decrypted or returned
+      expect(prismaMock.paymentMethodCvv.deleteMany, iso).toHaveBeenCalledTimes(1);
+      rate.mockClear();
+    }
+  });
+
+  it("no code path of the reveal writes the record — so no reveal, failed attempt, edit, reopen or retry can renew it", async () => {
+    const { revealBookingCvv } = await import("../booking-cvv");
+    setClock("2026-10-10T10:00:00.000Z");
+    await revealBookingCvv("b1", "pm1");
+    // the fake exposes only findUnique + deleteMany; an update / updateMany / upsert / create would have thrown "not a function"
+    expect(Object.keys(prismaMock.paymentMethodCvv).sort()).toEqual(["deleteMany", "findUnique"]);
+    expect(prismaMock.paymentMethodCvv.deleteMany).not.toHaveBeenCalled();
   });
 });

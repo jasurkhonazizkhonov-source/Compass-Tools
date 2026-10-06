@@ -52,6 +52,7 @@ describe("who sees the control", () => {
   it("an Admin sees 'no longer available' (and no reveal button) when nothing is retained", () => {
     const html = renderToStaticMarkup(<PaymentMethodCard {...baseProps} cvv={{ available: false }} />);
     expect(html).toContain("CVV/CVC no longer available");
+    expect(html).toContain("at most 24 hours after the Booking Form is signed"); // says why, without exposing anything
     expect(html).not.toContain("Reveal CVV/CVC");
   });
 });

@@ -195,3 +195,72 @@ describe("destroyCvv / destroyExpiredCvvs", () => {
     spy.mockRestore();
   });
 });
+
+// ── The business rule, stated as tests ────────────────────────────────────────────────────────────────────────────────────────
+// Retention is exactly 24 ELAPSED hours from the moment the Booking Form was signed. It does not pause, extend or reset for a
+// weekend, a Monday, a holiday, a reveal, a payment attempt, an edit, a reopen or a reassignment, and there is no business-day
+// calculation, no configurable window and no renewal. A form signed on Friday at 5:00 PM therefore expires on Saturday at 5:00 PM —
+// it is NOT available on Monday for a manual charge. That is the deliberate tradeoff (docs/CARD_VAULT_SECURITY.md section 19).
+describe("Friday-to-Monday: exactly 24 elapsed hours, no weekend or Monday behaviour", () => {
+  const FRI_1700 = new Date("2026-10-09T17:00:00.000Z"); // a Friday (synthetic)
+  const at = (iso: string) => new Date(iso);
+
+  it("signed Friday 17:00 → expires Saturday 17:00", async () => {
+    const { cvvExpiryFor } = await import("../booking-cvv");
+    expect(FRI_1700.getUTCDay()).toBe(5); // Friday
+    const expires = cvvExpiryFor(FRI_1700);
+    expect(expires.toISOString()).toBe("2026-10-10T17:00:00.000Z");
+    expect(expires.getUTCDay()).toBe(6); // Saturday
+  });
+
+  it("available until Saturday 16:59:59.999, expired at 17:00:00 and at every later moment — Sunday and Monday included", async () => {
+    const { cvvExpiryFor, isCvvExpired } = await import("../booking-cvv");
+    const expires = cvvExpiryFor(FRI_1700);
+    const expectations: Array<[string, boolean]> = [
+      ["2026-10-09T17:00:01.000Z", false], // Friday, just signed
+      ["2026-10-09T23:59:59.000Z", false],
+      ["2026-10-10T09:00:00.000Z", false], // Saturday morning
+      ["2026-10-10T16:59:00.000Z", false], // Saturday 16:59 — still permitted
+      ["2026-10-10T16:59:59.999Z", false],
+      ["2026-10-10T17:00:00.000Z", true], //  Saturday 17:00 — expired
+      ["2026-10-10T17:01:00.000Z", true], //  Saturday 17:01
+      ["2026-10-11T12:00:00.000Z", true], //  Sunday
+      ["2026-10-12T08:00:00.000Z", true], //  Monday morning — gone
+      ["2026-10-12T17:00:00.000Z", true], //  Monday at the old "business" time — still gone
+      ["2026-10-13T09:00:00.000Z", true], //  Tuesday
+    ];
+    for (const [iso, expired] of expectations) expect(isCvvExpired(expires, at(iso)), iso).toBe(expired);
+  });
+
+  it("every day of the week behaves the same: +24h exactly, never a business-day or weekend adjustment", async () => {
+    const { cvvExpiryFor } = await import("../booking-cvv");
+    for (let day = 0; day < 14; day++) {
+      const signed = new Date(FRI_1700.getTime() + day * 24 * HOUR - 3 * HOUR); // 14:00 on 14 consecutive days (a full fortnight)
+      expect(cvvExpiryFor(signed).getTime() - signed.getTime(), signed.toISOString()).toBe(24 * HOUR);
+    }
+  });
+
+  it("it is ELAPSED time, not wall-clock time: across a daylight-saving change it is still exactly 24 hours (86,400,000 ms)", async () => {
+    const { cvvExpiryFor } = await import("../booking-cvv");
+    // US clocks fall back on Sunday 2026-11-01: 25 wall-clock hours pass between 17:00 PDT Saturday and 17:00 PST Sunday.
+    const signed = new Date("2026-11-01T00:00:00.000Z"); // Saturday 17:00 PDT (UTC-7)
+    expect(cvvExpiryFor(signed).toISOString()).toBe("2026-11-02T00:00:00.000Z"); // = Sunday 16:00 PST, not 17:00
+  });
+
+  it("nothing is configurable or renewable: no environment variable moves it, and the module exports no extension / renewal / business-day helper", async () => {
+    for (const name of ["CVV_RETENTION_HOURS", "CVV_RETENTION_DAYS", "CARD_CVV_RETENTION_HOURS", "CVV_WEEKEND_EXTENSION", "CVV_BUSINESS_DAYS"]) vi.stubEnv(name, "72");
+    vi.resetModules();
+    const m = await import("../booking-cvv");
+    expect(m.CVV_RETENTION_MS).toBe(24 * HOUR);
+    expect(m.cvvExpiryFor(FRI_1700).toISOString()).toBe("2026-10-10T17:00:00.000Z");
+    expect(Object.keys(m).sort()).toEqual(["CVV_RETENTION_MS", "cvvExpiryFor", "destroyCvv", "destroyExpiredCvvs", "isCvvExpired", "prepareCvvForStorage"]);
+  });
+
+  it("a Friday signing creates a record whose expiry is Saturday 17:00 — and a form 'signed' after the window would be refused at creation", async () => {
+    const { prepareCvvForStorage } = await import("../booking-cvv");
+    const prepared = await prepareCvvForStorage(CODE, "pm-fri", FRI_1700, FRI_1700);
+    expect(prepared!.expiresAt.toISOString()).toBe("2026-10-10T17:00:00.000Z");
+    // the same signing time, evaluated on Monday, is already over: no record is created
+    expect(await prepareCvvForStorage(CODE, "pm-fri", FRI_1700, at("2026-10-12T09:00:00.000Z"))).toBeNull();
+  });
+});

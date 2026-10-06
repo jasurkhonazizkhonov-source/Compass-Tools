@@ -67,7 +67,7 @@ export function CvvReveal({
   if (gone) {
     return (
       <p className="text-xs text-muted-foreground" data-testid="cvv-unavailable">
-        CVV/CVC no longer available
+        CVV/CVC no longer available — it is kept for at most 24 hours after the Booking Form is signed.
       </p>
     );
   }

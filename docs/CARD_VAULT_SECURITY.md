@@ -602,7 +602,7 @@ A runtime failure while storing a card (for example a database fault) is not a
 configuration state; it raises the `BOOKING_PAYMENT_UNAVAILABLE` health incident
 and the customer is told nothing was charged and no booking was recorded.
 
-## 19. Security code (CVV/CVC) — temporary, encrypted, Admin-only (maximum 24 hours)
+## 19. CVV/CVC 24-Hour Retention and Reveal (temporary, encrypted, Admin-only)
 
 **Status: application-level controls implemented; formal PCI DSS / acquirer / payment-brand / QSA validation remains required. This section does not claim, and the feature does not establish, PCI DSS compliance.**
 
@@ -651,5 +651,35 @@ The application guarantees that **the live database no longer holds the code** a
 * **PostgreSQL** keeps superseded row versions until vacuum and replays them from the write-ahead log; **replicas, snapshots, point-in-time-recovery archives and disaster-recovery copies** taken during the 24 hours may contain the encrypted value (and, if the key ring is also available, it could be decrypted) until those copies expire. Backup retention, replica lag, snapshot schedules and who may restore them are **infrastructure controls this repository cannot see or set**. Treat the provider's backup retention as part of the PCI assessment; if retention is long, the CVV exposure window in backups is long.
 * The key ring lives in the same application as the ciphertext's reader (see section 13): anyone who can read both the database and the application environment can decrypt every un-destroyed record.
 
-### 19.7 What this does NOT establish
+### 19.7 What this does NOT establish (see also 19.11)
 This is a set of application-level controls. It does not by itself make the environment PCI DSS compliant. **REQUIRES PCI/QSA/ACQUIRER REVIEW**: whether holding the code before a manual charge is acceptable under the merchant's validation type, acquirer agreement and each card brand's rules; the length of backup / replica retention; the key-management model (no HSM/KMS, no dual control); and the scoping of the CRM, its database and its staff terminals. Retention can be switched off at any time by removing the capture (nothing else depends on it): the Booking Form would then validate and drop the code exactly as before.
+
+### 19.8 Operational consequence — exactly 24 elapsed hours, no weekend, no Monday, no renewal
+The retention window is **calendar/elapsed time: `signedAt + exactly 24 hours`**. It does **not** pause, extend or reset for a Friday, Saturday, Sunday, holiday or weekend, or because an Admin viewed the CVV/CVC, a payment attempt succeeded or failed, a payment was retried, the Booking or Quote was edited, the Booking was reopened or it was reassigned. There is **no** weekend exception, **no** Monday exception, **no** business-day calculation, **no** 48/72/168-hour fallback, **no** Admin renewal and **no** configuration or environment variable that changes it. Revealing never writes to the record.
+
+> **Example.** A Booking Form signed **Friday at 5:00 PM** has its CVV/CVC expire **Saturday at 5:00 PM**. It will **not** remain available through the weekend for a Monday manual charge. Saturday 4:59 PM it can still be revealed; from Saturday 5:00 PM — and on Sunday and Monday — it cannot.
+
+**The CVV/CVC may therefore be unavailable for a Monday manual charge if the Booking Form was signed more than 24 hours earlier.** The system intentionally destroys it after 24 hours and provides no weekend extension or Admin renewal mechanism. This is a deliberate security/business tradeoff, not a defect. If the Admin needs the CVV/CVC for a charge, the Booking Form must be handled within the 24-hour window, or the payment workflow must use another mechanism the business and its acquirer permit. Nothing in this system should be changed to circumvent the window; if the business decides Monday charging needs a different process, that is a separate business/security decision and a separate change.
+
+When someone tries to reveal an expired value the screen says that the CVV/CVC is no longer available because the 24-hour retention period has expired (and the Payment section shows "CVV/CVC no longer available — it is kept for at most 24 hours after the Booking Form is signed"); the previous value is never decrypted or returned, and a stale record is deleted. Tests pin this with synthetic timestamps (signed Friday 17:00 → Saturday 16:59 permitted, 17:00 / 17:01 / Sunday / Monday refused; unaffected by a Friday reveal, a failed payment, a Saturday edit or reopen; exactly 86,400,000 ms across a daylight-saving change).
+
+### 19.9 Reveal Card Information and Reveal CVV/CVC are separate capabilities
+Both controls sit in **Quotes → Bookings → Booking → Payment**, the CVV/CVC control immediately below the card one. They are **different sensitive-data capabilities** with nothing shared except the key ring and the audit log's append-only table:
+
+| | Reveal Card Information (card number) | Reveal CVV/CVC |
+|---|---|---|
+| Server action | `revealPaymentMethod` (unchanged) | `revealBookingCvv` / `destroyBookingCvv` (new) |
+| Who | roles eligible for Reveal (Admin, Manager, Ticketing Agent) **with** the explicit `payments.reveal` grant | **Admin only**, **and** the `payments.reveal` grant |
+| Storage | `PaymentMethod.encryptedPan` (kept until purged by retention) | `PaymentMethodCvv.encryptedCvv` (≤ 24 h) |
+| AAD | `compass-card-vault\|cv2\|<id>` | `compass-card-vault\|cv2-cvv\|<paymentMethodId>` |
+| Rate limit | `CARD_REVEAL` 15 / 10 min | `CVV_REVEAL` 10 / 10 min (own bucket) |
+| Audit | `PAYMENT_METHOD_REVEALED` / `_REVEAL_DENIED` / `_REVEAL_RATE_LIMITED` | `CVV_REVEALED` / `CVV_REVEAL_DENIED` / `CVV_REVEAL_RATE_LIMITED` / `CVV_DESTROYED` |
+| Lifetime | until the card is removed / purged | fixed 24 h after signing; destroyed sooner on payment / cancel / removal / Admin destroy |
+
+**Permission to reveal the card number does not by itself grant CVV/CVC access** (a Manager or Ticketing Agent holding `payments.reveal` is refused). Revealing one never reveals, extends or consumes the other, and the existing card reveal is unchanged.
+
+### 19.10 Infrastructure retention — not verified from this repository
+Application deletion does **not** erase historical copies. The encrypted value (and, with the key ring, its plaintext) may persist in **PostgreSQL WAL, replicas, database snapshots, point-in-time-recovery archives, backups and disaster-recovery copies** for as long as the hosting provider retains them. This repository and its automation **cannot inspect** the production database's backup retention, PITR window, replica or snapshot retention, encryption at rest, or who can restore or read them, and none of those values is stated here. **REQUIRES MANUAL ACTION**: the database administrator must record (from the provider's console / contract) the backup and PITR retention, replica and snapshot retention, encryption-at-rest setting and the access controls over restores, and the PCI assessment must take the CVV exposure window in those copies into account.
+
+### 19.11 Compliance statement
+**This implementation provides application-level security controls but does not establish PCI DSS compliance.** It is not PCI compliant, certified or validated by virtue of this code. **REQUIRES PCI/QSA/ACQUIRER REVIEW** — whether holding the code before a manual charge is permitted for this merchant, acquirer and card brands; backup/replica retention; the key-management model; and scoping.
