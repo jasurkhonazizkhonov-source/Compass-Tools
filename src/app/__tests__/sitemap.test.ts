@@ -36,7 +36,8 @@ describe("sitemap.ts", () => {
     expect(urls).toContain("/contact");
     expect(urls).toContain("/privacy");
     expect(urls).toContain("/terms");
-    expect(urls).toContain("/login");
+    // the sign-in page is noindex and is not a search destination
+    expect(urls).not.toContain("/login");
   });
 
   it("includes every feature slug page, and none are missing or extra", () => {

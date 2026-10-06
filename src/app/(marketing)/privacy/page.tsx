@@ -1,19 +1,19 @@
 import type { Metadata } from "next";
+import { marketingMetadata } from "@/lib/marketing/seo";
 import { PRODUCT_NAME } from "@/lib/company-config";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = marketingMetadata({
   title: `Privacy Policy — ${PRODUCT_NAME}`,
   description: `How ${PRODUCT_NAME} collects, stores, and protects information, for both visitors to this website and users of the CRM.`,
-  alternates: { canonical: "/privacy" },
-  robots: { index: true, follow: true },
-};
+  path: "/privacy",
+});
 
 export default function PrivacyPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 sm:py-20">
       <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500">
         <h1 className="text-4xl font-semibold tracking-tight text-foreground">Privacy Policy</h1>
-        <p className="mt-3 text-sm text-muted-foreground">Last updated: {new Date().toLocaleDateString("en-US", { year: "numeric", month: "long" })}</p>
+        <p className="mt-3 text-sm text-muted-foreground">Last updated: October 2026</p>
         <p className="mt-6 text-sm leading-relaxed text-pretty text-muted-foreground">
           {PRODUCT_NAME} is a customer-relationship-management (CRM) platform built for travel agencies. This policy
           covers two separate things: (1) this public website, and (2) the {PRODUCT_NAME} application itself, used by
@@ -57,9 +57,11 @@ export default function PrivacyPage() {
             Where a travel agency collects a customer&apos;s card details for a booking, the card number is encrypted
             before storage using the application&apos;s own key-based encryption, and is only ever decrypted by an
             explicitly authorized staff member completing a manual charge with a supplier. The short security code
-            printed on the back of the card is never requested, collected, or stored by {PRODUCT_NAME} under any
-            circumstances. We do not claim any particular payment-industry certification (such as PCI DSS) for this
-            functionality.
+            printed on the back of the card is collected only on the booking form, is encrypted immediately, is kept
+            only so an authorized administrator can complete that manual charge, and is permanently deleted as soon as
+            the payment is recorded — and in every case no later than 24 hours after the customer signs the booking
+            form. It is never included in emails or shown to anyone other than an administrator. We do not claim any
+            particular payment-industry certification (such as PCI DSS) for this functionality.
           </p>
         </section>
         <section>

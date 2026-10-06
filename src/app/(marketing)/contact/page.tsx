@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { marketingMetadata, pageJsonLd } from "@/lib/marketing/seo";
+import { JsonLd } from "@/components/marketing/json-ld";
 import { LayoutDashboard, Clock, ShieldCheck } from "lucide-react";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { ContactForm } from "@/components/marketing/contact-form";
@@ -11,17 +13,10 @@ import { ContactForm } from "@/components/marketing/contact-form";
 // separate website and system (businessflights.travel →
 // /api/public/contact-inquiry → the "Get In Touch" inbox). Copy here must
 // read as "contact Compass Tools", not "contact a travel agency".
-export const metadata: Metadata = {
-  title: `Contact Us — ${PRODUCT_NAME}`,
-  description: "Questions about Compass Tools — a demo, a feature, technical support, or billing? Send us a message and our team will get back to you.",
-  alternates: { canonical: "/contact" },
-  openGraph: {
-    title: `Contact Us — ${PRODUCT_NAME}`,
-    description: "Questions about Compass Tools — a demo, a feature, technical support, or billing? Send us a message and our team will get back to you.",
-    url: "/contact",
-    images: [{ url: "/logo.png" }],
-  },
-};
+const CONTACT_DESCRIPTION =
+  "Questions about Compass Tools — a demo, a feature, technical support, or billing? Send us a message and our team will get back to you.";
+
+export const metadata: Metadata = marketingMetadata({ title: `Contact Us — ${PRODUCT_NAME}`, description: CONTACT_DESCRIPTION, path: "/contact" });
 
 const REASSURANCES = [
   { icon: LayoutDashboard, title: "A real person reviews it", body: `Your message is reviewed by a member of the ${PRODUCT_NAME} team, not an automated reply.` },
@@ -32,6 +27,7 @@ const REASSURANCES = [
 export default function ContactPage() {
   return (
     <div className="mx-auto max-w-3xl px-4 py-16 sm:px-6 sm:py-20">
+      <JsonLd data={pageJsonLd("ContactPage", { name: `Contact ${PRODUCT_NAME}`, description: CONTACT_DESCRIPTION, path: "/contact" })} />
       <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-300 text-center">
         <h1 className="text-4xl font-semibold tracking-tight text-balance text-foreground">Contact {PRODUCT_NAME}</h1>
         <p className="mt-4 text-pretty text-muted-foreground">

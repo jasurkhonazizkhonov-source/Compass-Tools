@@ -1,5 +1,7 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { marketingMetadata, softwareJsonLd, SITE_DESCRIPTION } from "@/lib/marketing/seo";
+import { JsonLd } from "@/components/marketing/json-ld";
 import { redirect } from "next/navigation";
 import { ArrowRight, CheckCircle2, ShieldCheck } from "lucide-react";
 import { getCurrentAccount } from "@/lib/dev-session";
@@ -9,19 +11,11 @@ import { Button } from "@/components/ui/button";
 import { MockLeadsPanel, MockQuotePanel, MockDashboardPanel } from "@/components/marketing/mock-crm-panel";
 import { Reveal } from "@/components/marketing/reveal";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = marketingMetadata({
   title: `${PRODUCT_NAME} — CRM for Travel Agencies`,
-  description:
-    "Compass Tools is a CRM built for travel agencies to manage leads, quotes, bookings, and customer communication in one place.",
-  alternates: { canonical: "/" },
-  openGraph: {
-    title: `${PRODUCT_NAME} — CRM for Travel Agencies`,
-    description: "Manage leads, quotes, bookings, and customer communication in one place.",
-    url: "/",
-    type: "website",
-    images: [{ url: "/logo.png" }],
-  },
-};
+  description: SITE_DESCRIPTION,
+  path: "/",
+});
 
 const WORKFLOW_STEPS = ["Lead", "Quote", "Customer", "Booking", "Communication", "Follow-up"];
 
@@ -43,6 +37,7 @@ export default async function HomePage() {
 
   return (
     <>
+      <JsonLd data={softwareJsonLd()} />
       {/* Hero */}
       <section className="relative overflow-hidden border-b bg-muted/20">
         <div

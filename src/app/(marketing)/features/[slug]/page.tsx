@@ -7,6 +7,8 @@ import { MARKETING_FEATURES, getFeatureBySlug } from "@/lib/marketing/features-d
 import { Button } from "@/components/ui/button";
 import { MockLeadsPanel, MockQuotePanel, MockDashboardPanel, MockBookingPanel, MockEmailPanel } from "@/components/marketing/mock-crm-panel";
 import { Reveal } from "@/components/marketing/reveal";
+import { JsonLd } from "@/components/marketing/json-ld";
+import { marketingMetadata, breadcrumbJsonLd } from "@/lib/marketing/seo";
 
 // One dynamic route rendering all seven /features/<slug> pages from a
 // single typed data source (src/lib/marketing/features-data.ts) rather
@@ -23,11 +25,7 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const { slug } = await params;
   const feature = getFeatureBySlug(slug);
   if (!feature) return {};
-  return {
-    title: `${feature.navLabel} — ${PRODUCT_NAME}`,
-    description: feature.summary,
-    alternates: { canonical: `/features/${feature.slug}` },
-  };
+  return marketingMetadata({ title: `${feature.navLabel} — ${PRODUCT_NAME}`, description: feature.summary, path: `/features/${feature.slug}` });
 }
 
 const MOCK_PANEL_BY_SLUG: Record<string, React.ComponentType> = {
@@ -50,6 +48,7 @@ export default async function FeatureDetailPage({ params }: { params: Promise<{ 
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+      <JsonLd data={breadcrumbJsonLd([{ name: PRODUCT_NAME, path: "/" }, { name: "Features", path: "/features" }, { name: feature.navLabel, path: `/features/${feature.slug}` }])} />
       <Link
         href="/features"
         className="inline-flex items-center gap-1 text-sm text-muted-foreground transition-colors hover:text-foreground"

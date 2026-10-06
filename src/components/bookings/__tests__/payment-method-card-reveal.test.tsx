@@ -81,6 +81,9 @@ describe("Reveal UI containment", () => {
     setup();
     fireEvent.click(screen.getByRole("button", { name: /reveal/i }));
     await waitFor(() => expect(pageHasPan()).toBe(true));
+    // The listeners are attached in a passive effect after the number renders; under load `waitFor` can resolve on the DOM commit alone, so
+    // flush effects before the event (otherwise the test races the listener registration, not the behaviour).
+    await act(async () => {});
     Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
@@ -93,6 +96,9 @@ describe("Reveal UI containment", () => {
     setup();
     fireEvent.click(screen.getByRole("button", { name: /reveal/i }));
     await waitFor(() => expect(pageHasPan()).toBe(true));
+    // The listeners are attached in a passive effect after the number renders; under load `waitFor` can resolve on the DOM commit alone, so
+    // flush effects before the event (otherwise the test races the listener registration, not the behaviour).
+    await act(async () => {});
     act(() => {
       window.dispatchEvent(new Event("blur"));
     });

@@ -1,20 +1,23 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { marketingMetadata, breadcrumbJsonLd } from "@/lib/marketing/seo";
+import { JsonLd } from "@/components/marketing/json-ld";
 import { ArrowRight } from "lucide-react";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { MARKETING_FEATURES } from "@/lib/marketing/features-data";
 import { Button } from "@/components/ui/button";
 import { Reveal } from "@/components/marketing/reveal";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = marketingMetadata({
   title: `Features — ${PRODUCT_NAME}`,
   description: "Explore Compass Tools: lead management, quotes, bookings, customer management, email, follow-up automation, and sales visibility.",
-  alternates: { canonical: "/features" },
-};
+  path: "/features",
+});
 
 export default function FeaturesPage() {
   return (
     <div className="mx-auto max-w-6xl px-4 py-16 sm:px-6 sm:py-20">
+      <JsonLd data={breadcrumbJsonLd([{ name: PRODUCT_NAME, path: "/" }, { name: "Features", path: "/features" }])} />
       <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-500 mx-auto max-w-2xl text-center">
         <h1 className="text-4xl font-semibold tracking-tight text-balance text-foreground">Built for how travel agencies work</h1>
         <p className="mt-4 text-pretty text-muted-foreground">

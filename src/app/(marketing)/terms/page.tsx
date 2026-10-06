@@ -1,12 +1,12 @@
 import type { Metadata } from "next";
+import { marketingMetadata } from "@/lib/marketing/seo";
 import { PRODUCT_NAME } from "@/lib/company-config";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = marketingMetadata({
   title: `Terms of Service — ${PRODUCT_NAME}`,
   description: `Terms for using this website and the ${PRODUCT_NAME} CRM.`,
-  alternates: { canonical: "/terms" },
-  robots: { index: true, follow: true },
-};
+  path: "/terms",
+});
 
 export default function TermsPage() {
   return (

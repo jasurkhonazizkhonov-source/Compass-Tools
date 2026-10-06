@@ -1,38 +1,19 @@
 import type { MetadataRoute } from "next";
 import { resolveBaseUrl } from "@/lib/company-config";
+import { PRIVATE_DISALLOW } from "@/lib/marketing/crawl-rules";
 
-// Public marketing routes are crawlable; every authenticated CRM surface is
-// disallowed by prefix so no private route is ever accidentally indexed.
+// Public marketing routes are crawlable; every authenticated CRM surface is disallowed by prefix (see crawl-rules.ts — robots.txt is
+// not a security control).
+//
+// Preview deployments (VERCEL_ENV=preview) disallow everything and publish no sitemap, so a preview URL can never compete with, or
+// be mistaken for, the production site. Production, local and self-hosted builds behave as described above.
 export default function robots(): MetadataRoute.Robots {
+  if (process.env.VERCEL_ENV === "preview") {
+    return { rules: { userAgent: "*", disallow: "/" } };
+  }
   const base = resolveBaseUrl();
   return {
-    rules: {
-      userAgent: "*",
-      allow: "/",
-      disallow: [
-        "/api/",
-        "/access-denied",
-        "/dashboard",
-        "/accounts",
-        "/bookings",
-        "/commissions",
-        "/company",
-        "/contacts",
-        "/leads",
-        "/quotes",
-        "/salesboard",
-        "/sequences",
-        "/subscriptions",
-        "/tasks",
-        "/users",
-        "/get-in-touch",
-        "/crm-inquiries",
-        "/system-health",
-        // Customer-facing but token-gated (a unique, unguessable link per
-        // quote/booking) — never something a crawler should index either.
-        "/quote/",
-      ],
-    },
+    rules: { userAgent: "*", allow: "/", disallow: PRIVATE_DISALLOW },
     sitemap: `${base}/sitemap.xml`,
   };
 }

@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
+import { marketingMetadata } from "@/lib/marketing/seo";
 import { ShieldCheck, Lock, KeyRound, Server } from "lucide-react";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { Reveal } from "@/components/marketing/reveal";
 
-export const metadata: Metadata = {
+export const metadata: Metadata = marketingMetadata({
   title: `Security — ${PRODUCT_NAME}`,
-  description: "How Compass Tools protects account access and customer data.",
-  alternates: { canonical: "/security" },
-};
+  description: "How Compass Tools protects account access and customer data: Google sign-in verified on the server, encrypted credentials, role-based access and encrypted card data.",
+  path: "/security",
+});
 
 // Factual descriptions only — every statement below reflects an actual,
 // verified implementation detail of this CRM (server-side Google identity
@@ -33,8 +34,8 @@ const PRACTICES = [
   },
   {
     icon: Server,
-    title: "No stored card numbers",
-    body: "Customer payment information is never stored as raw card data. Booking forms are served over HTTPS in production.",
+    title: "Encrypted card data",
+    body: "A card number entered on a booking form is encrypted before it is stored, never kept as raw card data, and can be revealed only by explicitly authorized staff — each reveal is logged. The card's security code is held encrypted only until the manual charge is recorded and never longer than 24 hours after the booking form is signed. Booking forms are served over HTTPS in production.",
   },
 ];
 
