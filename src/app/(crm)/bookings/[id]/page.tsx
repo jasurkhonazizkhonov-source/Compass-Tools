@@ -8,6 +8,7 @@ import { FlightItineraryDisplay } from "@/components/quotes/flight-itinerary-dis
 import { BookingTicketingForm } from "@/components/bookings/booking-ticketing-form";
 import { ChargeCustomerPanel } from "@/components/bookings/charge-customer-panel";
 import { PaymentMethodCard } from "@/components/bookings/payment-method-card";
+import { getBookingCvvStates } from "@/server/queries/booking-cvv";
 import { BookingIpReveal } from "@/components/bookings/booking-ip-reveal";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { BOOKING_STATUS_META } from "@/lib/status-meta";
@@ -35,6 +36,9 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
     if (await bookingRecordExists(id)) return <AccessRestricted />;
     notFound();
   }
+
+  // Admin-only retained security code: existence/expiry only (never the value); null for every other viewer.
+  const cvvStates = await getBookingCvvStates(currentAccount, booking.id);
 
   const meta = BOOKING_STATUS_META[booking.status];
   const bookingType = getBookingType(booking.quote);
@@ -210,6 +214,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
                       canReveal={canRevealPaymentMethod(currentAccount)}
                       canManageStatus={canConfirmPayment(currentAccount)}
                       currency={currency}
+                      cvv={cvvStates?.[pm.id]}
                     />
                     <div className="pl-3 border-l-2">
                       <ChargeCustomerPanel

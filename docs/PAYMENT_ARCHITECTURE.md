@@ -22,25 +22,22 @@ describes engineering boundaries only.
 
 ## Hard rules (enforced by tests, not just by convention)
 
-1. **The card security code (CVV / CVC / CVV2 / CVC2 / CID) is TRANSIENT input
-   only: it is never stored, cached, logged, e-mailed, audited, returned by any
-   API, put in a URL or kept in browser storage — and therefore can never be
-   revealed.** The booking form has a CVV/CVC input; its value lives in React
-   state, is sent once with "Finish Booking", is format-checked by the server
-   (3 digits, 4 for American Express) and is then dropped. It is passed to
-   nothing that persists, encrypts, logs or sends (a source-scan test pins the
-   exact three places it is touched: schema key, format check, discard), and
-   there is no column for one in any table and no in-memory cache. It is cleared
-   from the form after every definitive answer. Reveal returns the cardholder,
-   the number and the expiry only. A real-PostgreSQL test scans **every column
-   of every table** to prove a submitted marker value is nowhere
-   (`booking-submit.integration.test.ts`, "NO CVV ANYWHERE"). PIN, PIN blocks and
-   magnetic-stripe/track data are never collected at all. Customer consent does
-   not change this; there is no "temporary" or "24-hour" CVV store either.
-   *Note:* because nothing keeps the code, the app has no downstream use for it
-   (there is no payment-provider integration to pass it to) — it is validated
-   and discarded. Anything that needs a retained or retrievable security code is
-   out of scope by design.
+1. **The card security code (CVV / CVC / CVV2 / CVC2 / CID) is never stored in
+   plaintext or in any ordinary record, cache, log, e-mail, audit entry, URL or
+   browser storage — and "Reveal Card Information" never returns it.** Policy
+   narrowed at the owner's explicit request (docs/CARD_VAULT_SECURITY.md section
+   19): the booking form's CVV/CVC is format-checked, **encrypted immediately**
+   and kept only in the dedicated `PaymentMethodCvv` table, for **at most 24 hours
+   after the Booking Form was signed** (a fixed constant, not configurable, never
+   extended), destroyed earlier when the payment is recorded as charged or
+   cancelled or an Admin destroys it, and revealed only by a separate
+   **Admin-only** action with its own rate limit, sign-in and booking-scope
+   checks and audit trail. Guard tests pin exactly which source files may touch
+   it, that the schema has no other column for it, that the database refuses a
+   plaintext value or a longer window, and (real PostgreSQL) that a marker value
+   is in **no** table in plaintext (`booking-submit.integration.test.ts`,
+   `booking-cvv.integration.test.ts`). PIN, PIN blocks and magnetic-stripe/track
+   data are never collected at all. This is not a claim of PCI DSS compliance.
 2. **No card data in URLs, browser storage, logs, analytics, error messages,
    notifications or e-mail.** Staff e-mails and notifications carry brand +
    last4 + expiry only. Logs carry a safe error category, never a message that

@@ -137,46 +137,91 @@ describe("Stripe removal — repo-wide verification", () => {
     expect(codeOnly).not.toMatch(/\bstripe\w*/i);
   });
 
-  it("the Prisma schema's PaymentMethod model has no cvv/cvc/cid/security_code VALUE field under any name", () => {
-    const schema = readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf-8");
-    const modelMatch = /model PaymentMethod \{([\s\S]*?)\n\}/.exec(schema);
+  // POLICY (narrowed 2026-10-06 at the owner's explicit request; see docs/CARD_VAULT_SECURITY.md §19):
+  //   The security code (CVV/CVC) is NEVER stored in plaintext or in any ordinary application data. It exists ONLY as a card-vault
+  //   envelope in the dedicated, short-lived PaymentMethodCvv table — destroyed no later than 24 hours after the Booking Form was
+  //   signed — and is readable only through the dedicated Admin-only reveal action. Every guard below still fails if the code
+  //   appears anywhere else; they now describe exactly where it may be, instead of "nowhere".
+  const schemaText = () => readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf-8");
+  const stripSchemaComments = (block: string) => block.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
+
+  it("the Prisma schema's PaymentMethod model has no cvv/cvc/cid/security_code VALUE field under any name — only two relation pointers", () => {
+    const modelMatch = /model PaymentMethod \{([\s\S]*?)\n\}/.exec(schemaText());
     expect(modelMatch).not.toBeNull();
-    // CVV recollection follow-up: PaymentMethod now has one relation array
-    // field, `cvvRecollectionRequests CvvRecollectionRequest[]` — a
-    // relation POINTER to a separate request-tracking model, not a value
-    // column, so it's stripped before this check the same way the file
-    // header already treats explanatory comments as out of scope. The
-    // model it points to is independently verified immediately below to
-    // hold no actual CVV value column either — this isn't a blind
-    // exception, it's backed by its own assertion.
-    const body = modelMatch![1].replace(/^\s*cvvRecollectionRequests\s+CvvRecollectionRequest\[\].*$/m, "");
+    // Two relation POINTERS to separate models (a request-tracking model and the dedicated PaymentMethodCvv). A Prisma relation
+    // field is virtual — it is not a column of the PaymentMethod table (proved against a real database in
+    // booking-cvv.integration.test.ts) — and each target model is verified independently below. Nothing else may mention a code.
+    const body = stripSchemaComments(modelMatch![1])
+      .replace(/^\s*cvvRecollectionRequests\s+CvvRecollectionRequest\[\].*$/m, "")
+      .replace(/^\s*retainedSecurityCode\s+PaymentMethodCvv\?.*$/m, "");
     expect(body).not.toMatch(/cvv/i);
     expect(body).not.toMatch(/cvc/i);
     expect(body).not.toMatch(/\bcid\b/i);
     expect(body).not.toMatch(/security_?code/i);
   });
 
-  it("no Prisma model anywhere defines a cvv/cvc/cid/security_code column (the only place this could ever be persisted)", () => {
-    const schema = readFileSync(path.join(ROOT, "prisma", "schema.prisma"), "utf-8");
+  it("the ONLY model that can hold a security code is PaymentMethodCvv, and it holds it only as ciphertext in `encryptedCvv`", () => {
+    const schema = schemaText();
     const modelBlocks = schema.match(/model \w+ \{[\s\S]*?\n\}/g) ?? [];
     for (const block of modelBlocks) {
+      // (as before) no model has a column whose NAME is a security code
       expect(block).not.toMatch(/^\s*cvv\b/im);
       expect(block).not.toMatch(/^\s*cvc\b/im);
       expect(block).not.toMatch(/^\s*security_?code\b/im);
     }
+    const holders = modelBlocks.filter((b) => /\bencryptedCvv\b/.test(stripSchemaComments(b)));
+    expect(holders).toHaveLength(1);
+    expect(holders[0]).toMatch(/^model PaymentMethodCvv \{/);
+    // its complete column set: nothing that could carry a plaintext or a second copy
+    const columns = stripSchemaComments(holders[0])
+      .split("\n")
+      .map((l) => l.trim())
+      .filter((l) => l && !l.startsWith("model ") && l !== "}" && !l.startsWith("@@"))
+      .map((l) => l.split(/\s+/)[0]);
+    expect(columns).toEqual(["paymentMethodId", "paymentMethod", "encryptedCvv", "signedAt", "expiresAt", "destroyedAt", "destroyedReason", "createdAt"]);
+    expect(holders[0]).toMatch(/encryptedCvv\s+String\?/);
   });
 
-  // The security code is TRANSIENT input only: the customer types it into the
-  // booking form, it travels once with "Finish Booking", the server format-
-  // checks it and drops it. It is never stored, cached, logged, e-mailed or
-  // returned (and Reveal can never show it, because nothing keeps it). That
-  // handling is confined to exactly these four files; any other mention in
-  // executable source is a regression to investigate.
+  it("the migration lets the database itself refuse a plaintext value and a retention longer than 24 hours", () => {
+    const dir = readdirSync(path.join(ROOT, "prisma", "migrations")).find((d) => d.endsWith("booking_cvv_temporary_retention"));
+    expect(dir).toBeDefined();
+    const sql = readFileSync(path.join(ROOT, "prisma", "migrations", dir!, "migration.sql"), "utf-8");
+    // (the rollback note in the leading comments legitimately says DROP TABLE)
+    const code = sql.split(/\r?\n/).filter((l) => !l.trim().startsWith("--")).join("\n");
+    expect(sql).toMatch(/CREATE TABLE "PaymentMethodCvv"/);
+    expect(sql).toMatch(/PaymentMethodCvv_encryptedCvv_envelope[\s\S]*cv2\\\./);
+    expect(sql).toMatch(/"expiresAt" = "signedAt" \+ INTERVAL '24 hours'/);
+    expect(sql).toMatch(/ON DELETE CASCADE/);
+    // additive only: it touches no existing table
+    expect(code).not.toMatch(/ALTER TABLE "(?!PaymentMethodCvv")/);
+    expect(code).not.toMatch(/DROP |DELETE FROM|UPDATE "/i);
+  });
+
+  // The security code is first TRANSIENT input: the customer types it into the booking form, it travels once with "Finish
+  // Booking" and the server format-checks it. It is then encrypted straight away and held ONLY in PaymentMethodCvv (RETENTION
+  // files below). Every executable mention of the code in source must be in one of these two groups; any other file is a regression.
   const TRANSIENT_CODE_FILES = [
     path.join("src", "components", "booking", "card-payment-section.tsx"), // the input
     path.join("src", "components", "booking", "booking-flow.tsx"), // validation + the one submit payload + clearing
     path.join("src", "lib", "card-validation.ts"), // isValidCvvFormat (format check only)
-    path.join("src", "server", "actions", "booking.ts"), // schema key, format check, discard
+    path.join("src", "server", "actions", "booking.ts"), // schema key, format check, hand-off to the encrypting retention module, discard
+  ];
+  const RETENTION_FILES = [
+    path.join("src", "server", "security", "booking-cvv.ts"), // creation prep, destroy, 24h cleanup
+    path.join("src", "server", "actions", "booking-cvv.ts"), // the ONLY reveal / explicit destroy
+    path.join("src", "server", "queries", "booking-cvv.ts"), // existence + expiry for the Admin UI — never the value
+    path.join("src", "server", "security", "card-encryption.ts"), // encryptCvv / decryptCvv (own AAD domain)
+    path.join("src", "server", "security", "payment-vault.ts"), // getCvvVault (fail-closed gate)
+    path.join("src", "server", "security", "card-audit.ts"), // CVV_* audit action names
+    path.join("src", "server", "security", "rate-limit.ts"), // CVV_REVEAL bucket
+    path.join("src", "lib", "permissions.ts"), // canRevealBookingCvv
+    path.join("src", "lib", "prisma.ts"), // secondary defence: global omit of the ciphertext column
+    path.join("src", "components", "bookings", "cvv-reveal.tsx"), // Admin-only reveal / destroy UI
+    path.join("src", "components", "bookings", "payment-method-card.tsx"), // renders CvvReveal only when the server passes `cvv`
+    path.join("src", "app", "(crm)", "bookings", "[id]", "page.tsx"), // asks for existence/expiry states (Admin-only)
+    path.join("src", "app", "api", "cron", "tasks", "route.ts"), // daily 24h cleanup
+    path.join("src", "server", "actions", "payment-methods.ts"), // destroy when the payment is recorded as charged / cancelled
+    path.join("src", "server", "actions", "contact-payment-methods.ts"), // destroy when the card is removed
   ];
   const executableCode = (file: string) =>
     readFileSync(file, "utf-8")
@@ -186,12 +231,12 @@ describe("Stripe removal — repo-wide verification", () => {
       .map((line) => line.replace(/(^|[^:])\/\/.*$/, "$1"))
       .join("\n");
 
-  it("security-code handling exists ONLY in the four files that take it as transient input — nowhere else in executable source", () => {
+  it("security-code handling exists ONLY in the files that take it as input or implement the protected retention — nowhere else in executable source", () => {
     // The System Health sanitizer lists the security-code words in its
     // DEFENSIVE key deny-list (so such a key can never be stored in an
     // incident). It handles no value; it only refuses to.
     const DEFENSIVE_DENY_LIST = path.join("src", "server", "system", "health-events.ts");
-    const allowed = new Set([DEFENSIVE_DENY_LIST, ...TRANSIENT_CODE_FILES]);
+    const allowed = new Set([DEFENSIVE_DENY_LIST, ...TRANSIENT_CODE_FILES, ...RETENTION_FILES]);
     const offenders: string[] = [];
     for (const file of sourceFiles()) {
       if (!file.endsWith(".ts") && !file.endsWith(".tsx")) continue;
@@ -202,7 +247,30 @@ describe("Stripe removal — repo-wide verification", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("the server action touches the security code in exactly three ways — a schema key, a format check, and the discard — and never hands it to the database, the vault, a log or an e-mail", () => {
+  it("the ciphertext column and the decrypt call are touched only where they must be", () => {
+    const withToken = (re: RegExp) =>
+      sourceFiles()
+        .filter((f) => (f.endsWith(".ts") || f.endsWith(".tsx")) && !f.includes(`${path.sep}__integration__${path.sep}`))
+        .filter((f) => re.test(executableCode(f)))
+        .map((f) => path.relative(ROOT, f))
+        .sort();
+    // the encrypted value is read/written in: creation + cleanup module, the reveal action, and the one create in submitBooking (+ the omit config and the schema)
+    expect(withToken(/\bencryptedCvv\b/)).toEqual(
+      [
+        path.join("src", "lib", "prisma.ts"),
+        path.join("src", "server", "actions", "booking-cvv.ts"),
+        path.join("src", "server", "actions", "booking.ts"),
+        path.join("src", "server", "security", "booking-cvv.ts"),
+      ].sort()
+    );
+    expect(withToken(/\bdecryptCvv\b/)).toEqual([path.join("src", "server", "security", "card-encryption.ts"), path.join("src", "server", "security", "payment-vault.ts")].sort());
+    // the only code that can turn a stored envelope back into the value
+    expect(withToken(/getCvvVault\(\)\.reveal/)).toEqual([path.join("src", "server", "actions", "booking-cvv.ts")]);
+    // the reveal action is called from exactly one component
+    expect(withToken(/\brevealBookingCvv\b/)).toEqual([path.join("src", "components", "bookings", "cvv-reveal.tsx"), path.join("src", "server", "actions", "booking-cvv.ts")].sort());
+  });
+
+  it("the server action takes the security code in exactly these ways — a schema key, a format check, and a hand-off to the encrypting retention module — and never to the database, a log or an e-mail in plaintext", () => {
     const code = executableCode(path.join(ROOT, "src", "server", "actions", "booking.ts"));
     const lines = code.split("\n").filter((l) => /cvv/i.test(l));
     expect(lines.length).toBeGreaterThan(0);
@@ -210,14 +278,35 @@ describe("Stripe removal — repo-wide verification", () => {
       const ok =
         /^\s*cvv: z\.string\(\)/.test(line) || // the schema key
         /isValidCvvFormat/.test(line) || // the format check (also its import)
-        /\(card as \{ cvv\?: string \}\)\.cvv = undefined/.test(line) || // the discard
-        /card\.cvv !== undefined/.test(line); // the guard around the format check
+        /const submittedCvv = card\.cvv;/.test(line) || // read once, after the format check
+        /\(card as \{ cvv\?: string \}\)\.cvv = undefined/.test(line) || // the discard from the parsed input
+        /card\.cvv !== undefined/.test(line) || // the guard around the format check
+        /pendingCvvs/.test(line) || // the short-lived holder until the signing time is fixed
+        /pending\.cvv/.test(line) || // handed to prepareCvvForStorage, then cleared
+        /prepareCvvForStorage|PreparedCvv/.test(line) || // the encrypting module (import / call)
+        /retainedCvv|cvvNotRetained|retainedSecurityCode|encryptedCvv|BOOKING_CVV_NOT_RETAINED|CVV\/CVC|submittedCvv/.test(line); // the encrypted create / its bookkeeping
       expect(ok, line.trim()).toBe(true);
     }
-    // the only identifier it could be passed through is `card`, and none of the
-    // calls that persist, encrypt, log or send receive the whole card object
+    // the plaintext only ever reaches the encrypting function; never a vault.store, a log, a response or an e-mail
     expect(code).not.toMatch(/store\([^)]*card\b[^.]/);
     expect(code).not.toMatch(/console\.\w+\([^)]*\bcvv\b/i);
+    expect(code).not.toMatch(/pending\.cvv[^;\n]*(JSON|log|send|email)/i);
+    // the data written for the retained code is the ENCRYPTED value only
+    expect(code).toMatch(/encryptedCvv: retainedCvv\.get\(c\.id\)!\.encryptedCvv/);
+  });
+
+  it("no retention file ever logs, e-mails, stores in a browser or puts the code in a URL", () => {
+    for (const rel of RETENTION_FILES) {
+      const code = executableCode(path.join(ROOT, rel));
+      for (const line of code.split("\n").filter((l) => /cvv|cvc|securitycode/i.test(l))) {
+        expect(line, `${rel}: ${line.trim()}`).not.toMatch(/localStorage|sessionStorage|cookie\b|indexedDB|searchParams|router\.(push|replace)|URLSearchParams|sendEmail|sendMail|nodemailer/);
+        // a log line may name a fixed tag, never interpolate a value
+        if (/console\./.test(line)) expect(line, `${rel}: ${line.trim()}`).toMatch(/\[booking\] CVV_[A-Z_]+ \(\$\{[^}]*\}\)/);
+      }
+    }
+    // the Admin component keeps the value in component state only
+    const ui = executableCode(path.join(ROOT, "src", "components", "bookings", "cvv-reveal.tsx"));
+    expect(ui).not.toMatch(/localStorage|sessionStorage|document\.cookie|indexedDB|console\./);
   });
 
   it("the form keeps the security code in React state only — never in browser storage, a cookie, a URL or a console call", () => {

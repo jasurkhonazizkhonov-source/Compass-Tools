@@ -31,9 +31,10 @@ offered. The customer re-types the number; only the masked details
 ## What this feature does NOT do
 
 - Never returns, logs, or transmits a full card number for this purpose.
-- Never returns, stores, or offers a CVV for autofill. **Compass Tools never
-  stores a CVV** (the booking form takes it as transient input that is
-  discarded after a format check) — see `docs/PAYMENT_ARCHITECTURE.md`.
+- Never returns, stores, or offers a CVV for autofill. The booking form's CVV
+  is never autofilled or stored by the browser; the server keeps it only as the
+  short-lived, encrypted, Admin-only record described in
+  `docs/CARD_VAULT_SECURITY.md` section 19 — see `docs/PAYMENT_ARCHITECTURE.md`.
 - Never sends card data to customer emails, internal notifications, or
   analytics.
 - Only returns cards belonging to the requesting customer's own

@@ -122,7 +122,9 @@ describe("card data hygiene — static guards", () => {
     // card-key-rotation decrypts only to re-encrypt (script-only); payment-vault wraps it; the Reveal action is the one caller.
     // IP-vault "reveal" is a different (non-card) function and does not match \.reveal\( on the payment vault.
     const cardCallers = decryptCallers.filter((f) => !/ip-vault|ip-capture|booking-security|gmail/.test(f));
-    expect(cardCallers).toEqual(["src/server/actions/payment-methods.ts", "src/server/security/card-encryption.ts", "src/server/security/card-key-rotation.ts", "src/server/security/payment-vault.ts"]);
+    // The one addition is the Admin-only security-code reveal (actions/booking-cvv.ts), the sole caller of getCvvVault().reveal;
+    // the CVV envelope cannot decrypt as a card number (own AAD) and no PAN is reachable from it.
+    expect(cardCallers).toEqual(["src/server/actions/booking-cvv.ts", "src/server/actions/payment-methods.ts", "src/server/security/card-encryption.ts", "src/server/security/card-key-rotation.ts", "src/server/security/payment-vault.ts"]);
   });
 
   it("no console output in card-handling code can carry a card number: no console call mentions card/PAN variables", () => {

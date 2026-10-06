@@ -230,7 +230,7 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     expect(sendStaffEmail).toHaveBeenCalledTimes(1);
   });
 
-  it("NO CVV ANYWHERE: a security code is accepted as transient input, but is never stored, cached, logged or echoed — not in any table of the database", async () => {
+  it("NO PLAINTEXT CVV ANYWHERE: a security code is retained only as an encrypted PaymentMethodCvv record — never in plaintext, cached, logged or echoed, and not in any other table", async () => {
     const { quote } = await makeQuote();
     const spies = [vi.spyOn(console, "log"), vi.spyOn(console, "error"), vi.spyOn(console, "warn"), vi.spyOn(console, "info")];
     // A 4-digit marker is only valid for American Express, so this booking uses
@@ -263,6 +263,13 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
       if (rows[0].n > 0) hits.push(table_name);
     }
     expect(hits).toEqual([]);
+
+    // The one place the code may exist is the dedicated record, and only as ciphertext that decrypts through the CVV path alone
+    // (booking-cvv.integration.test.ts covers the whole lifecycle).
+    const kept = await prisma.$queryRaw<Array<{ encryptedCvv: string | null }>>`SELECT "encryptedCvv" FROM "PaymentMethodCvv" WHERE "paymentMethodId" IN (SELECT "id" FROM "PaymentMethod" WHERE "bookingId" = ${result.bookingId})`;
+    expect(kept).toHaveLength(1);
+    expect(kept[0].encryptedCvv).toMatch(/^cv2./);
+    expect(kept[0].encryptedCvv).not.toContain(MARK);
 
     // The stored card has no security-code field at all, and no plain PAN.
     const [pm] = await prisma.paymentMethod.findMany({ where: { bookingId: result.bookingId } });

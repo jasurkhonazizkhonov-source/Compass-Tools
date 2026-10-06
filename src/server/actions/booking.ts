@@ -27,6 +27,7 @@ import { BOOKABLE_QUOTE_STATUSES, isQuoteBookable } from "@/lib/exchange-proposa
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { runAfterResponse } from "@/lib/run-after-response";
 import { generateBookingReference } from "@/lib/booking-reference";
+import { prepareCvvForStorage, type PreparedCvv } from "@/server/security/booking-cvv";
 
 /** Called when the customer opens the secure quote page. Advances SENT to
  * READ once — the `if` guard is what prevents a duplicate transition (and
@@ -247,6 +248,8 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
   // generic; never echo any part of any submitted card number.
   // preparedCards holds every field that is retained; no security code is
   // ever part of it — see cardEntrySchema.
+  // Each card's security code, held only until the signing time is fixed below and it can be encrypted (see retainedCvv).
+  const pendingCvvs: Array<{ id: string; cvv: string | undefined }> = [];
   const preparedCards: Array<{ id: string; cardholderName: string; encryptedPan: string; last4: string; cardBrand: string | undefined; expiryMonth: number; expiryYear: number; amount: number }> = [];
   for (const card of parsed.paymentMethods) {
     const cardNumberDigits = digitsOnly(card.cardNumber);
@@ -264,6 +267,7 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
     if (card.cvv !== undefined && !isValidCvvFormat(card.cvv, cardBrand)) {
       return { ok: false, error: "Payment information could not be processed" };
     }
+    const submittedCvv = card.cvv;
     (card as { cvv?: string }).cvv = undefined;
     // The row id is chosen first so it is bound into the ciphertext (AAD): the
     // encrypted number only decrypts as THIS payment-method row.
@@ -295,6 +299,7 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
       });
       return { ok: false, error: "We couldn't securely process your payment details right now. Nothing was charged and no booking was recorded. Please try again shortly or contact your travel agent." };
     }
+    pendingCvvs.push({ id: paymentMethodId, cvv: submittedCvv });
     preparedCards.push({
       id: paymentMethodId,
       cardholderName: card.cardholderName,
@@ -350,6 +355,28 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
   const location = getRequestLocation(headerList);
   const userAgent = headerList.get("user-agent") ?? undefined;
   const now = new Date();
+
+  // The security code of each card is encrypted NOW — `now` is the authoritative signing time (the same instant stored as the
+  // quote's signedAt and the booking's termsAcceptedAt) and starts its fixed 24-hour clock — and kept only in the dedicated
+  // PaymentMethodCvv row written in the transaction below (server/security/booking-cvv.ts). A failure to retain it never fails the
+  // booking (the card is still stored; the Admin sees that no code is retained) but is surfaced on System Health; the plaintext
+  // reference is dropped immediately either way.
+  const retainedCvv = new Map<string, PreparedCvv>();
+  let cvvNotRetained = 0;
+  for (const pending of pendingCvvs) {
+    const prepared = await prepareCvvForStorage(pending.cvv, pending.id, now, now);
+    if (prepared) retainedCvv.set(pending.id, prepared);
+    else if (pending.cvv) cvvNotRetained++;
+    pending.cvv = undefined;
+  }
+  if (cvvNotRetained > 0) {
+    await recordHealthEvent({
+      type: "BOOKING_CVV_NOT_RETAINED",
+      category: "payment",
+      severity: "WARNING",
+      message: "A customer's security code could not be retained for a booking (card vault unavailable). The booking and card were saved; the Admin will see that no CVV/CVC is available for manual charging.",
+    });
+  }
 
   // ── THE critical section ───────────────────────────────────────────────
   // Everything that must be all-or-nothing happens in ONE transaction: the
@@ -463,6 +490,9 @@ export async function submitBooking(input: SubmitBookingInput): Promise<SubmitBo
                 expiryYear: c.expiryYear,
                 amountAllocated: c.amount,
                 consentGivenAt: now,
+                ...(retainedCvv.has(c.id)
+                  ? { retainedSecurityCode: { create: { encryptedCvv: retainedCvv.get(c.id)!.encryptedCvv, signedAt: retainedCvv.get(c.id)!.signedAt, expiresAt: retainedCvv.get(c.id)!.expiresAt } } }
+                  : {}),
               })),
             },
           },

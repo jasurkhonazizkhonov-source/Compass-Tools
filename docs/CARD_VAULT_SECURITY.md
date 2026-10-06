@@ -17,14 +17,16 @@ a compliance claim.
 | Cardholder name | Yes | `PaymentMethod.cardholderName` | Cardholder data stored **with** a PAN; ordinary column, **access-controlled** (same visibility rules as the booking/contact). Not encrypted: it is shown in masked views and needed for search/display; encrypting it would force a decrypt on every page view and widen exposure of the key. |
 | Expiry month / year | Yes | `expiryMonth`, `expiryYear` | Same as cardholder name (shown in masked views; needed for expiry checks). |
 | Last four digits, brand | Yes | `last4`, `cardBrand` | Masked display data. Not sensitive by itself. |
-| **CVV / CVC / security code** | **Never stored** (transient input only) | nowhere | Typed into the booking form (React state), sent once with Finish Booking, format-checked on the server and dropped. Never written to any table or the vault, cached, logged, audited, e-mailed, returned by any API, put in a URL or browser storage, and never recoverable — so Reveal cannot show it. No column anywhere. A source-scan test pins where it is touched; a real-database test scans every table for a marker value. |
+| **CVV / CVC / security code** | **Temporarily, encrypted, ≤ 24 h** (Sensitive Authentication Data) | `PaymentMethodCvv.encryptedCvv` — and nowhere else | Typed into the booking form (React state), sent once with Finish Booking, format-checked, then **encrypted at once** (card-vault envelope, its own AAD) and written only to the dedicated `PaymentMethodCvv` table. **Never plaintext**, never on `PaymentMethod`/`Booking`/any ordinary record; never cached, logged, audited, e-mailed, put in a URL or browser storage. Destroyed no later than **24 hours after the Booking Form was signed**, and earlier when the payment is recorded as charged or cancelled or an Admin destroys it. Revealed only by the dedicated **Admin-only** action. Full description, limits and PCI position: **section 19**. |
 | PIN, magnetic-stripe/track data | Never | nowhere | Same. |
 | PAN fingerprint / hash / search index | **No** | nowhere | There is **no product requirement to look a card up by its number**, so none is built (an HMAC index would only add another PAN-derived value to protect). If one is ever required it must be a keyed HMAC-SHA-256 (never a plain hash) under its own key, stored separately and never returned to a client. A guard test fails if a fingerprint column appears without this document being revisited. |
 
 Field-level rationale: PCI DSS requires the PAN to be rendered unreadable
 wherever it is stored; it permits cardholder name and expiry to be stored, with
 protection. The sensitive authentication data (CVV, PIN, track data) may not be
-retained after authorization at all — hence "never".
+retained after authorization at all. PIN and track data are therefore never
+collected. The security code is the one exception, and it is held only before
+authorization, encrypted, for at most 24 hours — see section 19.
 
 ## 2. Card lifecycle and every place a PAN can exist
 
@@ -599,3 +601,55 @@ WebAuthn for every account holding `payments.reveal`, verified per Reveal with a
 A runtime failure while storing a card (for example a database fault) is not a
 configuration state; it raises the `BOOKING_PAYMENT_UNAVAILABLE` health incident
 and the customer is told nothing was charged and no booking was recorded.
+
+## 19. Security code (CVV/CVC) — temporary, encrypted, Admin-only (maximum 24 hours)
+
+**Status: application-level controls implemented; formal PCI DSS / acquirer / payment-brand / QSA validation remains required. This section does not claim, and the feature does not establish, PCI DSS compliance.**
+
+### 19.1 What it is and why it exists
+The CVV/CVC is **Sensitive Authentication Data (SAD)**. PCI SSC guidance permits it to be collected and held *before* authorization (and requires strong encryption while it is) but forbids retaining it *after* authorization, even encrypted; payment brands and acquirers may impose stricter rules. Compass Tools has no payment gateway: an Administrator charges the card **by hand** in the supplier's / acquirer's terminal. To make that possible the code the customer typed into the Booking Form is kept — **only** for the pending manual-payment workflow — in a dedicated, short-lived, encrypted record and then destroyed. Nothing about this is a gateway, a tokenization service or a certified payment application.
+
+### 19.2 The lifecycle
+```
+Booking Form signed                    (authoritative instant = the one stored as Quote.signedAt / Booking.termsAcceptedAt)
+  → code format-checked, encrypted (card-vault envelope, own AAD), written to PaymentMethodCvv   expiresAt = signedAt + 24 h
+  → Admin opens the Booking → Payment → "Reveal CVV/CVC" (repeatable inside the window; shown 30 s)
+  → Admin charges the card by hand → records the payment
+  → destroyed:   payment recorded as SUCCEEDED / workflow CONFIRMED      → ciphertext set to NULL immediately
+                 workflow CANCELLED, or the card is removed                → destroyed
+                 Admin presses "Destroy CVV/CVC" (confirmation dialog)     → destroyed
+                 24 hours after signing, whatever else happened            → deleted (daily cron) and refused/deleted at reveal time
+```
+* **The 24-hour limit is fixed.** `CVV_RETENTION_MS` is a constant in `src/server/security/booking-cvv.ts`; no environment variable, setting or UI changes it, and there is no "unlimited" mode. `expiresAt` is written once at creation. **Nothing extends it**: revealing, reloading, editing the booking, reassigning it, changing the quote, recording a failed attempt or recording a payment never writes to it, and the database itself rejects any row whose `expiresAt` is not exactly `signedAt + 24 hours` (`PaymentMethodCvv_expires_24h_after_signing`).
+* **Payment states (from the real state machine).** `CONFIRMED` (set by *Record payment → Succeeded* or by the status control) is the terminal success state and destroys the code. `CANCELLED` is terminal and destroys it. `FAILED` is retryable — a failed attempt does **not** destroy it and does **not** extend the deadline (the Admin may retry within the 24 hours). `AUTHORIZED` is, in this codebase, the intermediate "supplier charge attempted" state (see `PaymentWorkflowStatus` in `schema.prisma`), not a terminal one, so it does not destroy the code; the 24-hour deadline still applies to it.
+* **Creation-time enforcement.** No record is created when there is no code, when the signing time is invalid or in the future, when the window would already be over, or when the vault is unavailable (the booking and card are still saved; System Health shows `BOOKING_CVV_NOT_RETAINED`, and the Admin sees "no longer available").
+* **Expiry is enforced three ways.** (1) The daily cron (`/api/cron/tasks`) deletes every record past `expiresAt`, idempotently; (2) every reveal checks `now < expiresAt` first and deletes a stale record on the spot; (3) the database constraint above makes a longer window unrepresentable. The limit therefore holds even if a cron run is late.
+
+### 19.3 Storage and encryption
+* Table `PaymentMethodCvv` (one row per card, keyed by `paymentMethodId`, `ON DELETE CASCADE`): `encryptedCvv`, `signedAt`, `expiresAt`, `destroyedAt`, `destroyedReason`, `createdAt`. **No plaintext column exists**; the `PaymentMethod`, `Booking`, `Quote`, `Contact` and `Lead` tables hold no security-code field (guard-tested; the `retainedSecurityCode` field on the `PaymentMethod` Prisma model is a *virtual* relation pointer required by Prisma for the foreign key — it is not a column and cannot carry a value).
+* Same key ring, same `cv2.<keyId>.<iv‖tag‖ciphertext>` AES-256-GCM envelope and fail-closed vault gate as the card number, but with its **own AAD domain** (`compass-card-vault|cv2-cvv|<paymentMethodId>`): a code's ciphertext cannot be decrypted as a card number, as another card's code, or from another row. The database CHECK `PaymentMethodCvv_encryptedCvv_envelope` rejects anything that is not an envelope (or NULL).
+* **Key rotation:** the rotation script does not touch these rows — they never outlive 24 hours, so a retired key needs to remain available only until the last record encrypted under it has expired (24 h). Nothing in the rotation or `--verify` tooling was changed.
+* The ciphertext column is omitted from every Prisma read (`src/lib/prisma.ts`) — a **secondary** defence. The primary controls are below.
+
+### 19.4 Who can reveal it and how
+Strictly **Admin only**. `canRevealBookingCvv` = role `ADMIN` **and** the explicit `payments.reveal` grant (the card-number Reveal's own grant); another role's card-reveal permission never carries over. The server action `revealBookingCvv(bookingId, paymentMethodId)` (`src/server/actions/booking-cvv.ts`) re-checks everything — the UI is never the control:
+
+| Role | Reveal / Destroy CVV/CVC |
+|---|---|
+| Admin with `payments.reveal`, active, recent sign-in, own company, booking visible | **Allowed** |
+| Admin without the grant · inactive Admin · Admin of another company | Refused |
+| Manager · Ticketing Agent · Travel Agent · Flight Expert · Marketing Agent (with or without card-reveal rights) | Refused — before the rate limiter, the booking lookup or any decryption |
+| Not signed in | Refused |
+
+Order of checks: active session → Admin + grant → dedicated rate limit `CVV_REVEAL` (10 per 10 minutes per account, counts every attempt, its own bucket, applied **before** any decryption) → the booking is one the account can see **and** in its own company → the card belongs to **that** booking → sign-in within the last 15 minutes (same step-up as the card Reveal) → the record exists, is not destroyed and has not expired → decrypt server-side → return the code. One request is *Booking + that booking's card*; there is no list, search, by-contact, by-lead or bulk variant. The code is never part of any Booking / Quote / Contact / Lead read, never in the page's data (the Booking page passes only "available until …" / "not available" to an Admin, and nothing at all to anyone else), and the ciphertext is never returned to a browser. The UI shows it for 30 seconds (hidden also on tab change / blur / unmount), keeps it in component state only, blocks copy, and never writes it to storage, a URL or analytics. **Hiding it is not destroying it**: the stored value remains until one of the destruction events above.
+
+### 19.5 Audit
+`CVV_REVEALED`, `CVV_REVEAL_DENIED` (with a reason category such as `NOT_ADMIN`, `MISSING_PERMISSION`, `BOOKING_NOT_ACCESSIBLE`, `CARD_NOT_ON_BOOKING`, `RECENT_LOGIN_REQUIRED`, `EXPIRED`, `DESTROYED`), `CVV_REVEAL_RATE_LIMITED` and `CVV_DESTROYED` (reason `PAYMENT_CONFIRMED`, `PAYMENT_CANCELLED`, `CARD_REMOVED`, `ADMIN_DESTROYED`, `EXPIRED`) go to the append-only card audit log with actor, booking, company, card id, result and the usual request context. **Never** the code, the ciphertext, the card number or a key. Logs carry only fixed tags (`[booking] CVV_NOT_RETAINED (…)`), never a value; no e-mail, activity entry, notification or health incident contains it (source- and database-scanned by tests).
+
+### 19.6 Destruction, backups and what the application cannot promise
+The application guarantees that **the live database no longer holds the code** after destruction: destruction sets the ciphertext to `NULL` (and the daily cleanup / reveal-time check deletes the row); no application path can recover it afterwards. It does **not** and cannot claim that every copy is gone:
+* **PostgreSQL** keeps superseded row versions until vacuum and replays them from the write-ahead log; **replicas, snapshots, point-in-time-recovery archives and disaster-recovery copies** taken during the 24 hours may contain the encrypted value (and, if the key ring is also available, it could be decrypted) until those copies expire. Backup retention, replica lag, snapshot schedules and who may restore them are **infrastructure controls this repository cannot see or set**. Treat the provider's backup retention as part of the PCI assessment; if retention is long, the CVV exposure window in backups is long.
+* The key ring lives in the same application as the ciphertext's reader (see section 13): anyone who can read both the database and the application environment can decrypt every un-destroyed record.
+
+### 19.7 What this does NOT establish
+This is a set of application-level controls. It does not by itself make the environment PCI DSS compliant. **REQUIRES PCI/QSA/ACQUIRER REVIEW**: whether holding the code before a manual charge is acceptable under the merchant's validation type, acquirer agreement and each card brand's rules; the length of backup / replica retention; the key-management model (no HSM/KMS, no dual control); and the scoping of the CRM, its database and its staff terminals. Retention can be switched off at any time by removing the capture (nothing else depends on it): the Booking Form would then validate and drop the code exactly as before.

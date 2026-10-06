@@ -13,6 +13,7 @@ import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit
 import { auditCardEvent, type CardAuditAction } from "@/server/security/card-audit";
 import { isValidCardNumber, isValidExpiry, detectCardBrand, lastFour, digitsOnly } from "@/lib/card-validation";
 import { logActivity } from "@/server/activity-log";
+import { destroyCvv } from "@/server/security/booking-cvv";
 
 const GENERIC_DENIAL = "You are not authorized to manage payment methods for this contact";
 const GENERIC_VALIDATION_ERROR = "Payment information could not be processed";
@@ -253,6 +254,9 @@ export async function removePaymentMethod(paymentMethodId: string) {
     data: { status: "ARCHIVED", encryptedPan: PURGED_REFERENCE, panPurgedAt: new Date() },
     select: { id: true },
   });
+
+  // The card number is destroyed here, so any retained security code for it is destroyed too (it is useless without the card).
+  await destroyCvv(existing.id, "CARD_REMOVED", actor.id);
 
   await auditPaymentMethodMutation({ actorId: actor.id, paymentMethodId: existing.id, contactId: existing.contactId, last4: existing.last4, action: "PAYMENT_METHOD_REMOVED", success: true });
   await auditPaymentMethodMutation({ actorId: actor.id, paymentMethodId: existing.id, contactId: existing.contactId, last4: existing.last4, action: "PAYMENT_METHOD_PURGED", success: true });

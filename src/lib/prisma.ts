@@ -165,6 +165,9 @@ function createPrismaClient() {
     // omit only shapes what is returned.)
     omit: {
       paymentMethod: { encryptedPan: true },
+      // Secondary defence only (the primary controls are the dedicated Admin-only reveal in server/security/booking-cvv.ts): the
+      // temporarily retained security code is never part of a generic read.
+      paymentMethodCvv: { encryptedCvv: true },
       account: {
         activeSessionId: true,
         lastSignInIp: true,

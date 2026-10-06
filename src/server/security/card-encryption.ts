@@ -123,6 +123,57 @@ export function decryptPan(reference: string, recordId: string): string {
   }
 }
 
+// ── Security code (CVV/CVC) — same ring, same envelope, its OWN associated data ─────────────────────────────────────────────────
+// The temporarily retained security code (PaymentMethodCvv) uses the very same key ring and `cv2.<keyId>.<payload>` envelope as the
+// card number, but is bound to a DIFFERENT AAD domain ("cv2-cvv"): a CVV envelope cannot decrypt as a card number, nor as the CVV
+// of another card, and a card-number envelope cannot be passed off as a CVV. Same fail-closed rules and fixed error codes.
+function cvvAadFor(recordId: string): Buffer {
+  return Buffer.from(`compass-card-vault|cv2-cvv|${recordId}`, "utf8");
+}
+
+/** Encrypts a 3–4 digit security code for the payment method `recordId`. Never logs or echoes the input. */
+export function encryptCvv(cvv: string, recordId: string): string {
+  if (!/^\d{3,4}$/.test(cvv) || !recordId) throw new CardVaultError("INVALID_INPUT");
+  const current = getCurrentKey();
+  if (!current) throw new CardVaultError("NOT_CONFIGURED");
+  try {
+    const iv = randomBytes(IV_LENGTH);
+    const cipher = createCipheriv(ALGORITHM, current.key, iv, { authTagLength: AUTH_TAG_LENGTH });
+    cipher.setAAD(cvvAadFor(recordId));
+    const encrypted = Buffer.concat([cipher.update(cvv, "utf8"), cipher.final()]);
+    const payload = Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString("base64url");
+    return `${ENVELOPE_PREFIX}${current.id}.${payload}`;
+  } finally {
+    current.key.fill(0);
+  }
+}
+
+/** Decrypts a stored security-code envelope. Only the dedicated, Admin-only, audited reveal path may call this. */
+export function decryptCvv(reference: string, recordId: string): string {
+  if (!recordId) throw new CardVaultError("INVALID_INPUT");
+  const info = inspectReference(reference);
+  // Only a versioned envelope can be a security code: a legacy blob or the purged tombstone never is.
+  if (!info || info.format !== "envelope") throw new CardVaultError("MALFORMED");
+  if (getKeyringStatus().state !== "configured") throw new CardVaultError("NOT_CONFIGURED");
+  const key = getKeyBuffer(info.keyId);
+  if (!key) throw new CardVaultError("KEY_UNKNOWN");
+  try {
+    const raw = Buffer.from(reference.split(".")[2], "base64url");
+    if (raw.length < IV_LENGTH + AUTH_TAG_LENGTH + 1) throw new CardVaultError("MALFORMED");
+    const decipher = createDecipheriv(ALGORITHM, key, raw.subarray(0, IV_LENGTH), { authTagLength: AUTH_TAG_LENGTH });
+    decipher.setAAD(cvvAadFor(recordId));
+    decipher.setAuthTag(raw.subarray(IV_LENGTH, IV_LENGTH + AUTH_TAG_LENGTH));
+    const plain = Buffer.concat([decipher.update(raw.subarray(IV_LENGTH + AUTH_TAG_LENGTH)), decipher.final()]).toString("utf8");
+    if (!/^\d{3,4}$/.test(plain)) throw new CardVaultError("MALFORMED");
+    return plain;
+  } catch (err) {
+    if (err instanceof CardVaultError) throw err;
+    throw new CardVaultError("AUTH_FAILED");
+  } finally {
+    key.fill(0);
+  }
+}
+
 /** Generates a fresh 32-byte key (base64) to paste into the host's secret store — a one-off, manual setup helper. */
 export function generateKey(): string {
   return randomBytes(32).toString("base64");

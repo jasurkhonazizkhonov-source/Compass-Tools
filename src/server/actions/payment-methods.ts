@@ -15,6 +15,7 @@ import { isChargeAmountAllowed } from "@/lib/payment-limits";
 import { canAccessPaymentMethod } from "@/server/payment-method-access";
 import { bookingVisibilityWhere } from "@/server/visibility";
 import { formatMoney, isSupportedCurrency } from "@/lib/currency";
+import { destroyCvv } from "@/server/security/booking-cvv";
 
 async function auditPaymentMethodAccess(params: {
   actorId: string | undefined;
@@ -235,6 +236,9 @@ export async function confirmPaymentReceived(input: z.infer<typeof confirmPaymen
     where: { id: paymentMethod.id },
     data: { workflowStatus: data.status === "SUCCEEDED" ? "CONFIRMED" : "FAILED" },
   });
+  // A successful charge is terminal: the retained security code is destroyed now (best-effort, never blocks recording the payment).
+  // A FAILED attempt is retryable and leaves it alone — and never extends its fixed 24-hour deadline.
+  if (data.status === "SUCCEEDED") await destroyCvv(paymentMethod.id, "PAYMENT_CONFIRMED", actor.id);
 
   await logActivity({
     bookingId: booking.id,
@@ -305,6 +309,11 @@ export async function updatePaymentMethodWorkflowStatus(input: z.infer<typeof up
     where: { id: paymentMethod.id },
     data: { workflowStatus: data.workflowStatus },
   });
+  // Terminal outcomes destroy the retained security code: CONFIRMED (charged) and CANCELLED (voided). AUTHORIZED is the
+  // intermediate "supplier charge attempted" state (see PaymentWorkflowStatus in schema.prisma) and FAILED is retryable, so neither
+  // destroys it; the 24-hour deadline still applies to both and is never extended.
+  if (data.workflowStatus === "CONFIRMED") await destroyCvv(paymentMethod.id, "PAYMENT_CONFIRMED", actor.id);
+  else if (data.workflowStatus === "CANCELLED") await destroyCvv(paymentMethod.id, "PAYMENT_CANCELLED", actor.id);
 
   await logActivity({
     bookingId: data.bookingId,

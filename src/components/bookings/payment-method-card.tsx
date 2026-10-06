@@ -10,6 +10,7 @@ import { revealPaymentMethod, updatePaymentMethodWorkflowStatus } from "@/server
 import { formatMoney, type SupportedCurrency } from "@/lib/currency";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import { useTimedReveal } from "./use-timed-reveal";
+import { CvvReveal } from "./cvv-reveal";
 import type { CardBrand } from "@/lib/card-validation";
 import type { PaymentMethodStatus, PaymentWorkflowStatus } from "@/generated/prisma/client";
 
@@ -47,10 +48,10 @@ type PaymentMethodSummary = {
  * is hidden, the window loses focus or the component unmounts — and shows the
  * retained PAN/cardholder/expiration/brand. The number is not selectable and
  * copy/cut are blocked, so it is never put on the clipboard by default (staff
- * read it and key it into the supplier's system by hand). There is no security code (CVV/CVC)
- * anywhere in this app: it is never collected, cached or displayed. The
- * revealed data lives only in this component's local state and is cleared
- * on unmount.
+ * read it and key it into the supplier's system by hand). The security code (CVV/CVC) is NOT part of
+ * this view and never travels with it: it has its own Admin-only "Reveal CVV/CVC" control (CvvReveal, rendered
+ * only when the server passes `cvv`), its own server action, and a hard 24-hour life. The revealed data lives only in
+ * this component's local state and is cleared on unmount.
  */
 export function PaymentMethodCard({
   bookingId,
@@ -59,6 +60,7 @@ export function PaymentMethodCard({
   canReveal,
   canManageStatus,
   currency,
+  cvv,
 }: {
   bookingId: string;
   label: string;
@@ -68,6 +70,8 @@ export function PaymentMethodCard({
   /** The booking's actual transaction currency — never assume USD for a
    * customer payment amount (see lib/currency.ts's formatMoney). */
   currency: SupportedCurrency;
+  /** Present ONLY for an Admin who may reveal the retained security code (decided on the server); absent for everyone else. */
+  cvv?: { available: true; expiresAt: string } | { available: false };
 }) {
   const { value: revealed, secondsLeft, show, hide } = useTimedReveal<RevealedCard>();
   const [isPending, setIsPending] = useState(false);
@@ -162,6 +166,8 @@ export function PaymentMethodCard({
           )}
         </div>
       )}
+
+      {cvv && <CvvReveal bookingId={bookingId} paymentMethodId={paymentMethod.id} state={cvv} />}
     </div>
   );
 }

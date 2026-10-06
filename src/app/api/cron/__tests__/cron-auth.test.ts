@@ -9,18 +9,20 @@ const work = {
   tasks: vi.fn(async () => ({ processed: 0 })),
   cleanup: vi.fn(async () => ({ deleted: 0 })),
   retention: vi.fn(async () => ({ status: "disabled" as const })),
+  cvv: vi.fn(async () => ({ deleted: 0 })),
   sequences: vi.fn(async () => ({ sent: 0 })),
   leads: vi.fn(async () => ({ distributed: 0 })),
 };
 vi.mock("@/server/actions/tasks", () => ({ processDueTaskNotifications: () => work.tasks() }));
 vi.mock("@/server/security/rate-limit", () => ({ cleanupExpiredRateLimitCounters: () => work.cleanup() }));
 vi.mock("@/server/security/card-retention-schedule", () => ({ runScheduledCardRetention: () => work.retention() }));
+vi.mock("@/server/security/booking-cvv", () => ({ destroyExpiredCvvs: () => work.cvv() }));
 vi.mock("@/server/actions/sequences", () => ({ processDueSequenceSteps: () => work.sequences() }));
 vi.mock("@/server/actions/lead-queue", () => ({ distributePendingWebsiteLeads: () => work.leads() }));
 
 const SECRET = "test-only-cron-secret-not-a-real-one";
 const ROUTES = [
-  ["tasks", () => import("../tasks/route"), () => [work.tasks, work.cleanup, work.retention]],
+  ["tasks", () => import("../tasks/route"), () => [work.tasks, work.cleanup, work.retention, work.cvv]],
   ["sequences", () => import("../sequences/route"), () => [work.sequences]],
   ["leads", () => import("../leads/route"), () => [work.leads]],
 ] as const;

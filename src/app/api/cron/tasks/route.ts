@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { processDueTaskNotifications } from "@/server/actions/tasks";
 import { cleanupExpiredRateLimitCounters } from "@/server/security/rate-limit";
 import { runScheduledCardRetention } from "@/server/security/card-retention-schedule";
+import { destroyExpiredCvvs } from "@/server/security/booking-cvv";
 
 // Entry point for a real scheduler (Vercel Cron, GitHub Actions schedule,
 // an external queue worker, etc.) to trigger task-due notifications. In
@@ -25,5 +26,9 @@ export async function GET(request: NextRequest) {
   // Opt-in card retention purge (CARD_RETENTION_DAYS; disabled unless set, and only
   // ever run by an AUTHENTICATED cron in production). Never fails the cron run.
   const cardRetention = await runScheduledCardRetention().catch(() => ({ status: "failed" as const }));
-  return NextResponse.json({ ...result, rateLimitCountersDeleted: rateLimitCleanup.deleted, cardRetention });
+  // The 24-hour limit on retained security codes (CVV/CVC): every record whose window has ended is destroyed here, every day,
+  // whether or not CARD_RETENTION_DAYS is set. Idempotent; never fails the run. (Reveal also refuses and destroys an expired
+  // record on its own, so the limit holds even if this run is late.)
+  const cvvCleanup = await destroyExpiredCvvs().catch(() => ({ deleted: 0 }));
+  return NextResponse.json({ ...result, rateLimitCountersDeleted: rateLimitCleanup.deleted, cardRetention, cvvRecordsDestroyed: cvvCleanup.deleted });
 }

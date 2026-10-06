@@ -12,7 +12,7 @@ import { getClientIp } from "@/lib/request-ip";
 // events about who touched a card; both are capped and neither is used for
 // anything except investigation. Metadata values are additionally scrubbed of
 // anything card-number-shaped as defence in depth — callers already never pass
-// a PAN, and the CVV/CVC does not exist anywhere in this application.
+// a PAN, and the CVV/CVC (kept only in the dedicated, 24-hour PaymentMethodCvv record) is never passed to this writer.
 //
 // The rows are append-only at the database (migration
 // 20260926000400_card_vault_hardening): a trigger rejects UPDATE and DELETE of
@@ -33,7 +33,13 @@ export type CardAuditAction =
   | "CARD_ENCRYPTION_FAILED"
   | "CARD_DECRYPTION_FAILED"
   | "CARD_KEYS_ROTATED"
-  | "PAYMENT_PERMISSIONS_CHANGED";
+  | "PAYMENT_PERMISSIONS_CHANGED"
+  // The temporarily retained security code (docs/CARD_VAULT_SECURITY.md §19). These events carry ids and a reason category only —
+  // never the code, its ciphertext or any card number.
+  | "CVV_REVEALED"
+  | "CVV_REVEAL_DENIED"
+  | "CVV_REVEAL_RATE_LIMITED"
+  | "CVV_DESTROYED";
 
 const CARD_SHAPED = /\b(?:\d[ -]?){13,19}\b/g;
 

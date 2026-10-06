@@ -69,6 +69,7 @@
     "20261004000200_unsubscribe_reason_and_booking_geo",
     "20261005000100_airline_reference_refresh",
     "20261005000200_audit_log_append_only",
-    "20261005000300_sign_in_tracking_and_session_revocation"
+    "20261005000300_sign_in_tracking_and_session_revocation",
+    "20261006000100_booking_cvv_temporary_retention"
   ]
 }

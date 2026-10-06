@@ -179,6 +179,8 @@ export const RATE_LIMITS = {
   UNSUBSCRIBE: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
   /** Full-card Reveal, per staff account. A legitimate manual charge reveals a handful of cards; this blocks scripted or stolen-session harvesting. */
   CARD_REVEAL: { windowMs: 10 * 60 * 1000, maxAttempts: 15 } satisfies RateLimitConfig,
+  /** Security-code (CVV/CVC) reveal, per Administrator account — its OWN bucket (never shared with the card-number Reveal), stricter, and counting every attempt. */
+  CVV_REVEAL: { windowMs: 10 * 60 * 1000, maxAttempts: 10 } satisfies RateLimitConfig,
   /** Full-IP reveal (a booking signer's or a lead submitter's), per staff account — counts every attempt, so a stolen session or a script cannot harvest addresses. */
   IP_REVEAL: { windowMs: 10 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
   /** Card add / edit / remove from a contact, per staff account. */

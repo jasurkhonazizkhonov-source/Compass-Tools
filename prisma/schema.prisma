@@ -1634,6 +1634,9 @@ model PaymentMethod {
 
   charges PaymentCharge[]
   cvvRecollectionRequests CvvRecollectionRequest[]
+  // The card's temporarily retained security code, if any (at most 24 h after the Booking Form was signed) — see
+  // PaymentMethodCvv. Never read by an ordinary query.
+  retainedSecurityCode PaymentMethodCvv?
 
   @@index([bookingId])
   @@index([contactId])
@@ -2205,4 +2208,31 @@ model RevokedSession {
 
   @@index([createdAt])
   @@index([accountId])
+}
+
+/// The security code (CVV/CVC) the customer typed into the Booking Form for ONE card, kept ONLY so an Administrator can charge
+/// that card by hand, and NEVER longer than 24 hours after the form was signed (`expiresAt = signedAt + 24 h`, fixed in code —
+/// not configurable, not extendable, never reset by viewing, editing or recording a payment). It is Sensitive Authentication
+/// Data: it exists only in this dedicated table, only as a card-vault envelope ("cv2.<keyId>.<payload>", AES-256-GCM with an
+/// AAD that is specific to the CVV and to this card, so it cannot be swapped with a card number or another card's code), and a
+/// database CHECK rejects anything that is not an envelope. The ciphertext column is omitted from every Prisma read by default
+/// (src/lib/prisma.ts) as a secondary defence; the PRIMARY controls are the dedicated Admin-only reveal action, company and
+/// booking scope, the sign-in and rate-limit checks, and the audit trail (src/server/security/booking-cvv.ts).
+/// The row is destroyed (encryptedCvv -> NULL, destroyedAt stamped) when the payment is recorded as successfully charged (workflow CONFIRMED), when an Admin
+/// destroys it, when the workflow is cancelled, or at expiry. See docs/CARD_VAULT_SECURITY.md section 19.
+model PaymentMethodCvv {
+  paymentMethodId String        @id
+  paymentMethod   PaymentMethod @relation(fields: [paymentMethodId], references: [id], onDelete: Cascade)
+  /// NULL once destroyed or expired. Never plaintext (CHECK PaymentMethodCvv_encryptedCvv_envelope).
+  encryptedCvv    String?
+  /// The authoritative moment the Booking Form was signed; the 24 h clock starts here and nowhere else.
+  signedAt        DateTime
+  /// signedAt + 24 h, written once at creation and never updated.
+  expiresAt       DateTime
+  destroyedAt     DateTime?
+  /// PAYMENT_CONFIRMED | PAYMENT_CANCELLED | CARD_REMOVED | ADMIN_DESTROYED | EXPIRED — a fixed code, never a value.
+  destroyedReason String?
+  createdAt       DateTime      @default(now())
+
+  @@index([expiresAt])
 }

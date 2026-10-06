@@ -445,7 +445,7 @@ the customer enters a card on the booking form and the CRM stores it encrypted
 Admins can Reveal it, and payments are recorded manually. There is **no external
 payment provider**. This is application-level encryption, **not PCI DSS-grade**
 key management — running it is the owner's decision and responsibility. The card
-security code (CVV/CVC) is transient input only — format-checked and discarded, **never** stored.
+security code (CVV/CVC) is kept only as a short-lived (24 hours after the Booking Form is signed, fixed) encrypted record for the manual charge, revealed only by an Admin and destroyed on payment or expiry — never plaintext, never anywhere else; see `docs/CARD_VAULT_SECURITY.md` section 19 (formal PCI DSS validation still required).
 
 So that it is never used by accident, the vault **fails closed** in every
 production-class environment (production and Vercel previews) until the owner

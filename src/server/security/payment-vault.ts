@@ -5,7 +5,7 @@
 // external provider. It is NOT PCI DSS-grade key management; see
 // docs/CARD_VAULT_SECURITY.md. Nothing outside this module should import
 // encryptPan or decryptPan directly.
-import { encryptPan, decryptPan, CardVaultError } from "./card-encryption";
+import { encryptPan, decryptPan, encryptCvv, decryptCvv, CardVaultError } from "./card-encryption";
 import { getCardVaultStatus } from "./card-vault-status";
 
 export interface PaymentVault {
@@ -37,6 +37,36 @@ class ClosedVault implements PaymentVault {
   async reveal(): Promise<never> {
     throw new CardVaultError("VAULT_UNAVAILABLE");
   }
+}
+
+/**
+ * The temporarily retained security code (CVV/CVC) — a SEPARATE interface from the card-number vault so nothing that already
+ * mocks or implements PaymentVault changes. Same fail-closed gate (getCardVaultStatus), same key ring, own AAD domain.
+ */
+export interface CvvVault {
+  store(cvv: string, paymentMethodId: string): Promise<string>;
+  reveal(reference: string, paymentMethodId: string): Promise<string>;
+}
+
+export function getCvvVault(): CvvVault {
+  if (!getCardVaultStatus().storageAvailable) {
+    return {
+      async store(): Promise<never> {
+        throw new CardVaultError("VAULT_UNAVAILABLE");
+      },
+      async reveal(): Promise<never> {
+        throw new CardVaultError("VAULT_UNAVAILABLE");
+      },
+    };
+  }
+  return {
+    async store(cvv, paymentMethodId) {
+      return encryptCvv(cvv, paymentMethodId);
+    },
+    async reveal(reference, paymentMethodId) {
+      return decryptCvv(reference, paymentMethodId);
+    },
+  };
 }
 
 /**

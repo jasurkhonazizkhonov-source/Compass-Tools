@@ -352,6 +352,14 @@ export function canRevealPaymentMethod(account: PaymentAccount): boolean {
   return hasEffectiveRevealGrant(account.paymentPermissions);
 }
 
+/** Revealing / destroying a booking's temporarily retained security code (CVV/CVC): ADMIN ONLY, and on top of that the same explicit
+ * `payments.reveal` grant the card-number Reveal needs. Another role's card-reveal permission never carries over to the CVV. */
+export function canRevealBookingCvv(account: PaymentAccount): boolean {
+  if (!account) return false;
+  if (account.role !== "ADMIN") return false;
+  return canRevealPaymentMethod(account);
+}
+
 /** Manually confirming a payment was processed (replaces the old
  * Stripe-driven automatic charge-success signal) — same role ceiling as
  * the pre-existing canChargePayments, plus the explicit grant. */
