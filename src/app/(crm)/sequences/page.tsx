@@ -99,7 +99,7 @@ export default async function SequencesPage({ searchParams }: { searchParams: Se
                 <TableHead>Active Enrollments</TableHead>
                 <TableHead>Total Enrolled</TableHead>
                 {showOwnerColumn && <TableHead>Owner</TableHead>}
-                <TableHead className="w-10" />
+                <TableHead className="w-10"><span className="sr-only">Row actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

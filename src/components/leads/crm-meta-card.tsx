@@ -61,7 +61,7 @@ export function CrmMetaCard({
           displayValue={leadSourceLabel(source as typeof SOURCES[number])}
           editor={(value, setValue) => (
             <Select value={value} onValueChange={setValue}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger aria-label="Lead source" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {SOURCES.map((s) => <SelectItem key={s} value={s}>{leadSourceLabel(s)}</SelectItem>)}
               </SelectContent>
@@ -83,7 +83,7 @@ export function CrmMetaCard({
           displayValue={<StatusBadge label={PRIORITY_META[priority].label} tone={PRIORITY_META[priority].tone} />}
           editor={(value, setValue) => (
             <Select value={value} onValueChange={setValue}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger aria-label="Priority" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p.charAt(0) + p.slice(1).toLowerCase()}</SelectItem>)}
               </SelectContent>
@@ -98,7 +98,7 @@ export function CrmMetaCard({
             displayValue={agents.find((a) => a.id === assignedAgentId)?.fullName ?? assignedAgentName ?? "Unassigned"}
             editor={(value, setValue) => (
               <Select value={value} onValueChange={setValue}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                <SelectTrigger aria-label="Assigned agent" className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                 <SelectContent>
                   {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.fullName}</SelectItem>)}
                 </SelectContent>

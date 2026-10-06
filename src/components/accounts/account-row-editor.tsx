@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
-import { Loader2, Pencil, Trash2 } from "lucide-react";
+import { Check, Loader2, Pencil, Trash2 } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -90,7 +90,7 @@ export function AccountRoleSelect({
       value={role}
       onValueChange={(v) => { if (v !== role) setPendingRole(v as AccountRole); }}
     >
-      <SelectTrigger className="h-8 w-[150px]">
+      <SelectTrigger aria-label="Role" className="h-8 w-[150px]">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -156,8 +156,8 @@ export function AccountFullNameEditor({ accountId, fullName, canEdit }: { accoun
         disabled={isPending}
         className="h-8 w-[170px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );
@@ -211,8 +211,8 @@ export function AccountPhoneEditor({ accountId, phone, canEdit }: { accountId: s
         disabled={isPending}
         className="h-8 w-[140px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );
@@ -293,8 +293,8 @@ export function AccountEmailEditor({
         disabled={isPending}
         className="h-8 w-[190px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );
@@ -351,8 +351,8 @@ export function AccountHiredAtEditor({ accountId, hiredAt, canEdit }: { accountI
         disabled={isPending}
         className="h-8 w-[150px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );
@@ -407,8 +407,8 @@ export function AccountLocationEditor({ accountId, location, canEdit }: { accoun
         disabled={isPending}
         className="h-8 w-[150px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );
@@ -479,8 +479,8 @@ export function AccountCommissionPercentEditor({ accountId, commissionPercent, c
         disabled={isPending}
         className="h-8 w-[90px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );
@@ -552,8 +552,8 @@ export function AccountTipPercentEditor({ accountId, tipPercent, canEdit }: { ac
         disabled={isPending}
         className="h-8 w-[90px]"
       />
-      <Button size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
-        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "✓"}
+      <Button aria-label="Save" size="icon-sm" variant="ghost" onClick={save} disabled={isPending}>
+        {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
       </Button>
     </div>
   );

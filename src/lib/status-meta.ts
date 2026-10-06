@@ -3,12 +3,13 @@ import type { LeadStatus, LeadSource, QuoteStatus, BookingStatus, Priority, Paym
 export type StatusTone = "success" | "info" | "purple" | "warning" | "neutral" | "destructive";
 
 const TONE_CLASSES: Record<StatusTone, string> = {
-  success: "bg-success/15 text-success border-success/30 dark:text-success",
-  info: "bg-info/15 text-info border-info/30 dark:text-info",
-  purple: "bg-purple/15 text-purple border-purple/30 dark:text-purple",
+  // Light theme: the token colour on its own 15% tint measured ~3.1:1, so the text is the token darkened 25% (>= 4.5:1); dark theme keeps the token.
+  success: "bg-success/15 text-[color-mix(in_oklab,var(--success),black_25%)] border-success/30 dark:text-success",
+  info: "bg-info/15 text-[color-mix(in_oklab,var(--info),black_25%)] border-info/30 dark:text-info",
+  purple: "bg-purple/15 text-[color-mix(in_oklab,var(--purple),black_20%)] border-purple/30 dark:text-purple",
   warning: "bg-warning/20 text-warning-foreground border-warning/40",
   neutral: "bg-muted text-muted-foreground border-border",
-  destructive: "bg-destructive/10 text-destructive border-destructive/30",
+  destructive: "bg-destructive/10 text-[color-mix(in_oklab,var(--destructive),black_20%)] border-destructive/30 dark:text-destructive",
 };
 
 export function toneClass(tone: StatusTone) {

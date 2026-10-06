@@ -309,7 +309,7 @@ export function QuoteBuilder({
                 <div className="space-y-1.5 max-w-xs">
                   <Label>Trip Type</Label>
                   <Select value={tripType} onValueChange={setTripType}>
-                    <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                    <SelectTrigger aria-label="Trip type" className="w-full"><SelectValue /></SelectTrigger>
                     <SelectContent>
                       {TRIP_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                     </SelectContent>
@@ -532,7 +532,7 @@ export function QuoteBuilder({
                   setExchangeRate(String(DEFAULT_EXCHANGE_RATES[next]));
                 }}
               >
-                <SelectTrigger className="h-8 w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Currency" className="h-8 w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {SUPPORTED_CURRENCIES.map((c) => (
                     <SelectItem key={c} value={c}>{CURRENCY_LABELS[c]}</SelectItem>

@@ -47,10 +47,10 @@ export function SiteFooter() {
           {FOOTER_COLUMNS.map((col) => (
             <div key={col.heading}>
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{col.heading}</h3>
-              <ul className="mt-3 space-y-2">
+              <ul className="mt-2">
                 {col.links.map((link) => (
                   <li key={link.href}>
-                    <Link href={link.href} className="text-sm text-muted-foreground transition-colors hover:text-foreground">
+                    <Link href={link.href} className="inline-block py-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground">
                       {link.label}
                     </Link>
                   </li>
@@ -61,7 +61,7 @@ export function SiteFooter() {
         </div>
         <div className="mt-10 flex flex-col gap-2 border-t pt-6 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <p>&copy; {new Date().getFullYear()} {PRODUCT_NAME}. All rights reserved.</p>
-          <Link href="/login" className="transition-colors hover:text-foreground">
+          <Link href="/login" className="inline-block py-1.5 transition-colors hover:text-foreground">
             Client Login
           </Link>
         </div>

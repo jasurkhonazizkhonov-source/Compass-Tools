@@ -357,7 +357,7 @@ function renderEmailCard(params: {
   const headerHtml = isInternal
     ? `<td style="background:#111827; padding:18px 28px;">
         <span style="color:#ffffff; font-size:15px; font-weight:700;">${PRODUCT_NAME}</span>
-        <span style="color:#9ca3af; font-size:12px; margin-left:8px;">Internal CRM Notification</span>
+        <span style="color:#6b7280; font-size:12px; margin-left:8px;">Internal CRM Notification</span>
       </td>`
     : `<td style="background:${EMAIL_TOKENS.cardBackground}; padding:24px 32px 22px; border-bottom:3px solid ${company.brandColor};">
         ${company.logoEmailUrl ? `<img src="${company.logoEmailUrl}" alt="${escapeHtml(company.name)}" width="180" height="76" style="display:block; width:180px; height:76px; object-fit:contain; object-position:left; border:0;" />` : `<span style="font-size:19px; font-weight:700; color:${EMAIL_TOKENS.text}; letter-spacing:-0.01em;">${escapeHtml(company.name)}</span>`}
@@ -579,7 +579,7 @@ function renderSegmentRow(seg: EmailSegment, cancellationState?: CancellationBan
             <td width="28">${logo}</td>
             <td style="padding-left:8px; font-size:13px; color:#111827;">
               <strong>${airlineName}</strong> <span style="color:#6b7280;">${airlineCode} ${escapeHtml(seg.flightNumber)}</span>
-              ${operatingCarrierLabel ? `<br/><span style="font-size:11px; color:#9ca3af;">${operatingCarrierLabel}</span>` : ""}
+              ${operatingCarrierLabel ? `<br/><span style="font-size:11px; color:#6b7280;">${operatingCarrierLabel}</span>` : ""}
             </td>
             <td align="right" style="font-size:11px; color:#6b7280; white-space:nowrap;">
               ${isNonstop ? `<span style="display:inline-block; padding:1px 7px; margin-right:6px; border-radius:999px; background:#ecfdf5; color:#15803d; font-size:10px; font-weight:700; letter-spacing:0.03em; text-transform:uppercase;">Nonstop</span>` : ""}${seg.cabin}${aircraft ? ` · ${aircraft}` : ""}
@@ -590,18 +590,18 @@ function renderSegmentRow(seg: EmailSegment, cancellationState?: CancellationBan
     </tr>
     <tr class="ct-seg-row">
       <td width="42%" class="ct-seg-cell" style="padding:14px; vertical-align:top;">
-        <p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Depart</p>
+        <p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Depart</p>
         <p style="margin:2px 0 0; font-size:12px; color:#6b7280;">${fmtDate(seg.departureAt)}</p>
         <p style="margin:1px 0 0; font-size:23px; font-weight:700; color:#111827;">${fmtTime(seg.departureAt)}</p>
         <p style="margin:2px 0 0; font-size:13px; color:#111827;">${formatAirportLabel(departureCity, seg.departureAirportCode)}</p>
       </td>
       <td width="16%" class="ct-seg-cell-mid" style="padding:14px 0; vertical-align:middle; text-align:center;">
-        <p style="margin:0; font-size:9px; color:#9ca3af; text-transform:uppercase; letter-spacing:0.04em;">Flight duration</p>
+        <p style="margin:0; font-size:9px; color:#6b7280; text-transform:uppercase; letter-spacing:0.04em;">Flight duration</p>
         <p style="margin:1px 0 0; font-size:11px; color:#6b7280; font-weight:600;">${fmtDuration(seg.durationMinutes)}</p>
-        <p style="margin:2px 0 0; font-size:14px; color:#9ca3af;">&#8594;</p>
+        <p style="margin:2px 0 0; font-size:14px; color:#6b7280;">&#8594;</p>
       </td>
       <td width="42%" class="ct-seg-cell ct-seg-cell-right" style="padding:14px; vertical-align:top; text-align:right;">
-        <p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Arrive</p>
+        <p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Arrive</p>
         <p style="margin:2px 0 0; font-size:12px; color:#6b7280;">${fmtDate(seg.arrivalAt)}${!sameDay ? " (+1 day)" : ""}</p>
         <p style="margin:1px 0 0; font-size:23px; font-weight:700; color:#111827;">${fmtTime(seg.arrivalAt)}</p>
         <p style="margin:2px 0 0; font-size:13px; color:#111827;">${formatAirportLabel(arrivalCity, seg.arrivalAirportCode)}</p>
@@ -701,7 +701,7 @@ export function renderItineraryHtml(segments: EmailSegment[], cancelledSegmentId
   return groups
     .map((group, gi) => {
       const legLabel = isMultiLeg
-        ? `<p style="margin:${gi === 0 ? "0" : "16px"} 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Flight ${gi + 1} · ${group[0].departureAirportCode} → ${group[group.length - 1].arrivalAirportCode}</p>`
+        ? `<p style="margin:${gi === 0 ? "0" : "16px"} 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Flight ${gi + 1} · ${group[0].departureAirportCode} → ${group[group.length - 1].arrivalAirportCode}</p>`
         : "";
       // Pass 11 Part 2 — ONE timezone-aware calculation for this whole
       // group, reused for the Total Journey Summary block AND every
@@ -839,7 +839,7 @@ export function buildQuoteEmail(params: {
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb; border-radius:10px; margin-bottom:22px;">
       <tr>
         <td style="padding:16px 18px;">
-          <p style="margin:0 0 8px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Trip Summary</p>
+          <p style="margin:0 0 8px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Trip Summary</p>
           <p style="margin:0; font-size:14px; color:#111827;"><strong>${route}</strong></p>
           <p style="margin:4px 0 0; font-size:13px; color:#4b5563;">${quoteTripLabel(params.tripType)} · ${params.passengerCount} passenger${params.passengerCount === 1 ? "" : "s"}</p>
         </td>
@@ -853,17 +853,17 @@ export function buildQuoteEmail(params: {
     ${renderItineraryHtml(params.segments, undefined, undefined, params.company.brandColor)}
     `
         : `
-    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Flight Itinerary</p>
+    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Flight Itinerary</p>
     ${renderItineraryHtml(params.segments, undefined, undefined, params.company.brandColor)}
     `
     }
 
-    <p style="margin:22px 0 0; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Pricing</p>
+    <p style="margin:22px 0 0; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Pricing</p>
     ${renderPricingHtml(params.pricing)}
 
     ${ctaButton(params.viewDealUrl, "View Deal", params.company.brandColor)}
 
-    <p style="margin:16px 0 0; font-size:12px; color:#9ca3af; line-height:1.6; text-align:center;">
+    <p style="margin:16px 0 0; font-size:12px; color:#6b7280; line-height:1.6; text-align:center;">
       This link is unique to you — please don't forward this email.<br />Questions? Just reply and ${escapeHtml(params.agentFullName.split(" ")[0])} will help.
     </p>
     ${params.trackingPixelUrl ? `<img src="${params.trackingPixelUrl}" width="1" height="1" alt="" style="display:block; border:0; width:1px; height:1px;" />` : ""}
@@ -922,12 +922,12 @@ export function buildCancellationScheduledEmail(params: {
       </tr>
     </table>
 
-    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Your Itinerary</p>
+    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Your Itinerary</p>
     ${renderItineraryHtml(params.segments, params.cancelledSegmentIds, "scheduled", params.company.brandColor)}
 
     ${ctaButton(params.viewDealUrl, "Review & Confirm Cancellation", params.company.brandColor)}
 
-    <p style="margin:16px 0 0; font-size:12px; color:#9ca3af; line-height:1.6; text-align:center;">
+    <p style="margin:16px 0 0; font-size:12px; color:#6b7280; line-height:1.6; text-align:center;">
       Questions? Just reply and ${escapeHtml(params.agentFullName.split(" ")[0])} will help.
     </p>
   `, params.company, params.agent, { preheader });
@@ -979,10 +979,10 @@ export function buildCancellationConfirmedEmail(params: {
       </tr>
     </table>
 
-    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Your Itinerary</p>
+    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Your Itinerary</p>
     ${renderItineraryHtml(params.segments, params.cancelledSegmentIds, undefined, params.company.brandColor)}
 
-    <p style="margin:16px 0 0; font-size:12px; color:#9ca3af; line-height:1.6; text-align:center;">
+    <p style="margin:16px 0 0; font-size:12px; color:#6b7280; line-height:1.6; text-align:center;">
       Questions? Just reply and ${escapeHtml(params.agentFullName.split(" ")[0])} will help.
     </p>
   `, params.company, params.agent, { preheader });
@@ -1051,12 +1051,12 @@ export function buildTaskReminderEmail(params: {
       </tr>
       <tr>
         <td style="padding:14px 18px; font-size:13px; color:#374151; line-height:1.9;">
-          ${params.relatedName ? `<p style="margin:0 0 10px;"><span style="color:#9ca3af;">Customer</span><br/><strong>${params.relatedName}</strong></p>` : ""}
-          <p style="margin:0 0 10px;"><span style="color:#9ca3af;">Due</span><br/><strong>${dateLine}</strong>${timeLine ? `<br/><strong>${timeLine}</strong>` : ""}</p>
-          <p style="margin:0 0 ${params.referenceValue ? "10px" : "0"};"><span style="color:#9ca3af;">Priority</span><br/><strong style="color:${PRIORITY_COLOR[params.priority]};">${PRIORITY_LABEL[params.priority]}</strong></p>
+          ${params.relatedName ? `<p style="margin:0 0 10px;"><span style="color:#6b7280;">Customer</span><br/><strong>${params.relatedName}</strong></p>` : ""}
+          <p style="margin:0 0 10px;"><span style="color:#6b7280;">Due</span><br/><strong>${dateLine}</strong>${timeLine ? `<br/><strong>${timeLine}</strong>` : ""}</p>
+          <p style="margin:0 0 ${params.referenceValue ? "10px" : "0"};"><span style="color:#6b7280;">Priority</span><br/><strong style="color:${PRIORITY_COLOR[params.priority]};">${PRIORITY_LABEL[params.priority]}</strong></p>
           ${
             params.referenceValue
-              ? `<p style="margin:0;"><span style="color:#9ca3af;">${params.referenceLabel}</span><br/><strong>${params.referenceUrl ? `<a href="${params.referenceUrl}" style="color:${params.company.brandColor}; text-decoration:none;">${params.referenceValue}</a>` : params.referenceValue}</strong></p>`
+              ? `<p style="margin:0;"><span style="color:#6b7280;">${params.referenceLabel}</span><br/><strong>${params.referenceUrl ? `<a href="${params.referenceUrl}" style="color:${params.company.brandColor}; text-decoration:none;">${params.referenceValue}</a>` : params.referenceValue}</strong></p>`
               : ""
           }
         </td>
@@ -1079,8 +1079,8 @@ function renderContactCard(name: string, email: string, phone: string): string {
       <td style="padding:12px 16px;">
         <p style="margin:0; font-size:14px; font-weight:600; color:#111827;">${name}</p>
         <p style="margin:6px 0 0; font-size:12px; color:#6b7280; line-height:1.7;">
-          <span style="color:#9ca3af;">Email</span> · ${email}<br/>
-          <span style="color:#9ca3af;">Phone</span> · ${phone}
+          <span style="color:#6b7280;">Email</span> · ${email}<br/>
+          <span style="color:#6b7280;">Phone</span> · ${phone}
         </p>
       </td>
     </tr>
@@ -1095,7 +1095,7 @@ function renderPassengerCards(passengers: Array<{ firstName: string; middleName:
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb; border-radius:10px; margin-bottom:8px;">
         <tr>
           <td style="padding:12px 16px;">
-            <p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Passenger ${i + 1}</p>
+            <p style="margin:0; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Passenger ${i + 1}</p>
             <p style="margin:3px 0 0; font-size:14px; font-weight:600; color:#111827;">${p.firstName}${p.middleName ? ` ${p.middleName}` : ""} ${p.lastName}</p>
             <p style="margin:2px 0 0; font-size:12px; color:#6b7280;">${typeLabel[p.type]}${p.dateOfBirth ? ` · DOB ${p.dateOfBirth.toLocaleDateString("en-US", { timeZone: "UTC" })}` : ""}</p>
           </td>
@@ -1281,17 +1281,17 @@ export function buildBookingConfirmationEmail(params: {
     ${confirmationBlock}
     ${exchangeBlock}
 
-    <p style="margin:22px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Flight Itinerary</p>
+    <p style="margin:22px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Flight Itinerary</p>
     <p style="margin:0 0 10px; font-size:13px; color:#4b5563;">${passengerCount} passenger${passengerCount === 1 ? "" : "s"}</p>
     ${renderItineraryHtml(params.segments, undefined, undefined, params.company.brandColor)}
 
-    <p style="margin:22px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Passengers</p>
+    <p style="margin:22px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Passengers</p>
     ${renderPassengerCards(params.passengers)}
 
-    <p style="margin:18px 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Contact</p>
+    <p style="margin:18px 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Contact</p>
     ${renderContactCard(params.contactName, params.contactEmail, params.contactPhone)}
 
-    <p style="margin:22px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Payment</p>
+    <p style="margin:22px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Payment</p>
     ${renderPaymentCard({
       pricing: params.pricing,
       paymentMethods: params.paymentMethods,
@@ -1438,22 +1438,22 @@ export function buildBookingSignedNotificationEmail(params: {
       <strong>${escapeHtml(params.customerFullName)}</strong> has signed and submitted the booking form for <strong>${params.bookingReference}</strong>. Ticketing is now pending in the CRM.
     </p>
 
-    <p style="margin:0 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Customer</p>
+    <p style="margin:0 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Customer</p>
     ${renderContactCard(escapeHtml(params.customerFullName), escapeHtml(params.contactEmail), escapeHtml(params.contactPhone))}
 
-    <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Flight Itinerary</p>
+    <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Flight Itinerary</p>
     ${renderItineraryHtml(params.segments, undefined, undefined, params.company.brandColor)}
 
-    <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Passengers</p>
+    <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Passengers</p>
     ${renderPassengerCards(params.passengers)}
 
-    <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Payment</p>
+    <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Payment</p>
     ${renderPaymentCard({ pricing: params.pricing, paymentMethods: params.paymentMethods, paid: params.paymentPaid, hideExpiry: true })}
 
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb; border-radius:10px; margin-top:18px;">
       <tr>
         <td style="padding:14px 18px; font-size:12px; color:#374151; line-height:1.9;">
-          <p style="margin:0 0 4px; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Signature Audit</p>
+          <p style="margin:0 0 4px; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Signature Audit</p>
           <strong>Signed name:</strong> ${escapeHtml(params.signedName)}<br/>
           <strong>Signed at:</strong> ${params.signedAt.toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short", timeZone: DISPLAY_TIMEZONE })}<br/>
           <strong>IP address (masked):</strong> ${params.ipAddress ? escapeHtml(maskIp(params.ipAddress, params.ipAddress.includes(":") ? "v6" : "v4")) : "Not captured"}<br/>
@@ -2087,7 +2087,7 @@ export function buildBookingProfitNotificationEmail(params: {
     <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb; border-radius:10px; margin-bottom:18px;">
       <tr>
         <td style="padding:14px 18px; font-size:13px; color:#374151; line-height:2.1;">
-          <p style="margin:0 0 6px; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Financial Summary</p>
+          <p style="margin:0 0 6px; font-size:10px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Financial Summary</p>
           <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
             <tr><td>Ticket Booking Cost</td><td align="right">${symbol}${fmtMoney(params.ticketBookingCost)}</td></tr>
             <tr><td>Selling Cost</td><td align="right">${symbol}${fmtMoney(params.sellingCost)}</td></tr>
@@ -2097,7 +2097,7 @@ export function buildBookingProfitNotificationEmail(params: {
       </tr>
     </table>
 
-    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Flight Itinerary</p>
+    <p style="margin:0 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Flight Itinerary</p>
     ${renderItineraryHtml(params.segments, undefined, undefined, params.company.brandColor)}
   `);
   return { subject, html };

@@ -398,7 +398,7 @@ export function NewLeadDialog({
               <div className="space-y-1.5">
                 <Label>Trip Type</Label>
                 <Select value={tripType} onValueChange={handleTripTypeChange}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Trip type" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {TRIP_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
@@ -407,7 +407,7 @@ export function NewLeadDialog({
               <div className="space-y-1.5">
                 <Label>Cabin Class</Label>
                 <Select value={cabinClass} onValueChange={setCabinClass}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Cabin class" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {CABIN_CLASSES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
                   </SelectContent>
@@ -448,7 +448,7 @@ export function NewLeadDialog({
               <div className="space-y-1.5">
                 <Label>Source</Label>
                 <Select value={source} onValueChange={(v) => { setSource(v); if (v !== "REFERRAL") setReferredByContact(null); }}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Source" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {SOURCES.map((s) => <SelectItem key={s} value={s}>{leadSourceLabel(s)}</SelectItem>)}
                   </SelectContent>
@@ -468,7 +468,7 @@ export function NewLeadDialog({
               <div className="space-y-1.5">
                 <Label>Priority</Label>
                 <Select value={priority} onValueChange={setPriority}>
-                  <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                  <SelectTrigger aria-label="Priority" className="w-full"><SelectValue /></SelectTrigger>
                   <SelectContent>
                     {PRIORITIES.map((p) => <SelectItem key={p} value={p}>{p.charAt(0) + p.slice(1).toLowerCase()}</SelectItem>)}
                   </SelectContent>
@@ -478,7 +478,7 @@ export function NewLeadDialog({
                 <Label>Assigned Agent</Label>
                 {canAssignOthers ? (
                   <Select value={assignedAgentId} onValueChange={setAssignedAgentId}>
-                    <SelectTrigger className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                    <SelectTrigger aria-label="Assigned agent" className="w-full"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                     <SelectContent>
                       {agents.map((a) => <SelectItem key={a.id} value={a.id}>{a.fullName}</SelectItem>)}
                     </SelectContent>

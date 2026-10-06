@@ -151,7 +151,7 @@ export function NewTaskDialog({
           <div className="space-y-1.5">
             <Label className="text-xs">Priority</Label>
             <Select value={priority} onValueChange={(v) => setPriority(v as Priority)}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger aria-label="Priority" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {PRIORITIES.map((p) => (
                   <SelectItem key={p} value={p}>{PRIORITY_META[p].label}</SelectItem>
@@ -162,7 +162,7 @@ export function NewTaskDialog({
           <div className="space-y-1.5">
             <Label className="text-xs">Assign to</Label>
             <Select value={assigneeId} onValueChange={setAssigneeId}>
-              <SelectTrigger className="w-full"><SelectValue placeholder="Select agent" /></SelectTrigger>
+              <SelectTrigger aria-label="Assign to" className="w-full"><SelectValue placeholder="Select agent" /></SelectTrigger>
               <SelectContent>
                 {agents.map((a) => (
                   <SelectItem key={a.id} value={a.id}>{a.fullName}</SelectItem>

@@ -71,7 +71,7 @@ export function TaskFilters({ agents, canScopeByUser }: { agents: Agent[]; canSc
       </div>
 
       <Select value={searchParams.get("status") ?? "all"} onValueChange={(v) => setParam("status", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[140px]"><SelectValue placeholder="Status" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by status" className="h-9 w-[140px]"><SelectValue placeholder="Status" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All statuses</SelectItem>
           <SelectItem value="PENDING">Pending</SelectItem>
@@ -80,7 +80,7 @@ export function TaskFilters({ agents, canScopeByUser }: { agents: Agent[]; canSc
       </Select>
 
       <Select value={searchParams.get("due") ?? "all"} onValueChange={(v) => setParam("due", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[150px]"><SelectValue placeholder="Due" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by due date" className="h-9 w-[150px]"><SelectValue placeholder="Due" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">Any due date</SelectItem>
           {DUE_OPTIONS.map((o) => (
@@ -91,7 +91,7 @@ export function TaskFilters({ agents, canScopeByUser }: { agents: Agent[]; canSc
 
       {canScopeByUser && (
         <Select value={searchParams.get("scope") ?? "mine"} onValueChange={(v) => setParam("scope", v === "mine" ? null : v)}>
-          <SelectTrigger className="h-9 w-[160px]"><SelectValue placeholder="My Tasks" /></SelectTrigger>
+          <SelectTrigger aria-label="Task owner" className="h-9 w-[160px]"><SelectValue placeholder="My Tasks" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="mine">My Tasks</SelectItem>
             <SelectItem value="all">All Tasks</SelectItem>
@@ -103,7 +103,7 @@ export function TaskFilters({ agents, canScopeByUser }: { agents: Agent[]; canSc
       )}
 
       <Select value={searchParams.get("priority") ?? "all"} onValueChange={(v) => setParam("priority", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[130px]"><SelectValue placeholder="Priority" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by priority" className="h-9 w-[130px]"><SelectValue placeholder="Priority" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All priorities</SelectItem>
           {PRIORITIES.map((p) => (
@@ -113,7 +113,7 @@ export function TaskFilters({ agents, canScopeByUser }: { agents: Agent[]; canSc
       </Select>
 
       <Select value={searchParams.get("sort") ?? "due_asc"} onValueChange={(v) => setParam("sort", v === "due_asc" ? null : v)}>
-        <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder="Sort" /></SelectTrigger>
+        <SelectTrigger aria-label="Sort tasks by" className="h-9 w-[180px]"><SelectValue placeholder="Sort" /></SelectTrigger>
         <SelectContent>
           {SORT_OPTIONS.map((o) => (
             <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>

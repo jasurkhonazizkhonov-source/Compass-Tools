@@ -37,7 +37,7 @@ export const EMAIL_TOKENS = {
   text: "#111827",
   textMuted: "#4b5563",
   textSubtle: "#6b7280",
-  textFaint: "#9ca3af",
+  textFaint: "#6b7280",
   success: "#15803d",
   successBackground: "#ecfdf5",
   successBorder: "#a7f3d0",

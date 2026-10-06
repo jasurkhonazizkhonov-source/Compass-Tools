@@ -154,7 +154,7 @@ export default async function PublicQuotePage({ params }: { params: Promise<{ to
                 </p>
               )}
               {cancellationAlreadySubmitted && (
-                <p className="text-sm text-info bg-info/15 border border-info/30 rounded-md px-3 py-2 mt-2">
+                <p className="text-sm text-[color-mix(in_oklab,var(--info),black_25%)] dark:text-info bg-info/15 border border-info/30 rounded-md px-3 py-2 mt-2">
                   Thanks — we&apos;ve received your confirmation. Your travel agent is processing the cancellation and will send you a final confirmation once it&apos;s complete.
                 </p>
               )}

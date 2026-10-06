@@ -491,7 +491,7 @@ export function BulkContactImport({ agents }: { agents: Agent[] }) {
 
       <div className="flex flex-wrap items-center gap-2">
         <Select value={bulkAssignId} onValueChange={setBulkAssignId}>
-          <SelectTrigger className="h-9 w-[220px]"><SelectValue placeholder="Assign selected rows to..." /></SelectTrigger>
+          <SelectTrigger aria-label="Assign selected rows to" className="h-9 w-[220px]"><SelectValue placeholder="Assign selected rows to..." /></SelectTrigger>
           <SelectContent>
             {agents.map((a) => (
               <SelectItem key={a.id} value={a.id}>{a.fullName}</SelectItem>
@@ -674,7 +674,7 @@ export function BulkContactImport({ agents }: { agents: Agent[] }) {
                 </td>
                 <td className="p-1">
                   <Select value={row.assignedAgentId || "none"} onValueChange={(v) => updateField(row.clientId, "assignedAgentId", v === "none" ? "" : v)}>
-                    <SelectTrigger className="h-8 text-sm"><SelectValue placeholder="Unassigned" /></SelectTrigger>
+                    <SelectTrigger aria-label="Assigned agent for this row" className="h-8 text-sm"><SelectValue placeholder="Unassigned" /></SelectTrigger>
                     <SelectContent>
                       <SelectItem value="none">Unassigned</SelectItem>
                       {agents.map((a) => (

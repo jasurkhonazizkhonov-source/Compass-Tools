@@ -103,7 +103,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
           whole card (motion-safe only) — it never delays interaction: the
           Google button underneath is already fully rendered and clickable
           throughout the transition, which animates opacity/transform only. */}
-      <div className="flex items-center justify-center bg-muted/30 px-4 py-16 sm:px-6">
+      <div role="main" className="flex items-center justify-center bg-muted/30 px-4 py-16 sm:px-6">
         <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:slide-in-from-bottom-2 motion-safe:duration-300 w-full max-w-sm space-y-8">
           <Link
             href="/"

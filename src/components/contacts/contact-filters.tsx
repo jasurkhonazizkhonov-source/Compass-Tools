@@ -65,7 +65,7 @@ export function ContactFilters({ agents }: { agents: Agent[] }) {
 
       {agents.length > 0 && (
         <Select value={searchParams.get("agent") ?? "all"} onValueChange={(v) => setParam("agent", v === "all" ? null : v)}>
-          <SelectTrigger className="h-9 w-[150px]"><SelectValue placeholder="Agent" /></SelectTrigger>
+          <SelectTrigger aria-label="Filter by agent" className="h-9 w-[170px]"><SelectValue placeholder="Agent" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All agents</SelectItem>
             {agents.map((a) => (
@@ -79,7 +79,7 @@ export function ContactFilters({ agents }: { agents: Agent[] }) {
       )}
 
       <Select value={searchParams.get("hasEmail") ?? "all"} onValueChange={(v) => setParam("hasEmail", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[150px]"><SelectValue placeholder="Email" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by email status" className="h-9 w-[170px]"><SelectValue placeholder="Email" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">Any email status</SelectItem>
           <SelectItem value="true">Has email</SelectItem>
@@ -88,7 +88,7 @@ export function ContactFilters({ agents }: { agents: Agent[] }) {
       </Select>
 
       <Select value={searchParams.get("hasPhone") ?? "all"} onValueChange={(v) => setParam("hasPhone", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[150px]"><SelectValue placeholder="Phone" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by phone status" className="h-9 w-[170px]"><SelectValue placeholder="Phone" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">Any phone status</SelectItem>
           <SelectItem value="true">Has phone</SelectItem>

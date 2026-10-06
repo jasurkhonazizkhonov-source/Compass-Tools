@@ -63,7 +63,7 @@ export default async function UsersPage() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
+                <TableHead className="sticky left-0 z-10 bg-card shadow-[8px_0_8px_-8px_rgba(0,0,0,0.25)]">Name</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Team</TableHead>
                 <TableHead>Phone</TableHead>
@@ -88,8 +88,9 @@ export default async function UsersPage() {
               {accounts.map((a) => {
                 const isLastActiveAdmin = a.id === current?.id && a.role === "ADMIN" && activeAdminCount === 1;
                 return (
-                <TableRow key={a.id} className="hover:bg-muted/40">
-                  <TableCell className="font-medium text-sm">
+                <TableRow key={a.id} className="group hover:bg-muted/40">
+                  {/* Pinned so a row stays identifiable while the wide table scrolls sideways (19 columns). */}
+                  <TableCell className="sticky left-0 z-10 bg-card font-medium text-sm group-hover:bg-[color-mix(in_srgb,var(--muted)_40%,var(--card))] shadow-[8px_0_8px_-8px_rgba(0,0,0,0.25)]">
                     <AccountFullNameEditor accountId={a.id} fullName={a.fullName} canEdit />
                     {a.id === current?.id && <Badge variant="outline" className="ml-2 text-[10px]">You</Badge>}
                   </TableCell>

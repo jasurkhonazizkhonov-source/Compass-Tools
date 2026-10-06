@@ -91,7 +91,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                   <TableHead>Priority</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Updated</TableHead>
-                  <TableHead>Created</TableHead>
+                  <TableHead className="hidden 2xl:table-cell">Created</TableHead>
                   <TableHead className="sticky right-0 z-10 w-px bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]">
                     <span className="sr-only">Actions</span>
                   </TableHead>
@@ -103,7 +103,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                   const customerName = `${lead.contact.firstName} ${lead.contact.lastName}`;
                   return (
                     <TableRow key={lead.id} className="group hover:bg-muted/40">
-                      <TableCell className="max-w-[260px]">
+                      <TableCell className="max-w-[200px]">
                         <Link href={`/leads/${lead.id}`} className="block truncate font-medium hover:underline hover:text-primary" title={customerName}>
                           {customerName}
                         </Link>
@@ -111,7 +111,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                           {lead.contact.primaryEmail || (lead.contact.primaryPhone ? formatPhoneInternational(lead.contact.primaryPhone) : null)}
                         </p>
                       </TableCell>
-                      <TableCell className="max-w-[240px] truncate text-sm whitespace-nowrap" title={leadRouteLabel(lead)}>
+                      <TableCell className="max-w-[176px] truncate text-sm whitespace-nowrap" title={leadRouteLabel(lead)}>
                         {leadRouteLabel(lead)}
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
@@ -124,10 +124,10 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                       <TableCell>
                         <LeadStatusSelect leadId={lead.id} status={lead.status} badgeClassName="text-sm" viewerRole={currentAccount?.role} />
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap" title={format(lead.updatedAt, "MMM d, yyyy h:mm a")}>
+                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap" title={`Updated ${format(lead.updatedAt, "MMM d, yyyy h:mm a")} · Created ${format(lead.createdAt, "MMM d, yyyy h:mm a")}`}>
                         {formatRelativeUpdated(lead.updatedAt)}
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
+                      <TableCell className="hidden text-sm text-muted-foreground whitespace-nowrap 2xl:table-cell">
                         {formatDistanceToNow(lead.createdAt, { addSuffix: true })}
                       </TableCell>
                       <TableCell className="sticky right-0 z-10 w-px bg-card group-hover:bg-[color-mix(in_srgb,var(--muted)_40%,var(--card))] shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]">

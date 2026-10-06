@@ -390,7 +390,7 @@ export function BookingTicketingForm({
     <div className="space-y-4">
       <div className="space-y-1.5">
         <Label>PNR Information <span className="text-muted-foreground font-normal">(internal only)</span></Label>
-        <Textarea value={pnrValue} onChange={(e) => setPnrValue(e.target.value)} placeholder="e.g. ABCDEF" rows={2} />
+        <Textarea aria-label="PNR information" value={pnrValue} onChange={(e) => setPnrValue(e.target.value)} placeholder="e.g. ABCDEF" rows={2} />
       </div>
       {/* Pass 23 §7/§24 — repeatable rows so a booking with multiple
           PNRs/airlines (codeshares, separate outbound/return, multiple
@@ -423,7 +423,7 @@ export function BookingTicketingForm({
               <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                 <div className="space-y-1">
                   <Label className="text-xs font-normal">Confirmation #</Label>
-                  <Input
+                  <Input aria-label="Confirmation number"
                     value={row.confirmationNumber}
                     onChange={(e) => updateConfirmationRow(row.id, { confirmationNumber: e.target.value.toUpperCase() })}
                     placeholder="e.g. ABC123"
@@ -446,7 +446,7 @@ export function BookingTicketingForm({
               </div>
               <div className="space-y-1">
                 <Label className="text-xs font-normal">E-Ticket Number(s) (optional, comma-separated)</Label>
-                <Input
+                <Input aria-label="E-ticket numbers"
                   value={row.eTicketNumbers}
                   onChange={(e) => updateConfirmationRow(row.id, { eTicketNumbers: e.target.value })}
                   placeholder="0257123456789, 0257123456790"
@@ -462,7 +462,7 @@ export function BookingTicketingForm({
       <div className="space-y-1.5">
         <Label>Ticket Status</Label>
         <Select value={statusValue} onValueChange={(v) => setStatusValue(v as BookingStatus)}>
-          <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+          <SelectTrigger aria-label="Ticket status" className="w-full"><SelectValue /></SelectTrigger>
           <SelectContent>
             {STATUSES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
           </SelectContent>
@@ -472,15 +472,15 @@ export function BookingTicketingForm({
       <div className="grid grid-cols-2 gap-3 pt-2 border-t">
         <div className="space-y-1.5">
           <Label className="text-xs">Ticket Nett Cost <span className="text-muted-foreground font-normal">(actual cost paid — required to confirm)</span></Label>
-          <Input type="number" value={fare} onChange={(e) => setFare(e.target.value)} className="h-8" />
+          <Input aria-label="Ticket nett cost" type="number" value={fare} onChange={(e) => setFare(e.target.value)} className="h-8" />
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Taxes</Label>
-          <Input type="number" value={tax} onChange={(e) => setTax(e.target.value)} className="h-8" />
+          <Input aria-label="Taxes" type="number" value={tax} onChange={(e) => setTax(e.target.value)} className="h-8" />
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Issuing Fee</Label>
-          <Input type="number" value={issuingFee} onChange={(e) => setIssuingFee(e.target.value)} className="h-8" />
+          <Input aria-label="Issuing fee" type="number" value={issuingFee} onChange={(e) => setIssuingFee(e.target.value)} className="h-8" />
         </div>
         <div className="space-y-1.5">
           <Label className="text-xs">Profit <span className="text-muted-foreground font-normal">(calculated)</span></Label>
@@ -492,7 +492,7 @@ export function BookingTicketingForm({
 
       <div className="space-y-1.5">
         <Label>Booking Notes <span className="text-muted-foreground font-normal">(internal only)</span></Label>
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Internal notes about this booking" rows={3} />
+        <Textarea aria-label="Booking notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Internal notes about this booking" rows={3} />
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

@@ -250,7 +250,7 @@ export function FlightSegmentEditor({
         </div>
       </div>
       {segment.isExtraLeg && (
-        <p className="text-xs text-info bg-info/10 border border-info/30 rounded-md px-3 py-1.5">
+        <p className="text-xs text-[color-mix(in_oklab,var(--info),black_25%)] dark:text-info bg-info/10 border border-info/30 rounded-md px-3 py-1.5">
           Marked as an Extra Leg — this flight will be hidden from the initial customer quote email and shown as a &quot;Bonus Flight&quot; once the customer opens View Deal.
         </p>
       )}

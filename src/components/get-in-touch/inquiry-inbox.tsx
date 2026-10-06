@@ -100,7 +100,7 @@ export async function InquiryInbox({ source, searchParams }: { source: InquirySo
                 <TableHead>Status</TableHead>
                 <TableHead>Assigned</TableHead>
                 <TableHead>Received</TableHead>
-                <TableHead className="w-10" />
+                <TableHead className="w-10"><span className="sr-only">Row actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

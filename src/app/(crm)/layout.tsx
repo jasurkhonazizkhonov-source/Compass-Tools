@@ -10,6 +10,7 @@ import { getMyQueueStatus } from "@/server/queries/lead-queue";
 import { getGmailConnectionState } from "@/server/queries/gmail-connection";
 import { getCompanyForAccountId, getCompanyById } from "@/server/queries/company";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
+import { SkipLink } from "@/components/layout/skip-link";
 
 // Vercel's default function limit is 10s. This app talks to Postgres over a
 // high-latency link and every CRM page issues many sequential statements — a healthy-but-slow request must not be
@@ -65,6 +66,7 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="min-h-screen bg-muted/30">
+      <SkipLink />
       <PresenceHeartbeat accountId={current?.id} />
       <Suspense fallback={null}>
         <GmailConnectToast />
@@ -72,7 +74,7 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
       <SidebarShell current={navAccount} companyName={company.name}>
         <div className="flex min-h-screen flex-col">
           <Topbar current={navAccount} queueStatus={queueStatus} gmailStatus={gmailStatus} companyName={company.name} />
-          <main className="flex-1 p-4 md:p-6">
+          <main id="main-content" tabIndex={-1} className="flex-1 p-4 outline-none md:p-6">
             <SystemReadinessBanner role={current?.role} />
             {children}
           </main>

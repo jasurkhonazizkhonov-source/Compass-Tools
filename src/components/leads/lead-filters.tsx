@@ -59,7 +59,7 @@ export function LeadFilters({ agents }: { agents: Agent[] }) {
       </div>
 
       <Select value={searchParams.get("status") ?? "all"} onValueChange={(v) => setParam("status", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[160px]"><SelectValue placeholder="Status" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by status" className="h-9 w-[160px]"><SelectValue placeholder="Status" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All statuses</SelectItem>
           {LEAD_STATUS_ORDER.map((s) => (
@@ -69,7 +69,7 @@ export function LeadFilters({ agents }: { agents: Agent[] }) {
       </Select>
 
       <Select value={searchParams.get("agent") ?? "all"} onValueChange={(v) => setParam("agent", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[150px]"><SelectValue placeholder="Agent" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by agent" className="h-9 w-[150px]"><SelectValue placeholder="Agent" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All agents</SelectItem>
           {agents.map((a) => (
@@ -83,7 +83,7 @@ export function LeadFilters({ agents }: { agents: Agent[] }) {
       </Select>
 
       <Select value={searchParams.get("cabin") ?? "all"} onValueChange={(v) => setParam("cabin", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[150px]"><SelectValue placeholder="Cabin" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by cabin" className="h-9 w-[150px]"><SelectValue placeholder="Cabin" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All cabins</SelectItem>
           {CABIN_CLASSES.map((c) => (
@@ -93,7 +93,7 @@ export function LeadFilters({ agents }: { agents: Agent[] }) {
       </Select>
 
       <Select value={searchParams.get("trip") ?? "all"} onValueChange={(v) => setParam("trip", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[140px]"><SelectValue placeholder="Trip type" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by trip type" className="h-9 w-[140px]"><SelectValue placeholder="Trip type" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All trip types</SelectItem>
           {TRIP_TYPES.map((t) => (
@@ -103,7 +103,7 @@ export function LeadFilters({ agents }: { agents: Agent[] }) {
       </Select>
 
       <Select value={searchParams.get("source") ?? "all"} onValueChange={(v) => setParam("source", v === "all" ? null : v)}>
-        <SelectTrigger className="h-9 w-[140px]"><SelectValue placeholder="Source" /></SelectTrigger>
+        <SelectTrigger aria-label="Filter by source" className="h-9 w-[140px]"><SelectValue placeholder="Source" /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">All sources</SelectItem>
           {SOURCES.map((s) => (

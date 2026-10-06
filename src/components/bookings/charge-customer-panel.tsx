@@ -83,29 +83,29 @@ export function ChargeCustomerPanel({
     <div className="space-y-4">
       {canConfirm && (
         <div className="space-y-2">
-          <div className="flex flex-col sm:flex-row sm:items-end gap-2">
-            <div className="space-y-1.5 w-full sm:flex-1 sm:min-w-0">
+          <div className="flex flex-wrap items-end gap-2">
+            <div className="space-y-1.5 min-w-[9rem] flex-1 basis-40">
               <Label className="text-xs">Amount ({currency})</Label>
-              <Input type="number" min={0.01} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
+              <Input aria-label="Amount" type="number" min={0.01} step="0.01" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.00" />
             </div>
-            <div className="space-y-1.5 w-full sm:w-40">
+            <div className="space-y-1.5 min-w-[9rem] flex-1 basis-36 sm:w-40 sm:flex-none">
               <Label className="text-xs">Outcome</Label>
               <Select value={status} onValueChange={(v) => setStatus(v as "SUCCEEDED" | "FAILED")}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Payment outcome"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="SUCCEEDED">Succeeded</SelectItem>
                   <SelectItem value="FAILED">Failed</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <Button onClick={submit} disabled={isPending} className="gap-1.5 w-full sm:w-auto">
+            <Button onClick={submit} disabled={isPending} className="gap-1.5 w-full sm:w-auto sm:shrink-0">
               {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <CheckCircle2 className="h-3.5 w-3.5" />}
               Record Payment
             </Button>
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">Reference Note (optional)</Label>
-            <Textarea value={referenceNote} onChange={(e) => setReferenceNote(e.target.value)} placeholder="e.g. Charged via airline direct billing, confirmation #12345" rows={2} />
+            <Textarea aria-label="Reference note" value={referenceNote} onChange={(e) => setReferenceNote(e.target.value)} placeholder="e.g. Charged via airline direct billing, confirmation #12345" rows={2} />
           </div>
         </div>
       )}

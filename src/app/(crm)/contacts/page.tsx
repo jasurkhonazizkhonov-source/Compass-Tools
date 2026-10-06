@@ -88,13 +88,13 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
                   const contactName = `${c.firstName} ${c.lastName}`;
                   return (
                     <TableRow key={c.id} className="group hover:bg-muted/40">
-                      <TableCell className="max-w-[240px]">
+                      <TableCell className="max-w-[200px]">
                         <Link href={`/contacts/${c.id}`} className="block truncate font-medium hover:underline hover:text-primary" title={contactName}>
                           {contactName}
                         </Link>
                       </TableCell>
                       <TableCell className="text-sm whitespace-nowrap">{c.primaryPhone ? formatPhoneInternational(c.primaryPhone) : "—"}</TableCell>
-                      <TableCell className="max-w-[220px] truncate text-sm text-muted-foreground" title={c.primaryEmail ?? undefined}>{c.primaryEmail ?? "—"}</TableCell>
+                      <TableCell className="max-w-[190px] truncate text-sm text-muted-foreground" title={c.primaryEmail ?? undefined}>{c.primaryEmail ?? "—"}</TableCell>
                       <TableCell className="text-sm whitespace-nowrap">
                         {c.owner ? c.owner.fullName : <span className="text-muted-foreground">Unassigned</span>}
                       </TableCell>

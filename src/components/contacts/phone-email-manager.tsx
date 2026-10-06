@@ -103,7 +103,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
         <div className="flex items-center gap-1.5">
           <PhoneValueInput value={newNumber} onChange={setNewNumber} placeholder="Phone number" />
           <Select value={newType} onValueChange={setNewType}>
-            <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Phone type" className="h-8 w-24"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="MOBILE">Mobile</SelectItem>
               <SelectItem value="HOME">Home</SelectItem>
@@ -207,7 +207,7 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
             autoFocus
           />
           <Select value={newType} onValueChange={setNewType}>
-            <SelectTrigger className="h-8 w-24"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Email type" className="h-8 w-24"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="PERSONAL">Personal</SelectItem>
               <SelectItem value="WORK">Work</SelectItem>

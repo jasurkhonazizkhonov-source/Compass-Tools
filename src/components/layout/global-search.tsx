@@ -66,7 +66,7 @@ export function GlobalSearch() {
           <span className="sm:hidden">Search...</span>
           <span className="hidden sm:inline">Search leads, contacts, quotes...</span>
         </span>
-        <kbd className="ml-auto hidden sm:inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] text-muted-foreground">
+        <kbd className="ml-auto hidden sm:inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] text-foreground/70">
           Ctrl K
         </kbd>
       </Button>

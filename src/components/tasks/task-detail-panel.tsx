@@ -94,7 +94,7 @@ export function TaskDetailPanel({ task, agents }: { task: TaskDetail; agents: Ag
             <CountdownBadge dueAt={task.dueAt} status={task.status} />
             {editing ? (
               <Select value={priority} onValueChange={(v) => setPriority(v as Priority)}>
-                <SelectTrigger className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Priority" className="h-7 w-[110px] text-xs"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {PRIORITIES.map((p) => (
                     <SelectItem key={p} value={p}>{PRIORITY_META[p].label}</SelectItem>
@@ -154,7 +154,7 @@ export function TaskDetailPanel({ task, agents }: { task: TaskDetail; agents: Ag
                 router.refresh();
               })}
             >
-              <SelectTrigger className="w-full">
+              <SelectTrigger aria-label="Assigned to" className="w-full">
                 <span className="flex items-center gap-1.5"><UserIcon className="h-3.5 w-3.5 text-muted-foreground" /><SelectValue /></span>
               </SelectTrigger>
               <SelectContent>

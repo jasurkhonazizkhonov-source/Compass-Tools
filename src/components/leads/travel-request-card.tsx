@@ -122,7 +122,7 @@ export function TravelRequestCard({
             displayValue={TRIP_TYPES.find((t) => t.value === tripType)?.label ?? tripType}
             editor={(value, setValue) => (
               <Select value={value} onValueChange={setValue}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Trip type" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {TRIP_TYPES.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                 </SelectContent>
@@ -136,7 +136,7 @@ export function TravelRequestCard({
             displayValue={CABIN_CLASSES.find((c) => c.value === cabinClass)?.label ?? cabinClass}
             editor={(value, setValue) => (
               <Select value={value} onValueChange={setValue}>
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectTrigger aria-label="Cabin class" className="w-full"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   {CABIN_CLASSES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
                 </SelectContent>

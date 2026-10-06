@@ -75,13 +75,13 @@ export default async function TasksPage({ searchParams }: { searchParams: Search
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-10" />
+                <TableHead className="w-10"><span className="sr-only">Row actions</span></TableHead>
                 <TableHead>Task</TableHead>
                 <TableHead>Related To</TableHead>
                 <TableHead>Assignee</TableHead>
                 <TableHead>Priority</TableHead>
                 <TableHead>Due</TableHead>
-                <TableHead className="w-10" />
+                <TableHead className="w-10"><span className="sr-only">Row actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

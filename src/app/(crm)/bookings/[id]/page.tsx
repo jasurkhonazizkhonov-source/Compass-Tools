@@ -110,7 +110,7 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
         </div>
         <p className="text-sm text-muted-foreground mt-1">
           {booking.contact.firstName} {booking.contact.lastName} · Agent: {booking.lead.assignedAgent?.fullName ?? "Unassigned"} ·{" "}
-          <Link href={`/leads/${booking.leadId}`} className="text-primary hover:underline">View Lead</Link>
+          <Link href={`/leads/${booking.leadId}`} className="text-primary underline underline-offset-2 hover:no-underline">View Lead</Link>
         </p>
       </div>
 
@@ -296,8 +296,8 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
             <CardContent>
               <ul className="space-y-2 text-sm">
                 {booking.statusHistory.map((h) => (
-                  <li key={h.id} className="flex items-center justify-between">
-                    <span>{h.fromStatus ? `${h.fromStatus} → ` : ""}<span className="font-medium">{h.toStatus}</span></span>
+                  <li key={h.id} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-0.5">
+                    <span>{h.fromStatus ? `${BOOKING_STATUS_META[h.fromStatus]?.label ?? h.fromStatus} → ` : ""}<span className="font-medium">{BOOKING_STATUS_META[h.toStatus]?.label ?? h.toStatus}</span></span>
                     <span className="text-xs text-muted-foreground">{h.changedBy?.fullName ?? "System"} · {formatDistanceToNow(h.changedAt, { addSuffix: true })}</span>
                   </li>
                 ))}

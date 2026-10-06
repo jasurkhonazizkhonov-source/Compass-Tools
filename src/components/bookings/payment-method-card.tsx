@@ -104,7 +104,7 @@ export function PaymentMethodCard({
         <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{label}</p>
         {canManageStatus ? (
           <Select value={paymentMethod.workflowStatus} onValueChange={(v) => setWorkflowStatus(v as PaymentWorkflowStatus)}>
-            <SelectTrigger className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
+            <SelectTrigger aria-label="Payment method status" className="h-7 w-32 text-xs"><SelectValue /></SelectTrigger>
             <SelectContent>
               {Object.entries(WORKFLOW_STATUS_LABELS).map(([value, text]) => (
                 <SelectItem key={value} value={value}>{text}</SelectItem>
@@ -116,10 +116,10 @@ export function PaymentMethodCard({
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
-        <div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <div className="col-span-2 sm:col-span-1">
           <p className="text-xs text-muted-foreground">Card</p>
-          <p className="text-sm font-medium flex items-center gap-1.5">
+          <p className="text-sm font-medium flex items-center gap-1.5 whitespace-nowrap">
             <CardBrandLogo brand={(paymentMethod.cardBrand as CardBrand) || "Unknown"} />
             •••• •••• •••• {paymentMethod.last4}
           </p>

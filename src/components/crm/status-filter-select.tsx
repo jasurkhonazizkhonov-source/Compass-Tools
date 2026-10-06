@@ -71,7 +71,7 @@ export function StatusFilterSelect({
 
     return (
       <Select value={searchParams.get(paramKey) ?? "all"} onValueChange={handleChange}>
-        <SelectTrigger className="h-9 w-[180px]"><SelectValue placeholder={placeholder} /></SelectTrigger>
+        <SelectTrigger aria-label={`Filter by ${paramKey}`} className="h-9 w-[180px]"><SelectValue placeholder={placeholder} /></SelectTrigger>
         <SelectContent>
           <SelectItem value="all">{allLabel}</SelectItem>
           {options.map((o) => (

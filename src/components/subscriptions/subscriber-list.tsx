@@ -347,7 +347,7 @@ export function SubscriberList({
                 <TableHead>Source</TableHead>
                 <TableHead>Subscribed</TableHead>
                 <TableHead>Unsubscribe details</TableHead>
-                <TableHead className="w-10" />
+                <TableHead className="w-10"><span className="sr-only">Select</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -359,11 +359,11 @@ export function SubscriberList({
                   <TableCell className="text-sm">{s.email}</TableCell>
                   <TableCell>
                     {s.status === "SUBSCRIBED" ? (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/15 px-2 py-0.5 text-xs font-medium text-success">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/15 px-2 py-0.5 text-xs font-medium text-[color-mix(in_oklab,var(--success),black_25%)] dark:text-success">
                         Active
                       </span>
                     ) : (
-                      <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-destructive">
+                      <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-[color-mix(in_oklab,var(--destructive),black_20%)] dark:text-destructive">
                         <XCircle className="h-3 w-3" /> Unsubscribed
                       </span>
                     )}

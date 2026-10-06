@@ -82,7 +82,7 @@ export function NewAccountDialog() {
           <div className="space-y-1.5">
             <Label>Role</Label>
             <Select value={role} onValueChange={(v) => setRole(v as AccountRole)}>
-              <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+              <SelectTrigger aria-label="Role" className="w-full"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {Object.entries(ROLE_LABELS).map(([value, label]) => (
                   <SelectItem key={value} value={value}>{label}</SelectItem>

@@ -50,7 +50,7 @@ export function DateTimePicker({
           <Button
             type="button"
             variant="outline"
-            className={cn("flex-1 justify-between font-normal", !selected && "text-muted-foreground")}
+            className={cn("min-w-0 flex-1 justify-between font-normal", !selected && "text-muted-foreground")}
           >
             <span className="flex items-center gap-2 truncate">
               <CalendarIcon className="h-3.5 w-3.5 shrink-0" />
