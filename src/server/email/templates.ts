@@ -758,6 +758,15 @@ export function renderPricingHtml(p: EmailPricing): string {
   </table>`;
 }
 
+/** "ROUND_TRIP" / "ROUND TRIP" → "Round trip" for the customer-facing Trip Summary (the stored value is an enum, not copy). */
+function quoteTripLabel(tripType: string): string {
+  const t = tripType.replace(/[_-]+/g, " ").trim().toLowerCase();
+  if (t === "round trip") return "Round trip";
+  if (t === "one way") return "One way";
+  if (t === "multi city") return "Multi-city";
+  return t ? t.charAt(0).toUpperCase() + t.slice(1) : "";
+}
+
 export function buildQuoteEmail(params: {
   customerFirstName: string;
   /** §8/§41 — optional; the greeting degrades gracefully (customerGreeting)
@@ -832,7 +841,7 @@ export function buildQuoteEmail(params: {
         <td style="padding:16px 18px;">
           <p style="margin:0 0 8px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#9ca3af; text-transform:uppercase;">Trip Summary</p>
           <p style="margin:0; font-size:14px; color:#111827;"><strong>${route}</strong></p>
-          <p style="margin:4px 0 0; font-size:13px; color:#4b5563;">${params.tripType} · ${params.passengerCount} passenger${params.passengerCount === 1 ? "" : "s"}</p>
+          <p style="margin:4px 0 0; font-size:13px; color:#4b5563;">${quoteTripLabel(params.tripType)} · ${params.passengerCount} passenger${params.passengerCount === 1 ? "" : "s"}</p>
         </td>
       </tr>
     </table>

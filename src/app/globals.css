@@ -233,3 +233,22 @@
     @apply font-sans;
   }
 }
+
+/* Reduced motion: honour the OS setting everywhere (dialog / select / popover enter-exit, fade-ins, hover transitions). Looping
+   loading indicators (spin / pulse) are left running — a frozen spinner would remove the only "working" feedback. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    transition-delay: 0ms !important;
+  }
+  *:not(.animate-spin):not(.animate-pulse):not(.animate-ping),
+  *:not(.animate-spin):not(.animate-pulse):not(.animate-ping)::before,
+  *:not(.animate-spin):not(.animate-pulse):not(.animate-ping)::after {
+    animation-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

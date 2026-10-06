@@ -5,13 +5,19 @@ import { PRODUCT_NAME, resolveBaseUrl } from "@/lib/company-config";
 // Graph / Twitter can never drift apart or be forgotten on a new page (a page-level `openGraph` REPLACES the root layout's rather than
 // merging with it, which is how pages used to lose og:url / og:site_name).
 //
-// Only facts the public site itself already states go in here: the product name, its origin and its logo. Nothing about customers,
+// Only facts the public site itself already states go in here: the product name, its origin and its own mark. Nothing about customers,
 // bookings, payments, staff or any internal system, and no claim (rating, price, certification, address …) the repository cannot
 // substantiate. Relative paths are resolved against `metadataBase` (resolveBaseUrl()) by Next.js, so production, preview and local
 // builds each canonicalise to their own configured origin.
 
 export const SITE_DESCRIPTION = "Compass Tools is a CRM built for travel agencies to manage leads, quotes, bookings, and customer communication in one place.";
-const LOGO = { url: "/logo.png", width: 1163, height: 488, alt: `${PRODUCT_NAME} logo` };
+// The product's own mark is the generated app icon (src/app/apple-icon.tsx, 180×180). Do NOT use public/logo.png here: that file is the
+// default travel agency's own logo, a different business from the product (the Open Graph / Twitter card image is generated from the
+// product's mark, served at /brand-card.png by src/app/(marketing)/brand-card.png/route.tsx).
+const LOGO = { path: "/apple-icon", width: 180, height: 180 };
+export const OG_SIZE = { width: 1200, height: 630 };
+export const OG_ALT = `${PRODUCT_NAME} — CRM for travel agencies`;
+const CARD = { url: "/brand-card.png", ...OG_SIZE, alt: OG_ALT };
 
 export function marketingMetadata(input: { title: string; description: string; path: string; index?: boolean }): Metadata {
   const { title, description, path, index = true } = input;
@@ -20,18 +26,24 @@ export function marketingMetadata(input: { title: string; description: string; p
     description,
     alternates: { canonical: path },
     robots: index ? { index: true, follow: true } : { index: false, follow: true },
-    openGraph: { title, description, url: path, siteName: PRODUCT_NAME, locale: "en_US", type: "website", images: [LOGO] },
-    twitter: { card: "summary", title, description, images: [LOGO.url] },
+    openGraph: { title, description, url: path, siteName: PRODUCT_NAME, locale: "en_US", type: "website", images: [CARD] },
+    twitter: { card: "summary_large_image", title, description, images: [CARD.url] },
   };
 }
 
-/** A page that must never appear in search results (sign-in, errors). Still crawlable so the directive can be read. */
+/**
+ * A page that must never appear in search results (sign-in, errors). Still crawlable so the directive can be read. It declares its own
+ * text-only Open Graph / Twitter metadata (no image) so a shared link never falls back to the root layout's default image.
+ */
 export function noIndexMetadata(input: { title: string; description: string; path: string }): Metadata {
+  const { title, description, path } = input;
   return {
-    title: input.title,
-    description: input.description,
-    alternates: { canonical: input.path },
+    title,
+    description,
+    alternates: { canonical: path },
     robots: { index: false, follow: true },
+    openGraph: { title, description, url: path, siteName: PRODUCT_NAME, locale: "en_US", type: "website" },
+    twitter: { card: "summary", title, description },
   };
 }
 
@@ -45,7 +57,7 @@ export function siteJsonLd() {
     "@context": "https://schema.org",
     "@graph": [
       { "@type": "WebSite", "@id": `${base}/#website`, name: PRODUCT_NAME, url: base, publisher: { "@id": `${base}/#organization` } },
-      { "@type": "Organization", "@id": `${base}/#organization`, name: PRODUCT_NAME, url: base, logo: { "@type": "ImageObject", url: `${base}${LOGO.url}`, width: LOGO.width, height: LOGO.height } },
+      { "@type": "Organization", "@id": `${base}/#organization`, name: PRODUCT_NAME, url: base, logo: { "@type": "ImageObject", url: `${base}${LOGO.path}`, width: LOGO.width, height: LOGO.height } },
     ],
   };
 }

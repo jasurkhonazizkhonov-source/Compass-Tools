@@ -14,6 +14,7 @@ export function SequenceActiveToggle({ sequenceId, isActive }: { sequenceId: str
       <span className="text-xs text-muted-foreground">{isActive ? "Active" : "Inactive"}</span>
       <Switch
         checked={isActive}
+        aria-label="Sequence active"
         disabled={isPending}
         onCheckedChange={() => startTransition(async () => {
           await toggleSequenceActive(sequenceId);

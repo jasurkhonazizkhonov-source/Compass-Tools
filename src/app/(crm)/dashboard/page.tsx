@@ -163,7 +163,7 @@ export default async function DashboardPage() {
         <LeadAcceptanceCard initialIsActive={queueStatus.isActive} initialPosition={queueStatus.position} />
       </div>
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4 2xl:grid-cols-7">
         <StatCard label="Total Leads" value={data.totalLeads} icon={Users} />
         <StatCard label="New Leads (7d)" value={data.newLeads} icon={UserPlus} tone="info" />
         <StatCard label="In Process" value={data.inProcess} icon={Loader2} tone="info" />

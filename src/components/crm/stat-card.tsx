@@ -29,7 +29,7 @@ export function StatCard({
         </div>
         <div className="min-w-0">
           <p className="text-2xl font-semibold tabular-nums leading-none">{value}</p>
-          <p className="text-xs text-muted-foreground mt-1 truncate">{label}</p>
+          <p className="text-xs text-muted-foreground mt-1 truncate" title={label}>{label}</p>
         </div>
       </CardContent>
     </Card>

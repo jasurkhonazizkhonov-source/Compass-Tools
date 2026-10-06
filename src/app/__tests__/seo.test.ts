@@ -54,14 +54,24 @@ describe("marketingMetadata", () => {
     expect(m.robots).toEqual({ index: true, follow: true });
     expect(m.openGraph).toMatchObject({ title: "T — Compass Tools", description: "D", url: "/x", siteName: "Compass Tools", type: "website" });
     expect(m.twitter).toMatchObject({ title: "T — Compass Tools", description: "D" });
-    const image = (m.openGraph?.images as { url: string }[])[0];
-    expect(image.url).toBe("/logo.png"); // relative: resolved against metadataBase, never a localhost / preview URL
+    expect(m.twitter).toMatchObject({ card: "summary_large_image" });
   });
 
-  it("noIndexMetadata emits noindex and no Open Graph card", () => {
+  it("uses the product's own generated brand card at a stable URL — never public/logo.png (another business's logo)", () => {
+    const og = (m.openGraph?.images as { url: string; width: number; height: number }[])[0];
+    expect(og).toMatchObject({ url: "/brand-card.png", width: 1200, height: 630 });
+    expect(m.twitter?.images).toEqual(["/brand-card.png"]);
+    expect(readCode("lib", "marketing", "seo.ts")).not.toMatch(/logo\.png/);
+    expect(read("app", "(marketing)", "brand-card.png", "route.tsx")).toMatch(/renderBrandCard\(\)/);
+    expect(readCode("lib", "marketing", "og-card.tsx")).not.toMatch(/logo\.png|business\s*flights|\bBFT\b/i);
+  });
+
+  it("noIndexMetadata emits noindex and text-only Open Graph / Twitter (no inherited default image)", () => {
     const n = noIndexMetadata({ title: "Sign In", description: "d", path: "/login" });
     expect(n.robots).toEqual({ index: false, follow: true });
-    expect(n.openGraph).toBeUndefined();
+    expect(n.openGraph).toMatchObject({ url: "/login", siteName: "Compass Tools" });
+    expect(n.openGraph?.images).toBeUndefined();
+    expect(n.twitter?.images).toBeUndefined();
   });
 
   it("the sign-in page is noindex", () => {
@@ -150,7 +160,7 @@ describe("robots", () => {
   });
 
   it("never disallows the public pages or the sign-in page (noindex needs the page to be fetchable)", () => {
-    for (const p of ["/", "/features", "/about", "/security", "/contact", "/privacy", "/terms", "/login", "/logo.png"]) {
+    for (const p of ["/", "/features", "/about", "/security", "/contact", "/privacy", "/terms", "/login", "/apple-icon", "/brand-card.png"]) {
       expect(PRIVATE_DISALLOW.some((rule) => rule !== "/" && p.startsWith(rule)), p).toBe(false);
     }
   });

@@ -199,6 +199,7 @@ export function TravelRequestCard({
           <span className="text-sm">Flexible dates</span>
           <Switch
             checked={flexibleDates}
+            aria-label="Flexible dates"
             onCheckedChange={(checked) => updateLeadField(leadId, { flexibleDates: checked })}
           />
         </div>

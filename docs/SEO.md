@@ -23,8 +23,11 @@ indexable and are never described in metadata, structured data or the sitemap.
   variants are ever canonical.
 * Statically rendered pages bake the origin in **at build time**, so a build must run with `APP_BASE_URL` (or Vercel's production URL variables)
   set; a local build without it canonicalises to `http://localhost:3000`.
-* Open Graph / Twitter use the existing `public/logo.png` (1163×488) as a relative URL. A page-level `openGraph` **replaces** (does not merge
-  with) the root layout's, which is why the builder always sets `url`, `siteName`, `locale` and `type` itself.
+* Open Graph / Twitter: every public page uses the product's own 1200×630 brand card, served at `/brand-card.png` (generated from the compass mark
+  and brand colours by `src/lib/marketing/og-card.tsx`). **Never use `public/logo.png` for public SEO**: that file is the default travel agency's
+  own logo (it brands that agency's customer emails and quote pages), a different business from the product. The Organization logo in JSON-LD
+  is the generated `/apple-icon`. A page-level `openGraph` **replaces** (does not merge with) the root layout's, which is why the builder always
+  sets `url`, `siteName`, `locale`, `type` and the image itself; `/login` declares text-only Open Graph so it never inherits the root default.
 * Public pages: `index, follow`. `/login`: `noindex, follow` — it stays crawlable (not in robots.txt) so crawlers can read the directive, and
   it is absent from the sitemap.
 * Preview deployments (`VERCEL_ENV=preview`): `robots.txt` is `Disallow: /` with no sitemap.
@@ -46,7 +49,7 @@ well-behaved crawlers to stay away; access to those routes is enforced by the se
 
 ## Structured data (JSON-LD)
 
-Only facts the public site itself states: product name, origin, logo, one-line description, page type and breadcrumbs.
+Only facts the public site itself states: product name, origin, the product's own icon, one-line description, page type and breadcrumbs.
 
 * every public page (marketing layout): `WebSite` + `Organization` (`@graph`, referenced by `@id`)
 * home: `SoftwareApplication` (`applicationCategory: BusinessApplication`; no price, rating, review or platform claim)

@@ -593,6 +593,7 @@ export function AccountStatusSwitch({
       <div className="flex items-center gap-2">
         <Switch
           checked={status === "ACTIVE"}
+          aria-label={`Account active: ${accountName}`}
           disabled={!canEdit || isPending || (isSelf && status === "ACTIVE")}
           title={isSelf && status === "ACTIVE" ? "You cannot disable your own account" : undefined}
           onCheckedChange={(checked) => {

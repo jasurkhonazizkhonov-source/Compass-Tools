@@ -95,7 +95,7 @@ export function NewAccountDialog() {
               <Label className="text-sm">CRM Access</Label>
               <p className="text-xs text-muted-foreground">{enabled ? "Enabled — can sign in immediately" : "Disabled — created but cannot access the CRM"}</p>
             </div>
-            <Switch checked={enabled} onCheckedChange={setEnabled} />
+            <Switch checked={enabled} onCheckedChange={setEnabled} aria-label="CRM Access" />
           </div>
         </div>
         <DialogFooter>
