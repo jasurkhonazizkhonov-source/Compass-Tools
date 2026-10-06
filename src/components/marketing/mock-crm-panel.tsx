@@ -11,9 +11,9 @@ const SAMPLE_ROWS = [
 ];
 
 const TONE_CLASSES: Record<string, string> = {
-  success: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
-  info: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-  warning: "bg-amber-500/15 text-amber-600 dark:text-amber-400",
+  success: "bg-emerald-500/15 text-emerald-800 dark:text-emerald-400",
+  info: "bg-blue-500/15 text-blue-700 dark:text-blue-400",
+  warning: "bg-amber-500/15 text-amber-800 dark:text-amber-400",
   default: "bg-muted text-muted-foreground",
 };
 
