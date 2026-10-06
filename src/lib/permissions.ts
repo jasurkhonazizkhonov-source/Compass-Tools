@@ -196,6 +196,19 @@ export function canViewLeadSubmissionInfo(role: AccountRole | undefined) {
   return canViewLeads(role);
 }
 
+/**
+ * Lead documents ("Files" tab). Anyone with the Leads area may UPLOAD to a lead they can already see and VIEW/download that lead's
+ * documents; only Admin and Manager may change a document's description or delete it (a Travel Agent can add a document but never
+ * alter or remove one). Both are always combined with leadVisibilityWhere — a role alone never grants access to a particular lead.
+ */
+export function canUploadLeadAttachments(role: AccountRole | undefined) {
+  return canViewLeads(role);
+}
+
+export function canManageLeadAttachments(role: AccountRole | undefined) {
+  return role === "ADMIN" || role === "MANAGER";
+}
+
 export function canViewSequencesPage(role: AccountRole | undefined) {
   return !!role && !BACK_OFFICE_ONLY_ROLES.includes(role) && !isMarketingOnly(role);
 }

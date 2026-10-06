@@ -13,6 +13,7 @@ import { leadVisibilityWhere, contactVisibilityWhere } from "@/server/visibility
 import { sendLeadReassignmentEmails } from "@/server/reassignment-email";
 import { applyLeadStatusChange } from "@/server/lead-status-change";
 import { runAfterResponse } from "@/lib/run-after-response";
+import { storageKeysForLeads, purgeStorageObjects } from "@/server/attachments/cleanup";
 import { sendCrmEmail } from "@/server/email/crm-email";
 import { normalizePhoneNumberWithRecovery, phoneCountryMismatch, isSupportedCountry, type CountryCode } from "@/lib/phone";
 import { duplicateContactWhere } from "@/lib/contact-matching";
@@ -390,7 +391,10 @@ export async function deleteLead(leadId: string) {
     throw new Error(DELETE_LEAD_DENIAL);
   }
 
+  // The database cascade removes the Lead's attachment rows; read their object keys first so the stored files are removed too.
+  const attachmentKeys = await storageKeysForLeads({ leadId: lead.id });
   await prisma.lead.delete({ where: { id: lead.id } });
+  await purgeStorageObjects(attachmentKeys, { actorId: actor.id, reason: "LEAD_DELETED", leadId: lead.id, contactId: lead.contactId });
 
   await prisma.auditLog.create({
     data: {

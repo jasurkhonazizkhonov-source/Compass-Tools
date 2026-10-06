@@ -148,7 +148,6 @@ export async function getContactDetail(contactId: string, viewer: Viewer) {
       notes: { orderBy: { createdAt: "desc" }, take: 50, include: { author: { select: ACCOUNT_NAME_SELECT } } },
       tasks: { orderBy: { dueAt: "asc" }, take: 50, include: { assignee: { select: ACCOUNT_NAME_SELECT } } },
       activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actor: { select: ACCOUNT_NAME_SELECT } } },
-      attachments: { orderBy: { createdAt: "desc" } },
       emailLogs: { orderBy: { createdAt: "desc" }, take: 20 },
       // Explicit select allow-list, never `include: true` — encryptedPan
       // (the only field that can ever be decrypted into a full PAN) must

@@ -46,6 +46,8 @@ and Vercel-specific configuration).
 
 - `docs/DEPLOYMENT.md` — full deployment walkthrough (database, environment
   variables, Google OAuth, bootstrap, Vercel cron/config).
+- `docs/LEAD_ATTACHMENTS.md` — Lead documents in private Cloudflare R2: permissions, security model,
+  environment variables and Cloudflare/Vercel setup.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and
   structured-data conventions.
 - `docs/PAYMENT_AUTOFILL_SECURITY.md` — why full card-number autofill is

@@ -45,6 +45,8 @@ vi.mock("@/server/actions/lead-queue", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    // Lead documents: deleting a lead / contact first collects the stored files' keys (none in these scenarios).
+    attachment: { findMany: vi.fn(async () => []) },
     auditLog: {
       create: vi.fn(async ({ data }: { data: { actorId: string | undefined; action: string; entityType: string; entityId: string; metadata: Record<string, unknown> } }) => {
         auditLogs.push(data);

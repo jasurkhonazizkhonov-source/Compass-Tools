@@ -91,11 +91,12 @@ describe("no second way to read or issue a session", () => {
     }
   });
 
-  it("the only API route that authenticates a signed-in user does so through getCurrentAccount (so expiry and replacement apply)", () => {
+  it("the only API routes that authenticate a signed-in user do so through getCurrentAccount (so expiry and replacement apply)", () => {
     const apiRoutes = walk(path.join(SRC, "app", "api")).filter((f) => f.endsWith("route.ts"));
     expect(apiRoutes.length).toBeGreaterThan(5);
     const sessionAware = apiRoutes.filter((f) => /getCurrentAccount|requireSession|activeSessionId/.test(read(f))).map(norm);
-    expect(sessionAware).toEqual(["src/app/api/auth/gmail/callback/route.ts"]);
+    // gmail callback (connect Gmail) and the Lead-document open/download route — both authenticate via getCurrentAccount only.
+    expect([...sessionAware].sort()).toEqual(["src/app/api/attachments/[id]/file/route.ts", "src/app/api/auth/gmail/callback/route.ts"]);
     for (const f of apiRoutes) expect(read(f), norm(f)).not.toMatch(/cookies\(\)\s*\)?\.?get\(["']compass/);
   });
 });

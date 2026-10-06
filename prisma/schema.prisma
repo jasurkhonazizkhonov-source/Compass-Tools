@@ -665,22 +665,51 @@ model Activity {
   @@index([createdAt])
 }
 
+// A document attached to a Lead (passport copy, signed form, itinerary ...). The bytes live in a PRIVATE Cloudflare R2 bucket, never in
+// Postgres; this row is the authoritative record of ownership: Attachment -> Lead -> Contact -> Company. Access is decided by the
+// database relationship (leadId + the lead's visibility), never by the object key, the file name or anything the browser sends.
+//
+// Upload is two-phase so a row is never presented as a file before the bytes exist: the row is created PENDING together with the
+// opaque storageKey, the browser PUTs to a short-lived presigned URL, and the row becomes READY only after the server has checked the
+// stored object (size + magic bytes). Stale PENDING rows are swept by the daily cron (object deleted, row removed).
+//
+// Legacy columns (fileUrl, contactId-only rows) pre-date storage and are kept as they were; no code path creates a row without a leadId
+// and companyId any more (the CHECK constraint below also enforces it for storage-backed rows).
 model Attachment {
   id         String   @id @default(cuid())
   contactId  String?
   contact    Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
   leadId     String?
   lead       Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // The sanitised ORIGINAL file name, for display only (never used in a path or key).
   fileName   String
-  fileUrl    String
+  // Legacy (pre-storage) location. Null for every R2-backed attachment.
+  fileUrl    String?
+  // The canonical MIME type chosen by the server from the validated extension (not the browser's claim).
   fileType   String?
   fileSize   Int?
   uploadedById String?
   uploadedBy Account? @relation("AttachmentUploader", fields: [uploadedById], references: [id])
   createdAt  DateTime @default(now())
+  updatedAt  DateTime @default(now()) @updatedAt
+
+  // Free-text note about the document; editable by Admin / Manager only.
+  description String?
+  // Tenant guard: always the owning Lead's Contact's company, copied at creation and re-checked on every read.
+  companyId   String?
+  // Opaque, server-generated R2 object key. Unique; never derived from user input and never sent to the browser.
+  storageKey  String?  @unique
+  status      AttachmentStatus @default(PENDING)
 
   @@index([contactId])
-  @@index([leadId])
+  @@index([leadId, createdAt])
+  @@index([companyId])
+  @@index([status, createdAt])
+}
+
+enum AttachmentStatus {
+  PENDING
+  READY
 }
 
 // ─────────────────────────────────────────────────────────────────────────

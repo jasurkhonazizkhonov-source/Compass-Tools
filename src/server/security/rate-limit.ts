@@ -183,6 +183,12 @@ export const RATE_LIMITS = {
   CVV_REVEAL: { windowMs: 10 * 60 * 1000, maxAttempts: 10 } satisfies RateLimitConfig,
   /** Full-IP reveal (a booking signer's or a lead submitter's), per staff account — counts every attempt, so a stolen session or a script cannot harvest addresses. */
   IP_REVEAL: { windowMs: 10 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
+  /** Lead document upload authorisations (each one creates a pending row and a presigned URL), per staff account. */
+  ATTACHMENT_UPLOAD: { windowMs: 15 * 60 * 1000, maxAttempts: 40 } satisfies RateLimitConfig,
+  /** Opening / downloading a Lead document (each one mints a 60-second presigned URL), per staff account — generous for real use, blunt for scraping. */
+  ATTACHMENT_DOWNLOAD: { windowMs: 10 * 60 * 1000, maxAttempts: 120 } satisfies RateLimitConfig,
+  /** Editing a document's description or deleting a document, per staff account. */
+  ATTACHMENT_MUTATION: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
   /** Card add / edit / remove from a contact, per staff account. */
   CARD_MUTATION: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
 } as const;

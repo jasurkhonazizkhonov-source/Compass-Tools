@@ -1,12 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, FileText, PlaneTakeoff, Paperclip } from "lucide-react";
+import { ArrowLeft, FileText, PlaneTakeoff } from "lucide-react";
 import { getLeadDetail, leadRecordExists } from "@/server/queries/leads";
 import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getApplicableSequences } from "@/server/queries/sequences";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads, canRevealBookingIp } from "@/lib/permissions";
+import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads, canRevealBookingIp, canManageLeadAttachments } from "@/lib/permissions";
+import { listLeadAttachments } from "@/server/queries/lead-attachments";
+import { LeadFilesPanel } from "@/components/leads/lead-files-panel";
+import { isStorageConfigured } from "@/server/storage/r2";
+import { maxFileSizeBytes } from "@/lib/attachments/policy";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { deleteLead } from "@/server/actions/leads";
 import { LeadSequencesPanel } from "@/components/leads/lead-sequences-panel";
@@ -52,6 +56,9 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     if (await leadRecordExists(id)) return <AccessRestricted />;
     notFound();
   }
+
+  // Metadata only (never file bytes or object keys); authorised by the same lead-visibility rule as this page.
+  const attachments = await listLeadAttachments(lead.id, viewer);
 
   // The legs the Travel Request editor starts from. A multi-city lead with saved
   // segments shows exactly those, in order. One that has none yet (switched to
@@ -194,7 +201,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                   <TabsTrigger value="booking">Booking</TabsTrigger>
                   <TabsTrigger value="sequences">Sequences {lead.enrollments.length > 0 && `(${lead.enrollments.length})`}</TabsTrigger>
                   <TabsTrigger value="activity">Activity</TabsTrigger>
-                  <TabsTrigger value="attachments">Files</TabsTrigger>
+                  <TabsTrigger value="attachments">Files {attachments.total > 0 && `(${attachments.total})`}</TabsTrigger>
                 </TabsList>
               </div>
 
@@ -282,7 +289,22 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               </TabsContent>
 
               <TabsContent value="attachments" className="pt-4">
-                <EmptyState icon={Paperclip} title="No files yet" description="Passport copies, visas, and other documents can be attached here." />
+                <LeadFilesPanel
+                  leadId={lead.id}
+                  total={attachments.total}
+                  files={attachments.items.map((a) => ({
+                    id: a.id,
+                    fileName: a.fileName,
+                    description: a.description,
+                    fileType: a.fileType,
+                    fileSize: a.fileSize,
+                    createdAt: a.createdAt.toISOString(),
+                    uploadedByName: a.uploadedBy?.fullName ?? null,
+                  }))}
+                  canManage={canManageLeadAttachments(currentAccount?.role)}
+                  storageReady={isStorageConfigured()}
+                  maxSizeMb={Math.round(maxFileSizeBytes() / (1024 * 1024))}
+                />
               </TabsContent>
             </Tabs>
           </CardContent>

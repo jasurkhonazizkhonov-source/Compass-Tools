@@ -16,36 +16,50 @@
 //    refused. Styles still allow 'unsafe-inline' (inline style attributes from
 //    the UI libraries cannot carry a nonce); a style-only injection cannot run
 //    code, which is the residual, documented risk.
-const COMMON = [
-  "default-src 'self'",
-  "img-src 'self' data: https:",
-  "font-src 'self' data:",
-  "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
-  "frame-src https://accounts.google.com",
-  "frame-ancestors 'none'",
-  "base-uri 'self'",
-  "form-action 'self'",
-  "object-src 'none'",
-];
+// The browser uploads Lead documents straight to the private R2 bucket through a short-lived presigned URL, so that one origin (and only
+// when file storage is configured) is allowed in connect-src. Read at call time so a deployment without R2 has no extra origin.
+function r2Origin(): string {
+  const raw = process.env.R2_ENDPOINT?.trim() || (process.env.R2_ACCOUNT_ID?.trim() ? `https://${process.env.R2_ACCOUNT_ID.trim()}.r2.cloudflarestorage.com` : "");
+  try {
+    const u = new URL(raw);
+    return u.protocol === "https:" ? ` ${u.origin}` : "";
+  } catch {
+    return "";
+  }
+}
+
+function common(): string[] {
+  return [
+    "default-src 'self'",
+    "img-src 'self' data: https:",
+    "font-src 'self' data:",
+    `connect-src 'self' https://accounts.google.com https://www.googleapis.com${r2Origin()}`,
+    "frame-src https://accounts.google.com",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
+    "object-src 'none'",
+  ];
+}
 
 export function buildBaseCsp(): string {
   return [
-    ...COMMON.slice(0, 1),
+    ...common().slice(0, 1),
     "script-src 'self' 'unsafe-inline' https://accounts.google.com",
     // https://accounts.google.com is required for Google's Sign-In button stylesheet.
     "style-src 'self' 'unsafe-inline' https://accounts.google.com",
-    ...COMMON.slice(1),
+    ...common().slice(1),
   ].join("; ");
 }
 
 export function buildNonceCsp(nonce: string, dev = false): string {
   return [
-    ...COMMON.slice(0, 1),
+    ...common().slice(0, 1),
     // 'strict-dynamic' makes browsers ignore host allow-lists and trust only nonce'd
     // scripts (and what they load); 'self' is the fallback for very old browsers.
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    ...COMMON.slice(1),
+    ...common().slice(1),
   ].join("; ");
 }
 

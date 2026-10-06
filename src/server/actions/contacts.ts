@@ -12,6 +12,7 @@ import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { performContactReassignment, recheckContactOwnershipMatch } from "@/server/contact-reassignment";
 import { sendCrmEmail } from "@/server/email/crm-email";
 import type { AccountRole } from "@/generated/prisma/client";
+import { storageKeysForLeads, purgeStorageObjects } from "@/server/attachments/cleanup";
 
 const DELETE_DENIAL = "You are not authorized to delete this contact";
 
@@ -90,7 +91,10 @@ export async function deleteContact(contactId: string) {
     throw new Error(DELETE_DENIAL);
   }
 
+  // Cascade deletes every Lead (and its attachment rows) of this Contact; collect the stored files' keys first and remove them after.
+  const attachmentKeys = await storageKeysForLeads({ contactId: contact.id });
   await prisma.contact.delete({ where: { id: contact.id } });
+  await purgeStorageObjects(attachmentKeys, { actorId: actor.id, reason: "CONTACT_DELETED", contactId: contact.id });
 
   await prisma.auditLog.create({
     data: {

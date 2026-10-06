@@ -143,7 +143,6 @@ export async function getLeadDetail(leadId: string, viewer: Viewer) {
       notesRel: { orderBy: { createdAt: "desc" }, include: { author: { select: ACCOUNT_NAME_SELECT } } },
       tasks: { orderBy: { dueAt: "asc" }, include: { assignee: { select: ACCOUNT_NAME_SELECT } } },
       activities: { orderBy: { createdAt: "desc" }, take: 30, include: { actor: { select: ACCOUNT_NAME_SELECT } } },
-      attachments: { orderBy: { createdAt: "desc" }, include: { uploadedBy: { select: ACCOUNT_NAME_SELECT } } },
       quotes: { orderBy: { createdAt: "desc" }, include: { itinerary: { include: { segments: true } } } },
       bookings: { orderBy: { createdAt: "desc" } },
       enrollments: {

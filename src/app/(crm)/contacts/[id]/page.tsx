@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { format } from "date-fns";
-import { ArrowLeft, Users, FileText, PlaneTakeoff, Paperclip } from "lucide-react";
+import { ArrowLeft, Users, FileText, PlaneTakeoff } from "lucide-react";
 import { getContactDetail, contactRecordExists } from "@/server/queries/contacts";
 import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
@@ -22,6 +22,8 @@ import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { LEAD_STATUS_META, QUOTE_STATUS_META } from "@/lib/status-meta";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { listContactLeadAttachments } from "@/server/queries/lead-attachments";
+import { ContactDocumentsPanel } from "@/components/contacts/contact-documents-panel";
 import { Card, CardContent } from "@/components/ui/card";
 
 export const dynamic = "force-dynamic";
@@ -40,6 +42,9 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
     if (await contactRecordExists(id)) return <AccessRestricted />;
     notFound();
   }
+
+  // Documents of this contact's leads — filtered by LEAD visibility, not just contact visibility.
+  const documents = await listContactLeadAttachments(contact.id, viewer);
 
   return (
     <div className="space-y-5">
@@ -131,7 +136,7 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
                   <TabsTrigger value="notes">Notes</TabsTrigger>
                   <TabsTrigger value="tasks">Tasks</TabsTrigger>
                   <TabsTrigger value="activity">Activity</TabsTrigger>
-                  <TabsTrigger value="files">Files</TabsTrigger>
+                  <TabsTrigger value="files">Files {documents.total > 0 && `(${documents.total})`}</TabsTrigger>
                 </TabsList>
               </div>
 
@@ -224,7 +229,19 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
               </TabsContent>
 
               <TabsContent value="files" className="pt-4">
-                <EmptyState icon={Paperclip} title="No files yet" description="Passport copies, visas, and other documents can be attached here." />
+                <ContactDocumentsPanel
+                  total={documents.total}
+                  files={documents.items.map((a) => ({
+                    id: a.id,
+                    fileName: a.fileName,
+                    description: a.description,
+                    fileType: a.fileType,
+                    fileSize: a.fileSize,
+                    createdAt: a.createdAt.toISOString(),
+                    uploadedByName: a.uploadedBy?.fullName ?? null,
+                    lead: a.leadId ? { id: a.leadId, label: a.leadRoute } : undefined,
+                  }))}
+                />
               </TabsContent>
             </Tabs>
           </CardContent>

@@ -4,6 +4,7 @@ import { processDueTaskNotifications } from "@/server/actions/tasks";
 import { cleanupExpiredRateLimitCounters } from "@/server/security/rate-limit";
 import { runScheduledCardRetention } from "@/server/security/card-retention-schedule";
 import { destroyExpiredCvvs } from "@/server/security/booking-cvv";
+import { sweepStalePendingAttachments } from "@/server/attachments/cleanup";
 
 // Entry point for a real scheduler (Vercel Cron, GitHub Actions schedule,
 // an external queue worker, etc.) to trigger task-due notifications. In
@@ -30,5 +31,7 @@ export async function GET(request: NextRequest) {
   // whether or not CARD_RETENTION_DAYS is set. Idempotent; never fails the run. (Reveal also refuses and destroys an expired
   // record on its own, so the limit holds even if this run is late.)
   const cvvCleanup = await destroyExpiredCvvs().catch(() => ({ deleted: 0 }));
-  return NextResponse.json({ ...result, rateLimitCountersDeleted: rateLimitCleanup.deleted, cardRetention, cvvRecordsDestroyed: cvvCleanup.deleted });
+  // Lead documents: uploads that were authorised but never completed are removed (object + row). Idempotent; never fails the run.
+  const attachmentSweep = await sweepStalePendingAttachments().catch(() => ({ removed: 0, failed: 0 }));
+  return NextResponse.json({ ...result, rateLimitCountersDeleted: rateLimitCleanup.deleted, cardRetention, cvvRecordsDestroyed: cvvCleanup.deleted, staleAttachmentUploadsRemoved: attachmentSweep.removed });
 }

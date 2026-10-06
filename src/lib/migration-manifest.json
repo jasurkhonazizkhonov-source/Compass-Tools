@@ -70,6 +70,7 @@
     "20261005000100_airline_reference_refresh",
     "20261005000200_audit_log_append_only",
     "20261005000300_sign_in_tracking_and_session_revocation",
-    "20261006000100_booking_cvv_temporary_retention"
+    "20261006000100_booking_cvv_temporary_retention",
+    "20261007000100_lead_attachments_r2"
   ]
 }
