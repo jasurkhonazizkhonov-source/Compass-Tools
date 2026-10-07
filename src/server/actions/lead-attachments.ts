@@ -185,15 +185,30 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
   }
 }
 
-/** The browser's PUT failed or was cancelled: drop the caller's own pending upload. */
-export async function abandonLeadAttachmentUpload(attachmentId: unknown): Promise<ActionResult> {
+// What the browser may report about a failed attempt: the step, a coarse kind and an HTTP status — never a URL, header or body.
+const diagnosticsSchema = z.object({
+  stage: z.enum(["authorize", "put", "verify", "cancelled"]),
+  kind: z.enum(["blocked", "rejected", "other"]),
+  status: z.number().int().min(0).max(599),
+});
+
+/**
+ * The browser's PUT failed or was cancelled: drop the caller's own pending upload. When the browser says why (stage / kind / status), it is
+ * written to the audit log and the server log so a failure in production can be traced without access to the user's browser.
+ */
+export async function abandonLeadAttachmentUpload(attachmentId: unknown, diagnostics?: unknown): Promise<ActionResult> {
   try {
     const actor = await activeActor();
     if (!actor || typeof attachmentId !== "string" || attachmentId.length > 80) return { ok: false, error: DENIED };
     const row = await prisma.attachment.findFirst({
       where: { id: attachmentId, uploadedById: actor.id, companyId: actor.companyId, status: "PENDING", lead: { is: leadVisibilityWhere(viewerOf(actor)) } },
-      select: { id: true, storageKey: true },
+      select: { id: true, storageKey: true, leadId: true, contactId: true },
     });
+    const diag = diagnosticsSchema.safeParse(diagnostics);
+    if (row && diag.success && diag.data.stage !== "cancelled") {
+      console.error(`[attachments] upload failed stage=${diag.data.stage} kind=${diag.data.kind} status=${diag.data.status}`);
+      await auditAttachment({ action: "ATTACHMENT_UPLOAD_FAILED", actorId: actor.id, attachmentId: row.id, leadId: row.leadId, contactId: row.contactId, companyId: actor.companyId, metadata: diag.data });
+    }
     if (row) await discardPending(row.id, row.storageKey);
     return { ok: true };
   } catch {

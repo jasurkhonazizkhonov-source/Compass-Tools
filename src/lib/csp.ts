@@ -18,8 +18,16 @@
 //    code, which is the residual, documented risk.
 // The browser uploads Lead documents straight to the private R2 bucket through a short-lived presigned URL, so that one origin (and only
 // when file storage is configured) is allowed in connect-src. Read at call time so a deployment without R2 has no extra origin.
+// Same value cleaning as src/server/storage/r2.ts (whitespace and one pair of surrounding quotes), kept dependency-free because
+// next.config.ts imports this file.
+const clean = (v: string | undefined) => {
+  const t = (v ?? "").trim();
+  return t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0] ? t.slice(1, -1).trim() : t;
+};
+
 function r2Origin(): string {
-  const raw = process.env.R2_ENDPOINT?.trim() || (process.env.R2_ACCOUNT_ID?.trim() ? `https://${process.env.R2_ACCOUNT_ID.trim()}.r2.cloudflarestorage.com` : "");
+  const accountId = clean(process.env.R2_ACCOUNT_ID);
+  const raw = clean(process.env.R2_ENDPOINT) || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "");
   try {
     const u = new URL(raw);
     return u.protocol === "https:" ? ` ${u.origin}` : "";

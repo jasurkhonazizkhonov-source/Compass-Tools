@@ -23,21 +23,33 @@ export type R2Config = { endpoint: string; region: string; bucket: string; acces
 
 type Env = Record<string, string | undefined>;
 
+/**
+ * Values pasted into a hosting dashboard often carry whitespace or the quotes of a `.env` line (`R2_BUCKET_NAME="files"`). A stray quote
+ * silently corrupts the signature (403) or the endpoint, so surrounding whitespace and one pair of matching quotes are removed.
+ */
+function clean(value: string | undefined): string {
+  const v = (value ?? "").trim();
+  return v.length >= 2 && (v[0] === '"' || v[0] === "'") && v[v.length - 1] === v[0] ? v.slice(1, -1).trim() : v;
+}
+
 export function getR2Config(env: Env = process.env): R2Config | null {
-  const accessKeyId = env.R2_ACCESS_KEY_ID?.trim();
-  const secretAccessKey = env.R2_SECRET_ACCESS_KEY?.trim();
-  const bucket = env.R2_BUCKET_NAME?.trim();
-  const accountId = env.R2_ACCOUNT_ID?.trim();
-  const endpoint = (env.R2_ENDPOINT?.trim() || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "")).replace(/\/+$/, "");
-  if (!accessKeyId || !secretAccessKey || !bucket || !endpoint) return null;
-  // The endpoint must be an https origin: a typo (or an injected value) must never send credentials over plain http.
+  const accessKeyId = clean(env.R2_ACCESS_KEY_ID);
+  const secretAccessKey = clean(env.R2_SECRET_ACCESS_KEY);
+  const bucket = clean(env.R2_BUCKET_NAME);
+  const accountId = clean(env.R2_ACCOUNT_ID);
+  const rawEndpoint = clean(env.R2_ENDPOINT) || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "");
+  if (!accessKeyId || !secretAccessKey || !bucket || !rawEndpoint) return null;
+  // The endpoint must be an https ORIGIN: a typo (or an injected value) must never send credentials over plain http, and a bucket path
+  // pasted onto the endpoint ("…/my-bucket") is dropped — the bucket is always sent separately, so keeping it would double it in the URL.
+  let endpoint: string;
   try {
-    const u = new URL(endpoint);
+    const u = new URL(rawEndpoint);
     if (u.protocol !== "https:") return null;
+    endpoint = u.origin;
   } catch {
     return null;
   }
-  return { endpoint, region: env.R2_REGION?.trim() || "auto", bucket, accessKeyId, secretAccessKey };
+  return { endpoint, region: clean(env.R2_REGION) || "auto", bucket, accessKeyId, secretAccessKey };
 }
 
 export function isStorageConfigured(env: Env = process.env): boolean {

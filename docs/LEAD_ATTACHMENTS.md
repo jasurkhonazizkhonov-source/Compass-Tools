@@ -122,6 +122,54 @@ token. Never reuse the production bucket or token locally. `.env` is git-ignored
 The test suite never needs R2: the storage layer (`src/server/storage/r2.ts`) is mocked, and the authorisation tests run against a
 real PostgreSQL when `INTEGRATION_DATABASE_URL` is set (see `docs/DEPLOYMENT.md` §8).
 
+## Troubleshooting an upload that fails
+
+Environment variables only reach a deployment that is **built after** they are set: after adding or changing any `R2_*` value in Vercel,
+**redeploy** (the Content-Security-Policy `connect-src` and the page's "storage is configured" check both read them).
+
+When an upload fails the dialog now says which kind of failure it was, and the browser reports **stage / kind / HTTP status only**
+(never a URL) to the server, which records `ATTACHMENT_UPLOAD_FAILED` in the audit log and `[attachments] upload failed stage=… kind=…
+status=…` in the function log. Read it from `AuditLog` (`action = 'ATTACHMENT_UPLOAD_FAILED'`, `metadata`):
+
+| stage / kind / status | Meaning | Check |
+| --- | --- | --- |
+| `authorize` | The application refused or could not prepare the upload (permission, validation, storage not configured) | the message shown to the user; `R2_*` values present for **Production** and redeployed |
+| `put` / `blocked` / `0` | The browser got no response from R2: **CORS** (most common), the page's CSP, or the network | bucket CORS (below); DevTools → Network → the `OPTIONS` preflight to `…r2.cloudflarestorage.com`; Console "blocked by CORS policy" / "violates Content Security Policy" |
+| `put` / `rejected` / `403` | R2 refused the signed request | wrong/expired key or secret, token not scoped to **this** bucket with Object Read & Write, wrong bucket name, stray quotes/spaces in a value (these are now stripped), clock skew |
+| `put` / `rejected` / `404` | Bucket or account id does not exist | `R2_BUCKET_NAME`, `R2_ACCOUNT_ID` / `R2_ENDPOINT` (a bucket path appended to the endpoint is ignored) |
+| `verify` | The file reached R2 but the server's checks failed (size differs, content doesn't match the extension) or R2 could not be read | the message shown; token must allow reading the object back |
+
+**The production origin is `https://www.compass-tools.com`** (the bare `https://compass-tools.com` redirects to it, so the browser's
+`Origin` is always the `www` one). A policy that lists only `https://compass-tools.com` makes every upload fail in the browser with no
+response — this was the actual cause of the first production failure (`put` / `blocked` / `0`) and is pinned by a regression test.
+
+Quick reference — **which fix for which symptom**:
+
+* **CORS / preflight failure** (no response, console says "blocked by CORS policy") → fix the **R2 bucket CORS** origin / headers.
+* **`PUT` returns 403** → fix the **R2 token / bucket / key** (credentials, Object Read & Write on *this* bucket, bucket name).
+* **Console says "violates Content Security Policy"** → the deployment was built without the `R2_*` values: set them and **redeploy**.
+* **`PUT` succeeds but the file is rejected afterwards** (`verify`) → the server-side checks (size / content signature) or reading the object back; see the message shown.
+
+CORS that works for this application (replace the origin with the real one; **exact** origin — scheme + host, no path, no trailing
+slash, no `*`):
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://www.compass-tools.com"],
+    "AllowedMethods": ["PUT"],
+    "AllowedHeaders": ["content-type", "content-length"],
+    "MaxAgeSeconds": 3600
+  }
+]
+```
+
+Only `PUT` is needed: downloads are top-level navigations to a signed URL (no CORS). Adding `GET` / `HEAD` and `"ExposeHeaders": ["ETag"]`
+is harmless but unnecessary.
+The browser's preflight asks for `content-type` (the only non-simple header it sends; `Content-Length` is added by the browser itself).
+If the site is also reached as `https://compass-tools.com` (without `www`) add that origin too. Preview deployments need their own origin
+listed, or use a separate bucket for previews.
+
 ## Known limits
 
 * No virus / malware scanning; no per-file versioning or replacement (delete + re-upload); no global Documents page.

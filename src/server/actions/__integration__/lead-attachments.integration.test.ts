@@ -290,6 +290,36 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, in-memory storage
       expect(fake.store.has(row.storageKey!)).toBe(false);
     });
 
+    it("a failed attempt is reported with stage / kind / status only, audited, and the retry then works", async () => {
+      as("Agent1");
+      const first = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "retry.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!first.ok) throw new Error("setup");
+      await actions.abandonLeadAttachmentUpload(first.attachmentId, { stage: "put", kind: "blocked", status: 0 });
+      expect(await prisma.attachment.count({ where: { id: first.attachmentId } })).toBe(0);
+      const failed = await prisma.auditLog.findFirstOrThrow({ where: { entityType: "Attachment", entityId: first.attachmentId, action: "ATTACHMENT_UPLOAD_FAILED" } });
+      expect(failed.metadata).toMatchObject({ stage: "put", kind: "blocked", status: 0, leadId: ids.LA1, companyId: "default-company" });
+      expect(JSON.stringify(failed.metadata)).not.toMatch(/https?:|r2\.test|sig=/);
+      // anything outside the allowed shape is ignored (nothing the browser says can inject a URL or free text into the log)
+      const second = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "retry.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!second.ok) throw new Error("setup");
+      await actions.abandonLeadAttachmentUpload(second.attachmentId, { stage: "put", kind: "blocked", status: 0, url: "https://evil.example/?sig=1" });
+      expect(await prisma.auditLog.count({ where: { entityType: "Attachment", entityId: second.attachmentId, action: "ATTACHMENT_UPLOAD_FAILED" } })).toBe(1);
+      expect(JSON.stringify((await prisma.auditLog.findFirstOrThrow({ where: { entityId: second.attachmentId, action: "ATTACHMENT_UPLOAD_FAILED" } })).metadata)).not.toContain("evil");
+      // and a fresh, complete upload of the same file now succeeds (a failed attempt blocks nothing)
+      const ok = await upload("Agent1", ids.LA1, { name: "retry.pdf", type: "application/pdf", bytes: PDF });
+      expect(ok.done).toEqual({ ok: true, attachmentId: ok.id });
+    });
+
+    it("diagnostics from someone else's pending upload are ignored", async () => {
+      as("Agent2");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA2, fileName: "x.pdf", contentType: "application/pdf", size: 10 });
+      if (!req.ok) throw new Error("setup");
+      as("Agent1");
+      await actions.abandonLeadAttachmentUpload(req.attachmentId, { stage: "put", kind: "rejected", status: 403 });
+      expect(await prisma.attachment.count({ where: { id: req.attachmentId } })).toBe(1);
+      expect(await prisma.auditLog.count({ where: { entityId: req.attachmentId, action: "ATTACHMENT_UPLOAD_FAILED" } })).toBe(0);
+    });
+
     it("the browser failing mid-upload (abandon) removes the pending record", async () => {
       as("Agent1");
       const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "a.pdf", contentType: "application/pdf", size: 10 });

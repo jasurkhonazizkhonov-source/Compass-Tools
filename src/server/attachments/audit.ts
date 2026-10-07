@@ -8,6 +8,7 @@ import type { Prisma } from "@/generated/prisma/client";
 export type AttachmentAuditAction =
   | "ATTACHMENT_UPLOADED"
   | "ATTACHMENT_UPLOAD_REJECTED"
+  | "ATTACHMENT_UPLOAD_FAILED"
   | "ATTACHMENT_OPENED"
   | "ATTACHMENT_DOWNLOADED"
   | "ATTACHMENT_DESCRIPTION_UPDATED"

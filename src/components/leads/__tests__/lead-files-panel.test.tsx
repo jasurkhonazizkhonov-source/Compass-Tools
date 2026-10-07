@@ -122,6 +122,68 @@ describe("Lead Files panel", () => {
     expect(actions.abandonLeadAttachmentUpload).not.toHaveBeenCalled();
   });
 
+  describe("when the browser → storage upload fails", () => {
+    // A minimal XMLHttpRequest whose outcome the test chooses: "error" = no response at all (CORS / CSP / network), or an HTTP status.
+    function stubXhr(outcome: "error" | number) {
+      class FakeXhr {
+        status = 0;
+        upload = { onprogress: null as null | ((e: unknown) => void) };
+        onload: null | (() => void) = null;
+        onerror: null | (() => void) = null;
+        onabort: null | (() => void) = null;
+        ontimeout: null | (() => void) = null;
+        open() {}
+        setRequestHeader() {}
+        abort() {}
+        send() {
+          queueMicrotask(() => {
+            if (outcome === "error") this.onerror?.();
+            else {
+              this.status = outcome;
+              this.onload?.();
+            }
+          });
+        }
+      }
+      vi.stubGlobal("XMLHttpRequest", FakeXhr);
+    }
+    async function attemptUpload() {
+      actions.requestLeadAttachmentUpload.mockResolvedValue({ ok: true, attachmentId: "pending-1", uploadUrl: "https://storage.invalid/put", headers: { "Content-Type": "application/pdf" } });
+      render(<LeadFilesPanel {...base} />);
+      fireEvent.click(screen.getByRole("button", { name: /Upload Document/ }));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.change(within(dialog).getByLabelText("File"), { target: { files: [new File(["%PDF-1.7"], "ok.pdf", { type: "application/pdf" })] } });
+      fireEvent.click(within(dialog).getByRole("button", { name: /^Upload$/ }));
+      return dialog;
+    }
+
+    it("no response (CORS / CSP / network): a specific, safe message; the failure is reported with stage, kind and status only; retry is possible", async () => {
+      stubXhr("error");
+      const dialog = await attemptUpload();
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/couldn't reach file storage/));
+      expect(within(dialog).getByRole("alert")).not.toHaveTextContent(/R2|bucket|cloudflare|https?:/i);
+      expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "put", kind: "blocked", status: 0 });
+      expect(actions.completeLeadAttachmentUpload).not.toHaveBeenCalled();
+      // not stuck: the Upload button is usable again for another attempt
+      expect(within(dialog).getByRole("button", { name: /^Upload$/ })).toBeEnabled();
+    });
+
+    it("storage answers 403: the status is shown and reported", async () => {
+      stubXhr(403);
+      const dialog = await attemptUpload();
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/rejected the upload \(error 403\)/));
+      expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "put", kind: "rejected", status: 403 });
+    });
+
+    it("a failure after a successful PUT is reported as the verify stage", async () => {
+      stubXhr(200);
+      actions.completeLeadAttachmentUpload.mockResolvedValue({ ok: false, error: "This file's contents don't match its file type, so it was not saved." });
+      const dialog = await attemptUpload();
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/contents don't match/));
+      expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "verify", kind: "other", status: 0 });
+    });
+  });
+
   it("editing a description sends only the description; delete asks for confirmation first", async () => {
     actions.updateLeadAttachmentDescription.mockResolvedValue({ ok: true, description: "new" });
     actions.deleteLeadAttachment.mockResolvedValue({ ok: true });

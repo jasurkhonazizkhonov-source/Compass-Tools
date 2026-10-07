@@ -102,14 +102,32 @@ export function FileRowItem({ file, canManage, onEdit, onDelete }: { file: LeadF
 
 type Phase = "idle" | "preparing" | "uploading" | "verifying";
 
+/** The browser→storage PUT failed. `blocked` = no response at all (CORS / CSP / network); `rejected` = storage answered with an error status. */
+class UploadTransportError extends Error {
+  constructor(
+    readonly kind: "blocked" | "rejected",
+    readonly status: number,
+  ) {
+    super("upload failed");
+  }
+}
+
+function transportMessage(err: UploadTransportError): string {
+  return err.kind === "blocked"
+    ? "The browser couldn't reach file storage, so the file was not saved. Please try again; if it keeps happening, ask an administrator to check the file-storage settings."
+    : `File storage rejected the upload (error ${err.status}), so the file was not saved. Please try again; if it keeps happening, ask an administrator to check the file-storage settings.`;
+}
+
 function putWithProgress(url: string, file: File, headers: Record<string, string>, onProgress: (pct: number) => void, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", url);
     for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
-    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new Error("upload failed")));
-    xhr.onerror = () => reject(new Error("upload failed"));
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new UploadTransportError("rejected", xhr.status)));
+    // Status 0: the browser never got a response — blocked by CORS / the page's CSP, or the network dropped.
+    xhr.onerror = () => reject(new UploadTransportError("blocked", 0));
+    xhr.ontimeout = () => reject(new UploadTransportError("blocked", 0));
     xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
     signal.addEventListener("abort", () => xhr.abort());
     xhr.send(file);
@@ -138,6 +156,7 @@ export function LeadFilesPanel({
   const [phase, setPhase] = useState<Phase>("idle");
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [fileInvalid, setFileInvalid] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const busy = phase !== "idle";
 
@@ -153,14 +172,19 @@ export function LeadFilesPanel({
     setPhase("idle");
     setProgress(0);
     setError(null);
+    setFileInvalid(false);
   }
 
   function pick(next: File | null) {
     setError(null);
     setFile(next);
+    setFileInvalid(false);
     if (next) {
       const checked = validateFile({ fileName: next.name, contentType: next.type, size: next.size }, maxSizeMb * 1024 * 1024);
-      if (!checked.ok) setError(checked.error);
+      if (!checked.ok) {
+        setError(checked.error);
+        setFileInvalid(true); // an unsupported / oversized file can't be uploaded; a failed UPLOAD of a valid file can simply be retried
+      }
     }
   }
 
@@ -173,12 +197,15 @@ export function LeadFilesPanel({
     const controller = new AbortController();
     abortRef.current = controller;
     let pendingId: string | null = null;
+    let stage: "authorize" | "put" | "verify" = "authorize";
     try {
       const req = await requestLeadAttachmentUpload({ leadId, fileName: file.name, contentType: file.type, size: file.size, description });
       if (!req.ok) throw new Error(req.error);
       pendingId = req.attachmentId;
+      stage = "put";
       setPhase("uploading");
       await putWithProgress(req.uploadUrl, file, req.headers, setProgress, controller.signal);
+      stage = "verify";
       setPhase("verifying");
       const done = await completeLeadAttachmentUpload(req.attachmentId);
       if (!done.ok) throw new Error(done.error);
@@ -187,11 +214,17 @@ export function LeadFilesPanel({
       setUploadOpen(false);
       router.refresh();
     } catch (err) {
-      if (pendingId) void abandonLeadAttachmentUpload(pendingId);
       const cancelled = err instanceof DOMException && err.name === "AbortError";
+      // Tell the server which step failed (stage / kind / HTTP status only — never a URL) so a production failure can be traced in the audit log.
+      if (pendingId) {
+        const transport = err instanceof UploadTransportError ? err : null;
+        void abandonLeadAttachmentUpload(pendingId, { stage: cancelled ? "cancelled" : stage, kind: transport?.kind ?? "other", status: transport?.status ?? 0 });
+      }
       setPhase("idle");
       setProgress(0);
-      if (!cancelled) setError(err instanceof Error && err.message !== "upload failed" ? err.message : "The upload didn't go through. Check your connection and try again.");
+      if (!cancelled) {
+        setError(err instanceof UploadTransportError ? transportMessage(err) : err instanceof Error ? err.message : "The upload didn't go through. Please try again.");
+      }
     } finally {
       abortRef.current = null;
     }
@@ -289,7 +322,7 @@ export function LeadFilesPanel({
             ) : (
               <Button variant="outline" onClick={() => { setUploadOpen(false); resetUpload(); }} disabled={busy}>Cancel</Button>
             )}
-            <Button onClick={upload} disabled={!file || busy || !!error}>
+            <Button onClick={upload} disabled={!file || busy || fileInvalid}>
               {busy ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <Upload className="size-3.5" aria-hidden />} Upload
             </Button>
           </DialogFooter>

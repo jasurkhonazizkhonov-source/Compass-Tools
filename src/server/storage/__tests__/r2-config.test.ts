@@ -22,6 +22,12 @@ describe("R2 configuration", () => {
     expect(isStorageConfigured(FULL)).toBe(true);
   });
 
+  it("tolerates the quotes and spaces of a pasted .env line, and a bucket path pasted onto the endpoint", () => {
+    const c = getR2Config({ ...FULL, R2_BUCKET_NAME: ' "crm-files" ', R2_ACCESS_KEY_ID: "'AKID'", R2_SECRET_ACCESS_KEY: '"SECRET"', R2_ENDPOINT: '"https://abc123.r2.cloudflarestorage.com/crm-files/"' });
+    expect(c).toEqual({ endpoint: "https://abc123.r2.cloudflarestorage.com", region: "auto", bucket: "crm-files", accessKeyId: "AKID", secretAccessKey: "SECRET" });
+    expect(storageOrigin({ ...FULL, R2_ENDPOINT: '"https://abc123.r2.cloudflarestorage.com/crm-files"' })).toBe("https://abc123.r2.cloudflarestorage.com");
+  });
+
   it("never accepts a non-https endpoint (credentials must not travel in clear text)", () => {
     expect(getR2Config({ ...FULL, R2_ENDPOINT: "http://abc123.r2.cloudflarestorage.com" })).toBeNull();
     expect(getR2Config({ ...FULL, R2_ENDPOINT: "not a url" })).toBeNull();
