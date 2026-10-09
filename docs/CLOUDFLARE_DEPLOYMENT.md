@@ -15,12 +15,29 @@ build did not yet serve (`ETARGET`). The committed lockfile never asked for it (
 The fix is to commit the adapter, Wrangler and the configuration, pinned and locked, so the build is a plain `npm ci` plus an explicit
 build — no auto-migration and no unpinned resolution.
 
+## What was wrong with the second Cloudflare build
+
+With the configuration committed, the dashboard still ran its default **Build command `npm run build`** (a plain `next build`) and then
+**Deploy command `npx wrangler deploy`**. Wrangler detects an OpenNext project and delegates to `opennextjs-cloudflare deploy`, which
+needs the output of `opennextjs-cloudflare build` (`.open-next/`, in particular `.open-next/.build/open-next.config.edge.mjs`). A plain
+`next build` does not create it, so the deploy failed with `Could not find compiled Open Next config, did you run the build command?`.
+
+The same plain build is also why the log said `APP_BASE_URL` was missing: the build step only sees Workers Builds **build variables**,
+not the Worker's runtime `vars`, so the origin silently fell back to `http://localhost:3000`.
+
+Fix (in the repository, so it works with the dashboard's default settings): `npm run build` is now `scripts/build.mjs`, which runs the
+full OpenNext Cloudflare build (`scripts/cloudflare-build.mjs`, including the `APP_BASE_URL` default) when Workers Builds sets
+`WORKERS_CI`, and a plain `next build` everywhere else. The adapter's own inner Next build is pinned to `npx next build`
+(`open-next.config.ts` `buildCommand`) so the two cannot call each other. Vercel is unaffected (`vercel-build` calls `npx next build`).
+Setting the Build command to `npm run cf:build` is equivalent and remains the explicit form.
+
 ## What is committed
 
 | File | Purpose |
 | --- | --- |
 | `wrangler.jsonc` | Worker `compass-tools`, entry `.open-next/worker.js`, `nodejs_compat`, assets binding, self-reference service, **non-secret** `vars.APP_BASE_URL` |
 | `open-next.config.ts` | Default `defineCloudflareConfig()` (no R2 incremental cache: the CRM is dynamic; static pages are built once) |
+| `scripts/build.mjs` | `npm run build`: the OpenNext Cloudflare build when `WORKERS_CI` is set (Workers Builds), plain `next build` otherwise |
 | `scripts/cloudflare-build.mjs` | Build entry point (`npm run cf:build`): fixes `APP_BASE_URL` for the static pages, flags the build as a Workers build, runs `opennextjs-cloudflare build` |
 | `src/lib/cloudflare/sharp-unavailable.ts` | Stub for the native `sharp` addon, aliased in **only** when `CLOUDFLARE_BUILD=1` (see `next.config.ts`) |
 | `public/_headers` | Long-lived caching for `/_next/static/*` |
@@ -33,8 +50,9 @@ moved from 16.3.1 to 16.3.8 — a patch release; the full test suite and the nor
 
 Worker `compass-tools` → **Settings → Build**:
 
-* **Build command:** `npm run cf:build`
-* **Deploy command:** `npx wrangler deploy` (or `npm run cf:deploy`, which also runs the adapter's cache step — a no-op here)
+* **Build command:** `npm run cf:build` (the dashboard default `npm run build` now does the same inside Workers Builds)
+* **Deploy command:** `npx wrangler deploy` (delegates to `opennextjs-cloudflare deploy`; `npm run cf:deploy` is equivalent). It must run
+  **after** the build command in the same build — the deploy step reads `.open-next/` produced by the build.
 * **Root directory:** repository root. **Production branch:** `main`.
 * Node: the build image's default (Node 22+) is fine. Dependencies install with `npm ci` from the committed lockfile.
 

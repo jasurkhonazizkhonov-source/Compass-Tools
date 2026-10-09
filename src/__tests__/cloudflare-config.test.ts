@@ -85,9 +85,24 @@ describe("build entry point", () => {
   it("scripts are wired and the Vercel build is untouched", () => {
     expect(pkg.scripts["cf:build"]).toBe("node scripts/cloudflare-build.mjs");
     expect(pkg.scripts["cf:deploy"]).toBe("opennextjs-cloudflare deploy");
-    expect(pkg.scripts.build).toBe("next build");
+    expect(pkg.scripts.build).toBe("node scripts/build.mjs");
     expect(pkg.scripts["vercel-build"]).toBe("node scripts/vercel-build.mjs");
     expect(read("vercel.json")).toContain("/api/cron/tasks");
+    // Vercel's build calls `next build` directly, so changing the "build" script cannot affect it.
+    expect(read("scripts", "vercel-build.mjs")).toContain("npx next build");
+  });
+
+  it("`npm run build` produces the OpenNext output inside Workers Builds (WORKERS_CI) and a plain Next build elsewhere", () => {
+    // The first Cloudflare deploy failed with "Could not find compiled Open Next config": the dashboard's default Build command
+    // is `npm run build`, and `wrangler deploy` -> `opennextjs-cloudflare deploy` needs `.open-next/` from the adapter build.
+    const script = read("scripts", "build.mjs");
+    expect(script).toMatch(/process\.env\.WORKERS_CI/);
+    expect(script).toContain("scripts\", \"cloudflare-build.mjs\"");
+    expect(script).toContain("npx next build");
+  });
+
+  it("the adapter's inner Next build is pinned to `npx next build`, so `npm run build` can never re-enter itself", () => {
+    expect(read("open-next.config.ts")).toMatch(/buildCommand:\s*"npx next build"/);
   });
 
   it("the build script takes APP_BASE_URL from wrangler.jsonc when unset, refuses a localhost origin, and flags the Workers build", () => {
