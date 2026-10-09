@@ -31,6 +31,27 @@ full OpenNext Cloudflare build (`scripts/cloudflare-build.mjs`, including the `A
 (`open-next.config.ts` `buildCommand`) so the two cannot call each other. Vercel is unaffected (`vercel-build` calls `npx next build`).
 Setting the Build command to `npm run cf:build` is equivalent and remains the explicit form.
 
+## What was wrong with the third Cloudflare build
+
+The build now reached server bundling and failed with `Could not resolve "pg-cloudflare"` at
+`.open-next/server-functions/default/node_modules/pg/lib/stream.js:41`, noting that `pg-cloudflare/package.json` points to
+`./dist/index.js`, which was missing from the copied package.
+
+* The installed package is complete (`pg-cloudflare@1.4.0`, an *optional* dependency of `pg@8.23.0`; lockfile consistent). It ships two
+  builds chosen by export condition: `workerd` → the real socket implementation (`dist/index.js`, `esm/index.mjs`), anything else →
+  `dist/empty.js`.
+* Next traces files with the Node conditions, so OpenNext's copy of the package contained only `dist/empty.js` plus the original
+  `package.json`. The Worker is bundled by esbuild with the `workerd` condition, which wants `dist/index.js` → unresolved.
+* It did not fail on Windows because there Next's external-package link (`.next/standalone/.next/node_modules/pg-<hash>`) is absolute and
+  points back at the complete project `node_modules/pg`; on Linux it is relative and lands on the incomplete traced copy.
+* Fix: OpenNext's own mechanism for packages with a `workerd` condition — it copies the whole package (with a `workerd`-only
+  `exports`) when the package is listed in Next's `serverExternalPackages`. `next.config.ts` lists `pg-cloudflare` there **for Cloudflare
+  builds only** (`CLOUDFLARE_BUILD=1`); the Vercel/Node build is byte-for-byte unaffected. It is not marked external in the Worker bundle,
+  stubbed, or suppressed: the bundle inlines the real implementation (`CloudflareSocket`, using `connect()` from `cloudflare:sockets`).
+* Verification: reproduced on Windows by making the standalone link relative (the Linux layout); the failure appeared exactly as reported
+  and disappeared with the fix. **This only proves the Worker bundles** — whether it can talk to the database is a separate question (see
+  the known blockers below).
+
 ## What is committed
 
 | File | Purpose |

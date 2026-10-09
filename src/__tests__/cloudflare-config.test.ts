@@ -141,6 +141,30 @@ describe("Workers-only sharp stub", () => {
     expect(cf.turbopack?.resolveAlias?.sharp).toBe("./src/lib/cloudflare/sharp-unavailable.ts");
   });
 
+  it("copies pg-cloudflare whole into the Worker build (only for a Cloudflare build)", async () => {
+    // Regression: "Could not resolve pg-cloudflare" at .open-next/.../pg/lib/stream.js. Next traces with the Node conditions, so the traced
+    // copy of pg-cloudflare only held dist/empty.js while the Worker is bundled with the `workerd` condition (-> dist/index.js).
+    // OpenNext copies a whole package when it is in serverExternalPackages and has a `workerd` export condition.
+    delete process.env.CLOUDFLARE_BUILD;
+    vi.resetModules();
+    const normal = (await import("../../next.config")).default as { serverExternalPackages?: string[] };
+    expect(normal.serverExternalPackages).toBeUndefined();
+
+    process.env.CLOUDFLARE_BUILD = "1";
+    vi.resetModules();
+    const cf = (await import("../../next.config")).default as { serverExternalPackages?: string[] };
+    expect(cf.serverExternalPackages).toEqual(["pg-cloudflare"]);
+  });
+
+  it("the installed pg-cloudflare really has the workerd entry points that must be copied", () => {
+    const dir = path.join(ROOT, "node_modules", "pg-cloudflare");
+    const manifest = JSON.parse(readFileSync(path.join(dir, "package.json"), "utf-8")) as { exports: { ".": { workerd: Record<string, string> } } };
+    for (const entry of Object.values(manifest.exports["."].workerd)) expect(existsSync(path.join(dir, entry)), entry).toBe(true);
+    // pg is what loads it, so its range must still allow this package (pg declares it as an optional dependency)
+    expect(lock.packages["node_modules/pg"]).toBeDefined();
+    expect(lock.packages["node_modules/pg-cloudflare"]?.version).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
   it("the stub throws a clear error when called", async () => {
     const stub = (await import("@/lib/cloudflare/sharp-unavailable")).default;
     expect(() => stub()).toThrow(/not available on this deployment platform/);

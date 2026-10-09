@@ -49,8 +49,21 @@ const NO_STORE = [{ key: "Cache-Control", value: "private, no-cache, no-store, m
 // the company-logo pipeline (src/lib/logo-processing.ts), which already handles failure. The Vercel / Node build is unaffected.
 const cloudflareBuild = process.env.CLOUDFLARE_BUILD === "1";
 
+// `pg-cloudflare` is the socket layer `pg` uses on Workers (it loads it only when it detects the Workers runtime). It ships two builds
+// selected by export condition: `workerd` -> the real socket implementation, anything else -> an empty stub. Next traces files with the
+// Node conditions, so the traced copy of the package contains only the empty stub, while OpenNext bundles the Worker with the
+// `workerd` condition and then cannot find `./dist/index.js` ("Could not resolve pg-cloudflare"). OpenNext's fix for packages with a
+// `workerd` condition is to copy them whole — it does that for packages named in `serverExternalPackages`. (It is NOT marked
+// external in the Worker bundle: the bundle still inlines the real implementation.)
+const CLOUDFLARE_WORKERD_PACKAGES = ["pg-cloudflare"];
+
 const nextConfig: NextConfig = {
-  ...(cloudflareBuild ? { turbopack: { resolveAlias: { sharp: "./src/lib/cloudflare/sharp-unavailable.ts" } } } : {}),
+  ...(cloudflareBuild
+    ? {
+        serverExternalPackages: CLOUDFLARE_WORKERD_PACKAGES,
+        turbopack: { resolveAlias: { sharp: "./src/lib/cloudflare/sharp-unavailable.ts" } },
+      }
+    : {}),
   async headers() {
     return [
       {
