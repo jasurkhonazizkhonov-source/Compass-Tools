@@ -16,6 +16,9 @@ const eslintConfig = defineConfig([
     ".claude/**",
     ".agents/**",
     ".windsurf/**",
+    // Cloudflare (OpenNext) build output and Wrangler local state — generated, git-ignored.
+    ".open-next/**",
+    ".wrangler/**",
   ]),
 ]);
 

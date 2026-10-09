@@ -44,7 +44,13 @@ const NO_STORE_SOURCES = [
 ];
 const NO_STORE = [{ key: "Cache-Control", value: "private, no-cache, no-store, max-age=0, must-revalidate" }];
 
+// Cloudflare Workers build only (scripts/cloudflare-build.mjs sets CLOUDFLARE_BUILD=1): `sharp` is a native Node addon that a Worker
+// cannot load and that OpenNext's bundler cannot inline, so it is replaced by a stub that throws when called. Its only callers are
+// the company-logo pipeline (src/lib/logo-processing.ts), which already handles failure. The Vercel / Node build is unaffected.
+const cloudflareBuild = process.env.CLOUDFLARE_BUILD === "1";
+
 const nextConfig: NextConfig = {
+  ...(cloudflareBuild ? { turbopack: { resolveAlias: { sharp: "./src/lib/cloudflare/sharp-unavailable.ts" } } } : {}),
   async headers() {
     return [
       {

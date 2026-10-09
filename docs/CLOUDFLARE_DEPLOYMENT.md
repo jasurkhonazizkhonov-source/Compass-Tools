@@ -1,0 +1,96 @@
+# Cloudflare Workers deployment (OpenNext) — status, setup and known blockers
+
+The CRM can be built for **Cloudflare Workers** with the OpenNext Cloudflare adapter (`@opennextjs/cloudflare`). The Vercel deployment
+(`vercel.json`, `scripts/vercel-build.mjs`) is unchanged and remains the production system; nothing here changes DNS or routing.
+
+> **Status (verified 2026-10-09): the Worker builds and boots, and the public pages work, but the authenticated CRM does NOT run on
+> Workers yet** — see [Known blockers](#known-blockers-the-crm-does-not-work-on-workers-yet). Do not point `www.compass-tools.com`
+> at the Worker until they are resolved and re-verified.
+
+## What was wrong with the first Cloudflare build
+
+Wrangler found no Worker configuration, so it tried to auto-migrate the project (`npm install` of the OpenNext adapter **outside the
+lockfile**). That fresh resolution requested `@aws-sdk/credential-provider-http@^3.972.75`, which the registry mirror used by the
+build did not yet serve (`ETARGET`). The committed lockfile never asked for it (it pins `3.972.74`; a clean `npm ci` from it succeeds).
+The fix is to commit the adapter, Wrangler and the configuration, pinned and locked, so the build is a plain `npm ci` plus an explicit
+build — no auto-migration and no unpinned resolution.
+
+## What is committed
+
+| File | Purpose |
+| --- | --- |
+| `wrangler.jsonc` | Worker `compass-tools`, entry `.open-next/worker.js`, `nodejs_compat`, assets binding, self-reference service, **non-secret** `vars.APP_BASE_URL` |
+| `open-next.config.ts` | Default `defineCloudflareConfig()` (no R2 incremental cache: the CRM is dynamic; static pages are built once) |
+| `scripts/cloudflare-build.mjs` | Build entry point (`npm run cf:build`): fixes `APP_BASE_URL` for the static pages, flags the build as a Workers build, runs `opennextjs-cloudflare build` |
+| `src/lib/cloudflare/sharp-unavailable.ts` | Stub for the native `sharp` addon, aliased in **only** when `CLOUDFLARE_BUILD=1` (see `next.config.ts`) |
+| `public/_headers` | Long-lived caching for `/_next/static/*` |
+| `package.json` / `package-lock.json` | `next@16.3.8`, `@opennextjs/cloudflare@1.20.10`, `wrangler@4.149.0` (exact versions) and scripts `cf:build`, `cf:preview`, `cf:deploy`, `cf:dry-run` |
+
+**Versions.** `@opennextjs/cloudflare@1.20.10` requires `next >= 16.3.8` (its peer range moves up with Next security releases), so Next
+moved from 16.3.1 to 16.3.8 — a patch release; the full test suite and the normal build pass on it.
+
+## Cloudflare dashboard (Workers Builds) — manual settings
+
+Worker `compass-tools` → **Settings → Build**:
+
+* **Build command:** `npm run cf:build`
+* **Deploy command:** `npx wrangler deploy` (or `npm run cf:deploy`, which also runs the adapter's cache step — a no-op here)
+* **Root directory:** repository root. **Production branch:** `main`.
+* Node: the build image's default (Node 22+) is fine. Dependencies install with `npm ci` from the committed lockfile.
+
+### Environment variables
+
+| Variable | Where | Value |
+| --- | --- | --- |
+| `APP_BASE_URL` | already in `wrangler.jsonc` `vars` (runtime) and read from it by `cf:build` (build time) | `https://www.compass-tools.com` — a Workers Builds **build variable** with the same name overrides it |
+| `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CRON_SECRET`, `CARD_ENCRYPTION_KEY`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `LEAD_INGEST_SECRET`, `CARD_VAULT_MODE`, `R2_*`, … | Worker → Settings → **Variables and Secrets** (runtime). Mark secrets as *Secret*. **Copy them from Vercel; they are not shared.** Use the **same** key values (re-generating an encryption key makes stored data unreadable). | see `.env.example` / `docs/DEPLOYMENT.md` |
+
+Secrets are never written to `wrangler.jsonc` or the repository. To keep dashboard-set variables across deploys use
+`npx wrangler deploy --keep-vars`.
+
+## Known blockers (the CRM does not work on Workers yet)
+
+Verified by running the built Worker locally in `workerd` (`npm run cf:preview`) — public pages, images, sitemap, robots, the cron
+auth gate and the signed-out attachment route all behave correctly (200 / 401), but:
+
+1. **Prisma's query compiler cannot start.** The generated client compiles its WebAssembly from bytes at runtime
+   (`new WebAssembly.Module(...)`), which Workers forbid (`CompileError`; `/api/health` reports `database.ok:false`). Workers need the
+   generator's `runtime = "workerd"` build (precompiled `.wasm` module). Changing the generator affects the Vercel build too, so it
+   needs a deliberate, separately tested change.
+2. **One Prisma client / `pg` pool shared across requests.** `src/lib/prisma.ts` keeps a process-wide singleton. A Worker may not
+   reuse an I/O object (socket) created by another request; OpenNext's guidance is a **per-request client with `maxUses: 1`**, ideally
+   through **Hyperdrive**. This is a database-layer change and was deliberately not made here.
+3. **Database TLS.** The default connection is "encrypted, not identity-verified" (`rejectUnauthorized: false`) and Aiven certificates
+   are signed by a project CA. Workers' TLS sockets validate against the system trust store and cannot take a custom CA, so connecting
+   to Aiven directly is unlikely to work; **Hyperdrive** (which holds the CA) is the supported route.
+4. **Route protection.** `src/proxy.ts` (the session gate and nonce-CSP provider) is a Node-runtime proxy. OpenNext reports "Node.js
+   middleware support is experimental in cloudflare", and in the local run every proxied route (`/dashboard`, `/leads`, …) answered
+   500 (`Error in routingHandler: Method Promise.prototype.then called on incompatible receiver`). Until that is resolved the Worker
+   cannot enforce the sign-in redirect — **it must not receive production traffic.**
+5. **Worker size.** The built Worker is ≈ 43 MB uncompressed / **≈ 10.2 MiB gzip** (Wrangler dry run). That is just under the Workers
+   Paid limit (10 MiB) and far over the Free plan limit (3 MiB): the Worker **requires the Workers Paid plan** and has almost no
+   headroom — any growth in dependencies can break the deploy.
+6. **Company logo processing** uses the native `sharp` addon, which a Worker cannot load. On Workers the logo-upload action reports an
+   error and a company with no uploaded logo gets none in its emails (the fallback path already degrades to "no logo"). Uploaded logos
+   already stored in the database keep working.
+
+None of these affect Vercel. They are listed so the cut-over decision is made on facts: the work needed is (1)–(4), most likely
+"Prisma `workerd` runtime + Hyperdrive + per-request client + a Workers-safe replacement for the Node proxy".
+
+## Local commands
+
+```
+npm run cf:build     # Workers build -> .open-next/   (APP_BASE_URL taken from wrangler.jsonc when unset)
+npm run cf:dry-run   # wrangler deploy --dry-run: validates wrangler.jsonc and bundles; prints the gzip size
+npm run cf:preview   # build + run the Worker locally in workerd (put test-only values in .dev.vars — git-ignored)
+```
+
+OpenNext warns that Windows is not fully supported; the Cloudflare build image is Linux. `.open-next/`, `.wrangler/` and `.dev.vars`
+are git-ignored.
+
+## Cut-over (separate step, needs explicit approval)
+
+Only after the blockers above are resolved and the Worker's own `*.workers.dev` URL passes a full authenticated check (sign-in, a lead,
+a quote, an attachment upload, the cron routes with the real `CRON_SECRET`): add the custom domain in Cloudflare, keep Vercel as the
+fallback, and run database migrations from the Vercel pipeline (`scripts/vercel-build.mjs` runs `prisma migrate deploy`; the Workers
+build deliberately does **not**).

@@ -48,3 +48,8 @@ next-env.d.ts
 .claude/
 .windsurf/
 skills-lock.json
+
+# cloudflare / opennext build output and local state
+.open-next
+.wrangler
+.dev.vars

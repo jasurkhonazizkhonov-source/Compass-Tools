@@ -1,0 +1,34 @@
+{
+  // Cloudflare Workers deployment of the Compass Tools CRM through the OpenNext Cloudflare adapter (@opennextjs/cloudflare).
+  // Build with `npm run cf:build`, deploy with `npm run cf:deploy` — see docs/CLOUDFLARE_DEPLOYMENT.md. The Vercel deployment
+  // (vercel.json / scripts/vercel-build.mjs) is unaffected.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "compass-tools",
+  "main": ".open-next/worker.js",
+  // Must be 2024-09-23 or later for the adapter; kept at a date the pinned workerd supports.
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": [
+    "nodejs_compat", // Node.js APIs (crypto, buffer, net/tls for the Postgres driver, …)
+    "global_fetch_strictly_public" // the app fetches public URLs (Google APIs, R2 presigned URLs, …)
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "services": [
+    {
+      // Used by the adapter for self-requests (e.g. on-demand revalidation); must match "name".
+      "binding": "WORKER_SELF_REFERENCE",
+      "service": "compass-tools"
+    }
+  ],
+  // NON-SECRET runtime variables only. Secrets (DATABASE_URL, CARD_ENCRYPTION_KEY, GOOGLE_CLIENT_SECRET, CRON_SECRET, R2_*, …) are
+  // set in the Cloudflare dashboard (Worker → Settings → Variables and Secrets) and are never written to this file.
+  // APP_BASE_URL is also read by scripts/cloudflare-build.mjs as the build-time default for the statically generated pages.
+  "vars": {
+    "APP_BASE_URL": "https://www.compass-tools.com"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

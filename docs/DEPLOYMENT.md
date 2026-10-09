@@ -6,6 +6,10 @@ in-app "switch company" concept — isolation between companies comes from
 each deployment only ever having access to its own database, not from
 tenant filtering inside a shared one.
 
+> Hosting: Vercel is the supported production platform. A Cloudflare Workers
+> (OpenNext) build exists but is **not production-ready** — see
+> [docs/CLOUDFLARE_DEPLOYMENT.md](CLOUDFLARE_DEPLOYMENT.md) for its status and blockers.
+
 ```
 Compass Tools (same codebase)
      │
