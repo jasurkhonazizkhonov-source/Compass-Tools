@@ -6,7 +6,24 @@
 // heuristic: it only ever acts when very confident a upload has a genuine
 // flat backdrop, and otherwise leaves the logo completely untouched rather
 // than risk damaging real brand artwork.
-import sharp from "sharp";
+import type { default as SharpFactory } from "sharp";
+
+// `sharp` is a native addon (libvips). It is loaded on FIRST USE, not when this module is imported: this module is reachable from the
+// server's start-up path (instrumentation -> task notifications -> company/logo queries), and a native library that cannot load on a
+// given host (a missing platform binary, a libvips file the build's file tracing did not copy) must only ever affect logo
+// processing - never prevent the whole server from starting. A load failure is not cached, so it is retried on the next use.
+type Sharp = typeof SharpFactory;
+let sharpLoading: Promise<Sharp> | undefined;
+function loadSharp(): Promise<Sharp> {
+  sharpLoading ??= import("sharp").then(
+    (m) => ((m as unknown as { default?: Sharp }).default ?? (m as unknown as Sharp)),
+    (err) => {
+      sharpLoading = undefined;
+      throw err;
+    }
+  );
+  return sharpLoading;
+}
 
 export const MAX_LOGO_FILE_BYTES = 8 * 1024 * 1024; // 8MB
 const MIN_DIMENSION = 32;
@@ -24,6 +41,13 @@ export async function validateLogoUpload(buffer: Buffer): Promise<LogoValidation
   }
   if (buffer.length > MAX_LOGO_FILE_BYTES) {
     return { ok: false, error: `The logo file is too large (max ${MAX_LOGO_FILE_BYTES / 1024 / 1024}MB).` };
+  }
+
+  let sharp: Sharp;
+  try {
+    sharp = await loadSharp();
+  } catch {
+    return { ok: false, error: "Image processing is not available on this server." };
   }
 
   let metadata;
@@ -66,6 +90,7 @@ export type ProcessedLogo = {
  * — a low-res source stays low-res rather than being blown up and blurred.
  */
 export async function processLogo(buffer: Buffer): Promise<ProcessedLogo> {
+  const sharp = await loadSharp();
   const withAlpha = await maybeRemoveFlatBackground(buffer);
 
   const [email, web, icon] = await Promise.all([
@@ -104,6 +129,7 @@ const CORNER_SAMPLE = 4; // px block sampled at each corner
  */
 async function maybeRemoveFlatBackground(buffer: Buffer): Promise<{ buffer: Buffer; transparencyApplied: boolean }> {
   try {
+    const sharp = await loadSharp();
     const image = sharp(buffer).ensureAlpha();
     const { data, info } = await image.raw().toBuffer({ resolveWithObject: true });
     const { width, height, channels } = info;

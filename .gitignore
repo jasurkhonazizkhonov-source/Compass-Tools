@@ -53,3 +53,9 @@ skills-lock.json
 .open-next
 .wrangler
 .dev.vars
+
+# self-hosted VPS deployment: backups and local state never belong in Git
+/backups/
+*.dump
+*.dump.age
+*.dump.partial

@@ -220,6 +220,7 @@ describe("Stripe removal — repo-wide verification", () => {
     path.join("src", "components", "bookings", "payment-method-card.tsx"), // renders CvvReveal only when the server passes `cvv`
     path.join("src", "app", "(crm)", "bookings", "[id]", "page.tsx"), // asks for existence/expiry states (Admin-only)
     path.join("src", "app", "api", "cron", "tasks", "route.ts"), // daily 24h cleanup
+    path.join("src", "app", "api", "cron", "cvv-cleanup", "route.ts"), // dedicated 24h cleanup endpoint (self-hosted scheduler): deletes expired rows, handles no value
     path.join("src", "server", "actions", "payment-methods.ts"), // destroy when the payment is recorded as charged / cancelled
     path.join("src", "server", "actions", "contact-payment-methods.ts"), // destroy when the card is removed
   ];

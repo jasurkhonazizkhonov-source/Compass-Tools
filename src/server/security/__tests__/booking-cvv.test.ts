@@ -191,7 +191,10 @@ describe("destroyCvv / destroyExpiredCvvs", () => {
     expect(await destroyExpiredCvvs(now)).toEqual({ deleted: 0 });
     prismaMock.paymentMethodCvv.deleteMany.mockRejectedValueOnce(new Error("db down"));
     const spy = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(await destroyExpiredCvvs(now)).toEqual({ deleted: 0 }); // never throws into the cron run
+    // never throws into the cron run, but a FAILURE is distinguishable from "nothing had expired" (the dedicated job must retry it)
+    expect(await destroyExpiredCvvs(now)).toEqual({ deleted: 0, failed: true });
+    expect(spy).toHaveBeenCalledWith(expect.stringContaining("CVV_EXPIRY_CLEANUP_FAILED"));
+    expect(JSON.stringify(spy.mock.calls)).not.toContain("db down"); // only a safe tag is logged, never the error message
     spy.mockRestore();
   });
 });

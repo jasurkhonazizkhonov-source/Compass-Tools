@@ -1,0 +1,21 @@
+# Daily PostgreSQL backup of Compass Tools. Install (as root), after replacing /opt/compass-tools and the User if yours differ:
+#   sudo cp deploy/systemd/compass-tools-backup.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now compass-tools-backup.timer
+# See docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md ("Backups"). The user must be allowed to run `docker` (that is root-equivalent: use
+# a dedicated deploy account, not a shared one).
+[Unit]
+Description=Compass Tools PostgreSQL backup
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/compass-tools
+Environment=BACKUP_DIR=/var/backups/compass-tools
+Environment=KEEP_DAYS=14
+# Optional: encrypt each backup with age (public key only; the private key must NOT live on this server).
+# Environment=BACKUP_AGE_RECIPIENT=age1...
+ExecStart=/usr/bin/bash /opt/compass-tools/deploy/backup-db.sh
+# A failed backup shows up in: systemctl status compass-tools-backup.service  /  journalctl -u compass-tools-backup.service
+Nice=10

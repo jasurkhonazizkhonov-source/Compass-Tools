@@ -197,4 +197,27 @@ describe("GET /api/health", () => {
     // Two queries per real check, one real check for the whole burst.
     expect(queryRaw).toHaveBeenCalledTimes(2);
   });
+
+  it("reports the database TLS state truthfully: disabled (private Docker database) is never shown as verified, and exposes no host, URL or certificate", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const { resetHealthCacheForTests } = await import("@/lib/health-check");
+    const { GET } = await import("../route");
+    const readTls = async () => {
+      resetHealthCacheForTests();
+      const body = await (await GET()).json();
+      expect(JSON.stringify(body)).not.toMatch(/postgresql:|secret-pw|BEGIN CERTIFICATE|@db/);
+      return body.readiness.databaseTls;
+    };
+    try {
+      vi.stubEnv("DATABASE_URL", "postgresql://compass:secret-pw@db:5432/compass");
+      expect(await readTls()).toBe("unverified");
+      vi.stubEnv("DATABASE_SSL_MODE", "disable");
+      expect(await readTls()).toBe("disabled");
+      vi.stubEnv("DATABASE_SSL_MODE", "");
+      vi.stubEnv("DATABASE_SSL_VERIFY", "system");
+      expect(await readTls()).toBe("verified");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });

@@ -38,8 +38,8 @@ export type HealthBody = {
     cardVaultEnabled: boolean;
     /** What this process treats itself as — a production deployment is always identifiable as one. */
     environment: "production" | "preview" | "development" | "test";
-    /** Whether the database connection verifies the server's certificate and host name (DATABASE_SSL_CA / DATABASE_SSL_VERIFY=system) or is only encrypted. */
-    databaseTls: "verified" | "unverified";
+    /** Whether the database connection verifies the server's certificate and host name (DATABASE_SSL_CA / DATABASE_SSL_VERIFY=system), is only encrypted, or has TLS explicitly disabled for a private-network database (DATABASE_SSL_MODE=disable). */
+    databaseTls: "verified" | "unverified" | "disabled";
     /** "not_configured" = signed website visitor context (IP / location of a website lead) cannot be verified, so website leads carry no visitor IP. A boolean category only — never the secret. */
     leadIngestSecret: "configured" | "not_configured";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
@@ -63,7 +63,7 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
     cardVaultKeyVersion: vault.keyVersion,
     cardVaultEnabled: !vault.productionClass || vault.modeAccepted,
     environment: vault.environment,
-    databaseTls: getDatabaseTlsMode() === "unverified" ? "unverified" : "verified",
+    databaseTls: ((mode) => (mode === "unverified" ? "unverified" : mode === "disabled" ? "disabled" : "verified"))(getDatabaseTlsMode()),
     leadIngestSecret: isLeadIngestSecretConfigured() ? "configured" : "not_configured",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     schema: schema?.state ?? "unknown",

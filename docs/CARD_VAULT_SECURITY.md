@@ -301,6 +301,14 @@ purge the PAN once the booking's tickets are issued and payments confirmed, and
 never later than 90 days after the booking; purge immediately when the customer
 asks to remove a stored card; run the purge on a schedule you control.
 
+**Self-hosted (Docker/VPS) deployment:** `deploy/backup-db.sh` dumps the database with the data of the
+`PaymentMethodCvv` table **excluded** (and verifies the exclusion), so a backup never holds a retained security
+code. Everything else — including the encrypted card numbers — is in the dump, so backups must be encrypted
+(`BACKUP_AGE_RECIPIENT`), access-controlled and kept apart from the key ring.
+A provider **disk snapshot** (for example an OVHcloud VPS snapshot / automated backup) is different: it copies the
+database volume *and* the `.env` file that holds the keys, and it does not exclude the CVV table — see
+[DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md §16.3](DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md#163-ovhcloud-snapshots-and-automated-backups-decision-3).
+
 **Backups and deletion:** deleting from the live database does **not** remove a
 card from existing backups. Ciphertext in a backup is unreadable without the
 ring that encrypted it; once *both* the backup has expired *and* the old key is
@@ -347,6 +355,14 @@ secret, and card-shaped numbers.
   (`configured|missing|invalid`), `cardVaultKeyVersion` (an id label such as
   `v1`/`k2`), `signerIpCapture`, `schema`, `pendingMigrations`, database
   latency. Never a key, ciphertext, PAN or connection detail.
+- `databaseTls` (also in `/api/health`): `verified` (CA or system trust), `unverified` (encrypted, identity not checked), or
+  `disabled` — plaintext, only possible when `DATABASE_SSL_MODE=disable` **and** the host in `DATABASE_URL` is exactly `db` (the
+  PostgreSQL service of the self-hosted Docker deployment) or loopback (`localhost`, `127.0.0.1`, `::1`, for a developer's own machine),
+  case-insensitively, with no `host=`/`hostaddr=` query parameter. Every other host — other single-label names, `*.internal`,
+  `host.docker.internal`, private-range IP addresses, public or managed-database hosts — is refused (src/lib/db-tls.ts). That check is a
+  configuration guardrail, **not** proof that the name resolves to a private network: the database container must also stay on the
+  internal Docker network with no published port (DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md §0.1). A remote managed database always uses
+  verified TLS (`DATABASE_SSL_CA` / `DATABASE_SSL_VERIFY=system`), never `disabled`.
 - Admin **System Health → "Card vault & booking readiness"** adds: key ring
   problems (by name/id), keys in ring, stored cards and how many are on an older
   key (metadata only), and a standing WARNING in production that the vault is
@@ -648,7 +664,7 @@ Order of checks: active session → Admin + grant → dedicated rate limit `CVV_
 
 ### 19.6 Destruction, backups and what the application cannot promise
 The application guarantees that **the live database no longer holds the code** after destruction: destruction sets the ciphertext to `NULL` (and the daily cleanup / reveal-time check deletes the row); no application path can recover it afterwards. It does **not** and cannot claim that every copy is gone:
-* **PostgreSQL** keeps superseded row versions until vacuum and replays them from the write-ahead log; **replicas, snapshots, point-in-time-recovery archives and disaster-recovery copies** taken during the 24 hours may contain the encrypted value (and, if the key ring is also available, it could be decrypted) until those copies expire. Backup retention, replica lag, snapshot schedules and who may restore them are **infrastructure controls this repository cannot see or set**. Treat the provider's backup retention as part of the PCI assessment; if retention is long, the CVV exposure window in backups is long.
+* **PostgreSQL** keeps superseded row versions until vacuum and replays them from the write-ahead log; **replicas, snapshots, point-in-time-recovery archives and disaster-recovery copies** taken during the 24 hours may contain the encrypted value (and, if the key ring is also available, it could be decrypted) until those copies expire. Backup retention, replica lag, snapshot schedules and who may restore them are **infrastructure controls this repository cannot see or set**. (The self-hosted `deploy/backup-db.sh` excludes this table's data from its logical dumps; disk snapshots, WAL and replicas are outside that.) Treat the provider's backup retention as part of the PCI assessment; if retention is long, the CVV exposure window in backups is long.
 * The key ring lives in the same application as the ciphertext's reader (see section 13): anyone who can read both the database and the application environment can decrypt every un-destroyed record.
 
 ### 19.7 What this does NOT establish (see also 19.11)

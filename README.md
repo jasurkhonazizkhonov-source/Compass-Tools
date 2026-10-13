@@ -46,6 +46,8 @@ and Vercel-specific configuration).
 
 - `docs/DEPLOYMENT.md` — full deployment walkthrough (database, environment
   variables, Google OAuth, bootstrap, Vercel cron/config).
+- `docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` — self-hosted production on an OVHcloud VPS: Docker Compose,
+  PostgreSQL in a private network, Cloudflare Tunnel, controlled deploys, backups, rollback, daily CVV cleanup.
 - `docs/LEAD_ATTACHMENTS.md` — Lead documents in private Cloudflare R2: permissions, security model,
   environment variables and Cloudflare/Vercel setup.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and

@@ -1,0 +1,122 @@
+# Continuous integration for Compass Tools.
+#
+# This workflow only CHECKS code. It does not deploy, does not publish an image, does not touch the VPS, Cloudflare or any
+# database other than throw-away containers it creates itself, and it uses no repository secrets. Deployment to the VPS is a
+# deliberate manual step (docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md). Do not add a job here that can change production without
+# a protected GitHub Environment with required reviewers.
+#
+# Actions are pinned to full commit SHAs (the version is in the comment); update them deliberately.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  static:
+    name: Static checks (types, lint, schema, scripts, secret hygiene)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install from the lockfile
+        run: npm ci
+      - name: Prisma schema is valid
+        run: npx prisma validate
+      - name: TypeScript
+        run: npx tsc --noEmit
+      - name: ESLint
+        run: npm run lint
+      - name: Shell scripts (shellcheck)
+        run: shellcheck -x -S warning deploy/*.sh
+      - name: No secrets or environment files are tracked
+        run: |
+          set -euo pipefail
+          bad="$(git ls-files | grep -E '(^|/)\.env($|\.)' | grep -v '^\.env\.example$' || true)"
+          [ -z "$bad" ] || { echo "Tracked environment file(s): $bad"; exit 1; }
+          if git grep -nE -e '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' -- . ':!docs' ':!src/**/__tests__/**' ':!src/**/__integration__/**'; then
+            echo "A private key appears to be committed."; exit 1
+          fi
+          # .env.example must contain placeholders only: no long base64/hex value assigned to a key/secret/token/password variable.
+          if grep -nE '^(POSTGRES_PASSWORD|TUNNEL_TOKEN|CARD_ENCRYPTION_KEY|GMAIL_TOKEN_ENCRYPTION_KEY|IP_ENCRYPTION_KEY|IP_HASH_KEY|CRON_SECRET|GOOGLE_CLIENT_SECRET)="[A-Za-z0-9+/=_-]{40,}"' .env.example; then
+            echo ".env.example looks like it contains a real secret."; exit 1
+          fi
+          echo "clean"
+
+  tests:
+    name: Unit + real-database integration tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # A throw-away PostgreSQL started below. TLS is ON (self-signed), like the managed production database, so the
+      # integration suites exercise the same connection path as production. (The plaintext-Docker path is covered by the smoke job.)
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/compass_test?sslmode=require
+      INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/compass_test?sslmode=require
+      INTEGRATION_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=require
+      INTEGRATION_SSL: "1"
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Start PostgreSQL 17 with TLS
+        run: |
+          set -euo pipefail
+          certs="$RUNNER_TEMP/pgtls"; mkdir -p "$certs"
+          openssl req -new -x509 -days 2 -nodes -subj "/CN=localhost" -keyout "$certs/server.key" -out "$certs/server.crt"
+          sudo chown 999:999 "$certs/server.key" "$certs/server.crt"; sudo chmod 600 "$certs/server.key"
+          docker run -d --name ci-pg -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres -v "$certs:/certs:ro" \
+            postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826 \
+            -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key -c max_connections=100
+          for i in $(seq 1 30); do docker exec ci-pg pg_isready -U postgres >/dev/null 2>&1 && break; sleep 2; done
+          docker exec ci-pg psql -U postgres -c 'CREATE DATABASE compass_test'
+      - run: npm ci
+      - name: Apply the migrations to the empty test database
+        run: npx prisma migrate deploy
+      - name: Prisma migrations match schema.prisma (no schema change without a migration)
+        run: bash deploy/check-migration-drift.sh
+      - name: Tests (serial, like the reference run)
+        run: npx vitest run --no-file-parallelism
+
+  docker:
+    name: Docker image + Compose smoke test (plaintext private database)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build, migrate, boot and probe the stack
+        run: bash deploy/ci-smoke.sh
+
+  audit:
+    name: Dependency audit (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Reports, never blocks: fixes are major-version decisions that need compatibility testing (see the guide, "Dependency audit").
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: npm audit (production dependencies)
+        run: npm audit --omit=dev || true
+      - name: npm audit (all dependencies)
+        run: npm audit || true

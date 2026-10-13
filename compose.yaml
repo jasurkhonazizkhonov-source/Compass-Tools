@@ -1,0 +1,219 @@
+# Compass Tools - self-hosted production stack: OVHcloud VPS + Docker Compose + Cloudflare Tunnel.
+# Full guide: docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md.   Start:  docker compose up -d --build
+#
+# What runs
+#   db           PostgreSQL 17 on a PRIVATE network with no internet access and NO published port. Data lives in a named volume.
+#   app          the Next.js server (image built from ./Dockerfile). No published port: it is reachable only by other containers.
+#   cloudflared  the Cloudflare Tunnel connector. Public traffic reaches the app ONLY through it (outbound connection to
+#                Cloudflare; no inbound port is opened on the VPS). In the Cloudflare dashboard each public hostname points to
+#                the service  http://app:3000.
+#   cvv-cleanup  one small process that, once a day, calls the app's authenticated CVV-cleanup endpoint. Nothing else.
+#   tools        (profile "tools") on-demand: database migrations and operational scripts. Never started by `up`.
+#
+# Secrets: everything comes from the protected .env file next to this file (copy .env.example, `chmod 600 .env`). Each service
+# below is given ONLY the variables it needs - the tunnel token never reaches the app, and the app never sees the database
+# superuser settings. No secret is written in this file, in the image, or in a build argument.
+#
+# Image pins: images are pinned by version AND digest so a rebuild or a restart can never silently change them (policy for updating
+# them: the guide, "Updating base images"). Digests were read from Docker Hub on 2026-10-13.
+
+name: compass-tools
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-hardening: &hardening
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
+services:
+  db:
+    image: postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-compass}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (openssl rand -hex 32)}
+      POSTGRES_DB: ${POSTGRES_DB:-compass}
+      # Checksums are only settable when the cluster is first created; harmless on an existing volume.
+      POSTGRES_INITDB_ARGS: --data-checksums
+    # Sized for a 4 GB VPS shared with the app: modest cache, few connections (the app pool is 2 per instance).
+    command:
+      - postgres
+      - -c
+      - max_connections=40
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - effective_cache_size=1GB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - log_min_duration_statement=2000
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks: [data]
+    shm_size: 256mb
+    mem_limit: 1g
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    logging: *default-logging
+    # Deliberately NO `ports:`. The database must never be published on the host or the internet.
+
+  app:
+    image: compass-tools:${APP_VERSION:-local}
+    build:
+      context: .
+      target: runner
+      args:
+        # Public origin (not a secret). Baked into the static pages at build time and used for the Gmail OAuth redirect URI at run time.
+        APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env, e.g. https://www.compass-tools.com}
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: "3000"
+      # --- database (private Docker network; plain TCP is correct here, see docs and src/lib/db-tls.ts) ---
+      DATABASE_URL: postgresql://${POSTGRES_USER:-compass}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-compass}?sslmode=disable
+      DATABASE_SSL_MODE: disable
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-}
+      DATABASE_POOL_CONNECT_TIMEOUT_MS: ${DATABASE_POOL_CONNECT_TIMEOUT_MS:-}
+      DATABASE_POOL_IDLE_TIMEOUT_MS: ${DATABASE_POOL_IDLE_TIMEOUT_MS:-}
+      DATABASE_CONNECT_RETRIES: ${DATABASE_CONNECT_RETRIES:-}
+      # --- public address and proxy trust ---
+      APP_BASE_URL: ${APP_BASE_URL}
+      # The ONLY way to reach this container is through cloudflared, which receives Cloudflare's CF-Connecting-IP. Never publish the
+      # app port on the host: with a reachable port a client could forge that header. See the guide, "Trusted proxy".
+      TRUSTED_PROXY: cloudflare
+      # --- sign-in / Gmail ---
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:?Set GOOGLE_CLIENT_ID in .env}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:?Set GOOGLE_CLIENT_SECRET in .env}
+      INITIAL_ADMIN_EMAIL: ${INITIAL_ADMIN_EMAIL:-}
+      GMAIL_TOKEN_ENCRYPTION_KEY: ${GMAIL_TOKEN_ENCRYPTION_KEY:?Set GMAIL_TOKEN_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
+      # --- sensitive-data keys (never regenerate a key that has data under it) ---
+      CARD_ENCRYPTION_KEY: ${CARD_ENCRYPTION_KEY:?Set CARD_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
+      CARD_ENCRYPTION_KEYS: ${CARD_ENCRYPTION_KEYS:-}
+      CARD_ENCRYPTION_KEY_ID: ${CARD_ENCRYPTION_KEY_ID:-}
+      IP_ENCRYPTION_KEY: ${IP_ENCRYPTION_KEY:?Set IP_ENCRYPTION_KEY in .env (openssl rand -base64 32)}
+      IP_HASH_KEY: ${IP_HASH_KEY:?Set IP_HASH_KEY in .env (openssl rand -base64 32)}
+      # Empty = the card vault stays CLOSED (the owner's explicit opt-in is the only thing that opens it). Never set by this file.
+      CARD_VAULT_MODE: ${CARD_VAULT_MODE:-}
+      # Empty = no automatic card-number purge (a business decision the owner has not made). Never set by this file.
+      CARD_RETENTION_DAYS: ${CARD_RETENTION_DAYS:-}
+      # --- scheduled jobs and ingestion ---
+      CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env (openssl rand -base64 32); without it every /api/cron/* endpoint refuses}
+      LEAD_INGEST_SECRET: ${LEAD_INGEST_SECRET:-}
+      # --- optional: Lead documents in a private Cloudflare R2 bucket (empty = uploads disabled) ---
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
+      R2_REGION: ${R2_REGION:-}
+      R2_ENDPOINT: ${R2_ENDPOINT:-}
+      MAX_LEAD_ATTACHMENT_SIZE_MB: ${MAX_LEAD_ATTACHMENT_SIZE_MB:-}
+    # No `ports:` - only containers on the `web` network (cloudflared, cvv-cleanup) can reach http://app:3000.
+    expose:
+      - "3000"
+    networks: [data, web]
+    <<: *hardening
+    tmpfs:
+      - /tmp
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 512
+    stop_grace_period: 30s
+    # HEALTHCHECK is defined in the image (scripts/healthcheck.mjs -> /api/health, which also checks the database).
+    logging: *default-logging
+
+  cloudflared:
+    image: cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07
+    restart: unless-stopped
+    # A remotely managed tunnel: the token (from the Cloudflare dashboard) selects the tunnel; the public hostnames and the origin
+    # service (http://app:3000) are configured in the dashboard, not in this file. The metrics server is bound to loopback inside
+    # the container only; /ready answers 200 only while the tunnel has an active connection to Cloudflare.
+    command: tunnel --no-autoupdate --metrics 127.0.0.1:2000 run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env (Cloudflare dashboard -> Networking -> Tunnels -> compass-tools-vps)}
+    depends_on:
+      app:
+        condition: service_healthy
+    networks: [web]
+    <<: *hardening
+    mem_limit: 256m
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "--metrics", "127.0.0.1:2000", "ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    logging: *default-logging
+
+  cvv-cleanup:
+    image: compass-tools:${APP_VERSION:-local}
+    pull_policy: never
+    restart: unless-stopped
+    command: ["node", "scripts/cvv-cleanup-scheduler.mjs"]
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CRON_SECRET: ${CRON_SECRET}
+      CRON_TARGET_URL: http://app:3000
+      CLEANUP_HEARTBEAT_URL: ${CLEANUP_HEARTBEAT_URL:-}
+    networks: [web]
+    <<: *hardening
+    mem_limit: 128m
+    # The image's HEALTHCHECK probes a web server this container does not run.
+    healthcheck:
+      disable: true
+    logging: *default-logging
+
+  tools:
+    profiles: ["tools"]
+    image: compass-tools-tools:${APP_VERSION:-local}
+    build:
+      context: .
+      target: tools
+      args:
+        APP_BASE_URL: ${APP_BASE_URL:?Set APP_BASE_URL in .env}
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-compass}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-compass}?sslmode=disable
+      DATABASE_SSL_MODE: disable
+      CARD_ENCRYPTION_KEY: ${CARD_ENCRYPTION_KEY:-}
+      CARD_ENCRYPTION_KEYS: ${CARD_ENCRYPTION_KEYS:-}
+      CARD_ENCRYPTION_KEY_ID: ${CARD_ENCRYPTION_KEY_ID:-}
+      CHECKPOINT_DISABLE: "1"
+      PRISMA_HIDE_UPDATE_MESSAGE: "1"
+    # The private network only: no internet, so these commands can only ever talk to the database.
+    networks: [data]
+    <<: *hardening
+    tmpfs:
+      - /tmp
+    mem_limit: 1536m
+    logging: *default-logging
+
+networks:
+  # internal: true = no route to the internet. Only db, app and tools are on it.
+  data:
+    internal: true
+  web: {}
+
+volumes:
+  postgres-data: {}

@@ -71,8 +71,12 @@ export async function destroyCvv(paymentMethodId: string, reason: CvvDestroyReas
 /**
  * The 24-hour cleanup, run by the daily cron and safe to run repeatedly: every record whose window has ended is deleted outright
  * (ciphertext and row). Returns how many rows were removed. Never throws into the cron run.
+ *
+ * `failed: true` is the ONLY way a failure is distinguishable from "nothing had expired" (both have deleted: 0), so a dedicated
+ * job (/api/cron/cvv-cleanup) can report an error and be retried instead of silently looking healthy. Callers that only add the
+ * count to a larger response (/api/cron/tasks) keep ignoring it.
  */
-export async function destroyExpiredCvvs(now: Date = new Date()): Promise<{ deleted: number }> {
+export async function destroyExpiredCvvs(now: Date = new Date()): Promise<{ deleted: number; failed?: true }> {
   try {
     const result = await prisma.paymentMethodCvv.deleteMany({ where: { expiresAt: { lte: now } } });
     if (result.count > 0) {
@@ -89,6 +93,6 @@ export async function destroyExpiredCvvs(now: Date = new Date()): Promise<{ dele
     return { deleted: result.count };
   } catch (err) {
     console.error(`[booking] CVV_EXPIRY_CLEANUP_FAILED (${safeErrorTag(err)})`);
-    return { deleted: 0 };
+    return { deleted: 0, failed: true };
   }
 }
