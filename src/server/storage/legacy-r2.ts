@@ -1,23 +1,25 @@
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-  DeleteObjectCommand,
-} from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { DOWNLOAD_URL_TTL_SECONDS, UPLOAD_URL_TTL_SECONDS } from "@/lib/attachments/policy";
+import { DOWNLOAD_URL_TTL_SECONDS } from "@/lib/attachments/policy";
 
-// Private Cloudflare R2 object storage (S3-compatible). Server-only: the credentials never leave this module, and the browser only ever
-// receives a short-lived presigned URL for ONE object after the caller has been authorised for the Lead that owns it.
+// LEGACY storage provider: private Cloudflare R2 (S3-compatible). READ-ONLY IN PRACTICE - new uploads never touch it.
 //
-// Configuration (all server environment variables; see docs/LEAD_ATTACHMENTS.md):
+// Lead documents used to be uploaded to a private R2 bucket. They now go to the VPS disk (src/server/storage/local.ts), but files that
+// were uploaded before the move still live in R2 and must stay openable and deletable until they are migrated or deliberately retired.
+// This module exists only for those rows (Attachment.storageProvider = 'R2'). It deliberately offers only:
+//   - presignDownload  open / download an existing file (a 60-second signed link, redirect from the authorised download route)
+//   - remove           delete an existing file when a user deletes it, or when its lead / contact is deleted
+// There is no upload, presign-upload, head or range-read here: nothing in the application can create or inspect an object in R2.
+//
+// Server-only: the credentials never leave this module and the browser only ever receives a short-lived link for ONE object after the
+// caller was authorised for the Lead that owns it.
+//
+// Configuration (server environment variables; ONLY needed while R2-backed attachments exist - see docs/LEAD_ATTACHMENTS.md "Legacy R2"):
 //   R2_ACCOUNT_ID          Cloudflare account id (builds the endpoint when R2_ENDPOINT is not set)
-//   R2_ACCESS_KEY_ID       } an R2 API token scoped to the one bucket, Object Read & Write
+//   R2_ACCESS_KEY_ID       } an R2 API token scoped to the one bucket (Object Read is enough for downloads; delete needs Write)
 //   R2_SECRET_ACCESS_KEY   }
-//   R2_BUCKET_NAME         the PRIVATE bucket
-//   R2_REGION              "auto" (R2's only region)
-//   R2_ENDPOINT            optional override; default https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com
+//   R2_BUCKET_NAME         the private bucket
+//   (R2_REGION and R2_ENDPOINT are optional overrides; the defaults - "auto" and the account endpoint - are what R2 uses.)
 
 export type R2Config = { endpoint: string; region: string; bucket: string; accessKeyId: string; secretAccessKey: string };
 
@@ -52,14 +54,9 @@ export function getR2Config(env: Env = process.env): R2Config | null {
   return { endpoint, region: clean(env.R2_REGION) || "auto", bucket, accessKeyId, secretAccessKey };
 }
 
-export function isStorageConfigured(env: Env = process.env): boolean {
+/** Whether the legacy R2 credentials are present. When false, existing R2-backed files cannot be opened or deleted. */
+export function isLegacyR2Configured(env: Env = process.env): boolean {
   return getR2Config(env) !== null;
-}
-
-/** The https origin the browser uploads to — added to the Content-Security-Policy's connect-src when storage is configured. */
-export function storageOrigin(env: Env = process.env): string | null {
-  const c = getR2Config(env);
-  return c ? new URL(c.endpoint).origin : null;
 }
 
 export class StorageError extends Error {
@@ -76,7 +73,7 @@ let cached: { key: string; client: S3Client; cfg: R2Config } | null = null;
 
 function clientAndConfig(): { client: S3Client; cfg: R2Config } {
   const cfg = getR2Config();
-  if (!cfg) throw new StorageError("not_configured", "File storage is not configured");
+  if (!cfg) throw new StorageError("not_configured", "Legacy file storage is not configured");
   const key = `${cfg.endpoint}|${cfg.bucket}|${cfg.accessKeyId}|${cfg.region}`;
   if (!cached || cached.key !== key) {
     cached = {
@@ -110,22 +107,7 @@ const isMissing = (err: unknown) => {
   return e?.name === "NotFound" || e?.name === "NoSuchKey" || e?.$metadata?.httpStatusCode === 404;
 };
 
-export const objectStorage = {
-  /** A presigned PUT for exactly this key, content type and byte length, valid for UPLOAD_URL_TTL_SECONDS. */
-  async presignUpload(key: string, contentType: string, contentLength: number): Promise<{ url: string; expiresInSeconds: number }> {
-    try {
-      const { client, cfg } = clientAndConfig();
-      const url = await getSignedUrl(client, new PutObjectCommand({ Bucket: cfg.bucket, Key: key, ContentType: contentType, ContentLength: contentLength }), {
-        expiresIn: UPLOAD_URL_TTL_SECONDS,
-        // Sign the type and length so the stored object can't differ from what the server validated.
-        signableHeaders: new Set(["content-type", "content-length"]),
-      });
-      return { url, expiresInSeconds: UPLOAD_URL_TTL_SECONDS };
-    } catch (err) {
-      return fail("presign-upload", err);
-    }
-  },
-
+export const legacyR2 = {
   /** A presigned GET that forces the served type and disposition (so an uploaded file can never render as HTML in our origin's context). */
   async presignDownload(key: string, opts: { contentType: string; contentDisposition: string }): Promise<string> {
     try {
@@ -137,30 +119,6 @@ export const objectStorage = {
       );
     } catch (err) {
       return fail("presign-download", err);
-    }
-  },
-
-  /** Object size, or null when the object does not exist. */
-  async head(key: string): Promise<{ size: number } | null> {
-    try {
-      const { client, cfg } = clientAndConfig();
-      const r = await client.send(new HeadObjectCommand({ Bucket: cfg.bucket, Key: key }));
-      return { size: Number(r.ContentLength ?? 0) };
-    } catch (err) {
-      if (isMissing(err)) return null;
-      return fail("head", err);
-    }
-  },
-
-  /** The first `bytes` bytes of the object (for signature verification), or null when it does not exist. */
-  async readHead(key: string, bytes: number): Promise<Uint8Array | null> {
-    try {
-      const { client, cfg } = clientAndConfig();
-      const r = await client.send(new GetObjectCommand({ Bucket: cfg.bucket, Key: key, Range: `bytes=0-${Math.max(0, bytes - 1)}` }));
-      return r.Body ? await r.Body.transformToByteArray() : new Uint8Array();
-    } catch (err) {
-      if (isMissing(err)) return null;
-      return fail("read", err);
     }
   },
 

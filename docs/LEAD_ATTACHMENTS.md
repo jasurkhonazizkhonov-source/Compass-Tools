@@ -1,8 +1,17 @@
-# Lead documents (Files tab) — Cloudflare R2
+# Lead documents (Files tab) — stored on the VPS disk
 
-Users can attach documents (passport copies, signed forms, itineraries …) to a **Lead**. The file bytes are stored in a **private
-Cloudflare R2 bucket**; PostgreSQL holds only metadata and ownership. A Contact's Files tab shows a read-only summary of the documents
-of its Leads. Nothing is attached to outgoing emails, and none of this touches the card vault, CVV/CVC retention or payment security.
+Users can attach documents (passport copies, signed forms, itineraries …) to a **Lead**. The file bytes are stored on the **server's own
+disk**, in a persistent Docker bind mount; PostgreSQL holds only metadata and ownership. A Contact's Files tab shows a read-only summary of
+the documents of its Leads. Nothing is attached to outgoing emails, and none of this touches the card vault, CVV/CVC retention or payment
+security.
+
+> **History.** Documents used to go to a private Cloudflare R2 bucket. **New uploads no longer touch R2.** Files uploaded before the
+> change are still in R2 and keep working (open, download, delete) through a small, isolated legacy reader — see
+> [Legacy R2 files](#legacy-r2-files). Nothing was migrated or deleted automatically.
+
+> **This feature needs the VPS deployment.** The files live on a local disk, so a deployment without a persistent disk (Vercel,
+> Cloudflare Workers) cannot accept uploads: the Files tab reports storage as unavailable there. Use the Docker/VPS stack
+> (`docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md`).
 
 ## What users can do
 
@@ -15,7 +24,7 @@ of its Leads. Nothing is attached to outgoing emails, and none of this touches t
 
 Every operation is **also** limited by lead visibility (`leadVisibilityWhere`): the company, the role and a Manager's team. A role alone
 never grants access to a particular lead. Permissions live in `src/lib/permissions.ts` (`canUploadLeadAttachments`,
-`canManageLeadAttachments`) and are enforced in the server actions, not just hidden in the UI.
+`canManageLeadAttachments`) and are enforced in the server actions and route handlers, not just hidden in the UI.
 
 ## Supported files
 
@@ -23,156 +32,278 @@ Allowlist only (`src/lib/attachments/policy.ts`): **PDF, JPG/JPEG, PNG, WebP, DO
 Rejected on the server: video, audio, executables and scripts, HTML, **SVG** (can carry script), archives (ZIP/RAR/7z …), macro-enabled
 Office files (.docm/.xlsm/.pptm) and anything else not listed. A name like `invoice.exe.pdf` is refused (dangerous earlier extension).
 
-* **Size limit:** `MAX_LEAD_ATTACHMENT_SIZE_MB`, default **10 MB**, hard ceiling 25 MB. Shown in the upload dialog.
+* **Size limit:** `MAX_LEAD_ATTACHMENT_SIZE_MB`, default **10 MB**, hard ceiling **25 MB** (a larger value is capped). Shown in the upload dialog.
 * **Per lead:** at most 200 files.
-* **Checks, in order:** extension allowlist → declared type consistent with the extension → size → (after upload) the stored object's
-  real size equals the authorised size → its first bytes match the file format (PDF/JPEG/PNG/WebP/Office/text signatures).
-  A mismatch deletes the object and the record. **This is not malware scanning** — no file content is virus-scanned. Add a scanning
-  step (for example a Cloudflare / ClamAV queue) if the business requires it.
+* **Checks, in order:** extension allowlist → declared type consistent with the extension → size → while receiving: never more than the
+  authorised size, exactly that size at the end, and the **actual first bytes match the file format** (PDF/JPEG/PNG/WebP/Office/text
+  signatures) → re-verified when the upload is completed. A mismatch deletes the file and the record. **This is not malware scanning** —
+  no file content is virus-scanned. Add a scanning step (for example ClamAV on the VPS) if the business requires it.
 
-## How it works
+## Architecture
 
 ```
-Upload (browser → app → R2, bytes never pass through Vercel)
-  1. requestLeadAttachmentUpload  authorise (account → role → lead visible → company), validate, create a PENDING row with an opaque
-                                   server-generated key, return a presigned PUT URL (5 min; type + length are signed)
-  2. browser PUTs the file straight to R2
-  3. completeLeadAttachmentUpload verify the stored object (exists, exact size, magic bytes) → row becomes READY → audit + lead activity
-  (failure / cancel → abandonLeadAttachmentUpload; anything left PENDING is swept by the daily cron after 1 hour)
+Upload (browser → app, same origin; the file never touches any other service)
+  1. requestLeadAttachmentUpload   server action: authorise (account → role → lead visible → company), validate name/type/size,
+                                   create a PENDING row with an opaque server-generated key, return the same-origin upload URL
+  2. PUT /api/attachments/{id}/upload   raw file body (progress and cancel work as before). The server re-authorises, checks the
+                                   declared length BEFORE reading a byte, checks disk room, then STREAMS the body to a private temp
+                                   file: it is cut off at the first byte beyond the authorised size, the size is compared, the first
+                                   bytes are checked against the format, the file is fsynced and published atomically under its key.
+  3. completeLeadAttachmentUpload  server action: re-verify the stored file (exists, exact size, signature) → row becomes READY →
+                                   audit + lead activity. Calling it twice is harmless (idempotent).
+  (failure / cancel → abandonLeadAttachmentUpload; anything left PENDING is swept after 1 hour — see Maintenance)
 
 Open / download   GET /api/attachments/{id}/file[?download=1]
-  authorise (the attachment's OWN lead must be visible to the caller, same company, READY) → audit → 302 to a presigned GET URL that
-  expires in 60 s and forces Content-Type and Content-Disposition. PDFs / images open in a tab; everything else downloads.
+  authorise (the attachment's OWN lead must be visible to the caller, same company, READY) → audit → stream from disk with the type and
+  disposition chosen by the server (never by the browser). PDFs / images open in a tab; everything else downloads.
 
-Edit description / delete   Admin & Manager only, same authorisation. Delete removes the R2 object first, then the row (retry-safe).
+Edit description / delete   Admin & Manager only, same authorisation. Delete removes the file first, then the row (retry-safe: deleting
+                            a file that is already gone succeeds).
 ```
 
-* **Object keys** are opaque: `companies/{companyId}/leads/{leadId}/attachments/{attachmentId}/{128-bit random}` — no user-controlled
-  text, no file name. The key is never sent to the browser; the browser only knows the attachment id.
+* **No public URL.** Nothing serves the upload directory. There is no static route, no Next.js `public/` entry and no web-server alias;
+  the only way out is the authorised download route. The directory is mounted into the `app` container (read-write) and the `tools`
+  maintenance container (**read-only**) — never into PostgreSQL, cloudflared or the scheduler.
+* **Opaque keys.** Files are stored as `<2 hex>/<64 hex>` (256 random bits; the first directory is the key's first two characters).
+  The key never contains a customer file name, a lead id, a company id or anything the browser sent. The key is never sent to the browser;
+  the browser only knows the attachment id. A key becomes a path in exactly one function (`pathForKey`), which accepts nothing but that
+  shape — `..`, separators, absolute paths and drive letters cannot be expressed — and re-checks the result is inside the upload directory.
+* **Safe writes.** Received into `<dir>/.tmp/` with `O_EXCL` and mode 0600, fsynced, then published with `link(2)` — atomic **and**
+  exclusive, so two racing uploads of one attachment cannot both win and a half-written file is never visible under a final key.
+  Directories are 0700, files 0600, owned by the application user. Reads refuse symlinks (`O_NOFOLLOW`) and anything that is not a
+  regular file.
 * **File names** are untrusted: directory parts, control / bidi / separator characters removed, length capped; shown as text only;
-  `Content-Disposition` is built with an ASCII fallback + RFC 5987 name (no CR/LF/quotes possible).
+  `Content-Disposition` is built with an ASCII fallback + RFC 5987 name (no CR/LF/quotes possible). They are stored in the database only —
+  never in a path.
+* **Download headers.** `Content-Type` from the server's allowlist, `X-Content-Type-Options: nosniff`, `Cross-Origin-Resource-Policy:
+  same-origin`, `Cache-Control: private, no-store`, and a restrictive `Content-Security-Policy` on the response itself.
 * **Lead isolation / IDOR:** the lead and company are derived from the attachment's database row, never from a value sent next to it.
   "Does not exist", "another lead", and "another company" all return the same 404 / generic message. Contact aggregation filters by
-  **each Lead's** visibility (one query, no N+1), so a Contact can't be used to reach a Lead the viewer can't see.
-* **Consistency:** upload = row PENDING → object stored → verified → READY. Delete = object, then row. Lead / Contact deletion collects
-  the object keys before the database cascade and purges them afterwards; a failed purge is recorded in the audit log
-  (`ATTACHMENT_STORAGE_ORPHANED`, with the opaque keys) so it can be reconciled. R2 errors are logged without keys, bucket or account.
+  **each Lead's** visibility (one query, no N+1).
+* **Errors are generic.** Browsers get messages such as "File storage is unavailable right now". Absolute paths, keys, OS error codes and
+  library messages never reach a response, a log line or an audit record.
+* **Consistency.** Upload = row PENDING → file stored → verified → READY. Delete = file, then row. Lead / Contact deletion collects the
+  stored files' references before the database cascade and removes the files afterwards; a failed removal is recorded in the audit log
+  (`ATTACHMENT_STORAGE_ORPHANED`, with the opaque keys) so it can be reconciled. A row is only removed once its file is gone or absent.
+  Every removal is routed by the row's own `storageProvider`, and the local module accepts nothing but its own key shape — nothing can
+  delete a file outside the upload directory, and an R2 key is never interpreted as a local path.
 * **Audit** (append-only `AuditLog`, entity `Attachment`): `ATTACHMENT_UPLOADED`, `_UPLOAD_REJECTED`, `_OPENED`, `_DOWNLOADED`,
   `_DESCRIPTION_UPDATED`, `_DELETED`, `_ACCESS_DENIED`, `_STORAGE_ORPHANED`. Records actor, attachment, lead, contact, company and
-  outcome — never file contents, signed URLs, credentials or file names.
-* **Rate limits** (per account, existing limiter): uploads 40 / 15 min, opens + downloads 120 / 10 min, edits + deletes 60 / 15 min.
-* **Retention:** there is **no automatic deletion**. How long customer documents (which may include identity documents) must be kept
-  or erased is a legal / business decision — **REQUIRES BUSINESS DECISION**. The schema keeps `createdAt`, `status`, `companyId`,
-  `leadId` so a policy can be added later.
+  outcome — never file contents, paths, keys or file names.
+* **Rate limits** (per account): uploads 40 / 15 min, opens + downloads 120 / 10 min, edits + deletes 60 / 15 min.
+* **Retention:** there is **no automatic deletion** of valid documents, ever (including when the disk is full). How long customer
+  documents (which may include identity documents) must be kept or erased is a legal / business decision — **REQUIRES BUSINESS DECISION**.
+
+### Database: `Attachment.storageProvider`
+
+Migration `20261013000100_attachment_storage_provider` (additive, no data is changed or dropped):
+
+* new enum `AttachmentStorageProvider` (`R2`, `LOCAL`) and column `Attachment.storageProvider NOT NULL DEFAULT 'R2'`;
+* every existing row therefore becomes `R2` — exactly what it is. The default is deliberately `R2`: during a rolling deploy an older app
+  that does not know the column keeps inserting rows that are (correctly) R2 rows;
+* new uploads are written as `LOCAL`; a `CHECK` constraint guarantees a `LOCAL` row's key has the local shape, so a malformed key can
+  never be stored as a local path.
+
+Apply it with the normal deploy (`bash deploy/deploy.sh --migrate`: a database backup is taken first). To apply by hand:
+`docker compose run --rm tools npx prisma migrate deploy`.
 
 ## Configuration
 
-Server-side environment variables. **None of them is exposed to the browser** (none starts with `NEXT_PUBLIC_`).
+Server-side environment variables. **None is exposed to the browser** (none starts with `NEXT_PUBLIC_`). Real values live in the
+production `.env` (mode 600, git-ignored); never put them in the repository, an issue or a chat.
 
-```
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
-R2_BUCKET_NAME=
-R2_REGION=auto
-R2_ENDPOINT=
-MAX_LEAD_ATTACHMENT_SIZE_MB=10
-```
-
-| Variable | Value | Where to get it | Secret | Vercel | Local `.env` |
-| --- | --- | --- | --- | --- | --- |
-| `R2_ACCOUNT_ID` | Cloudflare account id | Cloudflare dashboard → **R2 Object Storage** (Account ID shown on the page / in the right sidebar) | No | Yes — Production, Preview (optional), Development | Optional (only to try uploads locally) |
-| `R2_ACCESS_KEY_ID` | Access Key ID of an **R2 API token** | Dashboard → **R2 → Manage R2 API Tokens → Create API token** (shown once) | Yes | Yes — Production (and Preview only if you want previews to upload; use a separate bucket) | Optional |
-| `R2_SECRET_ACCESS_KEY` | Secret Access Key of that token | Same screen, shown **once** — store it in your password manager | **Yes** | Yes (mark **Sensitive**) | Optional |
-| `R2_BUCKET_NAME` | Exact name of the private bucket | R2 → Buckets | No | Yes | Optional |
-| `R2_REGION` | `auto` | Fixed value for R2 | No | Yes (`auto`) | Optional |
-| `R2_ENDPOINT` | `https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com` (https only) | Derived from the account id; the **S3 API** URL on the bucket's Settings page. Leave unset to derive it from `R2_ACCOUNT_ID` | No | Optional | Optional |
-| `MAX_LEAD_ATTACHMENT_SIZE_MB` | Whole number, 1–25 | Your choice (default 10) | No | Optional | Optional |
-
-Uploads are enabled only when `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` and an endpoint (or `R2_ACCOUNT_ID`) are all
-set. Otherwise the Files tab shows "File uploads are not set up yet" and the Upload button is disabled; nothing else is affected.
-
-### Cloudflare setup (once per environment)
-
-1. **Create a bucket** (R2 → Create bucket). Keep it **private**: do **not** enable the `r2.dev` public URL and do **not** attach a public
-   custom domain. The application is the only authorisation layer.
-2. **Create a least-privilege API token** (R2 → Manage R2 API Tokens): permission **Object Read & Write**, **scoped to this one bucket**.
-   Do not use a Global / account-wide Cloudflare API key. Put the Access Key ID and Secret Access Key into the variables above.
-3. **Add a CORS policy** to the bucket (Settings → CORS policy) — required because the browser uploads directly to R2:
-   ```json
-   [
-     {
-       "AllowedOrigins": ["https://www.compass-tools.com"],
-       "AllowedMethods": ["PUT"],
-       "AllowedHeaders": ["content-type", "content-length"],
-       "MaxAgeSeconds": 3600
-     }
-   ]
-   ```
-   List only your real origin(s). Downloads need no CORS (they are top-level navigations).
-4. (Recommended) add a lifecycle rule to **abort incomplete multipart uploads** after 1 day.
-5. Set the variables in **Vercel → Project → Settings → Environment Variables** and redeploy. The Content-Security-Policy `connect-src`
-   automatically includes the R2 endpoint origin when it is configured (`src/lib/csp.ts`).
-
-### Local development
-
-Either leave R2 unset (uploads disabled; everything else works) or point the variables at a **separate dev bucket** with its own
-token. Never reuse the production bucket or token locally. `.env` is git-ignored; never commit credentials.
-
-The test suite never needs R2: the storage layer (`src/server/storage/r2.ts`) is mocked, and the authorisation tests run against a
-real PostgreSQL when `INTEGRATION_DATABASE_URL` is set (see `docs/DEPLOYMENT.md` §8).
-
-## Troubleshooting an upload that fails
-
-Environment variables only reach a deployment that is **built after** they are set: after adding or changing any `R2_*` value in Vercel,
-**redeploy** (the Content-Security-Policy `connect-src` and the page's "storage is configured" check both read them).
-
-When an upload fails the dialog now says which kind of failure it was, and the browser reports **stage / kind / HTTP status only**
-(never a URL) to the server, which records `ATTACHMENT_UPLOAD_FAILED` in the audit log and `[attachments] upload failed stage=… kind=…
-status=…` in the function log. Read it from `AuditLog` (`action = 'ATTACHMENT_UPLOAD_FAILED'`, `metadata`):
-
-| stage / kind / status | Meaning | Check |
+| Variable | Default | Purpose |
 | --- | --- | --- |
-| `authorize` | The application refused or could not prepare the upload (permission, validation, storage not configured) | the message shown to the user; `R2_*` values present for **Production** and redeployed |
-| `put` / `blocked` / `0` | The browser got no response from R2: **CORS** (most common), the page's CSP, or the network | bucket CORS (below); DevTools → Network → the `OPTIONS` preflight to `…r2.cloudflarestorage.com`; Console "blocked by CORS policy" / "violates Content Security Policy" |
-| `put` / `rejected` / `403` | R2 refused the signed request | wrong/expired key or secret, token not scoped to **this** bucket with Object Read & Write, wrong bucket name, stray quotes/spaces in a value (these are now stripped), clock skew |
-| `put` / `rejected` / `404` | Bucket or account id does not exist | `R2_BUCKET_NAME`, `R2_ACCOUNT_ID` / `R2_ENDPOINT` (a bucket path appended to the endpoint is ignored) |
-| `verify` | The file reached R2 but the server's checks failed (size differs, content doesn't match the extension) or R2 could not be read | the message shown; token must allow reading the object back |
+| `UPLOAD_STORAGE_DIR` | `/var/lib/compass-tools/uploads` (production); `./.local-uploads` (development) | Where the app writes inside the container. `compose.yaml` sets it; leave it alone. In production the app **never creates** this directory: if the bind mount is missing, storage is reported "unavailable" instead of silently writing into the container's disposable layer. |
+| `UPLOADS_HOST_DIR` | `/srv/compass-tools/uploads` | The **host** directory that is bind-mounted there (read by Compose from `.env`). Change it to use another disk/path. |
+| `UPLOAD_MIN_FREE_MB` | `1024` | Free space always left on the disk for PostgreSQL, logs and Docker. Uploads are refused (HTTP 507, "storage is almost full") instead of filling the disk. |
+| `MAX_LEAD_ATTACHMENT_SIZE_MB` | `10` | Largest accepted file, whole number 1–25. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | unset | **Legacy only**: needed to open/delete files uploaded before the move. Leave unset on a new installation. `R2_REGION` / `R2_ENDPOINT` remain optional overrides. |
 
-**The production origin is `https://www.compass-tools.com`** (the bare `https://compass-tools.com` redirects to it, so the browser's
-`Origin` is always the `www` one). A policy that lists only `https://compass-tools.com` makes every upload fail in the browser with no
-response — this was the actual cause of the first production failure (`put` / `blocked` / `0`) and is pinned by a regression test.
+### Limits on the path to the app (read this if big uploads fail)
 
-Quick reference — **which fix for which symptom**:
+* **Cloudflare** (the tunnel proxies through Cloudflare): request bodies up to **100 MB** on Free/Pro plans — above the 25 MB ceiling here.
+  Cloudflare also times out a request that sends nothing for 100 s; a normal upload is far inside that.
+* **Next.js:** the upload route is a Route Handler under `/api/…`, which is *outside* the proxy matcher (`src/proxy.ts`). That matters:
+  routes the proxy runs on get their request body buffered and capped at 10 MB (`proxyClientMaxBodySize`). A regression test pins
+  `/api/*` outside the matcher, so a 25 MB file streams without whole-file buffering.
+* **No other reverse proxy** sits between cloudflared and the app. If you add one (nginx/Caddy), raise its body-size limit to at least
+  `MAX_LEAD_ATTACHMENT_SIZE_MB` and disable request buffering (`client_max_body_size 26m;` and `proxy_request_buffering off;` for nginx).
+* **Server Actions** (`next.config.ts` `serverActions.bodySizeLimit`) do not carry the file: only small JSON (name, type, size).
+* The upload must finish within **15 minutes**; a stalled or deliberately slow client is cut off.
 
-* **CORS / preflight failure** (no response, console says "blocked by CORS policy") → fix the **R2 bucket CORS** origin / headers.
-* **`PUT` returns 403** → fix the **R2 token / bucket / key** (credentials, Object Read & Write on *this* bucket, bucket name).
-* **Console says "violates Content Security Policy"** → the deployment was built without the `R2_*` values: set them and **redeploy**.
-* **`PUT` succeeds but the file is rejected afterwards** (`verify`) → the server-side checks (size / content signature) or reading the object back; see the message shown.
+## VPS setup (once)
 
-CORS that works for this application (replace the origin with the real one; **exact** origin — scheme + host, no path, no trailing
-slash, no `*`):
+The application runs as the image's `node` user, **uid/gid 1000**. The host directory must exist and be owned by that id; Compose is
+configured *not* to create it (a root-owned directory would be unwritable and uploads would fail at runtime).
 
-```json
-[
-  {
-    "AllowedOrigins": ["https://www.compass-tools.com"],
-    "AllowedMethods": ["PUT"],
-    "AllowedHeaders": ["content-type", "content-length"],
-    "MaxAgeSeconds": 3600
-  }
-]
+```bash
+sudo install -d -o 1000 -g 1000 -m 0700 /srv/compass-tools/uploads
+ls -ldn /srv/compass-tools/uploads        # expect: drwx------ 2 1000 1000 …
 ```
 
-Only `PUT` is needed: downloads are top-level navigations to a signed URL (no CORS). Adding `GET` / `HEAD` and `"ExposeHeaders": ["ETag"]`
-is harmless but unnecessary.
-The browser's preflight asks for `content-type` (the only non-simple header it sends; `Content-Length` is added by the browser itself).
-If the site is also reached as `https://compass-tools.com` (without `www`) add that origin too. Preview deployments need their own origin
-listed, or use a separate bucket for previews.
+* Use a different location by creating it the same way and setting `UPLOADS_HOST_DIR=/that/path` in `.env`.
+* Put it on a **separate volume** if you can (a mounted OVHcloud additional disk): then uploads can never fill the system disk, and the
+  disk can be snapshotted/grown independently. Mount that volume at the path **before** the first start.
+* Do **not** put it inside the repository checkout, under a web server's document root, or in a directory another service writes to.
+* `bash deploy/deploy.sh` and `bash deploy/verify.sh` check the directory, its owner and a real write/read/delete round trip.
+
+## Deploying this change to the VPS
+
+Pushing to GitHub does **not** deploy anything. On the VPS, as the deploy user, in the checkout:
+
+1. Create the directory (above) — **before** the deploy; `docker compose` refuses to start without it.
+2. Take a database backup (`bash deploy/backup-db.sh`; the deploy does this too when `--migrate` is used).
+3. `bash deploy/deploy.sh --migrate` — shows what changes, applies the additive migration, rebuilds, restarts, runs `verify.sh`.
+4. Do the [verification](#verifying-a-deployment) below.
+5. Leave the `R2_*` values in `.env` for now (they open the old files).
+
+### Rollback
+
+* **App:** `bash deploy/rollback.sh <previous-version>` returns to the previous image. The migration is additive, so the older code runs
+  against the new schema.
+* **Files uploaded after the cut-over exist only on the VPS disk** (`LOCAL` rows). An older release does not know how to read them:
+  they show as unavailable until you roll forward again. **Do not delete the upload directory or drop the column while `LOCAL` rows
+  exist** — back the directory up first (below). R2 files are unaffected by a rollback.
+* The new column and enum can stay in the database indefinitely; removing them would be a separate, deliberate migration.
+
+## Verifying a deployment
+
+After `deploy.sh` (it runs `verify.sh`, which includes the storage checks), do this once by hand in the browser as an Admin:
+
+1. Open a Lead → **Files** → upload a small PDF. The progress bar runs and the file appears under the lead.
+2. Open it (a tab with the PDF) and Download it; compare the bytes if you like.
+3. On the server, confirm a file exists and nothing exposes it:
+   ```bash
+   bash deploy/uploads-usage.sh                                   # counts, sizes, by backend
+   sudo ls -lR /srv/compass-tools/uploads | head -20              # <2 hex>/<64 hex>, mode -rw-------, owner 1000
+   ```
+4. **Persistence:** recreate the container and open the file again:
+   ```bash
+   docker compose up -d --force-recreate app
+   ```
+   The file must still open. (The CI smoke test does the same with a probe file.)
+5. Delete the test file in the CRM; run `bash deploy/uploads-usage.sh` again — the file is gone.
+6. Compare the database with the disk at any time (read-only): `docker compose run --rm tools npx tsx scripts/attachments-reconcile.ts`
+   — it lists attachment ids/keys that are **MISSING** (record but no file), wrong **SIZE**, **ORPHAN** (file but no record) and
+   **PENDING** uploads; it prints no file names, and changes nothing. Exit code 2 = a record without a usable file.
+
+## Disk space
+
+The VPS disk is shared by PostgreSQL, Docker images/build cache, logs and the uploads. The application protects it, and never deletes a
+valid attachment to make room.
+
+* **Look:** `df -h` (and `bash deploy/uploads-usage.sh`, which also shows the uploads' size, totals per backend and `docker system df`).
+  `verify.sh` warns above **80 %** used and fails above **95 %**.
+* **The app watches too:** `GET /api/health` → `readiness.uploadStorage` is `ready`, `low_space` or `unavailable`.
+* **Disk full / nearly full:** when less than `UPLOAD_MIN_FREE_MB` would remain, a new upload is refused up front (HTTP 507) with the
+  message "File storage is almost full, so new files can't be added right now. Please ask an administrator." If the disk fills during a
+  write (ENOSPC), the partial temp file is removed, the upload fails with the same kind of generic message, and no record is made visible.
+  Existing documents are untouched and keep opening. Everything else in the CRM keeps working (PostgreSQL has its own volume, but shares
+  the disk — which is exactly why the reserve exists).
+* **Find the large uploads** (ids, sizes, dates — never file names; decide with the lead's owner whether a file is still needed):
+  ```bash
+  bash deploy/uploads-usage.sh          # includes "the 15 largest uploads"
+  ```
+  Deleting is always a deliberate action in the CRM (Admin/Manager), which removes the file and the record together.
+* **Reduce growth:** lower `MAX_LEAD_ATTACHMENT_SIZE_MB` (affects new uploads only), prune old backups (`KEEP_DAYS`), `docker image prune`,
+  and move the uploads to a bigger/separate volume (stop `app`, copy with `rsync -a`, fix ownership 1000:1000, point `UPLOADS_HOST_DIR`
+  at it, start).
+* **Recommended:** alert when the disk passes 80 % (OVHcloud monitoring or a cron `df`), and decide a retention policy for old leads'
+  documents with the business (legal input needed for identity documents).
+
+## Backup and restore
+
+The database holds only **metadata**. Restoring the database alone brings back records that point at files that are not there; restoring
+files alone leaves files with no records. **Back up and restore both, from the same day.**
+
+```bash
+bash deploy/backup-db.sh          # PostgreSQL dump (existing)
+bash deploy/backup-uploads.sh     # the documents: verified .tar.gz, mode 600 in a 700 directory (BACKUP_DIR, KEEP_DAYS, BACKUP_AGE_RECIPIENT)
+```
+
+The daily systemd unit (`deploy/systemd/compass-tools-backup.service`) runs both, database first. `backup-uploads.sh` reads the files
+inside a throw-away container as the application user (no root), skips in-flight `.tmp` files, verifies that every archive entry is
+exactly a `<2 hex>/<64 hex>` file, refuses to start if the backup disk lacks room, and can encrypt with `age` (it fails closed rather than
+write an unencrypted copy when `BACKUP_AGE_RECIPIENT` is set).
+
+**A backup that lives only on the same server is lost with the server.** Copy the (encrypted) archives off the VPS —
+`docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` §12.3. OVHcloud snapshots capture the disk, including the uploads and the keys in `.env`;
+treat them accordingly.
+
+**Restore** (practise it — a test restore changes nothing):
+
+```bash
+bash deploy/restore-uploads.sh /var/backups/compass-tools/uploads-<time>.tar.gz             # CHECK only: integrity + entry names
+bash deploy/restore-db.sh      /var/backups/compass-tools/<db backup from the same day>      # test restore into a throw-away database
+
+# real recovery, in this order, with the site offline:
+bash deploy/restore-db.sh      <db backup> --replace         # asks you to type the database name; takes a safety backup first
+bash deploy/restore-uploads.sh <uploads backup> --replace    # asks you to type RESTORE; moves current files aside, never deletes them
+docker compose run --rm tools npx tsx scripts/attachments-reconcile.ts   # database and disk should now agree
+```
+
+`--replace` moves the current files into `.before-restore-<time>` inside the upload directory (nothing is deleted); remove that folder
+yourself once you are satisfied (the script prints the command). Encrypted `.age` archives must be decrypted first.
+
+## Maintenance
+
+* **Stale uploads.** An upload that never completes (browser closed, crash) leaves a PENDING row older than 1 hour and possibly a file or
+  a `.tmp/*.part` file. The daily task `/api/cron/tasks` removes them: the file first, the row only after the file is gone or absent; a
+  file that cannot be removed keeps its row, is retried the next day, and is audited. Leftover `.tmp/*.part` files older than 1 hour are swept in the same run.
+  **On the VPS this daily task is not scheduled by default** (`docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` §10.3) — ask for a schedule, or run
+  it by hand occasionally:
+  ```bash
+  docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/cron/tasks',{headers:{authorization:'Bearer '+process.env.CRON_SECRET}}).then(r=>r.text()).then(console.log)"
+  ```
+  Normal cancellations and failures clean up immediately; this sweep only covers crashes.
+* **Reconcile** (read-only) after a restore, an incident or a disk problem: `scripts/attachments-reconcile.ts` (above).
+
+## Legacy R2 files
+
+Every row uploaded before the move has `storageProvider = 'R2'` and its object still sits in the private bucket. They keep working:
+
+* **Open/download:** a 302 to a presigned link valid for 60 s that forces the content type and disposition (unchanged behaviour).
+* **Delete / lead & contact deletion:** the R2 object is deleted, then the row. If the `R2_*` values are missing the delete fails
+  generically and the row is kept (never a row removed while its R2 object remains).
+* The R2 code is isolated in `src/server/storage/legacy-r2.ts` and can **only** presign a download and delete an object. New uploads
+  never call it (a test asserts this). The browser's Content-Security-Policy no longer allows connections to R2.
+* **Keep the four `R2_*` variables, the R2 token and the bucket** until no R2 row remains. The application never deletes R2 objects on
+  its own and this change did not touch the bucket.
+
+**Retiring R2** (only when the business decides to): check how many R2 files remain —
+
+```sql
+SELECT "storageProvider", "status", count(*) FROM "Attachment" WHERE "storageKey" IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2;
+```
+
+— an `R2` row count of 0 means the credentials and the bucket are no longer needed. There is no automatic R2 → local migration tool; if
+you want the old files moved, that is a separate, reviewable task (download each object, verify size/signature, write it locally,
+switch the row to `LOCAL`, and only then — much later, after a backup — delete the R2 object).
+
+## Troubleshooting
+
+When an upload fails the dialog says which kind of failure it was; the browser reports **stage / kind / HTTP status only** (never a URL)
+to the server, which records `ATTACHMENT_UPLOAD_FAILED` in the audit log. Read it from `AuditLog`
+(`action = 'ATTACHMENT_UPLOAD_FAILED'`, `metadata`).
+
+| Symptom | Likely cause | Check / fix |
+| --- | --- | --- |
+| "File storage is unavailable" (503); `/api/health` → `uploadStorage: unavailable` | The bind mount is missing or not writable | `ls -ldn $UPLOADS_HOST_DIR` must be `1000 1000`; `docker compose config \| grep -A4 uploads`; `bash deploy/verify.sh` |
+| `docker compose up` says the bind source does not exist | The host directory was not created | `sudo install -d -o 1000 -g 1000 -m 0700 /srv/compass-tools/uploads` |
+| Every upload fails with 500/503 right after a deploy, `ls -ln` shows `0 0` (root) | Directory owned by root | `sudo chown 1000:1000 <dir> && sudo chmod 0700 <dir>` |
+| "File storage is almost full" (507); `uploadStorage: low_space` | Less than `UPLOAD_MIN_FREE_MB` free | [Disk space](#disk-space): free space or move the uploads to a bigger volume |
+| 413 / "didn't match what was selected" | File larger than `MAX_LEAD_ATTACHMENT_SIZE_MB`, or its size changed in transit | Check the limit; try again |
+| 422 / "didn't match" | The file's real content does not match its extension (a renamed file, a corrupt PDF) | Re-export the document in the right format |
+| Upload hangs then fails with status `0` through the public site only | A proxy in front of the app cuts or buffers large bodies | [Limits](#limits-on-the-path-to-the-app-read-this-if-big-uploads-fail) |
+| A document opens for some leads but 404 for others | Lead visibility (Manager teams, company) — the same 404 as "does not exist" | Check the viewer's role/team; this is by design |
+| An old document (before the move) won't open | `R2_*` values missing/wrong, or the object was removed from the bucket | Re-add the four variables; `docker compose logs app \| grep attachments` |
+| Reconcile reports MISSING | A record whose file is gone (restore from a mismatched backup, manual deletion) | Restore the uploads backup from the same day as the database; never recreate files by hand |
+| ORPHAN files in reconcile | Files with no record (an interrupted delete or a database restored to an older day) | Review, back up, then remove deliberately — nothing removes them automatically |
 
 ## Known limits
 
 * No virus / malware scanning; no per-file versioning or replacement (delete + re-upload); no global Documents page.
-* Presigned-upload size enforcement relies on R2 honouring the signed `Content-Length`; the server also re-checks the stored size before
-  a file becomes visible and removes anything that differs.
+* One server, one disk: the documents are as durable as your backups (see above). A multi-server setup would need shared storage — a
+  different design.
 * A Lead's list shows the newest 100 files (a count and a note appear above that).

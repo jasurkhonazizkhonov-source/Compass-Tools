@@ -9,7 +9,7 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads, canRevealBookingIp, canManageLeadAttachments } from "@/lib/permissions";
 import { listLeadAttachments } from "@/server/queries/lead-attachments";
 import { LeadFilesPanel } from "@/components/leads/lead-files-panel";
-import { isStorageConfigured } from "@/server/storage/r2";
+import { status as uploadStorageStatus } from "@/server/storage/local";
 import { maxFileSizeBytes } from "@/lib/attachments/policy";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { deleteLead } from "@/server/actions/leads";
@@ -302,7 +302,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
                     uploadedByName: a.uploadedBy?.fullName ?? null,
                   }))}
                   canManage={canManageLeadAttachments(currentAccount?.role)}
-                  storageReady={isStorageConfigured()}
+                  storageReady={(await uploadStorageStatus()).state === "ready"}
                   maxSizeMb={Math.round(maxFileSizeBytes() / (1024 * 1024))}
                 />
               </TabsContent>

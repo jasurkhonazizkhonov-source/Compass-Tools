@@ -19,6 +19,8 @@
 
 # ---- local state / backups / production data ----------------------------------------------------------------------------------
 backups
+.local-uploads
+uploads
 **/*.dump
 **/*.dump.gz
 **/*.sql.gz

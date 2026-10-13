@@ -65,6 +65,7 @@ describe("GET /api/health", () => {
         databaseTls: "unverified",
         leadIngestSecret: "not_configured",
         signerIpCapture: "enabled",
+        uploadStorage: expect.stringMatching(/^(ready|low_space|unavailable)$/),
         schema: "current",
         pendingMigrations: 0,
       });
@@ -81,6 +82,7 @@ describe("GET /api/health", () => {
         databaseTls: "unverified",
         leadIngestSecret: "not_configured",
         signerIpCapture: "disabled",
+        uploadStorage: expect.stringMatching(/^(ready|low_space|unavailable)$/),
         schema: "current",
         pendingMigrations: 0,
       });
@@ -196,6 +198,39 @@ describe("GET /api/health", () => {
 
     // Two queries per real check, one real check for the whole burst.
     expect(queryRaw).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports the Lead-document store as a category (ready / low_space / unavailable) - never a path or a size", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const path = await import("node:path");
+    const { resetStatusCacheForTests } = await import("@/server/storage/local");
+    const { resetHealthCacheForTests } = await import("@/lib/health-check");
+    const { GET } = await import("../route");
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), "compass-health-uploads-"));
+    const read = async () => {
+      resetStatusCacheForTests();
+      resetHealthCacheForTests();
+      const text = JSON.stringify(await (await GET()).json());
+      expect(text).not.toContain(dir);
+      expect(text).not.toMatch(/compass-health-uploads|UPLOAD_|freeBytes/);
+      return JSON.parse(text).readiness.uploadStorage as string;
+    };
+    try {
+      vi.stubEnv("UPLOAD_STORAGE_DIR", dir);
+      vi.stubEnv("UPLOAD_MIN_FREE_MB", "0");
+      expect(await read()).toBe("ready");
+      vi.stubEnv("UPLOAD_STORAGE_DIR", "relative/not/absolute");
+      expect(await read()).toBe("unavailable");
+      vi.stubEnv("UPLOAD_STORAGE_DIR", dir);
+      vi.stubEnv("UPLOAD_MIN_FREE_MB", "999999999");
+      expect(["low_space", "ready"]).toContain(await read()); // "ready" only where the filesystem cannot report free space
+    } finally {
+      vi.unstubAllEnvs();
+      await fsp.rm(dir, { recursive: true, force: true });
+      resetStatusCacheForTests();
+    }
   });
 
   it("reports the database TLS state truthfully: disabled (private Docker database) is never shown as verified, and exposes no host, URL or certificate", async () => {

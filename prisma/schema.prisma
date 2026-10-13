@@ -697,8 +697,13 @@ model Attachment {
   description String?
   // Tenant guard: always the owning Lead's Contact's company, copied at creation and re-checked on every read.
   companyId   String?
-  // Opaque, server-generated R2 object key. Unique; never derived from user input and never sent to the browser.
+  // Opaque, server-generated storage key. Unique; never derived from user input and never sent to the browser. What it means depends on
+  // storageProvider: for LOCAL it is "<2 hex>/<64 hex>" under the VPS upload directory (never a path); for R2 it is the legacy object key.
   storageKey  String?  @unique
+  // WHERE the bytes live. New uploads are always LOCAL (the VPS disk). R2 marks files uploaded before the move to local storage; they stay
+  // readable/deletable through the legacy R2 reader until they are migrated or retired. The database default stays R2 on purpose: it is
+  // what every pre-existing row is, and it keeps code from before this column existed writing correctly-labelled rows.
+  storageProvider AttachmentStorageProvider @default(R2)
   status      AttachmentStatus @default(PENDING)
 
   @@index([contactId])
@@ -710,6 +715,12 @@ model Attachment {
 enum AttachmentStatus {
   PENDING
   READY
+}
+
+// Which storage backend holds an attachment's bytes. See Attachment.storageProvider.
+enum AttachmentStorageProvider {
+  R2
+  LOCAL
 }
 
 // ─────────────────────────────────────────────────────────────────────────

@@ -60,6 +60,46 @@ wait_healthy() {
   die "$service did not become healthy within ${timeout}s. Inspect it with: docker compose logs --tail=100 $service"
 }
 
+# Where the uploaded Lead documents live inside the app container, and the HOST directory that is mounted there.
+UPLOADS_CONTAINER_DIR="/var/lib/compass-tools/uploads"
+uploads_host_dir() {
+  local id src
+  # A running app container is the authority on what is really mounted.
+  id="$(dc ps -q app 2>/dev/null | head -1 || true)"
+  if [ -n "$id" ]; then
+    src="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "'"$UPLOADS_CONTAINER_DIR"'"}}{{.Source}}{{end}}{{end}}' "$id" 2>/dev/null || true)"
+    [ -n "$src" ] && { printf '%s' "$src"; return 0; }
+  fi
+  # Otherwise ask Compose what it WOULD mount (it resolves UPLOADS_HOST_DIR from .env itself; the `source:` line precedes `target:`).
+  src="$(dc config 2>/dev/null | awk -v t="target: $UPLOADS_CONTAINER_DIR" 'index($0, t) { print prev; exit } { prev = $0 }' | sed -E 's/^[[:space:]]*source:[[:space:]]*//')"
+  printf '%s' "${src:-/srv/compass-tools/uploads}"
+}
+
+# Runs a command as the application user (uid 1000) in a throw-away container of the app image with the uploads mounted. No dependencies
+# are started and nothing is published. This is how the scripts read and write the 0700, uid-1000 files without needing root.
+in_uploads_container() { dc run --rm --no-deps -T --entrypoint "$1" app "${@:2}"; }
+
+# Fails with copy-paste instructions unless the HOST upload directory exists and belongs to the application user (uid/gid 1000).
+# Compose is configured NOT to create it (a root-owned one would be unwritable by the app and uploads would fail at runtime).
+check_uploads_dir() {
+  local dir owner mode
+  dir="$(uploads_host_dir)"
+  if [ ! -d "$dir" ]; then
+    die "The upload directory $dir does not exist. Create it once (the application runs as uid/gid 1000):
+  sudo install -d -o 1000 -g 1000 -m 0700 $dir
+(see docs/LEAD_ATTACHMENTS.md; to use another location set UPLOADS_HOST_DIR in .env)"
+  fi
+  owner="$(stat -c '%u:%g' "$dir" 2>/dev/null || echo unknown)"
+  mode="$(stat -c '%a' "$dir" 2>/dev/null || echo unknown)"
+  [ "$owner" = "1000:1000" ] || die "The upload directory $dir is owned by $owner; the application (uid/gid 1000) could not write to it. Run:
+  sudo chown 1000:1000 $dir && sudo chmod 0700 $dir"
+  case "$mode" in
+    700|750) ;;
+    *) yellow "The upload directory $dir has mode $mode; it holds customers' documents. Recommended: sudo chmod 0700 $dir" ;;
+  esac
+  green "Upload directory OK: $dir (owner $owner, mode $mode)"
+}
+
 confirm() { # $1 = prompt; honours ASSUME_YES=1
   [ "${ASSUME_YES:-0}" = "1" ] && return 0
   local answer

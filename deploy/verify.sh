@@ -48,7 +48,7 @@ summary="$(dc exec -T app node -e '
     console.log([(ok ? "OK" : "BAD") + " status=" + h.status + " db=" + (h.database && h.database.ok),
       "schema=" + r.schema + (r.pendingMigrations ? " pending=" + r.pendingMigrations : ""),
       "databaseTls=" + r.databaseTls, "cardVault=" + r.cardVaultState + " enabled=" + r.cardVaultEnabled,
-      "signerIpCapture=" + r.signerIpCapture].join(" | "));
+      "signerIpCapture=" + r.signerIpCapture, "uploadStorage=" + r.uploadStorage].join(" | "));
   }).catch(() => { console.log("BAD the app did not answer /api/health"); });
 ' 2>/dev/null || echo 'BAD could not run the check')"
 case "$summary" in OK*) pass "$summary" ;; *) fail "$summary" ;; esac
@@ -56,6 +56,36 @@ case "$summary" in *"schema=current"*) ;; *) fail "database schema is not curren
 case "$summary" in *"databaseTls=disabled"*) pass "database TLS is explicitly disabled for the private Docker network (expected)" ;; *) warn "databaseTls is not 'disabled' - compose.yaml sets DATABASE_SSL_MODE=disable for the Docker database" ;; esac
 case "$summary" in *"enabled=false"*) warn "the card vault is CLOSED (CARD_VAULT_MODE unset), so customers cannot finish a booking that needs card storage. That is the owner's explicit opt-in (docs/CARD_VAULT_SECURITY.md); nothing here enables it." ;; esac
 case "$summary" in *"signerIpCapture=disabled"*) warn "signer IP capture is disabled - TRUSTED_PROXY is not in effect" ;; esac
+
+step "3b. Lead document storage (VPS disk)"
+case "$summary" in
+  *"uploadStorage=ready"*) pass "upload storage is ready" ;;
+  *"uploadStorage=low_space"*) warn "upload storage is nearly full: new uploads are refused until space is freed (bash deploy/uploads-usage.sh)" ;;
+  *) fail "upload storage is unavailable: the upload directory is missing, not writable or not mounted (docs/LEAD_ATTACHMENTS.md, Troubleshooting)" ;;
+esac
+# Prove the mount is real and writable by the application user: write, read back and delete a probe file INSIDE the running app container.
+# The probe name starts with a dot and has no 2-hex shard, so it can never be mistaken for (or collide with) an upload.
+if probe="$(dc exec -T app sh -c 'd=/var/lib/compass-tools/uploads; f="$d/.verify-probe-$$"; printf ok > "$f" && [ "$(cat "$f")" = ok ] && rm -f "$f" && echo PROBE_OK' 2>/dev/null)" && [ "$probe" = "PROBE_OK" ]; then
+  pass "the app can write, read and delete in its upload directory"
+else
+  fail "the app container cannot write to /var/lib/compass-tools/uploads (owner must be uid/gid 1000: sudo chown 1000:1000 <host dir>)"
+fi
+mount_src="$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/lib/compass-tools/uploads"}}{{.Type}} {{.Source}}{{end}}{{end}}' "$(dc ps -q app 2>/dev/null | head -1)" 2>/dev/null || true)"
+case "$mount_src" in
+  "bind "*) pass "uploads are a host bind mount (${mount_src#bind }), so they survive container recreation and image upgrades" ;;
+  *) fail "the uploads directory is not a host bind mount ($mount_src); files would be lost when the container is recreated" ;;
+esac
+db_mounts="$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$(dc ps -q db 2>/dev/null | head -1)" 2>/dev/null || true)"
+case "$db_mounts" in *compass-tools/uploads*) fail "the uploads are mounted into the database container" ;; *) pass "the database container does not see the uploads" ;; esac
+host_dir="$(uploads_host_dir)"
+if [ -d "$host_dir" ]; then
+  used_pct="$(df -P "$host_dir" | awk 'NR==2 {gsub("%","",$5); print $5}')"
+  if [ -n "$used_pct" ]; then
+    if [ "$used_pct" -ge 95 ]; then fail "the disk holding the uploads is ${used_pct}% full"
+    elif [ "$used_pct" -ge 80 ]; then warn "the disk holding the uploads is ${used_pct}% full (bash deploy/uploads-usage.sh)"
+    else pass "disk holding the uploads is ${used_pct}% full"; fi
+  fi
+fi
 
 step "4. Scheduled CVV cleanup"
 last="$(dc logs --no-log-prefix --tail=200 cvv-cleanup 2>/dev/null | grep '"status":"ok"' | tail -1 || true)"

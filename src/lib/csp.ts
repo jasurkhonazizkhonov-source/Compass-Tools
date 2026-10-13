@@ -16,32 +16,15 @@
 //    refused. Styles still allow 'unsafe-inline' (inline style attributes from
 //    the UI libraries cannot carry a nonce); a style-only injection cannot run
 //    code, which is the residual, documented risk.
-// The browser uploads Lead documents straight to the private R2 bucket through a short-lived presigned URL, so that one origin (and only
-// when file storage is configured) is allowed in connect-src. Read at call time so a deployment without R2 has no extra origin.
-// Same value cleaning as src/server/storage/r2.ts (whitespace and one pair of surrounding quotes), kept dependency-free because
-// next.config.ts imports this file.
-const clean = (v: string | undefined) => {
-  const t = (v ?? "").trim();
-  return t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0] ? t.slice(1, -1).trim() : t;
-};
-
-function r2Origin(): string {
-  const accountId = clean(process.env.R2_ACCOUNT_ID);
-  const raw = clean(process.env.R2_ENDPOINT) || (accountId ? `https://${accountId}.r2.cloudflarestorage.com` : "");
-  try {
-    const u = new URL(raw);
-    return u.protocol === "https:" ? ` ${u.origin}` : "";
-  } catch {
-    return "";
-  }
-}
-
+// Lead documents are uploaded to this same origin (PUT /api/attachments/{id}/upload) and downloaded from it, so connect-src needs no storage
+// origin. (Before the move to local storage the browser uploaded straight to a Cloudflare R2 origin, which had to be listed here. Opening an
+// older file that still lives in R2 is a navigation/redirect, which connect-src does not govern.)
 function common(): string[] {
   return [
     "default-src 'self'",
     "img-src 'self' data: https:",
     "font-src 'self' data:",
-    `connect-src 'self' https://accounts.google.com https://www.googleapis.com${r2Origin()}`,
+    "connect-src 'self' https://accounts.google.com https://www.googleapis.com",
     "frame-src https://accounts.google.com",
     "frame-ancestors 'none'",
     "base-uri 'self'",

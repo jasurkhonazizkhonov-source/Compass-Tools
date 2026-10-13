@@ -184,7 +184,9 @@ openssl rand -base64 32     # GMAIL_TOKEN_ENCRYPTION_KEY, CARD_ENCRYPTION_KEY, I
 | `CARD_RETENTION_DAYS` | **leave unset** | Empty = no automatic card-number purge. |
 | `CARD_ENCRYPTION_KEYS`, `CARD_ENCRYPTION_KEY_ID` | optional | Key ring for rotation (CARD_VAULT_SECURITY.md §6). |
 | `LEAD_INGEST_SECRET` | optional | Must equal the travel website's value; ≥ 32 characters. |
-| `R2_*`, `MAX_LEAD_ATTACHMENT_SIZE_MB` | optional | Lead documents in a private R2 bucket (LEAD_ATTACHMENTS.md). Empty = uploads off. |
+| `UPLOADS_HOST_DIR` | optional | Host directory for Lead documents (default `/srv/compass-tools/uploads`; **create it first**, §3.4). |
+| `UPLOAD_MIN_FREE_MB`, `MAX_LEAD_ATTACHMENT_SIZE_MB` | optional | Disk reserve kept free (default 1024) and largest accepted file (default 10, max 25). LEAD_ATTACHMENTS.md. |
+| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | legacy | Only to open/delete Lead documents uploaded to R2 **before** the move to local storage. Never used for new uploads. Keep until the old files are retired. |
 | `CLEANUP_HEARTBEAT_URL` | optional | A dead-man's-switch URL pinged after each successful cleanup. |
 | `DATABASE_POOL_*`, `DATABASE_CONNECT_RETRIES` | optional | Leave unset. |
 
@@ -238,6 +240,8 @@ usermod -aG docker deploy     # NOTE: the docker group is root-equivalent: only 
 ```bash
 install -d -o deploy -g deploy /opt/compass-tools
 install -d -m 700 -o deploy -g deploy /var/backups/compass-tools
+# Lead documents: owned by the container user (uid/gid 1000), NOT by deploy. Compose refuses to start without it.
+sudo install -d -o 1000 -g 1000 -m 0700 /srv/compass-tools/uploads
 su - deploy
 cd /opt && git clone https://github.com/jasurkhonazizkhonov-source/Compass-Tools.git compass-tools
 cd compass-tools && git log -1 --oneline
@@ -396,13 +400,14 @@ is blocked"* page means the redirect-URI list is wrong (DEPLOYMENT.md §2a has t
 ### 9.3 Verify after every deployment
 
 ```bash
-bash deploy/verify.sh               # containers, no published ports, app health, schema, CVV job, and the public site via Cloudflare
+bash deploy/verify.sh               # containers, no published ports, app health, schema, upload storage, CVV job, and the public site via Cloudflare
 bash deploy/verify.sh --internal    # skip the checks that go out through Cloudflare
 ```
 
 It reports (and exits non-zero on failures): container health; **no host port published** and nothing listening on 5432/3000 beyond
 loopback; `/api/health` → database OK, `schema=current`, `databaseTls=disabled`; the card vault state (a closed vault is a **warning**, not
-a failure — it is the owner's opt-in); the last CVV cleanup; and, publicly, `/api/health` → 200, HSTS present, `http://` → `https://`,
+a failure — it is the owner's opt-in); the **upload storage** (`uploadStorage=ready`, a write/read/delete probe as the app user, a host
+bind mount, not visible to the database container, host disk below 80 % used); the last CVV cleanup; and, publicly, `/api/health` → 200, HSTS present, `http://` → `https://`,
 an **unauthenticated `POST /api/cron/cvv-cleanup` is refused**, and `compass-tools.com` → `www`.
 
 Also by hand, once: sign in with Google; open **System Health**; save any record (proves Server Actions work through the tunnel);
@@ -481,6 +486,10 @@ df -h / && docker system df                                  # disk
 
 ## 12. PostgreSQL backup and restore
 
+> **Lead documents are not in the database.** The database holds only their metadata; the files are on the VPS disk
+> (`/srv/compass-tools/uploads`). `deploy/backup-uploads.sh` backs them up (the systemd unit runs it right after the database dump) and
+> `deploy/restore-uploads.sh` restores them. Always restore both from the same day: `docs/LEAD_ATTACHMENTS.md`, "Backup and restore".
+
 ### 12.1 What a backup contains
 
 `deploy/backup-db.sh` writes a `pg_dump --format=custom` file with:
@@ -490,6 +499,7 @@ df -h / && docker system df                                  # disk
 * **not** the data of the `PaymentMethodCvv` table. Retained security codes are destroyed 24 h after the signed form; a backup that kept them
   would keep them as long as the backup lives. The script verifies (`pg_restore --list`) that the file is readable **and** that no CVV data
   is in it, and refuses to keep it otherwise. A restore therefore comes back with no retained codes (they would have expired within a day).
+* **not** the uploaded Lead documents (see the note above) — they are backed up as a separate archive;
 * **not** the encryption keys — those live only in `.env`. **A backup without the keys is unusable; keys without a backup are useless.** Keep
   both, separately.
 
@@ -618,7 +628,7 @@ CARD_VAULT_SECURITY.md §13 and §19.7 and **require QSA/acquirer review**. In p
 
 ### 16.3 OVHcloud snapshots and automated backups (decision 3)
 
-A VPS snapshot or "automated backup" copies the **entire disk**: the PostgreSQL volume *and* `/opt/compass-tools/.env` (the keys). It
+A VPS snapshot or "automated backup" copies the **entire disk**: the PostgreSQL volume *and* `/opt/compass-tools/.env` (the keys). It also copies the **uploaded Lead documents** (passport copies and similar) in `/srv/compass-tools/uploads` unless that directory is on a separate volume. It
 therefore contains decryptable card data and — for snapshots taken inside the 24-hour window — retained security codes, and it is kept for
 the provider's retention period. If you enable these, treat the snapshots as part of the vault's PCI scope, or keep the database on a
 separate encrypted volume. This guide's own backup excludes the CVV table; a disk snapshot does not.

@@ -29,6 +29,7 @@ describe("attachment reads are always scoped by lead visibility", () => {
     "server/queries/lead-attachments.ts", // visibleAttachmentWhere() — the one read path for lists
     "server/actions/lead-attachments.ts", // every query carries leadVisibilityWhere + company
     "app/api/attachments/[id]/file/route.ts", // visibleAttachmentWhere()
+    "app/api/attachments/[id]/upload/route.ts", // the caller's OWN pending upload + leadVisibilityWhere
     "server/attachments/cleanup.ts", // system jobs: stale PENDING sweep, key collection before a cascade delete
   ]);
 
@@ -38,7 +39,7 @@ describe("attachment reads are always scoped by lead visibility", () => {
   });
 
   it("every lookup in the actions, the route and the queries goes through the visibility rule", () => {
-    for (const f of ["server/actions/lead-attachments.ts", "app/api/attachments/[id]/file/route.ts"]) {
+    for (const f of ["server/actions/lead-attachments.ts", "app/api/attachments/[id]/file/route.ts", "app/api/attachments/[id]/upload/route.ts"]) {
       const code = strip(read(...f.split("/")));
       const finds = [...code.matchAll(/prisma\.attachment\.(findFirst|findMany|findUnique)\(/g)];
       expect(finds.length, f).toBeGreaterThan(0);
@@ -86,28 +87,67 @@ describe("credentials and storage never reach the browser", () => {
     for (const f of ALL) {
       const raw = readFileSync(f, "utf-8");
       if (!/^\s*["']use client["']/.test(raw)) continue;
-      expect(raw, path.relative(SRC, f)).not.toMatch(/server\/storage\/r2|@aws-sdk|R2_SECRET|R2_ACCESS/);
+      expect(raw, path.relative(SRC, f)).not.toMatch(/server\/storage|@aws-sdk|R2_SECRET|R2_ACCESS|UPLOAD_STORAGE_DIR/);
     }
   });
 
   it("no R2 setting is exposed as a NEXT_PUBLIC_ variable", () => {
-    for (const f of ALL) expect(readFileSync(f, "utf-8"), path.relative(SRC, f)).not.toMatch(/NEXT_PUBLIC_R2|NEXT_PUBLIC_.*BUCKET/);
+    for (const f of ALL) expect(readFileSync(f, "utf-8"), path.relative(SRC, f)).not.toMatch(/NEXT_PUBLIC_R2|NEXT_PUBLIC_.*BUCKET|NEXT_PUBLIC_UPLOAD/);
   });
 
-  it("the R2 secret is read only inside the storage module", () => {
+  it("the R2 secret is read only inside the LEGACY R2 module", () => {
     const readers = ALL.filter((f) => /R2_SECRET_ACCESS_KEY/.test(strip(readFileSync(f, "utf-8")))).map((f) => path.relative(SRC, f).replace(/\\/g, "/"));
-    expect(readers).toEqual(["server/storage/r2.ts"]);
+    expect(readers).toEqual(["server/storage/legacy-r2.ts"]);
+  });
+
+  it("the upload directory setting is read in exactly one place, and is never exposed", () => {
+    const readers = ALL.filter((f) => /UPLOAD_STORAGE_DIR/.test(strip(readFileSync(f, "utf-8")))).map((f) => path.relative(SRC, f).replace(/\\/g, "/"));
+    expect(readers).toEqual(["server/storage/local.ts"]);
+  });
+
+  it("only the storage module touches the filesystem: the actions, routes, queries and cleanup never build or open a path", () => {
+    const feature = ALL.filter((f) => {
+      const rel = path.relative(SRC, f).replace(/\\/g, "/");
+      return /^app\/api\/attachments\//.test(rel) || /^server\/attachments\//.test(rel) || rel === "server/actions/lead-attachments.ts" || rel === "server/queries/lead-attachments.ts" || rel === "components/leads/lead-files-panel.tsx";
+    });
+    expect(feature.length).toBeGreaterThanOrEqual(6);
+    for (const f of feature) {
+      expect(strip(readFileSync(f, "utf-8")), path.relative(SRC, f)).not.toMatch(/from ["'](node:)?(fs|fs\/promises|path)["']|require\(["'](node:)?(fs|path)["']\)|process\.cwd\(\)/);
+    }
+  });
+
+  it("uploaded files are never served from a public directory or a static rewrite", () => {
+    const root = path.resolve(SRC, "..");
+    const publicDir = path.join(root, "public");
+    const listing = readdirSync(publicDir, { recursive: true }).map(String);
+    expect(listing.filter((p) => /upload|attachment/i.test(p))).toEqual([]);
+    const next = readFileSync(path.join(root, "next.config.ts"), "utf-8");
+    expect(strip(next)).not.toMatch(/rewrites|UPLOAD_STORAGE_DIR|local-uploads|\/var\/lib\/compass-tools/);
+    expect(readFileSync(path.join(root, ".gitignore"), "utf-8")).toMatch(/\.local-uploads/);
+  });
+
+  it("the download route streams local files from the storage module and never redirects to them or builds a URL", () => {
+    const code = strip(read("app", "api", "attachments", "[id]", "file", "route.ts"));
+    expect(code).toContain("localStorage.openRead(row.storageKey)");
+    expect(code).toMatch(/row\.storageProvider === "R2"/);
+    // the only redirect is the legacy R2 signed link
+    expect([...code.matchAll(/status: 302/g)]).toHaveLength(1);
+    expect(code.indexOf("status: 302")).toBeLessThan(code.indexOf("localStorage.openRead"));
   });
 
   it("no console.log / debugger in the feature", () => {
-    const files = ALL.filter((f) => /attachments|lead-files-panel|contact-documents-panel|storage[\\/]r2/.test(f));
+    const files = ALL.filter((f) => /attachments|lead-files-panel|contact-documents-panel|storage[\\/]/.test(f));
     expect(files.length).toBeGreaterThan(6);
     for (const f of files) expect(strip(readFileSync(f, "utf-8")), path.relative(SRC, f)).not.toMatch(/console\.log|debugger/);
   });
 
-  it("the storage module logs neither keys nor the bucket nor credentials", () => {
-    const code = strip(read("server", "storage", "r2.ts"));
-    for (const m of code.matchAll(/console\.error\(([^)]*)\)/g)) expect(m[1]).not.toMatch(/key|bucket|secret|endpoint|url/i);
+  it("the storage modules log neither keys, paths, the bucket nor credentials", () => {
+    for (const file of ["legacy-r2.ts", "local.ts"]) {
+      const code = strip(read("server", "storage", file));
+      const calls = [...code.matchAll(/console\.error\(([^)]*)\)/g)];
+      expect(calls.length, file).toBeGreaterThan(0);
+      for (const m of calls) expect(m[1], file).not.toMatch(/key|bucket|secret|endpoint|url|path|root|message|err\.message/i);
+    }
   });
 });
 
@@ -124,5 +164,23 @@ describe("lead and contact deletion clean up stored files", () => {
       expect(collect, fn).toBeLessThan(del);
       expect(purge, fn).toBeGreaterThan(del);
     }
+  });
+});
+
+describe("downloads from the local disk are served defensively", () => {
+  const route = read("app", "api", "attachments", "[id]", "file", "route.ts");
+
+  it("forces the type, disables sniffing and caching, and restricts embedding and loading", () => {
+    expect(route).toMatch(/"Content-Type": type\.mime/);
+    expect(route).toMatch(/"X-Content-Type-Options": "nosniff"/);
+    expect(route).toMatch(/"Cache-Control": "private, no-store"/);
+    expect(route).toMatch(/"Cross-Origin-Resource-Policy": "same-origin"/);
+    expect(route).toMatch(/default-src 'none'/);
+    expect(route).toMatch(/frame-ancestors 'none'/);
+  });
+
+  it("never puts a path or storage key in a header", () => {
+    const headers = route.slice(route.indexOf("Content-Type"), route.indexOf("Content-Security-Policy"));
+    expect(headers).not.toMatch(/storageKey|pathForKey|UPLOAD_STORAGE_DIR/);
   });
 });

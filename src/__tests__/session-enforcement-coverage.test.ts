@@ -95,8 +95,8 @@ describe("no second way to read or issue a session", () => {
     const apiRoutes = walk(path.join(SRC, "app", "api")).filter((f) => f.endsWith("route.ts"));
     expect(apiRoutes.length).toBeGreaterThan(5);
     const sessionAware = apiRoutes.filter((f) => /getCurrentAccount|requireSession|activeSessionId/.test(read(f))).map(norm);
-    // gmail callback (connect Gmail) and the Lead-document open/download route — both authenticate via getCurrentAccount only.
-    expect([...sessionAware].sort()).toEqual(["src/app/api/attachments/[id]/file/route.ts", "src/app/api/auth/gmail/callback/route.ts"]);
+    // gmail callback (connect Gmail) and the Lead-document open/download + upload routes — all authenticate via getCurrentAccount only.
+    expect([...sessionAware].sort()).toEqual(["src/app/api/attachments/[id]/file/route.ts", "src/app/api/attachments/[id]/upload/route.ts", "src/app/api/auth/gmail/callback/route.ts"]);
     for (const f of apiRoutes) expect(read(f), norm(f)).not.toMatch(/cookies\(\)\s*\)?\.?get\(["']compass/);
   });
 });

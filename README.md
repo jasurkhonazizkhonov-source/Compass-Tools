@@ -48,8 +48,8 @@ and Vercel-specific configuration).
   variables, Google OAuth, bootstrap, Vercel cron/config).
 - `docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` — self-hosted production on an OVHcloud VPS: Docker Compose,
   PostgreSQL in a private network, Cloudflare Tunnel, controlled deploys, backups, rollback, daily CVV cleanup.
-- `docs/LEAD_ATTACHMENTS.md` — Lead documents in private Cloudflare R2: permissions, security model,
-  environment variables and Cloudflare/Vercel setup.
+- `docs/LEAD_ATTACHMENTS.md` — Lead documents stored on the VPS disk (persistent bind mount): permissions, security
+  model, VPS directory setup, backup/restore, disk monitoring, and compatibility with older Cloudflare R2 files.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and
   structured-data conventions.
 - `docs/PAYMENT_AUTOFILL_SECURITY.md` — why full card-number autofill is

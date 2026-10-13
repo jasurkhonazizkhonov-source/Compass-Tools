@@ -60,6 +60,7 @@ APP_VERSION="$(git rev-parse --short=12 HEAD)"
 export APP_VERSION
 echo "Image version: $APP_VERSION"
 check_compose
+check_uploads_dir
 
 step "Building images (app + migration tools)"
 dc build app tools

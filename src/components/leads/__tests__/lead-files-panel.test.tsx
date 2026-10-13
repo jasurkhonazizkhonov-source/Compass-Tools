@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within, cleanup } from "@testing-library/react";
 import "@/test/rtl-setup";
 
 const refresh = vi.fn();
@@ -76,12 +76,12 @@ describe("Lead Files panel", () => {
     expect(desc.className).toMatch(/break-words/);
   });
 
-  it("empty state, and a disabled Upload button with an explanation when storage isn't configured", () => {
+  it("empty state, and a disabled Upload button with an explanation when storage isn't available", () => {
     render(<LeadFilesPanel {...base} files={[]} total={0} storageReady={false} />);
     expect(screen.getByText("No files yet")).toBeInTheDocument();
     expect(screen.getByText("0 files")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Upload Document/ })).toBeDisabled();
-    expect(screen.getByRole("status")).toHaveTextContent(/not set up/i);
+    expect(screen.getByRole("status")).toHaveTextContent(/not available/i);
     expect(document.body.textContent).not.toMatch(/R2|bucket|S3|Cloudflare/i);
   });
 
@@ -122,24 +122,39 @@ describe("Lead Files panel", () => {
     expect(actions.abandonLeadAttachmentUpload).not.toHaveBeenCalled();
   });
 
-  describe("when the browser → storage upload fails", () => {
-    // A minimal XMLHttpRequest whose outcome the test chooses: "error" = no response at all (CORS / CSP / network), or an HTTP status.
-    function stubXhr(outcome: "error" | number) {
+  describe("when the browser → server upload fails", () => {
+    // A minimal XMLHttpRequest whose outcome the test chooses: "error" = no response at all (network), an HTTP status with the server's JSON
+    // body, or "hang" = a request that never finishes (so it can be cancelled).
+    const xhrCalls = { open: [] as unknown[][], sent: [] as unknown[], headers: [] as unknown[][] };
+    function stubXhr(outcome: "error" | "hang" | number, body = "") {
+      xhrCalls.open.length = 0;
+      xhrCalls.sent.length = 0;
+      xhrCalls.headers.length = 0;
       class FakeXhr {
         status = 0;
+        responseText = "";
         upload = { onprogress: null as null | ((e: unknown) => void) };
         onload: null | (() => void) = null;
         onerror: null | (() => void) = null;
         onabort: null | (() => void) = null;
         ontimeout: null | (() => void) = null;
-        open() {}
-        setRequestHeader() {}
-        abort() {}
-        send() {
+        open(...args: unknown[]) {
+          xhrCalls.open.push(args);
+        }
+        setRequestHeader(...args: unknown[]) {
+          xhrCalls.headers.push(args);
+        }
+        abort() {
+          this.onabort?.();
+        }
+        send(file: unknown) {
+          xhrCalls.sent.push(file);
+          if (outcome === "hang") return;
           queueMicrotask(() => {
             if (outcome === "error") this.onerror?.();
             else {
               this.status = outcome;
+              this.responseText = body;
               this.onload?.();
             }
           });
@@ -148,7 +163,7 @@ describe("Lead Files panel", () => {
       vi.stubGlobal("XMLHttpRequest", FakeXhr);
     }
     async function attemptUpload() {
-      actions.requestLeadAttachmentUpload.mockResolvedValue({ ok: true, attachmentId: "pending-1", uploadUrl: "https://storage.invalid/put", headers: { "Content-Type": "application/pdf" } });
+      actions.requestLeadAttachmentUpload.mockResolvedValue({ ok: true, attachmentId: "pending-1", uploadUrl: "/api/attachments/pending-1/upload", headers: { "Content-Type": "application/pdf" } });
       render(<LeadFilesPanel {...base} />);
       fireEvent.click(screen.getByRole("button", { name: /Upload Document/ }));
       const dialog = await screen.findByRole("dialog");
@@ -157,22 +172,65 @@ describe("Lead Files panel", () => {
       return dialog;
     }
 
-    it("no response (CORS / CSP / network): a specific, safe message; the failure is reported with stage, kind and status only; retry is possible", async () => {
+    it("the file is PUT to the same-origin upload address the server returned - never to a storage provider", async () => {
+      stubXhr(200, '{"ok":true}');
+      actions.completeLeadAttachmentUpload.mockResolvedValue({ ok: true, attachmentId: "pending-1" });
+      await attemptUpload();
+      await waitFor(() => expect(actions.completeLeadAttachmentUpload).toHaveBeenCalledWith("pending-1"));
+      expect(xhrCalls.open).toEqual([["PUT", "/api/attachments/pending-1/upload"]]);
+      expect(String(xhrCalls.open[0][1])).not.toMatch(/^https?:|r2|amazonaws|cloudflarestorage/i);
+      expect(xhrCalls.sent[0]).toBeInstanceOf(File);
+      expect(xhrCalls.headers).toEqual([["Content-Type", "application/pdf"]]);
+    });
+
+    it("cancelling an upload in progress aborts the request, reports 'cancelled' without an error message, and removes the pending record", async () => {
+      stubXhr("hang");
+      const dialog = await attemptUpload();
+      fireEvent.click(await within(dialog).findByRole("button", { name: /Cancel upload/ }));
+      await waitFor(() => expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "cancelled", kind: "other", status: 0 }));
+      expect(within(dialog).queryByRole("alert")).toBeNull();
+      expect(actions.completeLeadAttachmentUpload).not.toHaveBeenCalled();
+      expect(within(dialog).getByRole("button", { name: /^Upload$/ })).toBeEnabled();
+    });
+
+    it("no response (network drop): a specific, safe message; the failure is reported with stage, kind and status only; retry is possible", async () => {
       stubXhr("error");
       const dialog = await attemptUpload();
-      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/couldn't reach file storage/));
-      expect(within(dialog).getByRole("alert")).not.toHaveTextContent(/R2|bucket|cloudflare|https?:/i);
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/didn't reach the server/));
+      expect(within(dialog).getByRole("alert")).not.toHaveTextContent(/R2|bucket|cloudflare|https?:|CORS/i);
       expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "put", kind: "blocked", status: 0 });
       expect(actions.completeLeadAttachmentUpload).not.toHaveBeenCalled();
       // not stuck: the Upload button is usable again for another attempt
       expect(within(dialog).getByRole("button", { name: /^Upload$/ })).toBeEnabled();
     });
 
-    it("storage answers 403: the status is shown and reported", async () => {
+    it("the server answers with an error status and no message: the status is shown and reported", async () => {
       stubXhr(403);
       const dialog = await attemptUpload();
       await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/rejected the upload \(error 403\)/));
       expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "put", kind: "rejected", status: 403 });
+    });
+
+    it("the server's own short message is shown (content mismatch, too large, storage full)", async () => {
+      for (const [status, message] of [
+        [422, "This file's contents don't match its file type, so it was not saved."],
+        [413, "The uploaded file didn't match what was selected. Please try again."],
+        [507, "File storage is almost full, so new files can't be added right now. Please ask an administrator."],
+      ] as const) {
+        stubXhr(status, JSON.stringify({ error: message }));
+        const dialog = await attemptUpload();
+        await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(message));
+        expect(actions.abandonLeadAttachmentUpload).toHaveBeenLastCalledWith("pending-1", { stage: "put", kind: "rejected", status });
+        cleanup();
+        vi.clearAllMocks();
+      }
+    });
+
+    it("an error body that is not a short plain message is ignored (never shown)", async () => {
+      stubXhr(500, "<html>Internal Server Error at /var/lib/compass-tools/uploads/ab/cd</html>");
+      const dialog = await attemptUpload();
+      await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/rejected the upload \(error 500\)/));
+      expect(within(dialog).getByRole("alert")).not.toHaveTextContent(/var\/lib|html/i);
     });
 
     it("a failure after a successful PUT is reported as the verify stage", async () => {

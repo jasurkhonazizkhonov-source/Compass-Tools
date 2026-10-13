@@ -4,7 +4,7 @@
 # See docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md ("Backups"). The user must be allowed to run `docker` (that is root-equivalent: use
 # a dedicated deploy account, not a shared one).
 [Unit]
-Description=Compass Tools PostgreSQL backup
+Description=Compass Tools PostgreSQL + uploaded documents backup
 Wants=docker.service
 After=docker.service
 
@@ -17,5 +17,8 @@ Environment=KEEP_DAYS=14
 # Optional: encrypt each backup with age (public key only; the private key must NOT live on this server).
 # Environment=BACKUP_AGE_RECIPIENT=age1...
 ExecStart=/usr/bin/bash /opt/compass-tools/deploy/backup-db.sh
+# The uploaded Lead documents are files on the VPS disk, NOT in the database: back them up too, AFTER the database dump (see
+# deploy/backup-uploads.sh). Restore both from the same day.
+ExecStart=/usr/bin/bash /opt/compass-tools/deploy/backup-uploads.sh
 # A failed backup shows up in: systemctl status compass-tools-backup.service  /  journalctl -u compass-tools-backup.service
 Nice=10

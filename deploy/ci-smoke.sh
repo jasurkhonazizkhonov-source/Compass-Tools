@@ -14,7 +14,16 @@ export COMPOSE_PROJECT_NAME=compass-smoke
 export APP_VERSION=smoke
 TMP="$(mktemp -d)"
 export COMPOSE_ENV_FILES="$TMP/env"
-cleanup() { docker compose down -v --remove-orphans >/dev/null 2>&1 || true; rm -rf "$TMP"; }
+# The uploads bind mount: a host directory owned by the image user (uid/gid 1000), exactly as the VPS guide prescribes.
+UPLOADS="$TMP/uploads"
+install -d -m 0700 "$UPLOADS"
+if [ "$(id -u)" != "1000" ]; then sudo chown 1000:1000 "$UPLOADS"; fi
+cleanup() {
+  docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+  # Files in the mount are owned by uid 1000, which may not be us.
+  rm -rf "$UPLOADS" 2>/dev/null || sudo rm -rf "$UPLOADS" 2>/dev/null || true
+  rm -rf "$TMP"
+}
 trap cleanup EXIT
 
 rand_b64() { openssl rand -base64 32; }
@@ -29,6 +38,7 @@ CARD_ENCRYPTION_KEY=$(rand_b64)
 IP_ENCRYPTION_KEY=$(rand_b64)
 IP_HASH_KEY=$(rand_b64)
 CRON_SECRET=$(openssl rand -hex 24)
+UPLOADS_HOST_DIR=$UPLOADS
 EOF
 chmod 600 "$TMP/env"
 CRON_SECRET="$(grep '^CRON_SECRET=' "$TMP/env" | cut -d= -f2-)"
@@ -65,6 +75,20 @@ tls="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/heal
 
 step "sharp's native libraries load on Linux (company-logo processing)"
 docker compose exec -T app node -e 'const s=require("sharp");s({create:{width:4,height:4,channels:3,background:"#fff"}}).png().toBuffer().then(b=>{console.log("png bytes",b.length)}).catch(e=>{console.error(e.message);process.exit(1)})' && ok "sharp works"
+
+step "Lead document storage: a writable, persistent, private bind mount"
+up="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health").then(r=>r.json()).then(h=>console.log(h.readiness.uploadStorage))')"
+[ "$up" = "ready" ] && ok "readiness.uploadStorage=ready" || fail "uploadStorage is $up (expected ready)"
+docker compose exec -T app sh -c 'printf smoke > /var/lib/compass-tools/uploads/.probe && [ "$(cat /var/lib/compass-tools/uploads/.probe)" = smoke ]' && ok "the app user can write and read in the mount" || fail "cannot write in the uploads mount"
+[ -f "$UPLOADS/.probe" ] && ok "the file appears in the HOST directory (a real bind mount)" || fail "the file did not reach the host directory"
+docker compose up -d --force-recreate --no-deps app
+for _ in $(seq 1 60); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ] && break; sleep 3; done
+docker compose exec -T app sh -c '[ "$(cat /var/lib/compass-tools/uploads/.probe)" = smoke ]' && ok "the file survives recreation of the container" || fail "the file was lost when the container was recreated"
+docker compose exec -T app rm -f /var/lib/compass-tools/uploads/.probe
+db_mounts="$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$(docker compose ps -q db)")"
+case "$db_mounts" in *compass-tools/uploads*) fail "the uploads are mounted into the database container" ;; *) ok "the database container does not see the uploads" ;; esac
+tools_rw="$(docker compose config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).services.tools.volumes||[];console.log(v.length>0&&v.every(x=>x.read_only)?"ro":"rw")})')"
+[ "$tools_rw" = "ro" ] && ok "the maintenance container sees the uploads read-only" || fail "the tools container can write to the uploads"
 
 step "Runs as a non-root user"
 uid="$(docker compose exec -T app id -u)"

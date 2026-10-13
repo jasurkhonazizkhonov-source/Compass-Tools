@@ -102,20 +102,36 @@ export function FileRowItem({ file, canManage, onEdit, onDelete }: { file: LeadF
 
 type Phase = "idle" | "preparing" | "uploading" | "verifying";
 
-/** The browser→storage PUT failed. `blocked` = no response at all (CORS / CSP / network); `rejected` = storage answered with an error status. */
+/**
+ * The browser→server PUT failed. `blocked` = no response at all (network drop, a proxy or firewall in between); `rejected` = the server
+ * answered with an error status, and `serverMessage` is the short, already-generic text it sent (never a path or a stack).
+ */
 class UploadTransportError extends Error {
   constructor(
     readonly kind: "blocked" | "rejected",
     readonly status: number,
+    readonly serverMessage: string | null = null,
   ) {
     super("upload failed");
   }
 }
 
 function transportMessage(err: UploadTransportError): string {
-  return err.kind === "blocked"
-    ? "The browser couldn't reach file storage, so the file was not saved. Please try again; if it keeps happening, ask an administrator to check the file-storage settings."
-    : `File storage rejected the upload (error ${err.status}), so the file was not saved. Please try again; if it keeps happening, ask an administrator to check the file-storage settings.`;
+  if (err.kind === "blocked") {
+    return "The upload didn't reach the server, so the file was not saved. Check your connection and try again; if it keeps happening, ask an administrator.";
+  }
+  if (err.status === 413) return err.serverMessage ?? "The file is larger than the server accepts, so it was not saved.";
+  return err.serverMessage ?? `The server rejected the upload (error ${err.status}), so the file was not saved. Please try again; if it keeps happening, ask an administrator.`;
+}
+
+/** The server's JSON `{ error }` text, only if it is a short plain string. */
+function serverMessageOf(xhr: XMLHttpRequest): string | null {
+  try {
+    const body = JSON.parse(xhr.responseText) as { error?: unknown };
+    return typeof body.error === "string" && body.error.length > 0 && body.error.length <= 240 ? body.error : null;
+  } catch {
+    return null;
+  }
 }
 
 function putWithProgress(url: string, file: File, headers: Record<string, string>, onProgress: (pct: number) => void, signal: AbortSignal): Promise<void> {
@@ -124,8 +140,8 @@ function putWithProgress(url: string, file: File, headers: Record<string, string
     xhr.open("PUT", url);
     for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
-    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new UploadTransportError("rejected", xhr.status)));
-    // Status 0: the browser never got a response — blocked by CORS / the page's CSP, or the network dropped.
+    xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(new UploadTransportError("rejected", xhr.status, serverMessageOf(xhr))));
+    // Status 0: the browser never got a response — the network dropped or something in between cut the request.
     xhr.onerror = () => reject(new UploadTransportError("blocked", 0));
     xhr.ontimeout = () => reject(new UploadTransportError("blocked", 0));
     xhr.onabort = () => reject(new DOMException("aborted", "AbortError"));
@@ -249,11 +265,11 @@ export function LeadFilesPanel({
           {`${total} file${total === 1 ? "" : "s"}`}
           <span className="hidden sm:inline"> · {ALLOWED_EXTENSIONS_LABEL} · up to {maxSizeMb} MB each</span>
         </p>
-        <Button size="sm" onClick={() => setUploadOpen(true)} disabled={!storageReady} title={storageReady ? undefined : "File storage is not configured yet"}>
+        <Button size="sm" onClick={() => setUploadOpen(true)} disabled={!storageReady} title={storageReady ? undefined : "File storage is not available right now"}>
           <Upload className="size-3.5" aria-hidden /> Upload Document
         </Button>
       </div>
-      {!storageReady && <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" role="status">File uploads are not set up yet. An administrator needs to configure file storage.</p>}
+      {!storageReady && <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm text-muted-foreground" role="status">File uploads are not available right now. An administrator needs to check the file storage.</p>}
 
       {files.length === 0 ? (
         <EmptyState icon={Paperclip} title="No files yet" description="Passport copies, visas, and other documents can be attached here." />

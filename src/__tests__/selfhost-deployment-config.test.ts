@@ -255,3 +255,103 @@ describe("the app image", () => {
     }
   });
 });
+
+describe("Lead document storage: a persistent, private bind mount on the VPS", () => {
+  const app = service("app");
+  const tools = service("tools");
+
+  it("the app mounts a HOST directory (not a named volume), refuses to auto-create it, at the path the application expects", () => {
+    expect(app).toMatch(/- type: bind\n\s+source: \$\{UPLOADS_HOST_DIR:-\/srv\/compass-tools\/uploads\}\n\s+target: \/var\/lib\/compass-tools\/uploads\n\s+bind:\n\s+create_host_path: false/);
+    expect(app).toMatch(/UPLOAD_STORAGE_DIR: \/var\/lib\/compass-tools\/uploads/);
+    expect(uncommented(compose)).not.toMatch(/^volumes:\n(\s+\w+:.*\n)*\s+uploads/m); // no named uploads volume
+  });
+
+  it("only the app writes; the maintenance container is read-only; the database and the other containers never see the uploads", () => {
+    expect(tools).toMatch(/target: \/var\/lib\/compass-tools\/uploads\n\s+read_only: true/);
+    for (const name of ["db", "cloudflared", "cvv-cleanup"]) expect(service(name), name).not.toMatch(/compass-tools\/uploads|UPLOADS_HOST_DIR/);
+  });
+
+  it("the mount point is owned by the non-root image user (uid/gid 1000), and the app never needs to run as root", () => {
+    expect(dockerfile).toMatch(/\/var\/lib\/compass-tools\/uploads/);
+    expect(dockerfile).toMatch(/^USER node$/m);
+    expect(app).not.toMatch(/^\s+user:\s*["']?0|privileged:\s*true/m);
+  });
+
+  it("nothing serves the directory: it is not under public/, not copied into the image and not excluded from or added to the build by accident", () => {
+    expect(existsSync(path.join(ROOT, "public", "uploads"))).toBe(false);
+    expect(dockerignore).toMatch(/uploads/);
+    expect(read(".gitignore")).toMatch(/\.local-uploads/);
+    expect(uncommented(compose)).not.toMatch(/\/var\/lib\/compass-tools\/uploads:\/(usr|var\/www|public)/);
+  });
+
+  it("R2 survives only as four optional LEGACY read/delete credentials; nothing configures R2 for new uploads", () => {
+    const r2 = [...app.matchAll(/^\s+(R2_[A-Z_]+):/gm)].map((m) => m[1]).sort();
+    expect(r2).toEqual(["R2_ACCESS_KEY_ID", "R2_ACCOUNT_ID", "R2_BUCKET_NAME", "R2_SECRET_ACCESS_KEY"]);
+    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"]) expect(app).toContain(`${name}: \${${name}:-}`); // optional: empty by default
+    for (const name of ["db", "cloudflared", "cvv-cleanup", "tools"]) expect(service(name), name).not.toMatch(/R2_/);
+    for (const m of envExample.matchAll(/^#?\s*(R2_[A-Z_]+)="([^"]*)"/gm)) expect(m[2], `${m[1]} must be empty`).toBe("");
+  });
+
+  it(".env.example documents the storage settings without a real value", () => {
+    for (const name of ["UPLOAD_STORAGE_DIR", "UPLOAD_MIN_FREE_MB", "UPLOADS_HOST_DIR", "MAX_LEAD_ATTACHMENT_SIZE_MB"]) expect(envExample, name).toContain(name);
+  });
+});
+
+describe("upload operations scripts", () => {
+  const backupUploads = read("deploy", "backup-uploads.sh");
+  const restoreUploads = read("deploy", "restore-uploads.sh");
+  const usage = read("deploy", "uploads-usage.sh");
+  const verify = read("deploy", "verify.sh");
+  const smoke = read("deploy", "ci-smoke.sh");
+  const reconcile = read("scripts", "attachments-reconcile.ts");
+
+  it("the backup reads inside the container as the app user, verifies the archive, checks disk space, keeps it private and can encrypt it", () => {
+    expect(backupUploads).toContain("in_uploads_container tar");
+    expect(backupUploads).toContain("gzip -t");
+    expect(backupUploads).toContain("[0-9a-f]{64}");
+    expect(backupUploads).toContain("--exclude=./.tmp");
+    expect(backupUploads).toMatch(/Not enough free space/);
+    expect(backupUploads).toContain("umask 077");
+    expect(backupUploads).toContain("chmod 700");
+    expect(backupUploads).toMatch(/BACKUP_AGE_RECIPIENT[\s\S]*Refusing to write an unencrypted backup/);
+    expect(code(backupUploads)).not.toMatch(/\bsudo\b\s+(rm|tar|chown)|docker compose down|\brm -rf\b/);
+  });
+
+  it("the restore defaults to a harmless check, rejects unexpected archive entries, asks for a typed confirmation and never deletes the old files", () => {
+    expect(restoreUploads).toContain('MODE="${2:---check}"');
+    expect(restoreUploads).toContain("[0-9a-f]{64}");
+    expect(restoreUploads).toMatch(/Type RESTORE/);
+    expect(restoreUploads).toContain(".before-restore-");
+    expect(restoreUploads).toContain("--no-same-owner");
+    expect(code(restoreUploads)).not.toMatch(/\brm -rf\b|\brm -r\b/); // the removal is only SUGGESTED in an echoed message
+  });
+
+  it("the usage report is read-only and never prints a file name", () => {
+    expect(code(usage).replace(/--rm\b/g, "")).not.toMatch(/(^|[\s;|&(])rm\s|\bdelete\b|DELETE|UPDATE|INSERT|(^|[\s;|&(])mv\s|\s-delete\b|\s-exec\b/i);
+    expect(usage).not.toMatch(/fileName|"name"/);
+  });
+
+  it("deploy, verify and the CI smoke test cover the upload directory", () => {
+    expect(read("deploy", "deploy.sh")).toContain("check_uploads_dir");
+    expect(read("deploy", "common.sh")).toMatch(/1000:1000/);
+    expect(verify).toContain("uploadStorage=");
+    expect(verify).toMatch(/PROBE_OK/);
+    expect(smoke).toContain("UPLOADS_HOST_DIR");
+    expect(smoke).toMatch(/force-recreate/);
+    expect(smoke).toMatch(/uploadStorage/);
+  });
+
+  it("the daily backup unit saves the documents as well as the database", () => {
+    const unit = read("deploy", "systemd", "compass-tools-backup.service");
+    expect(unit).toContain("deploy/backup-db.sh");
+    expect(unit).toContain("deploy/backup-uploads.sh");
+    expect(unit.indexOf("backup-db.sh")).toBeLessThan(unit.indexOf("backup-uploads.sh")); // the database first
+  });
+
+  it("the reconcile report never modifies or deletes anything", () => {
+    const body = code(reconcile);
+    expect(body).not.toMatch(/\b(unlink|rm|rmdir|rename|writeFile|appendFile|truncate|copyFile|mkdir|chmod|chown)\w*\s*\(/);
+    expect(body.replace(/searchParams\.delete\(/g, "")).not.toMatch(/\.(create|update|delete|upsert|createMany|updateMany|deleteMany)\s*\(|\$executeRaw|\b(INSERT|UPDATE|DELETE)\s/);
+    expect(body).not.toMatch(/fileName|originalName/); // customers' file names are never printed
+  });
+});
