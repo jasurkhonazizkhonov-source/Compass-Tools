@@ -183,7 +183,9 @@ openssl rand -base64 32     # GMAIL_TOKEN_ENCRYPTION_KEY, CARD_ENCRYPTION_KEY, I
 | `CARD_VAULT_MODE` | **leave unset** | Empty = vault **closed**. Only the owner sets `application-encryption-risk-accepted`. Not set by any file here. |
 | `CARD_RETENTION_DAYS` | **leave unset** | Empty = no automatic card-number purge. |
 | `CARD_ENCRYPTION_KEYS`, `CARD_ENCRYPTION_KEY_ID` | optional | Key ring for rotation (CARD_VAULT_SECURITY.md §6). |
+| `WEBSITE_API_KEY` | Zero-downtime rotation with `WEBSITE_API_KEY_NEXT` (docs/WEBSITE_LEAD_API.md, "Rotating the key"): add the new key, switch the website, then remove the old one | Both keys are accepted during the overlap. |
 | `LEAD_INGEST_SECRET` | optional | Must equal the travel website's value; ≥ 32 characters. |
+| `WEBSITE_API_KEY`, `WEBSITE_API_KEY_NEXT`, `WEBSITE_API_COMPANY_ID`, `WEBSITE_API_ALLOW_PUBLIC_ROUTE` | optional | The authenticated website API (docs/WEBSITE_LEAD_API.md). Empty key = the API answers 503. Generate the key with `openssl rand -hex 32`. |
 | `UPLOADS_HOST_DIR` | optional | Host directory for Lead documents (default `/srv/compass-tools/uploads`; **create it first**, §3.4). |
 | `UPLOAD_MIN_FREE_MB`, `MAX_LEAD_ATTACHMENT_SIZE_MB` | optional | Disk reserve kept free (default 1024) and largest accepted file (default 10, max 25). LEAD_ATTACHMENTS.md. |
 | `CLEANUP_HEARTBEAT_URL` | optional | A dead-man's-switch URL pinged after each successful cleanup. |

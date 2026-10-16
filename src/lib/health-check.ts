@@ -4,6 +4,7 @@ import { trustedProxyMode } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
 import { getCardVaultStatus } from "@/server/security/card-vault-status";
 import { getDatabaseTlsMode } from "@/lib/db-tls";
+import { isWebsiteApiConfigured } from "@/server/security/website-api-auth";
 import { isLeadIngestSecretConfigured } from "@/server/lead-ingest-context";
 import { status as uploadStorageStatus } from "@/server/storage/local";
 
@@ -43,6 +44,8 @@ export type HealthBody = {
     databaseTls: "verified" | "unverified" | "disabled";
     /** "not_configured" = signed website visitor context (IP / location of a website lead) cannot be verified, so website leads carry no visitor IP. A boolean category only — never the secret. */
     leadIngestSecret: "configured" | "not_configured";
+    /** "configured" = the authenticated website API (POST /api/v1/website/flight-inquiries) has a usable key and is enabled; "not_configured" = it answers 503. A category only — never the key. */
+    websiteApi: "configured" | "not_configured";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
     /**
@@ -72,6 +75,7 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
     environment: vault.environment,
     databaseTls: ((mode) => (mode === "unverified" ? "unverified" : mode === "disabled" ? "disabled" : "verified"))(getDatabaseTlsMode()),
     leadIngestSecret: isLeadIngestSecretConfigured() ? "configured" : "not_configured",
+    websiteApi: isWebsiteApiConfigured() ? "configured" : "not_configured",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     uploadStorage,
     schema: schema?.state ?? "unknown",

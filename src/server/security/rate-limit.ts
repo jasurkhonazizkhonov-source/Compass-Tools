@@ -158,6 +158,13 @@ export const RATE_LIMITS = {
    * submit several different travelers' requests), still tight enough to
    * block a scripted flood of fake leads. */
   LEAD_CAPTURE: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
+  /** The authenticated website API (POST /api/v1/website/flight-inquiries): ONE shared budget for the website's backend, not per visitor
+   * (the caller is a single trusted server, so a per-IP key would throttle every visitor together). Generous for real traffic, a hard
+   * ceiling for a runaway retry loop or a leaked key. */
+  WEBSITE_API_REQUESTS: { windowMs: 60 * 1000, maxAttempts: 120 } satisfies RateLimitConfig,
+  /** Requests to that API with a missing or wrong key, counted globally. Only FAILURES count, so an attacker guessing keys can exhaust this
+   * budget (and then gets 429) but can never use up the legitimate caller's own budget above. */
+  WEBSITE_API_AUTH_FAILURES: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
   /** Pass 26 §35 — the public "Get in Touch" form. Same low-frequency
    * profile as lead capture. */
   CONTACT_INQUIRY: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,

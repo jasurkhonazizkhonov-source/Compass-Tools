@@ -39,10 +39,12 @@ CARD_ENCRYPTION_KEY=$(rand_b64)
 IP_ENCRYPTION_KEY=$(rand_b64)
 IP_HASH_KEY=$(rand_b64)
 CRON_SECRET=$(openssl rand -hex 24)
+WEBSITE_API_KEY=$(openssl rand -hex 32)
 UPLOADS_HOST_DIR=$UPLOADS
 EOF
 chmod 600 "$TMP/env"
 CRON_SECRET="$(grep '^CRON_SECRET=' "$TMP/env" | cut -d= -f2-)"
+WEBSITE_API_KEY="$(grep '^WEBSITE_API_KEY=' "$TMP/env" | cut -d= -f2-)"
 
 ok()   { printf '  PASS  %s\n' "$*"; }
 fail() { printf '  FAIL  %s\n' "$*" >&2; docker compose logs --tail=60 >&2 || true; exit 1; }
@@ -104,6 +106,18 @@ code() { docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/cr
 [ "$(code POST '{}')" = "401" ] && ok "POST without the secret -> 401" || fail "unauthenticated POST was not refused"
 [ "$(code GET '{}')" = "405" ] && ok "GET -> 405" || fail "GET was not refused"
 [ "$(code POST "{authorization:'Bearer wrong'}")" = "401" ] && ok "POST with a wrong secret -> 401" || fail "wrong secret was not refused"
+
+step "Website API: enabled, authenticated, and private-network only"
+# The container reads the key from its own environment; the host-side value is used only to prove a WRONG key and a RIGHT key behave differently.
+api() { docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/v1/website/flight-inquiries',{method:'POST',headers:$1,body:'{}'}).then(r=>console.log(r.status))"; }
+[ "$(api '{}')" = "401" ] && ok "no credential -> 401" || fail "the website API did not refuse a request without a credential"
+[ "$(api "{authorization:'Bearer wrong-wrong-wrong-wrong-wrong-wrong-wrong'}")" = "401" ] && ok "wrong key -> 401" || fail "the website API accepted a wrong key"
+[ "$(api "{authorization:'Bearer $WEBSITE_API_KEY','content-type':'application/json'}")" = "400" ] && ok "right key passes authentication (400: no Idempotency-Key yet)" || fail "the right key was not accepted"
+[ "$(api "{authorization:'Bearer $WEBSITE_API_KEY','cf-ray':'smoke-FRA'}")" = "404" ] && ok "a request that came through the public Cloudflare edge -> 404" || fail "the website API answered a public-edge request"
+api_ready="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health").then(r=>r.json()).then(h=>console.log(h.readiness.websiteApi))')"
+[ "$api_ready" = "configured" ] && ok "readiness.websiteApi=configured" || fail "readiness.websiteApi is $api_ready"
+api_net="$(docker compose config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);const n=c.networks.website_api;const app=Object.keys(c.services.app.networks||{});const others=["db","cloudflared"].filter((x)=>Object.keys(c.services[x].networks||{}).includes("website_api"));console.log((n&&n.internal?"internal":"open")+" app:"+app.includes("website_api")+" others:"+others.length)})')"
+[ "$api_net" = "internal app:true others:0" ] && ok "website_api is an internal network that only the app joins" || fail "unexpected website_api network layout: $api_net"
 
 step "The scheduled CVV-cleanup job runs once against the real endpoint"
 docker compose run --rm cvv-cleanup node scripts/cvv-cleanup-scheduler.mjs --once | tee "$TMP/job.log"

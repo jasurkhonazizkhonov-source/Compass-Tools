@@ -37,7 +37,8 @@ describe("compose.yaml: nothing is exposed on the host", () => {
 
   it("the app is reachable by other containers only (expose, not ports) and cloudflared is on the same network as the app", () => {
     expect(service("app")).toMatch(/expose:\s*\n\s+- "3000"/);
-    expect(service("app")).toMatch(/networks:\s*\[data, web\]/);
+    // data (database), web (cloudflared) and website_api (the website's backend only; reached as http://compass-crm:3000)
+    expect(service("app")).toMatch(/networks:\s*\n\s+data: \{\}\n\s+web: \{\}\n\s+website_api:\s*\n\s+aliases: \[compass-crm\]/);
     expect(service("cloudflared")).toMatch(/networks:\s*\[web\]/);
   });
 

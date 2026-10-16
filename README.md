@@ -50,6 +50,8 @@ and Vercel-specific configuration).
   PostgreSQL in a private network, Cloudflare Tunnel, controlled deploys, backups, rollback, daily CVV cleanup.
 - `docs/LEAD_ATTACHMENTS.md` — Lead documents stored on the VPS disk (persistent bind mount): permissions, security
   model, VPS directory setup, backup/restore, and disk monitoring.
+- `docs/WEBSITE_LEAD_API.md` — the authenticated server-to-server API the BusinessFlights.travel backend uses to create flight-inquiry
+  leads: contract, authentication and key rotation, idempotency and retries, private Docker network setup.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and
   structured-data conventions.
 - `docs/PAYMENT_AUTOFILL_SECURITY.md` — why full card-number autofill is

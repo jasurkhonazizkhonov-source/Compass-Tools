@@ -116,6 +116,11 @@ services:
       # --- scheduled jobs and ingestion ---
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env (openssl rand -base64 32); without it every /api/cron/* endpoint refuses}
       LEAD_INGEST_SECRET: ${LEAD_INGEST_SECRET:-}
+      # --- Authenticated website API (POST /api/v1/website/flight-inquiries, docs/WEBSITE_LEAD_API.md). Empty = the API answers 503. ---
+      WEBSITE_API_KEY: ${WEBSITE_API_KEY:-}
+      WEBSITE_API_KEY_NEXT: ${WEBSITE_API_KEY_NEXT:-}
+      WEBSITE_API_COMPANY_ID: ${WEBSITE_API_COMPANY_ID:-}
+      WEBSITE_API_ALLOW_PUBLIC_ROUTE: ${WEBSITE_API_ALLOW_PUBLIC_ROUTE:-}
       MAX_LEAD_ATTACHMENT_SIZE_MB: ${MAX_LEAD_ATTACHMENT_SIZE_MB:-}
       # --- Lead documents: stored on the VPS disk (bind mount below), never in the database or a cloud bucket ---
       UPLOAD_STORAGE_DIR: /var/lib/compass-tools/uploads
@@ -123,7 +128,13 @@ services:
     # No `ports:` - only containers on the `web` network (cloudflared, cvv-cleanup) can reach http://app:3000.
     expose:
       - "3000"
-    networks: [data, web]
+    # website_api: the PRIVATE network the website's container joins to call the API (docs/WEBSITE_LEAD_API.md). The website reaches the CRM
+    # as http://compass-crm:3000 and nothing else: it is not on `data` (no database access) and not on `web` (no route to cloudflared).
+    networks:
+      data: {}
+      web: {}
+      website_api:
+        aliases: [compass-crm]
     # Persistent uploads: a HOST directory, so files survive container recreation and image upgrades. The long syntax with
     # create_host_path: false makes Compose REFUSE to start when the host directory is missing, instead of silently creating a root-owned
     # one that the application (uid 1000) could not write to. Create it once, owned by uid/gid 1000 (docs/LEAD_ATTACHMENTS.md).
@@ -230,6 +241,10 @@ networks:
   data:
     internal: true
   web: {}
+  # internal: true = no route to the internet. A FIXED name so the website's own Compose project can join it as an external network.
+  website_api:
+    name: compass-tools-website-api
+    internal: true
 
 volumes:
   postgres-data: {}

@@ -48,13 +48,14 @@ summary="$(dc exec -T app node -e '
     console.log([(ok ? "OK" : "BAD") + " status=" + h.status + " db=" + (h.database && h.database.ok),
       "schema=" + r.schema + (r.pendingMigrations ? " pending=" + r.pendingMigrations : ""),
       "databaseTls=" + r.databaseTls, "cardVault=" + r.cardVaultState + " enabled=" + r.cardVaultEnabled,
-      "signerIpCapture=" + r.signerIpCapture, "uploadStorage=" + r.uploadStorage].join(" | "));
+      "signerIpCapture=" + r.signerIpCapture, "uploadStorage=" + r.uploadStorage, "websiteApi=" + r.websiteApi].join(" | "));
   }).catch(() => { console.log("BAD the app did not answer /api/health"); });
 ' 2>/dev/null || echo 'BAD could not run the check')"
 case "$summary" in OK*) pass "$summary" ;; *) fail "$summary" ;; esac
 case "$summary" in *"schema=current"*) ;; *) fail "database schema is not current: run the migration step (deploy.sh --migrate, or: docker compose run --rm tools npx prisma migrate deploy)" ;; esac
 case "$summary" in *"databaseTls=disabled"*) pass "database TLS is explicitly disabled for the private Docker network (expected)" ;; *) warn "databaseTls is not 'disabled' - compose.yaml sets DATABASE_SSL_MODE=disable for the Docker database" ;; esac
 case "$summary" in *"enabled=false"*) warn "the card vault is CLOSED (CARD_VAULT_MODE unset), so customers cannot finish a booking that needs card storage. That is the owner's explicit opt-in (docs/CARD_VAULT_SECURITY.md); nothing here enables it." ;; esac
+case "$summary" in *"websiteApi=not_configured"*) warn "the website API (POST /api/v1/website/flight-inquiries) is not enabled: WEBSITE_API_KEY is unset or shorter than 32 characters (docs/WEBSITE_LEAD_API.md). Only needed once the website calls the CRM." ;; esac
 case "$summary" in *"signerIpCapture=disabled"*) warn "signer IP capture is disabled - TRUSTED_PROXY is not in effect" ;; esac
 
 step "3b. Lead document storage (VPS disk)"
