@@ -40,6 +40,8 @@ jobs:
         run: npm ci
       - name: Prisma schema is valid
         run: npx prisma validate
+      - name: Generate the Next.js route types (LayoutProps, PageProps ...) that tsc needs in a fresh checkout
+        run: npx next typegen
       - name: TypeScript
         run: npx tsc --noEmit
       - name: ESLint
@@ -105,7 +107,17 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build, migrate, boot and probe the stack
-        run: bash deploy/ci-smoke.sh
+        # On failure the last lines of the output are also published as a workflow ANNOTATION (readable on the run page and through the
+        # public check-run API without repository admin rights). The smoke test uses throw-away random values only; nothing secret is logged.
+        run: |
+          set +e
+          bash deploy/ci-smoke.sh 2>&1 | tee "$RUNNER_TEMP/smoke.log"
+          rc=${PIPESTATUS[0]}
+          if [ "$rc" -ne 0 ]; then
+            msg="$(tail -n 70 "$RUNNER_TEMP/smoke.log" | cut -c1-300 | sed -e 's/%/%25/g' | awk 'BEGIN{ORS="%0A"}{print}')"
+            echo "::error title=Docker smoke test failed (exit $rc)::$msg"
+          fi
+          exit "$rc"
 
   audit:
     name: Dependency audit (report only)
