@@ -9,8 +9,8 @@ import { NextRequest } from "next/server";
 // REAL-DATABASE proof of Lead document storage on the VPS disk: authorisation (lead / company / role), IDOR, cross-company isolation, the
 // upload (request -> same-origin PUT of the bytes -> complete) with server-side size and content verification, Admin/Manager-only edit +
 // delete, Contact aggregation that respects Lead visibility, consistency between PostgreSQL and the file store, the audit trail, and the
-// legacy R2 files that must keep working. Files are REAL files in a temporary directory; only the legacy R2 provider is a fake (no network,
-// no credentials). Runs only when INTEGRATION_DATABASE_URL points at a DISPOSABLE PostgreSQL with this repo's migrations applied.
+// handling of rows whose key is not one of ours. Files are REAL files in a temporary directory; nothing is faked, and no storage credentials
+// of any kind are present in the environment. Runs only when INTEGRATION_DATABASE_URL points at a DISPOSABLE PostgreSQL with this repo's migrations applied.
 
 const URL_UNDER_TEST = process.env.INTEGRATION_DATABASE_URL;
 const enabled = !!URL_UNDER_TEST;
@@ -30,32 +30,11 @@ vi.mock("next/headers", () => ({ headers: vi.fn(async () => new Map()) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => currentActor) }));
 
-// The LEGACY R2 provider, faked. New uploads must never call it; old rows must keep working through it.
-const fake = vi.hoisted(() => ({
-  r2Configured: true,
-  r2FailRemove: false,
-  r2Calls: [] as string[],
-}));
-vi.mock("@/server/storage/legacy-r2", () => ({
-  isLegacyR2Configured: () => fake.r2Configured,
-  legacyR2: {
-    presignDownload: async (key: string, opts: { contentType: string; contentDisposition: string }) => {
-      fake.r2Calls.push(`presignDownload:${key}`);
-      return `https://r2.test/${key}?ct=${encodeURIComponent(opts.contentType)}&cd=${encodeURIComponent(opts.contentDisposition)}&sig=y`;
-    },
-    remove: async (key: string) => {
-      fake.r2Calls.push(`remove:${key}`);
-      if (fake.r2FailRemove) throw new Error("storage down");
-    },
-  },
-}));
-
 const TAG = `att-${Date.now()}`;
 const PDF = new TextEncoder().encode("%PDF-1.7\n%test document\n");
 const PNG = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
 const DOCX = Uint8Array.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]);
 const EXE = new TextEncoder().encode("MZ\x90\x00\x03\x00\x00\x00");
-const R2_KEY = (n: string) => `companies/default-company/leads/legacylead00/attachments/${n}/0123456789abcdef0123456789abcdef`;
 
 describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files", () => {
   let prisma: typeof import("@/lib/prisma").prisma;
@@ -194,9 +173,6 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
     process.env.UPLOAD_STORAGE_DIR = UPLOAD_DIR;
     process.env.UPLOAD_MIN_FREE_MB = "0";
     local.resetStatusCacheForTests();
-    fake.r2Configured = true;
-    fake.r2FailRemove = false;
-    fake.r2Calls.length = 0;
     as(null);
     // each test gets a fresh rate-limit allowance
     await prisma.rateLimitCounter.deleteMany({ where: { key: { startsWith: "acct:" } } });
@@ -223,7 +199,7 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
     it("the record is tied to the lead, contact, company and uploader, with an opaque key that never reaches the browser", async () => {
       const r = await upload("Agent1", ids.LA1, { name: "../../etc/Passport Copy.pdf", type: "application/pdf", bytes: PDF, description: "Passport copy" });
       const row = await prisma.attachment.findUniqueOrThrow({ where: { id: r.id! } });
-      expect(row).toMatchObject({ leadId: ids.LA1, contactId: ids.contactA, companyId: "default-company", uploadedById: actors.Agent1.id, status: "READY", storageProvider: "LOCAL", fileType: "application/pdf", description: "Passport copy", fileName: "Passport Copy.pdf" });
+      expect(row).toMatchObject({ leadId: ids.LA1, contactId: ids.contactA, companyId: "default-company", uploadedById: actors.Agent1.id, status: "READY", fileType: "application/pdf", description: "Passport copy", fileName: "Passport Copy.pdf" });
       expect(row.storageKey).toMatch(/^[0-9a-f]{2}\/[0-9a-f]{64}$/);
       expect(row.storageKey).not.toMatch(/Passport|etc|default-company|\.\./);
       expect(row.storageKey).not.toContain(ids.LA1);
@@ -232,11 +208,10 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       const list = await queries.listLeadAttachments(ids.LA1, actors.Agent1);
       expect(JSON.stringify(list)).not.toContain(row.storageKey!);
       expect(Object.keys(list.items[0])).not.toContain("storageKey");
-      expect(Object.keys(list.items[0])).not.toContain("storageProvider");
       // the browser is told only a same-origin address for exactly this attachment
       const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "x.pdf", contentType: "application/pdf", size: PDF.length });
       expect(req.ok && req.uploadUrl).toBe(`/api/attachments/${req.ok ? req.attachmentId : ""}/upload`);
-      expect(JSON.stringify(req)).not.toMatch(/https?:|UPLOAD_DIR|compass-int-uploads|r2/i);
+      expect(JSON.stringify(req)).not.toMatch(/https?:|UPLOAD_DIR|compass-int-uploads/i);
     });
 
     it.skipIf(process.platform === "win32")("the stored file is private to the application user (0600) in a private directory (0700)", async () => {
@@ -381,7 +356,7 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       local.resetStatusCacheForTests();
       const notReady = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "a.pdf", contentType: "application/pdf", size: 10 });
       expect(notReady).toMatchObject({ ok: false });
-      expect(JSON.stringify(notReady)).not.toMatch(/R2|bucket|S3|secret|credential|compass-int|\/tmp|\\\\/i);
+      expect(JSON.stringify(notReady)).not.toMatch(/bucket|S3|secret|credential|compass-int|\/tmp|\\\\/i);
       // almost full: less free space than the reserve
       process.env.UPLOAD_STORAGE_DIR = UPLOAD_DIR;
       process.env.UPLOAD_MIN_FREE_MB = "999999999";
@@ -460,7 +435,7 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       expect(await prisma.attachment.count({ where: { id: first.attachmentId } })).toBe(0);
       const failed = await prisma.auditLog.findFirstOrThrow({ where: { entityType: "Attachment", entityId: first.attachmentId, action: "ATTACHMENT_UPLOAD_FAILED" } });
       expect(failed.metadata).toMatchObject({ stage: "put", kind: "blocked", status: 0, leadId: ids.LA1, companyId: "default-company" });
-      expect(JSON.stringify(failed.metadata)).not.toMatch(/https?:|r2\.test|sig=/);
+      expect(JSON.stringify(failed.metadata)).not.toMatch(/https?:|sig=/);
       // anything outside the allowed shape is ignored (nothing the browser says can inject a URL or free text into the log)
       const second = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "retry.pdf", contentType: "application/pdf", size: PDF.length });
       if (!second.ok) throw new Error("setup");
@@ -769,7 +744,7 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       expect(after.mtimeMs).toBe(before.mtimeMs); // same file, not rewritten
       expect(Buffer.from(await fsp.readFile(p)).equals(Buffer.from(PDF))).toBe(true);
       const row = await prisma.attachment.findUniqueOrThrow({ where: { id: d.id! } });
-      expect(row).toMatchObject({ description: "Passport copy — verified", storageKey: d.key, fileSize: PDF.length, status: "READY", storageProvider: "LOCAL" });
+      expect(row).toMatchObject({ description: "Passport copy — verified", storageKey: d.key, fileSize: PDF.length, status: "READY" });
       expect(await actions.updateLeadAttachmentDescription(d.id, "   ")).toEqual({ ok: true, description: null });
       expect(await actions.deleteLeadAttachment(d.id)).toEqual({ ok: true });
       expect(await prisma.attachment.count({ where: { id: d.id } })).toBe(0);
@@ -799,7 +774,7 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       const r = await actions.deleteLeadAttachment(d.id);
       restore();
       expect(r).toMatchObject({ ok: false });
-      expect(JSON.stringify(r)).not.toMatch(/R2|bucket|S3|EPERM|compass-int/i);
+      expect(JSON.stringify(r)).not.toMatch(/bucket|S3|EPERM|compass-int/i);
       expect(await prisma.attachment.count({ where: { id: d.id } })).toBe(1);
       expect(onDisk(d.key!)).toBe(true);
       expect(await actions.deleteLeadAttachment(d.id)).toEqual({ ok: true });
@@ -882,7 +857,7 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       const r = await callRoute(d.id!);
       restore();
       expect(r.status).toBe(503);
-      expect(await r.text()).not.toMatch(/EIO|compass-int|simulated|R2|bucket/i);
+      expect(await r.text()).not.toMatch(/EIO|compass-int|simulated|bucket/i);
     });
 
     it("downloads are rate limited per account", async () => {
@@ -899,109 +874,14 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
     });
   });
 
-  // ── legacy R2 files ──────────────────────────────────────────────────────────────────────────────────────────────────────
-  describe("legacy R2 attachments keep working, and new uploads never touch R2", () => {
-    async function legacyRow(name: string, key = R2_KEY(name), status: "READY" | "PENDING" = "READY") {
+  // ── rows whose key is not one of ours ──────────────────────────────────────────────────────────────────────────────────────
+  describe("a stored key that is not exactly one of ours never reaches the filesystem", () => {
+    async function oddRow(name: string, key: string, status: "READY" | "PENDING" = "READY") {
       return prisma.attachment.create({
-        data: { id: `legacy-${name}-${TAG}`.slice(0, 60), leadId: ids.LA1, contactId: ids.contactA, companyId: "default-company", fileName: `${name}.pdf`, fileType: "application/pdf", fileSize: PDF.length, uploadedById: actors.Agent1.id, storageKey: key, storageProvider: "R2", status },
+        data: { id: `odd-${name}-${TAG}`.slice(0, 60), leadId: ids.LA1, contactId: ids.contactA, companyId: "default-company", fileName: `${name}.pdf`, fileType: "application/pdf", fileSize: PDF.length, uploadedById: actors.Agent1.id, storageKey: key, status },
       });
     }
 
-    it("a full local lifecycle (upload, list, open, download, edit, delete) makes no R2 call at all", async () => {
-      const d = await upload("Agent1", ids.LA1, { name: "local.pdf", type: "application/pdf", bytes: PDF });
-      as("Agent1");
-      await (await callRoute(d.id!)).arrayBuffer();
-      await (await callRoute(d.id!, "?download=1")).arrayBuffer();
-      as("Admin");
-      await actions.updateLeadAttachmentDescription(d.id, "x");
-      await actions.deleteLeadAttachment(d.id);
-      const abandoned = await upload("Agent1", ids.LA1, { name: "gone.pdf", type: "application/pdf", bytes: PDF });
-      await actions.abandonLeadAttachmentUpload(abandoned.id);
-      await cleanup.sweepStalePendingAttachments(Date.now() + 5 * 3600_000);
-      expect(fake.r2Calls).toEqual([]);
-    });
-
-    it("an existing R2 file is listed and opens through a short-lived signed redirect that forces the type and disposition", async () => {
-      const row = await legacyRow("old1");
-      expect((await queries.listLeadAttachments(ids.LA1, actors.Agent1)).items.map((i) => i.id)).toContain(row.id);
-      as("Agent1");
-      const open = await callRoute(row.id);
-      expect(open.status).toBe(302);
-      const loc = new URL(open.headers.get("location")!);
-      expect(loc.origin).toBe("https://r2.test");
-      expect(loc.searchParams.get("ct")).toBe("application/pdf");
-      expect(loc.searchParams.get("cd")).toMatch(/^inline; filename=/);
-      expect(open.headers.get("cache-control")).toBe("no-store");
-      expect(new URL((await callRoute(row.id, "?download=1")).headers.get("location")!).searchParams.get("cd")).toMatch(/^attachment;/);
-      expect(fake.r2Calls.every((c) => c.startsWith("presignDownload:"))).toBe(true);
-      expect(await auditActions(row.id)).toEqual(expect.arrayContaining(["ATTACHMENT_OPENED", "ATTACHMENT_DOWNLOADED"]));
-      expect(JSON.stringify(await prisma.auditLog.findMany({ where: { entityId: row.id } }))).not.toMatch(/r2\.test|sig=|companies\//);
-    });
-
-    it("an R2 row is routed by its PROVIDER, not by the shape of its key: a local-shaped key on an R2 row goes to R2 and never opens a local file", async () => {
-      const real = await upload("Agent1", ids.LA1, { name: "real.pdf", type: "application/pdf", bytes: PDF }); // a genuine local file
-      const lookalikeKey = local.newKey(); // shaped exactly like a local key, but no local file exists at it
-      const lookalike = await legacyRow("look", lookalikeKey);
-      as("Agent1");
-      const open = await callRoute(lookalike.id);
-      expect(open.status).toBe(302);
-      expect(fake.r2Calls).toEqual([`presignDownload:${lookalikeKey}`]);
-      const opened = vi.spyOn(fsp, "open");
-      as("Admin");
-      expect(await actions.deleteLeadAttachment(lookalike.id)).toEqual({ ok: true });
-      expect(fake.r2Calls).toContain(`remove:${lookalikeKey}`);
-      expect(opened.mock.calls.filter((c) => String(c[0]).startsWith(UPLOAD_DIR))).toHaveLength(0); // the R2 delete touched no local file
-      expect(onDisk(real.key!)).toBe(true); // and the unrelated local file is intact
-    });
-
-    it("the same key can never exist twice, so an R2 row can never alias a local file (storageKey is globally unique)", async () => {
-      const real = await upload("Agent1", ids.LA1, { name: "real.pdf", type: "application/pdf", bytes: PDF });
-      await expect(legacyRow("alias", real.key!)).rejects.toThrow();
-      expect(onDisk(real.key!)).toBe(true);
-    });
-
-    it("traversal-looking keys on R2 rows never reach the filesystem", async () => {
-      const row = await legacyRow("trav", "../../../etc/passwd");
-      as("Agent1");
-      expect((await callRoute(row.id)).status).toBe(302);
-      as("Admin");
-      expect(await actions.deleteLeadAttachment(row.id)).toEqual({ ok: true });
-      expect(fake.r2Calls).toEqual([`presignDownload:../../../etc/passwd`, `remove:../../../etc/passwd`]);
-    });
-
-    it("legacy credentials missing: opening is a generic 503; the record and the R2 object are left alone", async () => {
-      const row = await legacyRow("old2");
-      as("Agent1");
-      fake.r2Configured = false;
-      const r = await callRoute(row.id);
-      expect(r.status).toBe(503);
-      expect(await r.text()).not.toMatch(/R2|bucket|S3/i);
-      expect(await prisma.attachment.count({ where: { id: row.id } })).toBe(1);
-    });
-
-    it("deleting an R2 file removes the R2 object first and keeps the record when R2 can't", async () => {
-      const row = await legacyRow("old3");
-      as("Admin");
-      fake.r2FailRemove = true;
-      const failed = await actions.deleteLeadAttachment(row.id);
-      expect(failed).toMatchObject({ ok: false });
-      expect(JSON.stringify(failed)).not.toMatch(/R2|bucket|S3/i);
-      expect(await prisma.attachment.count({ where: { id: row.id } })).toBe(1);
-      fake.r2FailRemove = false;
-      expect(await actions.deleteLeadAttachment(row.id)).toEqual({ ok: true });
-      expect(fake.r2Calls.filter((c) => c === `remove:${R2_KEY("old3")}`)).toHaveLength(2);
-    });
-
-    it("a stale PENDING R2 row is cleaned through R2 (and its row removed); a stale PENDING local row through the filesystem", async () => {
-      const r2 = await legacyRow("pend", R2_KEY("pend"), "PENDING");
-      const localPending = await pendingLocal();
-      const swept = await cleanup.sweepStalePendingAttachments(Date.now() + 5 * 3600_000);
-      expect(swept.removed).toBeGreaterThanOrEqual(2);
-      expect(fake.r2Calls).toContain(`remove:${R2_KEY("pend")}`);
-      expect(await prisma.attachment.count({ where: { id: { in: [r2.id, localPending.id] } } })).toBe(0);
-      expect(onDisk(localPending.key)).toBe(false);
-      expect(fake.r2Calls).not.toContain(`remove:${localPending.key}`);
-    });
     async function pendingLocal() {
       as("Agent1");
       const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "p.pdf", contentType: "application/pdf", size: PDF.length });
@@ -1011,27 +891,68 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       return { id: req.attachmentId, key: row.storageKey! };
     }
 
-    it("a PENDING R2 row can no longer be completed (nothing uploads to R2): it is discarded and the user retries", async () => {
-      const row = await legacyRow("pend2", R2_KEY("pend2"), "PENDING");
+    it("a full lifecycle (upload, list, open, download, edit, delete, abandon, sweep) uses only the local directory and needs no storage credentials", async () => {
+      for (const name of Object.keys(process.env)) expect(name, "no cloud-storage credential may be needed").not.toMatch(/^(AWS_|S3_)/);
+      const d = await upload("Agent1", ids.LA1, { name: "local.pdf", type: "application/pdf", bytes: PDF });
+      expect(onDisk(d.key!)).toBe(true);
       as("Agent1");
-      const res = await actions.completeLeadAttachmentUpload(row.id);
-      expect(res).toMatchObject({ ok: false });
-      expect(await prisma.attachment.count({ where: { id: row.id } })).toBe(0);
-      expect(fake.r2Calls).toEqual([`remove:${R2_KEY("pend2")}`]);
+      expect((await callRoute(d.id!)).status).toBe(200);
+      expect((await callRoute(d.id!, "?download=1")).status).toBe(200);
+      as("Admin");
+      expect(await actions.updateLeadAttachmentDescription(d.id, "x")).toMatchObject({ ok: true });
+      expect(await actions.deleteLeadAttachment(d.id)).toEqual({ ok: true });
+      expect(onDisk(d.key!)).toBe(false);
+      const abandoned = await upload("Agent1", ids.LA1, { name: "gone.pdf", type: "application/pdf", bytes: PDF });
+      await actions.abandonLeadAttachmentUpload(abandoned.id);
+      await cleanup.sweepStalePendingAttachments(Date.now() + 5 * 3600_000);
     });
 
-    it("lead deletion removes BOTH kinds of file, each through its own provider; a failed purge is recorded for reconciliation", async () => {
+    it("traversal-looking and foreign-shaped keys are refused by the storage module: opening is a generic 503, deleting keeps the record, nothing outside the directory is touched", async () => {
+      const real = await upload("Agent1", ids.LA1, { name: "real.pdf", type: "application/pdf", bytes: PDF });
+      const opened = vi.spyOn(fsp, "open");
+      const unlinked = vi.spyOn(fsp, "unlink");
+      for (const [i, key] of ["../../../etc/passwd", "/etc/passwd", "companies/default-company/leads/x/attachments/y/0123456789abcdef0123456789abcdef", `ab/${"a".repeat(63)}`, `cd/${"ab".padEnd(64, "c")}`].entries()) {
+        const row = await oddRow(`k${i}`, key);
+        as("Agent1");
+        const open = await callRoute(row.id);
+        expect(open.status).toBe(503);
+        expect(await open.text()).not.toMatch(/etc|passwd|companies|bucket|S3/i);
+        as("Admin");
+        const del = await actions.deleteLeadAttachment(row.id);
+        expect(del.ok).toBe(false);
+        expect(JSON.stringify(del)).not.toMatch(/etc|passwd|companies|bucket|S3/i);
+        expect(await prisma.attachment.count({ where: { id: row.id } })).toBe(1); // kept, never silently dropped
+        await prisma.attachment.delete({ where: { id: row.id } });
+      }
+      expect(opened.mock.calls.filter((c) => !String(c[0]).startsWith(UPLOAD_DIR))).toHaveLength(0);
+      expect(unlinked.mock.calls.filter((c) => !String(c[0]).startsWith(UPLOAD_DIR))).toHaveLength(0);
+      expect(onDisk(real.key!)).toBe(true);
+      opened.mockRestore();
+      unlinked.mockRestore();
+    });
+
+    it("a stale PENDING row with a key that is not ours is kept (and counted as failed) rather than dropped blindly; a stale local one is removed through the filesystem", async () => {
+      const odd = await oddRow("pend", "companies/default-company/leads/x/attachments/y/0123456789abcdef0123456789abcdef", "PENDING");
+      const localPending = await pendingLocal();
+      const result = await cleanup.sweepStalePendingAttachments(Date.now() + 5 * 3600_000);
+      expect(result.failed).toBeGreaterThanOrEqual(1);
+      expect(await prisma.attachment.count({ where: { id: odd.id } })).toBe(1);
+      expect(await prisma.attachment.count({ where: { id: localPending.id } })).toBe(0);
+      await prisma.attachment.delete({ where: { id: odd.id } });
+    });
+  });
+
+  describe("lead and contact deletion remove the stored files", () => {
+    it("lead deletion removes the files of file, each through its own provider; a failed purge is recorded for reconciliation", async () => {
       const c = await prisma.contact.create({ data: { firstName: "Del", lastName: `D-${TAG}`, primaryEmail: `d-${TAG}@example.test`, companyId: "default-company", ownerId: actors.Agent1.id } });
       contactIds.push(c.id);
       const lead = await makeLead("LDEL", c.id, "Agent1");
       const d1 = await upload("Agent1", lead.id, { name: "d1.pdf", type: "application/pdf", bytes: PDF });
       const d2 = await upload("Agent1", lead.id, { name: "d2.pdf", type: "application/pdf", bytes: PDF });
-      await prisma.attachment.create({ data: { leadId: lead.id, contactId: c.id, companyId: "default-company", fileName: "old.pdf", fileType: "application/pdf", fileSize: 10, storageKey: R2_KEY("deletedlead"), storageProvider: "R2", status: "READY" } });
       as("Admin");
       await leadActions.deleteLead(lead.id);
       expect(await prisma.attachment.count({ where: { leadId: lead.id } })).toBe(0);
       expect(onDisk(d1.key!) || onDisk(d2.key!)).toBe(false);
-      expect(fake.r2Calls).toEqual([`remove:${R2_KEY("deletedlead")}`]);
 
       // the file store failing during the purge -> the opaque keys are written to the audit log
       const lead2 = await makeLead("LDEL2", c.id, "Agent1");
@@ -1122,20 +1043,6 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       const a = await prisma.attachment.create({ data: { fileName: "x.pdf", storageKey: `k-${TAG}-3`, leadId: ids.LA1, companyId: "default-company", status: "READY" } });
       await expect(prisma.attachment.create({ data: { fileName: "y.pdf", storageKey: `k-${TAG}-3`, leadId: ids.LA1, companyId: "default-company", status: "READY" } })).rejects.toThrow();
       await prisma.attachment.delete({ where: { id: a.id } });
-    });
-
-    it("existing rows default to R2 (the migration's meaning), and the database REFUSES a LOCAL row whose key could be a path", async () => {
-      const legacy = await prisma.attachment.create({ data: { fileName: "x.pdf", storageKey: `k-${TAG}-4`, leadId: ids.LA1, companyId: "default-company", status: "READY" } });
-      expect(legacy.storageProvider).toBe("R2");
-      const base = { fileName: "x.pdf", leadId: ids.LA1, companyId: "default-company", status: "READY" as const, storageProvider: "LOCAL" as const };
-      const good = `${"ab"}/${"ab".padEnd(64, "c")}`;
-      for (const bad of ["../../etc/passwd", "/etc/passwd", "ab/../../x", `ab/${"a".repeat(63)}`, `AB/${"A".repeat(64)}`, `cd/${"ab".padEnd(64, "c")}`, "plain-key", `${good}/x`]) {
-        await expect(prisma.attachment.create({ data: { ...base, storageKey: bad } }), bad).rejects.toThrow();
-      }
-      await expect(prisma.attachment.create({ data: { ...base, storageKey: null } }), "null key").resolves.toMatchObject({ storageProvider: "LOCAL" }); // no bytes -> nothing to point at
-      const ok = await prisma.attachment.create({ data: { ...base, storageKey: good } });
-      expect(ok.storageKey).toBe(good);
-      await prisma.attachment.deleteMany({ where: { id: { in: [legacy.id, ok.id] } } });
     });
 
     it("pre-existing placeholder rows (no storage key) are never listed or openable", async () => {

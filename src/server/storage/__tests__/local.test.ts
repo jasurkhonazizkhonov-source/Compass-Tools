@@ -106,7 +106,7 @@ describe("keys are opaque and can never become a path outside the root", () => {
     ["shard that does not match the id", `ab/${"c".repeat(64)}`],
     ["a file name", "passport.pdf"],
     ["the .tmp area", `.tmp/${"a".repeat(32)}.part`],
-    ["an old R2 key", "companies/default-company/leads/lead1234567/attachments/0b9c1d52-aaaa-bbbb-cccc-1234567890ab/0123456789abcdef0123456789abcdef"],
+    ["a long nested key", "companies/default-company/leads/lead1234567/attachments/0b9c1d52-aaaa-bbbb-cccc-1234567890ab/0123456789abcdef0123456789abcdef"],
     ["empty", ""],
   ])("refuses %s", (_label, key) => {
     expect(isValidKey(key)).toBe(false);

@@ -5,10 +5,6 @@ disk**, in a persistent Docker bind mount; PostgreSQL holds only metadata and ow
 the documents of its Leads. Nothing is attached to outgoing emails, and none of this touches the card vault, CVV/CVC retention or payment
 security.
 
-> **History.** Documents used to go to a private Cloudflare R2 bucket. **New uploads no longer touch R2.** Files uploaded before the
-> change are still in R2 and keep working (open, download, delete) through a small, isolated legacy reader — see
-> [Legacy R2 files](#legacy-r2-files). Nothing was migrated or deleted automatically.
-
 > **This feature needs the VPS deployment.** The files live on a local disk, so a deployment without a persistent disk (Vercel,
 > Cloudflare Workers) cannot accept uploads: the Files tab reports storage as unavailable there. Use the Docker/VPS stack
 > (`docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md`).
@@ -85,8 +81,8 @@ Edit description / delete   Admin & Manager only, same authorisation. Delete rem
 * **Consistency.** Upload = row PENDING → file stored → verified → READY. Delete = file, then row. Lead / Contact deletion collects the
   stored files' references before the database cascade and removes the files afterwards; a failed removal is recorded in the audit log
   (`ATTACHMENT_STORAGE_ORPHANED`, with the opaque keys) so it can be reconciled. A row is only removed once its file is gone or absent.
-  Every removal is routed by the row's own `storageProvider`, and the local module accepts nothing but its own key shape — nothing can
-  delete a file outside the upload directory, and an R2 key is never interpreted as a local path.
+  Every removal goes through the local module, which accepts nothing but its own key shape — nothing can delete a file outside the
+  upload directory.
 * **Audit** (append-only `AuditLog`, entity `Attachment`): `ATTACHMENT_UPLOADED`, `_UPLOAD_REJECTED`, `_OPENED`, `_DOWNLOADED`,
   `_DESCRIPTION_UPDATED`, `_DELETED`, `_ACCESS_DENIED`, `_STORAGE_ORPHANED`. Records actor, attachment, lead, contact, company and
   outcome — never file contents, paths, keys or file names.
@@ -94,18 +90,11 @@ Edit description / delete   Admin & Manager only, same authorisation. Delete rem
 * **Retention:** there is **no automatic deletion** of valid documents, ever (including when the disk is full). How long customer
   documents (which may include identity documents) must be kept or erased is a legal / business decision — **REQUIRES BUSINESS DECISION**.
 
-### Database: `Attachment.storageProvider`
+### Database
 
-Migration `20261013000100_attachment_storage_provider` (additive, no data is changed or dropped):
-
-* new enum `AttachmentStorageProvider` (`R2`, `LOCAL`) and column `Attachment.storageProvider NOT NULL DEFAULT 'R2'`;
-* every existing row therefore becomes `R2` — exactly what it is. The default is deliberately `R2`: during a rolling deploy an older app
-  that does not know the column keeps inserting rows that are (correctly) R2 rows;
-* new uploads are written as `LOCAL`; a `CHECK` constraint guarantees a `LOCAL` row's key has the local shape, so a malformed key can
-  never be stored as a local path.
-
-Apply it with the normal deploy (`bash deploy/deploy.sh --migrate`: a database backup is taken first). To apply by hand:
-`docker compose run --rm tools npx prisma migrate deploy`.
+No schema change was needed: the existing `Attachment` table (migration `20261007000100_lead_attachments_r2`, the name is historical) already
+holds the opaque `storageKey`, size, type, status, lead, contact and company. The key is a local `<2 hex>/<64 hex>` key. That
+migration is kept as-is because it is already part of the migration history; its name is the only trace of the old design.
 
 ## Configuration
 
@@ -118,7 +107,6 @@ production `.env` (mode 600, git-ignored); never put them in the repository, an 
 | `UPLOADS_HOST_DIR` | `/srv/compass-tools/uploads` | The **host** directory that is bind-mounted there (read by Compose from `.env`). Change it to use another disk/path. |
 | `UPLOAD_MIN_FREE_MB` | `1024` | Free space always left on the disk for PostgreSQL, logs and Docker. Uploads are refused (HTTP 507, "storage is almost full") instead of filling the disk. |
 | `MAX_LEAD_ATTACHMENT_SIZE_MB` | `10` | Largest accepted file, whole number 1–25. |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | unset | **Legacy only**: needed to open/delete files uploaded before the move. Leave unset on a new installation. `R2_REGION` / `R2_ENDPOINT` remain optional overrides. |
 
 ### Limits on the path to the app (read this if big uploads fail)
 
@@ -148,24 +136,21 @@ ls -ldn /srv/compass-tools/uploads        # expect: drwx------ 2 1000 1000 …
 * Do **not** put it inside the repository checkout, under a web server's document root, or in a directory another service writes to.
 * `bash deploy/deploy.sh` and `bash deploy/verify.sh` check the directory, its owner and a real write/read/delete round trip.
 
-## Deploying this change to the VPS
+## Deploying to the VPS
 
 Pushing to GitHub does **not** deploy anything. On the VPS, as the deploy user, in the checkout:
 
 1. Create the directory (above) — **before** the deploy; `docker compose` refuses to start without it.
 2. Take a database backup (`bash deploy/backup-db.sh`; the deploy does this too when `--migrate` is used).
-3. `bash deploy/deploy.sh --migrate` — shows what changes, applies the additive migration, rebuilds, restarts, runs `verify.sh`.
+3. `bash deploy/deploy.sh` — shows what changes, rebuilds, restarts and runs `verify.sh`. This change has **no database migration**
+   (`--migrate` is only needed when `deploy.sh` reports pending migrations from other changes).
 4. Do the [verification](#verifying-a-deployment) below.
-5. Leave the `R2_*` values in `.env` for now (they open the old files).
 
 ### Rollback
 
-* **App:** `bash deploy/rollback.sh <previous-version>` returns to the previous image. The migration is additive, so the older code runs
-  against the new schema.
-* **Files uploaded after the cut-over exist only on the VPS disk** (`LOCAL` rows). An older release does not know how to read them:
-  they show as unavailable until you roll forward again. **Do not delete the upload directory or drop the column while `LOCAL` rows
-  exist** — back the directory up first (below). R2 files are unaffected by a rollback.
-* The new column and enum can stay in the database indefinitely; removing them would be a separate, deliberate migration.
+* **App:** `bash deploy/rollback.sh <previous-version>` returns to the previous image. There is no migration to undo.
+* **Files uploaded after this release exist only on the VPS disk.** An older release (which did not read the VPS disk) cannot open them: they
+  show as unavailable until you roll forward again. **Do not delete the upload directory** — back it up first (below).
 
 ## Verifying a deployment
 
@@ -259,28 +244,6 @@ yourself once you are satisfied (the script prints the command). Encrypted `.age
   Normal cancellations and failures clean up immediately; this sweep only covers crashes.
 * **Reconcile** (read-only) after a restore, an incident or a disk problem: `scripts/attachments-reconcile.ts` (above).
 
-## Legacy R2 files
-
-Every row uploaded before the move has `storageProvider = 'R2'` and its object still sits in the private bucket. They keep working:
-
-* **Open/download:** a 302 to a presigned link valid for 60 s that forces the content type and disposition (unchanged behaviour).
-* **Delete / lead & contact deletion:** the R2 object is deleted, then the row. If the `R2_*` values are missing the delete fails
-  generically and the row is kept (never a row removed while its R2 object remains).
-* The R2 code is isolated in `src/server/storage/legacy-r2.ts` and can **only** presign a download and delete an object. New uploads
-  never call it (a test asserts this). The browser's Content-Security-Policy no longer allows connections to R2.
-* **Keep the four `R2_*` variables, the R2 token and the bucket** until no R2 row remains. The application never deletes R2 objects on
-  its own and this change did not touch the bucket.
-
-**Retiring R2** (only when the business decides to): check how many R2 files remain —
-
-```sql
-SELECT "storageProvider", "status", count(*) FROM "Attachment" WHERE "storageKey" IS NOT NULL GROUP BY 1, 2 ORDER BY 1, 2;
-```
-
-— an `R2` row count of 0 means the credentials and the bucket are no longer needed. There is no automatic R2 → local migration tool; if
-you want the old files moved, that is a separate, reviewable task (download each object, verify size/signature, write it locally,
-switch the row to `LOCAL`, and only then — much later, after a backup — delete the R2 object).
-
 ## Troubleshooting
 
 When an upload fails the dialog says which kind of failure it was; the browser reports **stage / kind / HTTP status only** (never a URL)
@@ -297,7 +260,6 @@ to the server, which records `ATTACHMENT_UPLOAD_FAILED` in the audit log. Read i
 | 422 / "didn't match" | The file's real content does not match its extension (a renamed file, a corrupt PDF) | Re-export the document in the right format |
 | Upload hangs then fails with status `0` through the public site only | A proxy in front of the app cuts or buffers large bodies | [Limits](#limits-on-the-path-to-the-app-read-this-if-big-uploads-fail) |
 | A document opens for some leads but 404 for others | Lead visibility (Manager teams, company) — the same 404 as "does not exist" | Check the viewer's role/team; this is by design |
-| An old document (before the move) won't open | `R2_*` values missing/wrong, or the object was removed from the bucket | Re-add the four variables; `docker compose logs app \| grep attachments` |
 | Reconcile reports MISSING | A record whose file is gone (restore from a mismatched backup, manual deletion) | Restore the uploads backup from the same day as the database; never recreate files by hand |
 | ORPHAN files in reconcile | Files with no record (an interrupted delete or a database restored to an older day) | Review, back up, then remove deliberately — nothing removes them automatically |
 

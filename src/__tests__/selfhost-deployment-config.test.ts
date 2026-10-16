@@ -284,12 +284,9 @@ describe("Lead document storage: a persistent, private bind mount on the VPS", (
     expect(uncommented(compose)).not.toMatch(/\/var\/lib\/compass-tools\/uploads:\/(usr|var\/www|public)/);
   });
 
-  it("R2 survives only as four optional LEGACY read/delete credentials; nothing configures R2 for new uploads", () => {
-    const r2 = [...app.matchAll(/^\s+(R2_[A-Z_]+):/gm)].map((m) => m[1]).sort();
-    expect(r2).toEqual(["R2_ACCESS_KEY_ID", "R2_ACCOUNT_ID", "R2_BUCKET_NAME", "R2_SECRET_ACCESS_KEY"]);
-    for (const name of ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"]) expect(app).toContain(`${name}: \${${name}:-}`); // optional: empty by default
-    for (const name of ["db", "cloudflared", "cvv-cleanup", "tools"]) expect(service(name), name).not.toMatch(/R2_/);
-    for (const m of envExample.matchAll(/^#?\s*(R2_[A-Z_]+)="([^"]*)"/gm)) expect(m[2], `${m[1]} must be empty`).toBe("");
+  it("no cloud-storage credential is passed to any container or documented in .env.example", () => {
+    for (const name of ["app", "db", "cloudflared", "cvv-cleanup", "tools"]) expect(service(name), name).not.toMatch(/R2_|S3_|AWS_/);
+    expect(envExample).not.toMatch(/R2_|S3_|AWS_/);
   });
 
   it(".env.example documents the storage settings without a real value", () => {

@@ -9,7 +9,7 @@ import { auditAttachment } from "@/server/attachments/audit";
 import { hasRoomFor, storeUpload } from "@/server/storage/local";
 
 // Receives the BYTES of a Lead document: the browser PUTs the file here (same origin, with the session cookie) after
-// requestLeadAttachmentUpload created the PENDING record. This replaces the browser -> R2 presigned upload.
+// requestLeadAttachmentUpload created the PENDING record. The file never goes to any other service.
 //
 //   PUT /api/attachments/{attachmentId}/upload      body = the raw file (no multipart)
 //
@@ -67,7 +67,6 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
       uploadedById: actor.id,
       companyId: actor.companyId,
       status: "PENDING",
-      storageProvider: "LOCAL",
       storageKey: { not: null },
       lead: { is: leadVisibilityWhere({ id: actor.id, role: actor.role, companyId: actor.companyId }) },
     },

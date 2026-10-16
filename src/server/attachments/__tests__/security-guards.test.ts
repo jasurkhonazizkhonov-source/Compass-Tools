@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync, statSync } from "fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import path from "path";
 
 // Source-level guards for the Lead-document security properties, so a later edit can't quietly remove one:
@@ -83,24 +83,32 @@ describe("server actions", () => {
 });
 
 describe("credentials and storage never reach the browser", () => {
-  it("no client component imports the storage module or the AWS SDK", () => {
+  it("no client component imports the storage module or any storage SDK", () => {
     for (const f of ALL) {
       const raw = readFileSync(f, "utf-8");
       if (!/^\s*["']use client["']/.test(raw)) continue;
-      expect(raw, path.relative(SRC, f)).not.toMatch(/server\/storage|@aws-sdk|R2_SECRET|R2_ACCESS|UPLOAD_STORAGE_DIR/);
+      expect(raw, path.relative(SRC, f)).not.toMatch(/server\/storage|@aws-sdk|UPLOAD_STORAGE_DIR/);
     }
   });
 
-  it("no R2 setting is exposed as a NEXT_PUBLIC_ variable", () => {
-    for (const f of ALL) expect(readFileSync(f, "utf-8"), path.relative(SRC, f)).not.toMatch(/NEXT_PUBLIC_R2|NEXT_PUBLIC_.*BUCKET|NEXT_PUBLIC_UPLOAD/);
+  it("no storage setting is exposed as a NEXT_PUBLIC_ variable", () => {
+    for (const f of ALL) expect(readFileSync(f, "utf-8"), path.relative(SRC, f)).not.toMatch(/NEXT_PUBLIC_.*(BUCKET|UPLOAD|S3|R2)/);
   });
 
-  it("the R2 secret is read only inside the LEGACY R2 module", () => {
-    const readers = ALL.filter((f) => /R2_SECRET_ACCESS_KEY/.test(strip(readFileSync(f, "utf-8")))).map((f) => path.relative(SRC, f).replace(/\\/g, "/"));
-    expect(readers).toEqual(["server/storage/legacy-r2.ts"]);
+  it("there is no cloud-object-storage code or configuration left: no SDK import, no bucket credentials, no provider switch", () => {
+    const root = path.resolve(SRC, "..");
+    const pkg = readFileSync(path.join(root, "package.json"), "utf-8");
+    expect(pkg).not.toMatch(/@aws-sdk|@smithy|"aws4fetch"|"minio"/);
+    for (const f of [...ALL, ...walk(path.join(root, "scripts"))]) {
+      const code = strip(readFileSync(f, "utf-8"));
+      expect(code, path.relative(root, f)).not.toMatch(/@aws-sdk|@smithy|cloudflarestorage|R2_[A-Z_]+|storageProvider|AttachmentStorageProvider|presign/);
+    }
+    expect(readFileSync(path.join(root, "prisma", "schema.prisma"), "utf-8")).not.toMatch(/storageProvider|AttachmentStorageProvider/);
+    expect(existsSync(path.join(SRC, "server", "storage", "legacy-r2.ts"))).toBe(false);
+    expect(existsSync(path.join(SRC, "server", "storage", "index.ts"))).toBe(false);
   });
 
-  it("the upload directory setting is read in exactly one place, and is never exposed", () => {
+it("the upload directory setting is read in exactly one place, and is never exposed", () => {
     const readers = ALL.filter((f) => /UPLOAD_STORAGE_DIR/.test(strip(readFileSync(f, "utf-8")))).map((f) => path.relative(SRC, f).replace(/\\/g, "/"));
     expect(readers).toEqual(["server/storage/local.ts"]);
   });
@@ -129,10 +137,7 @@ describe("credentials and storage never reach the browser", () => {
   it("the download route streams local files from the storage module and never redirects to them or builds a URL", () => {
     const code = strip(read("app", "api", "attachments", "[id]", "file", "route.ts"));
     expect(code).toContain("localStorage.openRead(row.storageKey)");
-    expect(code).toMatch(/row\.storageProvider === "R2"/);
-    // the only redirect is the legacy R2 signed link
-    expect([...code.matchAll(/status: 302/g)]).toHaveLength(1);
-    expect(code.indexOf("status: 302")).toBeLessThan(code.indexOf("localStorage.openRead"));
+    expect(code).not.toMatch(/status: 30\d|Location|redirect\(/); // never a redirect: no signed or public URL exists
   });
 
   it("no console.log / debugger in the feature", () => {
@@ -141,8 +146,8 @@ describe("credentials and storage never reach the browser", () => {
     for (const f of files) expect(strip(readFileSync(f, "utf-8")), path.relative(SRC, f)).not.toMatch(/console\.log|debugger/);
   });
 
-  it("the storage modules log neither keys, paths, the bucket nor credentials", () => {
-    for (const file of ["legacy-r2.ts", "local.ts"]) {
+  it("the storage module logs neither keys, paths nor credentials", () => {
+    for (const file of ["local.ts"]) {
       const code = strip(read("server", "storage", file));
       const calls = [...code.matchAll(/console\.error\(([^)]*)\)/g)];
       expect(calls.length, file).toBeGreaterThan(0);

@@ -82,7 +82,7 @@ Worker `compass-tools` → **Settings → Build**:
 | Variable | Where | Value |
 | --- | --- | --- |
 | `APP_BASE_URL` | already in `wrangler.jsonc` `vars` (runtime) and read from it by `cf:build` (build time) | `https://www.compass-tools.com` — a Workers Builds **build variable** with the same name overrides it |
-| `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CRON_SECRET`, `CARD_ENCRYPTION_KEY`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `LEAD_INGEST_SECRET`, `CARD_VAULT_MODE`, `R2_*`, … | Worker → Settings → **Variables and Secrets** (runtime). Mark secrets as *Secret*. **Copy them from Vercel; they are not shared.** Use the **same** key values (re-generating an encryption key makes stored data unreadable). | see `.env.example` / `docs/DEPLOYMENT.md` |
+| `DATABASE_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `CRON_SECRET`, `CARD_ENCRYPTION_KEY`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `LEAD_INGEST_SECRET`, `CARD_VAULT_MODE`, … | Worker → Settings → **Variables and Secrets** (runtime). Mark secrets as *Secret*. **Copy them from Vercel; they are not shared.** Use the **same** key values (re-generating an encryption key makes stored data unreadable). | see `.env.example` / `docs/DEPLOYMENT.md` |
 
 Secrets are never written to `wrangler.jsonc` or the repository. To keep dashboard-set variables across deploys use
 `npx wrangler deploy --keep-vars`.

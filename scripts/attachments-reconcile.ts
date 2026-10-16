@@ -39,7 +39,7 @@ async function main() {
   await client.connect();
   let rows: Row[];
   try {
-    const res = await client.query<Row>(`SELECT "id", "status", "storageKey", "fileSize", "createdAt" FROM "Attachment" WHERE "storageProvider" = 'LOCAL' AND "storageKey" IS NOT NULL`);
+    const res = await client.query<Row>(`SELECT "id", "status", "storageKey", "fileSize", "createdAt" FROM "Attachment" WHERE "storageKey" IS NOT NULL`);
     rows = res.rows;
   } finally {
     await client.end();

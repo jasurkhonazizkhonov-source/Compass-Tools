@@ -10,8 +10,6 @@ import { leadVisibilityWhere } from "@/server/visibility";
 import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { logActivity } from "@/server/activity-log";
 import { localStorage, newKey, hasRoomFor, status as storageStatus } from "@/server/storage/local";
-import { removeStoredObject } from "@/server/storage";
-import type { AttachmentStorageProvider } from "@/generated/prisma/client";
 import { matchesSignature, SIGNATURE_PROBE_BYTES } from "@/server/attachments/signature";
 import { auditAttachment } from "@/server/attachments/audit";
 import { safeActionMessage } from "@/lib/safe-action-message";
@@ -115,7 +113,6 @@ export async function requestLeadAttachmentUpload(
         description: sanitizeDescription(description),
         uploadedById: actor.id,
         storageKey,
-        storageProvider: "LOCAL",
         status: "PENDING",
       },
     });
@@ -131,10 +128,10 @@ export async function requestLeadAttachmentUpload(
  * Drops a PENDING upload: its stored bytes (if any were received) and then its row. A file that cannot be removed right now is not
  * orphaned silently - the row is kept (and swept later) rather than deleted, so a transient filesystem error is retried.
  */
-async function discardPending(id: string, storageKey: string | null, provider: AttachmentStorageProvider) {
+async function discardPending(id: string, storageKey: string | null) {
   if (storageKey) {
     try {
-      await removeStoredObject({ provider, key: storageKey });
+      await localStorage.remove(storageKey);
     } catch {
       return; // keep the PENDING row: the stale sweep retries the file removal, then removes the row
     }
@@ -155,7 +152,7 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
 
     const row = await prisma.attachment.findFirst({
       where: { id: attachmentId, uploadedById: actor.id, companyId: actor.companyId, storageKey: { not: null }, lead: { is: leadVisibilityWhere(viewerOf(actor)) } },
-      select: { id: true, status: true, storageKey: true, storageProvider: true, fileName: true, fileType: true, fileSize: true, leadId: true, contactId: true },
+      select: { id: true, status: true, storageKey: true, fileName: true, fileType: true, fileSize: true, leadId: true, contactId: true },
     });
     if (!row || !row.storageKey || !row.leadId) {
       await auditAttachment({ action: "ATTACHMENT_ACCESS_DENIED", actorId: actor.id, attachmentId, metadata: { attempted: "COMPLETE_UPLOAD", reason: "NOT_FOUND_OR_NOT_ACCESSIBLE" } });
@@ -165,13 +162,11 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
 
     const type = allowedTypeForMime(row.fileType);
     const reject = async (reason: string, message: string) => {
-      await discardPending(row.id, row.storageKey, row.storageProvider);
+      await discardPending(row.id, row.storageKey);
       await auditAttachment({ action: "ATTACHMENT_UPLOAD_REJECTED", actorId: actor.id, attachmentId: row.id, leadId: row.leadId, contactId: row.contactId, companyId: actor.companyId, metadata: { reason } });
       return { ok: false as const, error: message };
     };
     if (!type || row.fileSize == null) return await reject("INVALID_RECORD", RETRY);
-    // A PENDING row of the legacy R2 backend can no longer be completed (nothing uploads to R2 any more): discard it, the user retries.
-    if (row.storageProvider !== "LOCAL") return await reject("LEGACY_PROVIDER", RETRY);
 
     let stored: { size: number } | null;
     let head: Uint8Array | null;
@@ -216,14 +211,14 @@ export async function abandonLeadAttachmentUpload(attachmentId: unknown, diagnos
     if (!actor || typeof attachmentId !== "string" || attachmentId.length > 80) return { ok: false, error: DENIED };
     const row = await prisma.attachment.findFirst({
       where: { id: attachmentId, uploadedById: actor.id, companyId: actor.companyId, status: "PENDING", lead: { is: leadVisibilityWhere(viewerOf(actor)) } },
-      select: { id: true, storageKey: true, storageProvider: true, leadId: true, contactId: true },
+      select: { id: true, storageKey: true, leadId: true, contactId: true },
     });
     const diag = diagnosticsSchema.safeParse(diagnostics);
     if (row && diag.success && diag.data.stage !== "cancelled") {
       console.error(`[attachments] upload failed stage=${diag.data.stage} kind=${diag.data.kind} status=${diag.data.status}`);
       await auditAttachment({ action: "ATTACHMENT_UPLOAD_FAILED", actorId: actor.id, attachmentId: row.id, leadId: row.leadId, contactId: row.contactId, companyId: actor.companyId, metadata: diag.data });
     }
-    if (row) await discardPending(row.id, row.storageKey, row.storageProvider);
+    if (row) await discardPending(row.id, row.storageKey);
     return { ok: true };
   } catch {
     return { ok: true };
@@ -234,7 +229,7 @@ export async function abandonLeadAttachmentUpload(attachmentId: unknown, diagnos
 async function findManageableAttachment(actor: Actor, attachmentId: string) {
   return prisma.attachment.findFirst({
     where: { id: attachmentId, status: "READY", companyId: actor.companyId, storageKey: { not: null }, lead: { is: leadVisibilityWhere(viewerOf(actor)) } },
-    select: { id: true, storageKey: true, storageProvider: true, description: true, leadId: true, contactId: true },
+    select: { id: true, storageKey: true, description: true, leadId: true, contactId: true },
   });
 }
 
@@ -284,9 +279,9 @@ export async function deleteLeadAttachment(attachmentId: unknown): Promise<Actio
     }
 
     // File first, row second. If the file delete fails the row stays (nothing is lost, the user can retry); if the row delete fails
-    // after the file is gone, a retry succeeds because deleting a missing file is a no-op. The backend is the row's own provider.
+    // after the file is gone, a retry succeeds because deleting a missing file is a no-op.
     try {
-      await removeStoredObject({ provider: row.storageProvider, key: row.storageKey });
+      await localStorage.remove(row.storageKey);
     } catch {
       return { ok: false, error: "The file couldn't be deleted right now. Please try again." };
     }

@@ -49,7 +49,7 @@ and Vercel-specific configuration).
 - `docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` — self-hosted production on an OVHcloud VPS: Docker Compose,
   PostgreSQL in a private network, Cloudflare Tunnel, controlled deploys, backups, rollback, daily CVV cleanup.
 - `docs/LEAD_ATTACHMENTS.md` — Lead documents stored on the VPS disk (persistent bind mount): permissions, security
-  model, VPS directory setup, backup/restore, disk monitoring, and compatibility with older Cloudflare R2 files.
+  model, VPS directory setup, backup/restore, and disk monitoring.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and
   structured-data conventions.
 - `docs/PAYMENT_AUTOFILL_SECURITY.md` — why full card-number autofill is

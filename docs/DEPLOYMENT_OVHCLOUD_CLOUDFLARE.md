@@ -186,7 +186,6 @@ openssl rand -base64 32     # GMAIL_TOKEN_ENCRYPTION_KEY, CARD_ENCRYPTION_KEY, I
 | `LEAD_INGEST_SECRET` | optional | Must equal the travel website's value; ≥ 32 characters. |
 | `UPLOADS_HOST_DIR` | optional | Host directory for Lead documents (default `/srv/compass-tools/uploads`; **create it first**, §3.4). |
 | `UPLOAD_MIN_FREE_MB`, `MAX_LEAD_ATTACHMENT_SIZE_MB` | optional | Disk reserve kept free (default 1024) and largest accepted file (default 10, max 25). LEAD_ATTACHMENTS.md. |
-| `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` | legacy | Only to open/delete Lead documents uploaded to R2 **before** the move to local storage. Never used for new uploads. Keep until the old files are retired. |
 | `CLEANUP_HEARTBEAT_URL` | optional | A dead-man's-switch URL pinged after each successful cleanup. |
 | `DATABASE_POOL_*`, `DATABASE_CONNECT_RETRIES` | optional | Leave unset. |
 
@@ -584,7 +583,7 @@ bash deploy/rollback.sh <version>                                       # restar
 | `CARD_ENCRYPTION_KEY` | **Never replace.** Add a new key to the key ring and re-encrypt: CARD_VAULT_SECURITY.md §6 (`docker compose run --rm tools npm run cards:rotate`) | Replacing the value destroys access to every stored card. Keep every old key while any backup or card uses it. |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | No rotation mechanism. A new value makes stored Gmail tokens unreadable → every user must reconnect Gmail | Only after confirmed compromise (DEPLOYMENT.md §5e). |
 | `IP_ENCRYPTION_KEY`, `IP_HASH_KEY` | No rotation mechanism; a new value makes existing IP records unreadable / unsearchable | Manual migration only (docs/ip-vault-compliance.md). |
-| `R2_*`, `LEAD_INGEST_SECRET` | Create the new credential at the source, update `.env`, restart `app`, then revoke the old | `LEAD_INGEST_SECRET` must match the travel website. |
+| `LEAD_INGEST_SECRET` | Create the new credential at the source, update `.env`, restart `app`, then revoke the old | `LEAD_INGEST_SECRET` must match the travel website. |
 
 After any `.env` change: `docker compose up -d` (Compose recreates only the services whose environment changed), then `bash deploy/verify.sh`.
 

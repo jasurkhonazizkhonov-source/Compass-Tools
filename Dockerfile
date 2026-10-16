@@ -23,7 +23,7 @@ ARG NODE_IMAGE=node:24.21.0-bookworm-slim@sha256:d6aa754f16b3197301076f047b5def2
 FROM ${NODE_IMAGE} AS base
 WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
-# openssl: required by the Prisma schema engine (prisma migrate). ca-certificates: TLS to Google, Gmail and Cloudflare R2.
+# openssl: required by the Prisma schema engine (prisma migrate). ca-certificates: TLS to Google and Gmail.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends openssl ca-certificates \
  && rm -rf /var/lib/apt/lists/*

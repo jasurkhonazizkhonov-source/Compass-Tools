@@ -665,13 +665,13 @@ model Activity {
   @@index([createdAt])
 }
 
-// A document attached to a Lead (passport copy, signed form, itinerary ...). The bytes live in a PRIVATE Cloudflare R2 bucket, never in
-// Postgres; this row is the authoritative record of ownership: Attachment -> Lead -> Contact -> Company. Access is decided by the
+// A document attached to a Lead (passport copy, signed form, itinerary ...). The bytes live as files on the VPS disk (a persistent bind
+// mount, see docs/LEAD_ATTACHMENTS.md), never in Postgres; this row is the authoritative record of ownership: Attachment -> Lead -> Contact -> Company. Access is decided by the
 // database relationship (leadId + the lead's visibility), never by the object key, the file name or anything the browser sends.
 //
 // Upload is two-phase so a row is never presented as a file before the bytes exist: the row is created PENDING together with the
-// opaque storageKey, the browser PUTs to a short-lived presigned URL, and the row becomes READY only after the server has checked the
-// stored object (size + magic bytes). Stale PENDING rows are swept by the daily cron (object deleted, row removed).
+// opaque storageKey, the browser PUTs the file to the same-origin upload route, and the row becomes READY only after the server has checked the
+// stored file (size + magic bytes). Stale PENDING rows are swept by the daily cron (file deleted, row removed).
 //
 // Legacy columns (fileUrl, contactId-only rows) pre-date storage and are kept as they were; no code path creates a row without a leadId
 // and companyId any more (the CHECK constraint below also enforces it for storage-backed rows).
@@ -683,7 +683,7 @@ model Attachment {
   lead       Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
   // The sanitised ORIGINAL file name, for display only (never used in a path or key).
   fileName   String
-  // Legacy (pre-storage) location. Null for every R2-backed attachment.
+  // Legacy (pre-storage) location. Null for every storage-backed attachment.
   fileUrl    String?
   // The canonical MIME type chosen by the server from the validated extension (not the browser's claim).
   fileType   String?
@@ -697,13 +697,8 @@ model Attachment {
   description String?
   // Tenant guard: always the owning Lead's Contact's company, copied at creation and re-checked on every read.
   companyId   String?
-  // Opaque, server-generated storage key. Unique; never derived from user input and never sent to the browser. What it means depends on
-  // storageProvider: for LOCAL it is "<2 hex>/<64 hex>" under the VPS upload directory (never a path); for R2 it is the legacy object key.
+  // Opaque, server-generated storage key ("<2 hex>/<64 hex>" under the VPS upload directory; never a path). Unique; never derived from user input and never sent to the browser.
   storageKey  String?  @unique
-  // WHERE the bytes live. New uploads are always LOCAL (the VPS disk). R2 marks files uploaded before the move to local storage; they stay
-  // readable/deletable through the legacy R2 reader until they are migrated or retired. The database default stays R2 on purpose: it is
-  // what every pre-existing row is, and it keeps code from before this column existed writing correctly-labelled rows.
-  storageProvider AttachmentStorageProvider @default(R2)
   status      AttachmentStatus @default(PENDING)
 
   @@index([contactId])
@@ -715,12 +710,6 @@ model Attachment {
 enum AttachmentStatus {
   PENDING
   READY
-}
-
-// Which storage backend holds an attachment's bytes. See Attachment.storageProvider.
-enum AttachmentStorageProvider {
-  R2
-  LOCAL
 }
 
 // ─────────────────────────────────────────────────────────────────────────

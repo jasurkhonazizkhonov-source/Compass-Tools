@@ -58,8 +58,6 @@ export const HARD_MAX_SIZE_MB = 25;
 export const DEFAULT_MAX_SIZE_MB = 10;
 /** An upload that is requested but never completed is treated as abandoned after this long. */
 export const PENDING_UPLOAD_TTL_MS = 60 * 60 * 1000;
-/** Lifetime of the signed link used to open a LEGACY file that still lives in R2 (new files are streamed by the app, with no link at all). */
-export const DOWNLOAD_URL_TTL_SECONDS = 60;
 /** A single lead can't accumulate unbounded files. */
 export const MAX_ATTACHMENTS_PER_LEAD = 200;
 

@@ -116,14 +116,8 @@ services:
       # --- scheduled jobs and ingestion ---
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env (openssl rand -base64 32); without it every /api/cron/* endpoint refuses}
       LEAD_INGEST_SECRET: ${LEAD_INGEST_SECRET:-}
-      # --- LEGACY: Cloudflare R2, needed ONLY to open/delete Lead documents uploaded before the move to local storage. Nothing is ever
-      #     uploaded to R2 any more. Leave empty on a fresh install; remove once no R2-backed attachment remains (docs/LEAD_ATTACHMENTS.md). ---
-      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
-      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
-      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
-      R2_BUCKET_NAME: ${R2_BUCKET_NAME:-}
       MAX_LEAD_ATTACHMENT_SIZE_MB: ${MAX_LEAD_ATTACHMENT_SIZE_MB:-}
-      # --- Lead documents: stored on the VPS disk (bind mount below), never in the database and no longer in R2 ---
+      # --- Lead documents: stored on the VPS disk (bind mount below), never in the database or a cloud bucket ---
       UPLOAD_STORAGE_DIR: /var/lib/compass-tools/uploads
       UPLOAD_MIN_FREE_MB: ${UPLOAD_MIN_FREE_MB:-}
     # No `ports:` - only containers on the `web` network (cloudflared, cvv-cleanup) can reach http://app:3000.

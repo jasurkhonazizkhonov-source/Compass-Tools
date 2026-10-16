@@ -82,7 +82,7 @@ describe("Lead Files panel", () => {
     expect(screen.getByText("0 files")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Upload Document/ })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent(/not available/i);
-    expect(document.body.textContent).not.toMatch(/R2|bucket|S3|Cloudflare/i);
+    expect(document.body.textContent).not.toMatch(/bucket|S3|Cloudflare/i);
   });
 
   it("the upload dialog states the allowed types and size, and refuses an unsupported file before any request", async () => {
@@ -197,7 +197,7 @@ describe("Lead Files panel", () => {
       stubXhr("error");
       const dialog = await attemptUpload();
       await waitFor(() => expect(within(dialog).getByRole("alert")).toHaveTextContent(/didn't reach the server/));
-      expect(within(dialog).getByRole("alert")).not.toHaveTextContent(/R2|bucket|cloudflare|https?:|CORS/i);
+      expect(within(dialog).getByRole("alert")).not.toHaveTextContent(/bucket|cloudflare|https?:|CORS/i);
       expect(actions.abandonLeadAttachmentUpload).toHaveBeenCalledWith("pending-1", { stage: "put", kind: "blocked", status: 0 });
       expect(actions.completeLeadAttachmentUpload).not.toHaveBeenCalled();
       // not stuck: the Upload button is usable again for another attempt

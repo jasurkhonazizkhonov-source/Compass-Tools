@@ -6,7 +6,6 @@ import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit
 import { visibleAttachmentWhere } from "@/server/queries/lead-attachments";
 import { prisma } from "@/lib/prisma";
 import { localStorage } from "@/server/storage/local";
-import { legacyR2, isLegacyR2Configured } from "@/server/storage/legacy-r2";
 import { auditAttachment } from "@/server/attachments/audit";
 import { allowedTypeForMime, contentDisposition } from "@/lib/attachments/policy";
 
@@ -16,9 +15,8 @@ import { allowedTypeForMime, contentDisposition } from "@/lib/attachments/policy
 //   GET /api/attachments/{attachmentId}/file            → opens PDFs / images in the tab, downloads everything else
 //   GET /api/attachments/{attachmentId}/file?download=1 → always downloads
 //
-//   LOCAL files (every new upload)  streamed from the VPS disk by this route, with the type and disposition forced by the server.
-//   R2 files (uploaded before the move to local storage)  answered with a redirect to a signed link that expires in 60 seconds and
-//                                   forces the same type and disposition - see src/server/storage/legacy-r2.ts.
+// The file is streamed from the VPS disk by this route, with the type and disposition forced by the server. There is no signed or
+// public URL of any kind.
 //
 // "Does not exist", "belongs to another lead" and "belongs to another company" are all the same 404.
 export const runtime = "nodejs";
@@ -41,7 +39,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
   // Authorisation is the query: READY, same company, and the attachment's OWN lead visible to this viewer.
   const row = await prisma.attachment.findFirst({
     where: { ...visibleAttachmentWhere({ id: actor.id, role: actor.role, companyId: actor.companyId }), id },
-    select: { id: true, storageKey: true, storageProvider: true, fileName: true, fileType: true, leadId: true, contactId: true },
+    select: { id: true, storageKey: true, fileName: true, fileType: true, leadId: true, contactId: true },
   });
   if (!row || !row.storageKey) {
     await auditAttachment({ action: "ATTACHMENT_ACCESS_DENIED", actorId: actor.id, attachmentId: id, metadata: { attempted: "OPEN", reason: "NOT_FOUND_OR_NOT_ACCESSIBLE" } });
@@ -63,19 +61,7 @@ export async function GET(request: NextRequest, context: { params: Promise<{ id:
       companyId: actor.companyId,
     });
 
-  if (row.storageProvider === "R2") {
-    if (!isLegacyR2Configured()) return UNAVAILABLE();
-    let url: string;
-    try {
-      url = await legacyR2.presignDownload(row.storageKey, { contentType: type.mime, contentDisposition: disposition });
-    } catch {
-      return UNAVAILABLE();
-    }
-    await audit();
-    return new NextResponse(null, { status: 302, headers: { Location: url, "Cache-Control": "no-store", "Referrer-Policy": "no-referrer" } });
-  }
-
-  // LOCAL: stream from disk. The key comes from the row (never from the request); the local module refuses anything but its own shape.
+  // Stream from disk. The key comes from the row (never from the request); the local module refuses anything but its own shape.
   let file: Awaited<ReturnType<typeof localStorage.openRead>>;
   try {
     file = await localStorage.openRead(row.storageKey);

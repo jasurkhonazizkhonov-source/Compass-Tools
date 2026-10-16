@@ -17,8 +17,7 @@
 //    the UI libraries cannot carry a nonce); a style-only injection cannot run
 //    code, which is the residual, documented risk.
 // Lead documents are uploaded to this same origin (PUT /api/attachments/{id}/upload) and downloaded from it, so connect-src needs no storage
-// origin. (Before the move to local storage the browser uploaded straight to a Cloudflare R2 origin, which had to be listed here. Opening an
-// older file that still lives in R2 is a navigation/redirect, which connect-src does not govern.)
+// origin.
 function common(): string[] {
   return [
     "default-src 'self'",

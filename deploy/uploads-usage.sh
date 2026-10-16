@@ -25,13 +25,12 @@ in_uploads_container sh -c 'find /var/lib/compass-tools/uploads -path "*/.before
 leftover="$(in_uploads_container sh -c 'ls -d /var/lib/compass-tools/uploads/.before-restore-* 2>/dev/null | wc -l')"
 [ "${leftover:-0}" -gt 0 ] && yellow "  $leftover '.before-restore-*' folder(s) from a past restore are still taking space (restore-uploads.sh explains how to remove them once you are satisfied)."
 
-step "By storage backend (database records)"
+step "Records (database)"
 db="$(app_db_name)"
-psql_in "$db" "SELECT \"storageProvider\" || '  ' || \"status\" || '  files=' || count(*) || '  size=' || pg_size_pretty(coalesce(sum(\"fileSize\"),0)::bigint) FROM \"Attachment\" WHERE \"storageKey\" IS NOT NULL GROUP BY \"storageProvider\", \"status\" ORDER BY 1" | sed 's/^/  /'
-echo "  (R2 = older files still in Cloudflare R2; LOCAL = this server's disk)"
+psql_in "$db" "SELECT \"status\" || '  files=' || count(*) || '  size=' || pg_size_pretty(coalesce(sum(\"fileSize\"),0)::bigint) FROM \"Attachment\" WHERE \"storageKey\" IS NOT NULL GROUP BY \"status\" ORDER BY 1" | sed 's/^/  /'
 
 step "The 15 largest uploads (id, size, date, lead id - no file names)"
-psql_in "$db" "SELECT \"id\" || '  ' || pg_size_pretty(\"fileSize\"::bigint) || '  ' || \"createdAt\"::date || '  lead=' || coalesce(\"leadId\",'-') || '  ' || \"storageProvider\" FROM \"Attachment\" WHERE \"fileSize\" IS NOT NULL AND \"storageKey\" IS NOT NULL ORDER BY \"fileSize\" DESC LIMIT 15" | sed 's/^/  /'
+psql_in "$db" "SELECT \"id\" || '  ' || pg_size_pretty(\"fileSize\"::bigint) || '  ' || \"createdAt\"::date || '  lead=' || coalesce(\"leadId\",'-') FROM \"Attachment\" WHERE \"fileSize\" IS NOT NULL AND \"storageKey\" IS NOT NULL ORDER BY \"fileSize\" DESC LIMIT 15" | sed 's/^/  /'
 
 step "Docker's own disk use"
 docker system df 2>/dev/null | sed 's/^/  /' || true
