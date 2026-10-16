@@ -47,27 +47,47 @@ export async function purgeStorageObjects(keys: string[], context: { actorId: st
 
 /**
  * Removes uploads that were authorised but never completed (browser closed, network drop, rejected file), and upload temp files left by a
- * cut-off request. Idempotent; run from the daily cron. A row is deleted only once its file is confirmed gone (or was already
- * absent), so a transient filesystem error is retried on the next run instead of orphaning the file. A row is only ever PENDING and
- * older than the one-hour window here, so a completed (READY) attachment is never touched.
+ * cut-off request. Idempotent; run from the daily cron.
+ *
+ * Safety against concurrent requests: the stale rows are SELECTed `FOR UPDATE SKIP LOCKED` inside one transaction and, only while that
+ * lock is held, their file is removed and the row deleted. A completion (`UPDATE ... WHERE status = 'PENDING'`) on the same row waits for
+ * the lock: if the sweep wins, the completion finds no row and reports failure; if the completion committed first, the row is READY, no
+ * longer matches `status = 'PENDING'` and is not selected at all, so a file that a READY attachment depends on is never removed. A row
+ * another transaction already holds is skipped (SKIP LOCKED) and collected by a later run. A row is deleted only once its file is
+ * confirmed gone (or was already absent), so a transient filesystem error is retried on the next run instead of orphaning the file.
  */
 export async function sweepStalePendingAttachments(now: number = Date.now()): Promise<{ removed: number; failed: number; tempFilesRemoved: number }> {
-  const stale = await prisma.attachment.findMany({
-    where: { status: "PENDING", createdAt: { lt: new Date(now - PENDING_UPLOAD_TTL_MS) } },
-    select: { id: true, storageKey: true },
-    take: 200,
-  });
+  const cutoff = new Date(now - PENDING_UPLOAD_TTL_MS);
   let removed = 0;
   let failed = 0;
-  for (const row of stale) {
-    try {
-      // The row is kept if the file cannot be confirmed gone; the next run retries.
-      if (row.storageKey) await localStorage.remove(row.storageKey);
-      await prisma.attachment.deleteMany({ where: { id: row.id, status: "PENDING" } });
-      removed++;
-    } catch {
-      failed++;
-    }
+  try {
+    await prisma.$transaction(
+      async (tx) => {
+        const stale = await tx.$queryRaw<{ id: string; storageKey: string | null }[]>`
+          SELECT "id", "storageKey" FROM "Attachment"
+          WHERE "status" = 'PENDING' AND "createdAt" < ${cutoff}
+          ORDER BY "createdAt"
+          LIMIT 200
+          FOR UPDATE SKIP LOCKED`;
+        for (const row of stale) {
+          try {
+            // The row is kept if the file cannot be confirmed gone; the next run retries.
+            if (row.storageKey) await localStorage.remove(row.storageKey);
+          } catch {
+            failed++;
+            continue;
+          }
+          await tx.attachment.delete({ where: { id: row.id } });
+          removed++;
+        }
+      },
+      { timeout: 60_000, maxWait: 10_000 }
+    );
+  } catch {
+    // The database failed mid-run: the transaction rolled back, so no row was removed (a file removed earlier in the run is simply
+    // absent, and removing an absent file succeeds on the next run).
+    removed = 0;
+    failed++;
   }
   const tempFilesRemoved = await localStorage.sweepTempFiles(now, PENDING_UPLOAD_TTL_MS).catch(() => 0);
   return { removed, failed, tempFilesRemoved };
