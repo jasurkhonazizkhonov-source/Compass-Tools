@@ -138,13 +138,26 @@ ls -ldn /srv/compass-tools/uploads        # expect: drwx------ 2 1000 1000 …
 
 ## Deploying to the VPS
 
-Pushing to GitHub does **not** deploy anything. On the VPS, as the deploy user, in the checkout:
+Pushing to GitHub does **not** deploy anything, and nothing here has been deployed. `deploy/deploy.sh` only deploys commits that are on
+`origin/main`, so the branch must be reviewed and merged first. Note that this branch also carries the self-hosted Docker/VPS stack itself
+(it was never merged separately): if the VPS is not running yet, follow `docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` from the start and treat
+the steps below as the uploads-specific part. On the VPS, as the deploy user, in the checkout:
 
-1. Create the directory (above) — **before** the deploy; `docker compose` refuses to start without it.
-2. Take a database backup (`bash deploy/backup-db.sh`; the deploy does this too when `--migrate` is used).
-3. `bash deploy/deploy.sh` — shows what changes, rebuilds, restarts and runs `verify.sh`. This change has **no database migration**
-   (`--migrate` is only needed when `deploy.sh` reports pending migrations from other changes).
+1. Create the directory — **before** the deploy; `docker compose` refuses to start without it:
+   ```bash
+   sudo install -d -o 1000 -g 1000 -m 0700 /srv/compass-tools/uploads
+   ```
+2. Take a database backup (a separate command; the deploy does this by itself only when `--migrate` is used):
+   ```bash
+   bash deploy/backup-db.sh
+   ```
+3. Deploy (it shows what changes, rebuilds, restarts and runs `verify.sh`). This change has **no database migration**; `--migrate` is only
+   needed when `deploy.sh` reports pending migrations from other changes:
+   ```bash
+   bash deploy/deploy.sh
+   ```
 4. Do the [verification](#verifying-a-deployment) below.
+5. Optionally install the daily maintenance timer (see [Maintenance](#maintenance)).
 
 ### Rollback
 
@@ -236,10 +249,10 @@ yourself once you are satisfied (the script prints the command). Encrypted `.age
 * **Stale uploads.** An upload that never completes (browser closed, crash) leaves a PENDING row older than 1 hour and possibly a file or
   a `.tmp/*.part` file. The daily task `/api/cron/tasks` removes them: the file first, the row only after the file is gone or absent; a
   file that cannot be removed keeps its row, is retried the next day, and is audited. Leftover `.tmp/*.part` files older than 1 hour are swept in the same run.
-  **On the VPS this daily task is not scheduled by default** (`docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` §10.3) — ask for a schedule, or run
-  it by hand occasionally:
+  **On the VPS this daily task is not scheduled until you install the timer** — a one-time, deliberate step
+  (`docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` §10.3, units in `deploy/systemd/compass-tools-maintenance.*`). Run it by hand any time:
   ```bash
-  docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/cron/tasks',{headers:{authorization:'Bearer '+process.env.CRON_SECRET}}).then(r=>r.text()).then(console.log)"
+  bash deploy/run-daily-maintenance.sh
   ```
   Normal cancellations and failures clean up immediately; this sweep only covers crashes.
 * **Reconcile** (read-only) after a restore, an incident or a disk problem: `scripts/attachments-reconcile.ts` (above).

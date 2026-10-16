@@ -11,7 +11,8 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    # feature/** so a branch is checked (including the Docker smoke test) as soon as it is pushed, without waiting for a pull request.
+    branches: [main, "feature/**"]
   workflow_dispatch:
 
 permissions:
@@ -53,8 +54,9 @@ jobs:
           if git grep -nE -e '-----BEGIN ([A-Z]+ )?PRIVATE KEY-----' -- . ':!docs' ':!src/**/__tests__/**' ':!src/**/__integration__/**'; then
             echo "A private key appears to be committed."; exit 1
           fi
-          # .env.example must contain placeholders only: no long base64/hex value assigned to a key/secret/token/password variable.
-          if grep -nE '^(POSTGRES_PASSWORD|TUNNEL_TOKEN|CARD_ENCRYPTION_KEY|GMAIL_TOKEN_ENCRYPTION_KEY|IP_ENCRYPTION_KEY|IP_HASH_KEY|CRON_SECRET|GOOGLE_CLIENT_SECRET)="[A-Za-z0-9+/=_-]{40,}"' .env.example; then
+          # .env.example must contain placeholders only: no long base64/hex value assigned to a key/secret/token/password variable
+          # (an obvious "replace-with-..." / "your-..." placeholder is fine).
+          if grep -nE '^(POSTGRES_PASSWORD|TUNNEL_TOKEN|CARD_ENCRYPTION_KEY|GMAIL_TOKEN_ENCRYPTION_KEY|IP_ENCRYPTION_KEY|IP_HASH_KEY|CRON_SECRET|GOOGLE_CLIENT_SECRET)="[A-Za-z0-9+/=_-]{40,}"' .env.example | grep -vE '="(replace-with|your-)'; then
             echo ".env.example looks like it contains a real secret."; exit 1
           fi
           echo "clean"

@@ -15,6 +15,7 @@ export APP_VERSION=smoke
 TMP="$(mktemp -d)"
 export COMPOSE_ENV_FILES="$TMP/env"
 # The uploads bind mount: a host directory owned by the image user (uid/gid 1000), exactly as the VPS guide prescribes.
+# (Mode 0700 and owned by 1000, so the runner user needs sudo to look inside it.)
 UPLOADS="$TMP/uploads"
 install -d -m 0700 "$UPLOADS"
 if [ "$(id -u)" != "1000" ]; then sudo chown 1000:1000 "$UPLOADS"; fi
@@ -80,7 +81,7 @@ step "Lead document storage: a writable, persistent, private bind mount"
 up="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health").then(r=>r.json()).then(h=>console.log(h.readiness.uploadStorage))')"
 [ "$up" = "ready" ] && ok "readiness.uploadStorage=ready" || fail "uploadStorage is $up (expected ready)"
 docker compose exec -T app sh -c 'printf smoke > /var/lib/compass-tools/uploads/.probe && [ "$(cat /var/lib/compass-tools/uploads/.probe)" = smoke ]' && ok "the app user can write and read in the mount" || fail "cannot write in the uploads mount"
-[ -f "$UPLOADS/.probe" ] && ok "the file appears in the HOST directory (a real bind mount)" || fail "the file did not reach the host directory"
+{ [ -f "$UPLOADS/.probe" ] || sudo test -f "$UPLOADS/.probe"; } && ok "the file appears in the HOST directory (a real bind mount)" || fail "the file did not reach the host directory"
 docker compose up -d --force-recreate --no-deps app
 for _ in $(seq 1 60); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ] && break; sleep 3; done
 docker compose exec -T app sh -c '[ "$(cat /var/lib/compass-tools/uploads/.probe)" = smoke ]' && ok "the file survives recreation of the container" || fail "the file was lost when the container was recreated"

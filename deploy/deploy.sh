@@ -20,6 +20,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 need_cmd docker; need_cmd git
 MIGRATE=0; REF="origin/main"
+# shellcheck disable=SC2034  # ASSUME_YES is read by confirm() in common.sh
 while [ $# -gt 0 ]; do
   case "$1" in
     --migrate) MIGRATE=1 ;;

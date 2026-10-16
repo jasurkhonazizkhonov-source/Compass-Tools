@@ -352,3 +352,35 @@ describe("upload operations scripts", () => {
     expect(body).not.toMatch(/fileName|originalName/); // customers' file names are never printed
   });
 });
+
+describe("daily maintenance (stale upload sweep) is an opt-in timer, not something the repository switches on", () => {
+  const script = read("deploy", "run-daily-maintenance.sh");
+  const service = read("deploy", "systemd", "compass-tools-maintenance.service");
+  const timer = read("deploy", "systemd", "compass-tools-maintenance.timer");
+
+  it("calls the app's own cron endpoint from inside the container, so the secret never leaves it", () => {
+    expect(script).toContain("dc exec -T app node");
+    expect(script).toContain("/api/cron/tasks");
+    expect(script).toContain("process.env.CRON_SECRET");
+    expect(script).toContain("127.0.0.1");
+    expect(code(script)).not.toMatch(/\$\{?CRON_SECRET|cat\s+\.env|source\s+\.?\/?\.env|curl|wget/); // never read or echoed on the host
+    expect(code(script)).not.toMatch(/\brm\b|DELETE|docker compose (down|stop)/);
+  });
+
+  it("the units schedule it daily, after the backup, and nothing in the repository enables them", () => {
+    expect(service).toContain("deploy/run-daily-maintenance.sh");
+    expect(service).toMatch(/Type=oneshot/);
+    expect(timer).toMatch(/OnCalendar=\*-\*-\* 03:30:00 UTC/);
+    expect(timer).toMatch(/Persistent=true/);
+    for (const text of [read("deploy", "deploy.sh"), read("deploy", "common.sh"), read("deploy", "ci-smoke.sh"), compose]) {
+      expect(code(text)).not.toMatch(/systemctl|compass-tools-maintenance/);
+    }
+  });
+
+  it("the CI workflow only checks code: no deploy step, no repository secret, and it also covers feature branches", () => {
+    const ci = read(".github", "workflows", "ci.yml");
+    expect(ci).toMatch(/branches: \[main, "feature\/\*\*"\]/);
+    expect(code(ci)).not.toMatch(/\$\{\{\s*secrets\.|\bssh |\bscp |rsync |docker push|docker login/i); // comments excluded
+    expect(ci).toMatch(/shellcheck -x -S warning deploy\/\*\.sh/);
+  });
+});

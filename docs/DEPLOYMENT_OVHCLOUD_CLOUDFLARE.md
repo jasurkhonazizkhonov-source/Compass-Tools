@@ -123,8 +123,8 @@ for it.
 
 1. **Cut-over date and data move** (§17): whether the VPS takes over from the current database, and when. The Docker stack starts with an
    *empty* database.
-2. **Daily maintenance** (§10.3): `/api/cron/tasks` (rate-limit cleanup, stale-upload sweep) is **not** scheduled on the VPS by default.
-   Do you want it scheduled? (Task notifications are already covered; the opt-in card-number purge stays off.)
+2. **Daily maintenance** (§10.3): `/api/cron/tasks` (rate-limit cleanup, stale-upload sweep) is **not** scheduled until you install the
+   shipped systemd timer yourself. Do you want it scheduled? (Recommended, because of the uploaded documents.) (Task notifications are already covered; the opt-in card-number purge stays off.)
 3. **OVHcloud snapshots / automated VPS backups** (§16.3): they capture the whole disk — database volume **and** `.env` (the keys). Enable
    them only knowingly.
 4. **Off-server backup copy** (§12.3): where encrypted backups go, and who holds the decryption key.
@@ -441,7 +441,7 @@ period.
   The deletion itself is written to the audit log (`CVV_DESTROYED`, trigger `EXPIRED`). Set `CLEANUP_HEARTBEAT_URL` (for example a
   Healthchecks.io check with a 26-hour period) to be alerted if the job stops. `verify.sh` fails if the job has *given up*.
 
-### 10.3 What is not scheduled on the VPS (decision 2)
+### 10.3 Daily maintenance (stale upload sweep) — a timer you install deliberately (decision 2)
 
 Vercel Cron ran `/api/cron/tasks` daily. On the VPS:
 
@@ -449,13 +449,25 @@ Vercel Cron ran `/api/cron/tasks` daily. On the VPS:
   `dueNotifiedAt` claim so duplicates are impossible).
 * **`/api/cron/sequences`** and **`/api/cron/leads`** were never scheduled on Vercel either (sequence steps are processed from the UI; leads are
   distributed on creation).
-* **Not covered**: the *daily* maintenance in `/api/cron/tasks` — deleting expired rate-limit counters and sweeping abandoned lead-document
-  uploads. Both are housekeeping (the tables only grow slowly). If you want it, say so and a second scheduled call can be added; the
-  endpoint is idempotent. Until then you can run it by hand:
+* **The daily maintenance in `/api/cron/tasks`** deletes expired rate-limit counters and sweeps abandoned lead-document uploads (the
+  partial file first, the record only once the file is gone; a completed attachment is never touched). Cancelled and failed uploads clean up
+  immediately, so this only removes what a crash left behind — but without it those leftovers accumulate on the disk. It is idempotent.
+  `deploy/run-daily-maintenance.sh` runs it from inside the app container (the secret never leaves the container). Run it by hand any time:
   ```bash
-  docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/cron/tasks',{headers:{authorization:'Bearer '+process.env.CRON_SECRET}}).then(r=>r.text()).then(console.log)"
+  bash deploy/run-daily-maintenance.sh
   ```
-  (This also runs the notification pass; the opt-in card-number purge stays off while `CARD_RETENTION_DAYS` is unset.)
+  and schedule it with the systemd timer shipped with the repository. **Nothing installs it for you** — you decide, on the VPS, as root:
+  ```bash
+  sudoedit deploy/systemd/compass-tools-maintenance.service    # check User= and the /opt/compass-tools paths first
+  sudo cp deploy/systemd/compass-tools-maintenance.service deploy/systemd/compass-tools-maintenance.timer /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now compass-tools-maintenance.timer
+  systemctl list-timers compass-tools-maintenance.timer
+  sudo systemctl start compass-tools-maintenance.service && journalctl -u compass-tools-maintenance.service -n 5 --no-pager   # try it now
+  ```
+  It runs at 03:30 UTC (after the 02:15 backup) and catches up after downtime. The same run also destroys any retained security code whose
+  24-hour window has ended (the dedicated CVV job already does this; it is a second safety net), and the opt-in card-number purge stays
+  **off** while `CARD_RETENTION_DAYS` is unset.
 
 ## 11. Logs and troubleshooting
 

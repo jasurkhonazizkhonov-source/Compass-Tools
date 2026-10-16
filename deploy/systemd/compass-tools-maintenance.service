@@ -1,0 +1,19 @@
+# Daily housekeeping of Compass Tools (stale Lead-document uploads, expired rate-limit counters). NOT enabled by anything in the
+# repository - install it deliberately, as root, after replacing /opt/compass-tools and the User if yours differ:
+#   sudo cp deploy/systemd/compass-tools-maintenance.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now compass-tools-maintenance.timer
+# See docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md (10.3) and docs/LEAD_ATTACHMENTS.md ("Maintenance"). The user must be allowed to run
+# `docker` (that is root-equivalent: use a dedicated deploy account, not a shared one).
+[Unit]
+Description=Compass Tools daily maintenance (stale upload sweep)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/compass-tools
+ExecStart=/usr/bin/bash /opt/compass-tools/deploy/run-daily-maintenance.sh
+# A failed run shows up in: systemctl status compass-tools-maintenance.service  /  journalctl -u compass-tools-maintenance.service
+TimeoutStartSec=300
+Nice=10
