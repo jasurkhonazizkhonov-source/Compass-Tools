@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { allowedTypeForMime, maxFileSizeBytes } from "@/lib/attachments/policy";
 import { matchesSignature } from "@/server/attachments/signature";
 import { auditAttachment } from "@/server/attachments/audit";
-import { hasRoomFor, storeUpload } from "@/server/storage/local";
+import { hasRoomFor, localStorage, storeUpload } from "@/server/storage/local";
 
 // Receives the BYTES of a Lead document: the browser PUTs the file here (same origin, with the session cookie) after
 // requestLeadAttachmentUpload created the PENDING record. The file never goes to any other service.
@@ -101,7 +101,18 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
     signal: request.signal,
   });
 
-  if (result.ok) return NextResponse.json({ ok: true }, { headers: NO_STORE });
+  if (result.ok) {
+    // The upload can take minutes. If the attachment was swept as stale, cancelled, or its lead deleted while the bytes were arriving, the
+    // file now on disk belongs to nothing: remove it, and tell the browser to start again instead of reporting success. Only a MISSING row
+    // means that: a row that is already READY (another request completed it the instant the file appeared) owns the file and is left alone.
+    // (A COUNT of the id this request was already authorised for: it returns a number, never attachment data.)
+    const stillExists = await prisma.attachment.count({ where: { id: row.id } });
+    if (stillExists === 0) {
+      await localStorage.remove(row.storageKey).catch(() => undefined);
+      return json(409, "This upload is no longer valid. Please start it again.");
+    }
+    return NextResponse.json({ ok: true }, { headers: NO_STORE });
+  }
   switch (result.reason) {
     case "TOO_LARGE":
       return reject("SIZE_EXCEEDED", 413, MISMATCH);

@@ -36,4 +36,4 @@ step "Docker's own disk use"
 docker system df 2>/dev/null | sed 's/^/  /' || true
 
 echo
-echo "To compare the database with the files:   docker compose run --rm tools npx tsx scripts/attachments-reconcile.ts"
+echo "To compare the database with the files:   bash deploy/compose.sh run --rm tools npx tsx scripts/attachments-reconcile.ts"

@@ -178,11 +178,11 @@ After `deploy.sh` (it runs `verify.sh`, which includes the storage checks), do t
    ```
 4. **Persistence:** recreate the container and open the file again:
    ```bash
-   docker compose up -d --force-recreate app
+   bash deploy/compose.sh up -d --force-recreate app
    ```
    The file must still open. (The CI smoke test does the same with a probe file.)
 5. Delete the test file in the CRM; run `bash deploy/uploads-usage.sh` again — the file is gone.
-6. Compare the database with the disk at any time (read-only): `docker compose run --rm tools npx tsx scripts/attachments-reconcile.ts`
+6. Compare the database with the disk at any time (read-only): `bash deploy/compose.sh run --rm tools npx tsx scripts/attachments-reconcile.ts`
    — it lists attachment ids/keys that are **MISSING** (record but no file), wrong **SIZE**, **ORPHAN** (file but no record) and
    **PENDING** uploads; it prints no file names, and changes nothing. Exit code 2 = a record without a usable file.
 
@@ -238,7 +238,7 @@ bash deploy/restore-db.sh      /var/backups/compass-tools/<db backup from the sa
 # real recovery, in this order, with the site offline:
 bash deploy/restore-db.sh      <db backup> --replace         # asks you to type the database name; takes a safety backup first
 bash deploy/restore-uploads.sh <uploads backup> --replace    # asks you to type RESTORE; moves current files aside, never deletes them
-docker compose run --rm tools npx tsx scripts/attachments-reconcile.ts   # database and disk should now agree
+bash deploy/compose.sh run --rm tools npx tsx scripts/attachments-reconcile.ts   # database and disk should now agree
 ```
 
 `--replace` moves the current files into `.before-restore-<time>` inside the upload directory (nothing is deleted); remove that folder

@@ -42,6 +42,9 @@ printf 'Type RESTORE to continue: '
 read -r typed
 [ "$typed" = "RESTORE" ] || die "Confirmation did not match. Nothing was changed."
 
+# The installed version must be read BEFORE the app is stopped (and the restart below must use the same one).
+require_app_version
+
 step "Stopping the website"
 dc stop cloudflared cvv-cleanup app
 
@@ -75,5 +78,9 @@ dc up -d app cvv-cleanup cloudflared
 wait_healthy app
 
 step "Comparing the database records with the files"
-dc run --rm tools npx tsx scripts/attachments-reconcile.ts || yellow "The comparison reported problems - read them above. Nothing was changed by it."
-yellow "When you are satisfied, free the space the old files use:  docker compose run --rm --no-deps --entrypoint rm app -rf /var/lib/compass-tools/uploads/$aside"
+if docker image inspect "compass-tools-tools:$APP_VERSION" >/dev/null 2>&1; then
+  dc run --rm tools npx tsx scripts/attachments-reconcile.ts || yellow "The comparison reported problems - read them above. Nothing was changed by it."
+else
+  yellow "The maintenance image compass-tools-tools:$APP_VERSION is not on this server, so the comparison was skipped (it would have to be built). Build it with deploy/deploy.sh, then run:  bash deploy/compose.sh run --rm tools npx tsx scripts/attachments-reconcile.ts"
+fi
+yellow "When you are satisfied, free the space the old files use:  bash deploy/compose.sh run --rm --no-deps --entrypoint rm app -rf /var/lib/compass-tools/uploads/$aside"

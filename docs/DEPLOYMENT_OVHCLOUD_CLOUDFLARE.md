@@ -285,10 +285,10 @@ Manual equivalent (what the script wraps): `docker compose up -d --build`. Prefe
   nothing to back up and the script says so.
 * Look before you apply:
   ```bash
-  docker compose run --rm tools                                 # prisma migrate status (read-only; this is the default command)
+  bash deploy/compose.sh run --rm tools                          # prisma migrate status (read-only; this is the default command)
   git diff --stat <old>..<new> -- prisma/migrations              # which migrations are coming
   ```
-* Apply by hand if you must: `docker compose run --rm tools npx prisma migrate deploy`.
+* Apply by hand if you must: `bash deploy/compose.sh run --rm tools npx prisma migrate deploy` (take a backup first: `bash deploy/backup-db.sh`).
 * **Never** run `prisma migrate reset`, `prisma migrate dev`, `prisma db push` or `DROP` against this database. The `tools` container cannot
   reach the internet, so a stray command can only ever talk to this database — which is why the discipline matters.
 * An old application image running against a newer schema is normal for a rollback (§14); migrations in this project are written to be
@@ -313,7 +313,7 @@ in a file here. (Menu names follow Cloudflare's current documentation; the dashb
    no redirect loop). Keep the final catch-all rule the dashboard adds (`http_status:404`).
 3. Adding a route creates a **proxied CNAME** `→ <TUNNEL_ID>.cfargotunnel.com` for that hostname in the zone (§7).
 4. Copy the connector **token** (shown once in the install snippet, or via "Refresh token") **directly into `.env`** on the server.
-5. Start the connector (it is part of the stack): `docker compose up -d cloudflared`, then check the tunnel shows **Healthy** in the dashboard
+5. Start the connector (it is part of the stack): `bash deploy/compose.sh up -d cloudflared`, then check the tunnel shows **Healthy** in the dashboard
    and `docker compose logs --tail=30 cloudflared` shows registered connections.
 6. Dashboard → **Notifications**: add a *Tunnel health* alert (email) so a down tunnel is noticed.
 
@@ -438,7 +438,7 @@ period.
 * **Observable**:
   ```bash
   docker compose logs --tail=20 cvv-cleanup            # {"job":"cvv-cleanup","status":"ok","destroyed":N,...}
-  docker compose run --rm cvv-cleanup node scripts/cvv-cleanup-scheduler.mjs --once    # run it right now (exit 0 = ok)
+  bash deploy/compose.sh run --rm cvv-cleanup node scripts/cvv-cleanup-scheduler.mjs --once    # run it right now (exit 0 = ok)
   ```
   The deletion itself is written to the audit log (`CVV_DESTROYED`, trigger `EXPIRED`). Set `CLEANUP_HEARTBEAT_URL` (for example a
   Healthchecks.io check with a 26-hour period) to be alerted if the job stops. `verify.sh` fails if the job has *given up*.
@@ -590,16 +590,16 @@ bash deploy/rollback.sh <version>                                       # restar
 
 | Secret | How to rotate | Consequence / warning |
 |---|---|---|
-| `CRON_SECRET` | New value in `.env` → `docker compose up -d app cvv-cleanup` | Safe, instant. Both containers read the same variable. |
-| `TUNNEL_TOKEN` | Dashboard → the tunnel → refresh/rotate the token; new value in `.env` → `docker compose up -d cloudflared` | Brief tunnel interruption. Do this if the token may have been exposed. |
+| `CRON_SECRET` | New value in `.env` → `bash deploy/compose.sh up -d app cvv-cleanup` | Safe, instant. Both containers read the same variable. |
+| `TUNNEL_TOKEN` | Dashboard → the tunnel → refresh/rotate the token; new value in `.env` → `bash deploy/compose.sh up -d cloudflared` | Brief tunnel interruption. Do this if the token may have been exposed. |
 | `POSTGRES_PASSWORD` | `docker compose exec db psql -U compass -c "ALTER USER compass PASSWORD '<new>'"` (use a hex value), then edit `.env`, then `docker compose up -d` | Editing `.env` **alone does nothing** to an existing database. |
-| `GOOGLE_CLIENT_SECRET` | Google Cloud → create a new secret → `.env` → `docker compose up -d app` → delete the old secret | Sign-in uses the client **ID**; the secret matters for Connect Gmail. |
-| `CARD_ENCRYPTION_KEY` | **Never replace.** Add a new key to the key ring and re-encrypt: CARD_VAULT_SECURITY.md §6 (`docker compose run --rm tools npm run cards:rotate`) | Replacing the value destroys access to every stored card. Keep every old key while any backup or card uses it. |
+| `GOOGLE_CLIENT_SECRET` | Google Cloud → create a new secret → `.env` → `bash deploy/compose.sh up -d app` → delete the old secret | Sign-in uses the client **ID**; the secret matters for Connect Gmail. |
+| `CARD_ENCRYPTION_KEY` | **Never replace.** Add a new key to the key ring and re-encrypt: CARD_VAULT_SECURITY.md §6 (`bash deploy/compose.sh run --rm tools npm run cards:rotate`) | Replacing the value destroys access to every stored card. Keep every old key while any backup or card uses it. |
 | `GMAIL_TOKEN_ENCRYPTION_KEY` | No rotation mechanism. A new value makes stored Gmail tokens unreadable → every user must reconnect Gmail | Only after confirmed compromise (DEPLOYMENT.md §5e). |
 | `IP_ENCRYPTION_KEY`, `IP_HASH_KEY` | No rotation mechanism; a new value makes existing IP records unreadable / unsearchable | Manual migration only (docs/ip-vault-compliance.md). |
 | `LEAD_INGEST_SECRET` | Create the new credential at the source, update `.env`, restart `app`, then revoke the old | `LEAD_INGEST_SECRET` must match the travel website. |
 
-After any `.env` change: `docker compose up -d` (Compose recreates only the services whose environment changed), then `bash deploy/verify.sh`.
+After any `.env` change: `bash deploy/compose.sh up -d` (Compose recreates only the services whose environment changed), then `bash deploy/verify.sh`. Use `deploy/compose.sh`, not a bare `docker compose up`: in a fresh shell `APP_VERSION` is unset, and a bare command would look for (and try to build) an image called `compass-tools:local` instead of the version that is deployed.
 
 **Recovery from server loss**: new VPS → §3 → clone → restore `.env` from your off-server copy → `docker compose up -d db` → restore the latest
 backup (§12.4) → `bash deploy/deploy.sh` → §9.3. Tunnel and DNS need no change: the tunnel is outbound-only, so a new connector with the same
@@ -652,7 +652,7 @@ The Docker stack starts **empty**. To bring the existing data across (high-impac
 
 1. Put the CRM into a read-only state for staff (announce a window), so nothing is written during the copy.
 2. On the VPS, with the **same keys** already in `.env` (§2), start only the database and apply the schema: `docker compose up -d db` then
-   `docker compose run --rm tools npx prisma migrate deploy`.
+   `docker compose run --rm tools npx prisma migrate deploy`. (On a brand-new server no version is installed yet, so this builds the image untagged; `bash deploy/deploy.sh --migrate` does the same with a proper version tag and is the preferred route.)
 3. Check the source server version: `SHOW server_version;` — the client used for the dump must be the same major version or newer
    (this stack runs 17). Dump **without** the CVV data (those codes expire within a day):
    ```bash

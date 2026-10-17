@@ -75,9 +75,42 @@ uploads_host_dir() {
   printf '%s' "${src:-/srv/compass-tools/uploads}"
 }
 
+# Which image version to use. compose.yaml names the images  compass-tools:${APP_VERSION:-local}  and  compass-tools-tools:${APP_VERSION:-local}.
+# deploy.sh and rollback.sh set APP_VERSION themselves. Every OTHER script (backups, restores, usage reports, a manual `docker compose run`)
+# starts in a fresh shell where it is unset, and the "local" fallback names an image that does not exist: Compose would then try to BUILD
+# it from the checkout (slow, memory-hungry, and a different tag from the running app) or, for `up`, start the application on that other
+# image. So those scripts call this first: it takes the tag of the application that is installed (running or stopped) and refuses to
+# continue - with a clear message - if that image is not on this server. It never builds and never guesses.
+require_app_version() {
+  local image
+  if [ -z "${APP_VERSION:-}" ]; then
+    image="$(docker inspect --format '{{.Config.Image}}' "$(dc ps -aq app 2>/dev/null | head -1)" 2>/dev/null || true)"
+    case "$image" in compass-tools:?*) APP_VERSION="${image#compass-tools:}" ;; esac
+  fi
+  [ -n "${APP_VERSION:-}" ] || die "Cannot tell which application version is installed: there is no 'app' container to read it from and APP_VERSION is not set. Start the application with deploy/deploy.sh, or name the version yourself:  APP_VERSION=<tag> bash deploy/<script>   (the tags on this server: docker images compass-tools --format '{{.Tag}}')"
+  case "$APP_VERSION" in *[!A-Za-z0-9._-]*) die "APP_VERSION contains characters that are not allowed in an image tag." ;; esac
+  docker image inspect "compass-tools:$APP_VERSION" >/dev/null 2>&1 || die "The image compass-tools:$APP_VERSION is not on this server, so nothing was run (Docker Compose would otherwise try to build it). Tags available: docker images compass-tools --format '{{.Tag}}'. To (re)build a version: bash deploy/deploy.sh --ref <sha>."
+  export APP_VERSION
+}
+
+# Whether a database check can be trusted. Prints "existing" when the application database already has tables, "empty" when it verifiably
+# has none (a first deployment), and returns non-zero - printing nothing - when it could not be determined (container down, query failed,
+# unexpected answer). Callers must treat a non-zero result as "unknown", never as "empty".
+database_state() {
+  local db count
+  db="$(app_db_name)" || return 1
+  [ -n "$db" ] || return 1
+  count="$(psql_in "$db" "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public' AND table_name <> '_prisma_migrations'")" || return 1
+  case "$count" in
+    0) echo empty ;;
+    [1-9]*) case "$count" in *[!0-9]*) return 1 ;; *) echo existing ;; esac ;;
+    *) return 1 ;;
+  esac
+}
+
 # Runs a command as the application user (uid 1000) in a throw-away container of the app image with the uploads mounted. No dependencies
 # are started and nothing is published. This is how the scripts read and write the 0700, uid-1000 files without needing root.
-in_uploads_container() { dc run --rm --no-deps -T --entrypoint "$1" app "${@:2}"; }
+in_uploads_container() { require_app_version; dc run --rm --no-deps -T --entrypoint "$1" app "${@:2}"; }
 
 # Fails with copy-paste instructions unless the HOST upload directory exists and belongs to the application user (uid/gid 1000).
 # Compose is configured NOT to create it (a root-owned one would be unwritable by the app and uploads would fail at runtime).

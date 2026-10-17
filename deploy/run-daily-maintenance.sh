@@ -20,7 +20,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
 need_cmd docker
 check_env_file
-[ -n "$(dc ps -q app)" ] || die "The app container is not running (docker compose up -d app)."
+[ -n "$(dc ps -q app)" ] || die "The app container is not running (start it with:  bash deploy/compose.sh up -d app)."
 
 # shellcheck disable=SC2016  # the JavaScript below is for the container's Node, not this shell
 dc exec -T app node -e '

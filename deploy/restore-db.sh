@@ -56,6 +56,9 @@ printf 'Type the database name (%s) to continue: ' "$LIVE_DB"
 read -r typed
 [ "$typed" = "$LIVE_DB" ] || die "Confirmation did not match. Nothing was changed."
 
+# The installed version must be read BEFORE the app is stopped (and the restart below must use the same one).
+require_app_version
+
 step "Stopping the website (the database stays up)"
 dc stop cloudflared cvv-cleanup app
 

@@ -803,7 +803,16 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       expect(open.headers.get("x-content-type-options")).toBe("nosniff");
       expect(open.headers.get("cache-control")).toBe("private, no-store");
       expect(open.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+      // a PDF opens in the browser's own viewer, so it gets only the framing rule; an image gets the strict policy (nothing may load or run)
+      expect(open.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
       expect(Buffer.from(await open.arrayBuffer()).equals(Buffer.from(PDF))).toBe(true);
+      const png = await upload("Agent1", ids.LA1, { name: "scan.png", type: "image/png", bytes: PNG });
+      as("Agent1");
+      const img = await callRoute(png.id!);
+      expect(img.headers.get("content-type")).toBe("image/png");
+      expect(img.headers.get("content-disposition")).toMatch(/^inline; filename=/);
+      expect(img.headers.get("content-security-policy")).toBe("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'none'");
+      await img.arrayBuffer();
       const dl = await callRoute(pdf.id!, "?download=1");
       expect(dl.headers.get("content-disposition")).toMatch(/^attachment; filename=/);
       await dl.arrayBuffer();
@@ -1051,6 +1060,172 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       expect((await queries.listLeadAttachments(ids.LA1, actors.Admin)).items.find((i) => i.id === legacy.id)).toBeUndefined();
       expect((await callRoute(legacy.id)).status).toBe(404);
       await prisma.attachment.delete({ where: { id: legacy.id } });
+    });
+  });
+
+  // ── races between the stale sweep, completion, cancellation and the bytes arriving ────────────────────────────────────────────
+  // The invariant under test: a file that a READY attachment depends on is never removed, and a request is never told "saved" for an
+  // attachment that was swept away. Each test forces the interleaving deterministically (no sleep decides the outcome).
+  describe("races with the stale-upload sweep", () => {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const age = (id: string) => prisma.attachment.update({ where: { id }, data: { createdAt: new Date(Date.now() - 3 * 3600_000) } });
+    /** A PENDING attachment whose bytes have been received (file on disk) but that has not been completed yet. */
+    async function receivedButNotCompleted() {
+      as("Agent1");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "race.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!req.ok) throw new Error("setup");
+      const row = await prisma.attachment.findUniqueOrThrow({ where: { id: req.attachmentId } });
+      expect((await putBytes(req.attachmentId, PDF)).status).toBe(200);
+      return { id: req.attachmentId, key: row.storageKey! };
+    }
+
+    it("a completion that lands between the sweep reading a row and removing its file is never undone: READY keeps its file, or the attachment is cleanly gone", async () => {
+      for (let round = 0; round < 3; round++) {
+        const p = await receivedButNotCompleted();
+        await age(p.id);
+        const realRemove = local.localStorage.remove.bind(local.localStorage);
+        let completing: Promise<{ ok: boolean }> | undefined;
+        vi.spyOn(local.localStorage, "remove").mockImplementationOnce(async (key: string) => {
+          // the uploader finally finishes the very same upload at this exact moment (not awaited: it may have to wait for the sweep)
+          as("Agent1");
+          completing = actions.completeLeadAttachmentUpload(p.id);
+          await sleep(250);
+          return realRemove(key);
+        });
+        await cleanup.sweepStalePendingAttachments(Date.now());
+        const done = await completing!;
+        vi.restoreAllMocks();
+
+        const row = await prisma.attachment.findUnique({ where: { id: p.id } });
+        if (row?.status === "READY") expect(onDisk(p.key), "a READY attachment lost its file").toBe(true);
+        if (!row) expect(onDisk(p.key), "a deleted attachment left its file behind").toBe(false);
+        if (done.ok) {
+          expect(row?.status, "told 'saved' but the attachment is gone or not READY").toBe("READY");
+          expect(onDisk(p.key)).toBe(true);
+        }
+        await prisma.attachment.deleteMany({ where: { id: p.id } });
+      }
+    });
+
+    it("cancelling an upload while it is being completed cannot leave a READY attachment without its file", async () => {
+      const p = await receivedButNotCompleted();
+      const realRemove = local.localStorage.remove.bind(local.localStorage);
+      let completing: Promise<{ ok: boolean }> | undefined;
+      vi.spyOn(local.localStorage, "remove").mockImplementationOnce(async (key: string) => {
+        as("Agent1");
+        completing = actions.completeLeadAttachmentUpload(p.id);
+        await sleep(250);
+        return realRemove(key);
+      });
+      as("Agent1");
+      await actions.abandonLeadAttachmentUpload(p.id);
+      const done = await completing!;
+      vi.restoreAllMocks();
+      const row = await prisma.attachment.findUnique({ where: { id: p.id } });
+      if (row?.status === "READY") expect(onDisk(p.key), "a READY attachment lost its file").toBe(true);
+      if (done.ok) expect(row?.status).toBe("READY");
+      if (!row) expect(onDisk(p.key)).toBe(false);
+    });
+
+    it("bytes that arrive after their upload was swept (or its lead deleted) are not left behind as an unreferenced file", async () => {
+      as("Agent1");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "late.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!req.ok) throw new Error("setup");
+      await age(req.attachmentId);
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let step = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(c) {
+          if (step++ === 0) return void c.enqueue(PDF.slice(0, 6));
+          await gate; // the client stalls here, mid-upload
+          c.enqueue(PDF.slice(6));
+          c.close();
+        },
+      });
+      const putting = putBytes(req.attachmentId, body, { length: PDF.length });
+      await sleep(150);
+      const swept = await cleanup.sweepStalePendingAttachments(Date.now()); // the row is >1 h old: removed while the bytes are still in flight
+      expect(swept.removed).toBe(1);
+      release();
+      const res = await putting;
+      expect(res.status).not.toBe(200);
+      expect(await storedFiles(), "an unreferenced file was left on disk").toEqual([]);
+      expect(await tempFiles()).toEqual([]);
+    });
+
+    it("bytes that arrive after the user cancelled are not kept: no unreferenced file remains", async () => {
+      as("Agent1");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "cancelled.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!req.ok) throw new Error("setup");
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let step = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(c) {
+          if (step++ === 0) return void c.enqueue(PDF.slice(0, 6));
+          await gate;
+          c.enqueue(PDF.slice(6));
+          c.close();
+        },
+      });
+      const putting = putBytes(req.attachmentId, body, { length: PDF.length });
+      await sleep(150);
+      as("Agent1");
+      expect(await actions.abandonLeadAttachmentUpload(req.attachmentId)).toEqual({ ok: true }); // the user pressed Cancel mid-upload
+      release();
+      const res = await putting;
+      expect(res.status).not.toBe(200);
+      expect(await prisma.attachment.count({ where: { id: req.attachmentId } })).toBe(0);
+      expect(await storedFiles(), "an unreferenced file was left on disk").toEqual([]);
+      expect(await tempFiles()).toEqual([]);
+    });
+
+    it("a completion that wins the moment the bytes are published is not undone: the route never deletes the file of a READY attachment", async () => {
+      as("Agent1");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "win.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!req.ok) throw new Error("setup");
+      const row = await prisma.attachment.findUniqueOrThrow({ where: { id: req.attachmentId } });
+      // The route's existence check happens after the file is published - make another request complete the same attachment just before it.
+      const real = prisma.attachment.count.bind(prisma.attachment);
+      vi.spyOn(prisma.attachment, "count").mockImplementation(((args: unknown) =>
+        prisma.attachment.update({ where: { id: req.attachmentId }, data: { status: "READY" } }).then(() => real(args as never))) as never);
+      const res = await putBytes(req.attachmentId, PDF);
+      vi.restoreAllMocks();
+      expect(res.status).toBe(200);
+      expect((await prisma.attachment.findUniqueOrThrow({ where: { id: req.attachmentId } })).status).toBe("READY");
+      expect(onDisk(row.storageKey!), "the file of a READY attachment was deleted").toBe(true);
+    });
+
+    it("a sweep never touches a READY attachment, a recent upload, or a row it cannot lock", async () => {
+      const ready = await upload("Agent1", ids.LA1, { name: "keep.pdf", type: "application/pdf", bytes: PDF });
+      await age(ready.id!);
+      const recent = await receivedButNotCompleted();
+      const swept = await cleanup.sweepStalePendingAttachments(Date.now());
+      expect(swept.removed).toBe(0);
+      expect(onDisk(ready.key!)).toBe(true);
+      expect(onDisk(recent.key)).toBe(true);
+      expect((await prisma.attachment.findUniqueOrThrow({ where: { id: ready.id! } })).status).toBe("READY");
+
+      // a row another transaction currently holds is skipped (and left intact), not waited for or removed
+      const stale = await receivedButNotCompleted();
+      await age(stale.id);
+      let locked!: () => void;
+      const held = new Promise<void>((r) => (locked = r));
+      const holder = prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Attachment" WHERE "id" = ${stale.id} FOR UPDATE`;
+        locked();
+        await sleep(600);
+      });
+      await held;
+      const during = await cleanup.sweepStalePendingAttachments(Date.now());
+      await holder;
+      expect(during.removed).toBe(0);
+      expect(onDisk(stale.key)).toBe(true);
+      expect(await prisma.attachment.count({ where: { id: stale.id } })).toBe(1);
+      const after = await cleanup.sweepStalePendingAttachments(Date.now()); // once free, it is collected normally
+      expect(after.removed).toBe(1);
+      expect(onDisk(stale.key)).toBe(false);
     });
   });
 });

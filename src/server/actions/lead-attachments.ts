@@ -129,14 +129,18 @@ export async function requestLeadAttachmentUpload(
  * orphaned silently - the row is kept (and swept later) rather than deleted, so a transient filesystem error is retried.
  */
 async function discardPending(id: string, storageKey: string | null) {
-  if (storageKey) {
-    try {
-      await localStorage.remove(storageKey);
-    } catch {
-      return; // keep the PENDING row: the stale sweep retries the file removal, then removes the row
-    }
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Lock the row while it is still PENDING. A completion running at the same moment waits for this lock and then finds no row; if
+      // it committed first the row is READY, is not matched here, and neither its file nor its row is touched.
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Attachment" WHERE "id" = ${id} AND "status" = 'PENDING' FOR UPDATE`;
+      if (locked.length === 0) return;
+      if (storageKey) await localStorage.remove(storageKey); // throws -> rolls back: the row stays and the stale sweep retries
+      await tx.attachment.delete({ where: { id } });
+    });
+  } catch {
+    // keep the PENDING row: the stale sweep retries the file removal, then removes the row
   }
-  await prisma.attachment.deleteMany({ where: { id, status: "PENDING" } });
 }
 
 /**
@@ -182,6 +186,12 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
     if (!matchesSignature(type.signature, head)) return await reject("SIGNATURE_MISMATCH", "This file's contents don't match its file type, so it was not saved.");
 
     const done = await prisma.attachment.updateMany({ where: { id: row.id, status: "PENDING" }, data: { status: "READY" } });
+    if (done.count === 0) {
+      // Not PENDING any more: either another request completed it (fine - idempotent) or it was swept / cancelled while we verified it.
+      // Never report success for an attachment that no longer exists.
+      const ready = await prisma.attachment.count({ where: { id: row.id, status: "READY" } }); // a COUNT of the id already authorised above
+      if (ready === 0) return { ok: false, error: "The upload didn't finish. Please try again." };
+    }
     if (done.count === 1) {
       await auditAttachment({ action: "ATTACHMENT_UPLOADED", actorId: actor.id, attachmentId: row.id, leadId: row.leadId, contactId: row.contactId, companyId: actor.companyId, metadata: { size: stored.size, mime: row.fileType } });
       await logActivity({ leadId: row.leadId, contactId: row.contactId ?? undefined, actorId: actor.id, type: "DOCUMENT_ADDED", description: `Uploaded a document: ${row.fileName}` }).catch(() => {});

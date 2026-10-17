@@ -93,6 +93,15 @@ case "$db_mounts" in *compass-tools/uploads*) fail "the uploads are mounted into
 tools_rw="$(docker compose --profile tools config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).services.tools.volumes||[];console.log(v.length>0&&v.every(x=>x.read_only)?"ro":"rw")})')"
 [ "$tools_rw" = "ro" ] && ok "the maintenance container sees the uploads read-only" || fail "the tools container can write to the uploads"
 
+step "Operator scripts pick the INSTALLED image version (APP_VERSION unset), never ':local'"
+ver="$(env -u APP_VERSION bash -c 'source deploy/common.sh; require_app_version; echo "$APP_VERSION"')"
+[ "$ver" = "smoke" ] && ok "require_app_version -> $ver (read from the running app container)" || fail "resolved '$ver', expected 'smoke'"
+# The container the maintenance/backup scripts start (same helper): the app image's REAL user must own the mount, with mode 0700.
+ids="$(env -u APP_VERSION bash deploy/compose.sh run --rm --no-deps -T --entrypoint sh app -c 'echo "$(id -u):$(id -g) $(stat -c %u:%g:%a /var/lib/compass-tools/uploads)"')"
+[ "$ids" = "1000:1000 1000:1000:700" ] && ok "app user 1000:1000; mount owned 1000:1000, mode 700" || fail "uid:gid / mount owner:mode was '$ids'"
+if docker image inspect compass-tools:local >/dev/null 2>&1; then fail "a stray compass-tools:local image exists (something built the wrong tag)"; else ok "no compass-tools:local image was built"; fi
+if env -u APP_VERSION bash -c 'source deploy/common.sh; COMPOSE_PROJECT_NAME=nothing-installed require_app_version' >/dev/null 2>&1; then fail "require_app_version succeeded with no installed app"; else ok "with no installed app the helper refuses instead of guessing"; fi
+
 step "Runs as a non-root user"
 uid="$(docker compose exec -T app id -u)"
 [ "$uid" != "0" ] && ok "uid $uid" || fail "the app runs as root"
