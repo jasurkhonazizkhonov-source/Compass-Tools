@@ -103,9 +103,11 @@ export async function PUT(request: NextRequest, context: { params: Promise<{ id:
 
   if (result.ok) {
     // The upload can take minutes. If the attachment was swept as stale, cancelled, or its lead deleted while the bytes were arriving, the
-    // file now on disk belongs to nothing: remove it, and tell the browser to start again instead of reporting success.
-    const stillPending = await prisma.attachment.findFirst({ where: { id: row.id, status: "PENDING" }, select: { id: true } });
-    if (!stillPending) {
+    // file now on disk belongs to nothing: remove it, and tell the browser to start again instead of reporting success. Only a MISSING row
+    // means that: a row that is already READY (another request completed it the instant the file appeared) owns the file and is left alone.
+    // (A COUNT of the id this request was already authorised for: it returns a number, never attachment data.)
+    const stillExists = await prisma.attachment.count({ where: { id: row.id } });
+    if (stillExists === 0) {
       await localStorage.remove(row.storageKey).catch(() => undefined);
       return json(409, "This upload is no longer valid. Please start it again.");
     }

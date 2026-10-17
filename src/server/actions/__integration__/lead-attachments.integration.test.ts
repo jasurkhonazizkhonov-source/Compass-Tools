@@ -803,7 +803,16 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       expect(open.headers.get("x-content-type-options")).toBe("nosniff");
       expect(open.headers.get("cache-control")).toBe("private, no-store");
       expect(open.headers.get("cross-origin-resource-policy")).toBe("same-origin");
+      // a PDF opens in the browser's own viewer, so it gets only the framing rule; an image gets the strict policy (nothing may load or run)
+      expect(open.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
       expect(Buffer.from(await open.arrayBuffer()).equals(Buffer.from(PDF))).toBe(true);
+      const png = await upload("Agent1", ids.LA1, { name: "scan.png", type: "image/png", bytes: PNG });
+      as("Agent1");
+      const img = await callRoute(png.id!);
+      expect(img.headers.get("content-type")).toBe("image/png");
+      expect(img.headers.get("content-disposition")).toMatch(/^inline; filename=/);
+      expect(img.headers.get("content-security-policy")).toBe("default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; frame-ancestors 'none'");
+      await img.arrayBuffer();
       const dl = await callRoute(pdf.id!, "?download=1");
       expect(dl.headers.get("content-disposition")).toMatch(/^attachment; filename=/);
       await dl.arrayBuffer();
@@ -1143,6 +1152,49 @@ describe.skipIf(!enabled)("Lead documents — real PostgreSQL, real local files"
       expect(res.status).not.toBe(200);
       expect(await storedFiles(), "an unreferenced file was left on disk").toEqual([]);
       expect(await tempFiles()).toEqual([]);
+    });
+
+    it("bytes that arrive after the user cancelled are not kept: no unreferenced file remains", async () => {
+      as("Agent1");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "cancelled.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!req.ok) throw new Error("setup");
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let step = 0;
+      const body = new ReadableStream<Uint8Array>({
+        async pull(c) {
+          if (step++ === 0) return void c.enqueue(PDF.slice(0, 6));
+          await gate;
+          c.enqueue(PDF.slice(6));
+          c.close();
+        },
+      });
+      const putting = putBytes(req.attachmentId, body, { length: PDF.length });
+      await sleep(150);
+      as("Agent1");
+      expect(await actions.abandonLeadAttachmentUpload(req.attachmentId)).toEqual({ ok: true }); // the user pressed Cancel mid-upload
+      release();
+      const res = await putting;
+      expect(res.status).not.toBe(200);
+      expect(await prisma.attachment.count({ where: { id: req.attachmentId } })).toBe(0);
+      expect(await storedFiles(), "an unreferenced file was left on disk").toEqual([]);
+      expect(await tempFiles()).toEqual([]);
+    });
+
+    it("a completion that wins the moment the bytes are published is not undone: the route never deletes the file of a READY attachment", async () => {
+      as("Agent1");
+      const req = await actions.requestLeadAttachmentUpload({ leadId: ids.LA1, fileName: "win.pdf", contentType: "application/pdf", size: PDF.length });
+      if (!req.ok) throw new Error("setup");
+      const row = await prisma.attachment.findUniqueOrThrow({ where: { id: req.attachmentId } });
+      // The route's existence check happens after the file is published - make another request complete the same attachment just before it.
+      const real = prisma.attachment.count.bind(prisma.attachment);
+      vi.spyOn(prisma.attachment, "count").mockImplementation(((args: unknown) =>
+        prisma.attachment.update({ where: { id: req.attachmentId }, data: { status: "READY" } }).then(() => real(args as never))) as never);
+      const res = await putBytes(req.attachmentId, PDF);
+      vi.restoreAllMocks();
+      expect(res.status).toBe(200);
+      expect((await prisma.attachment.findUniqueOrThrow({ where: { id: req.attachmentId } })).status).toBe("READY");
+      expect(onDisk(row.storageKey!), "the file of a READY attachment was deleted").toBe(true);
     });
 
     it("a sweep never touches a READY attachment, a recent upload, or a row it cannot lock", async () => {

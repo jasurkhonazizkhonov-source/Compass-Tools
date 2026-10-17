@@ -189,8 +189,8 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
     if (done.count === 0) {
       // Not PENDING any more: either another request completed it (fine - idempotent) or it was swept / cancelled while we verified it.
       // Never report success for an attachment that no longer exists.
-      const now = await prisma.attachment.findUnique({ where: { id: row.id }, select: { status: true } });
-      if (now?.status !== "READY") return { ok: false, error: "The upload didn't finish. Please try again." };
+      const ready = await prisma.attachment.count({ where: { id: row.id, status: "READY" } }); // a COUNT of the id already authorised above
+      if (ready === 0) return { ok: false, error: "The upload didn't finish. Please try again." };
     }
     if (done.count === 1) {
       await auditAttachment({ action: "ATTACHMENT_UPLOADED", actorId: actor.id, attachmentId: row.id, leadId: row.leadId, contactId: row.contactId, companyId: actor.companyId, metadata: { size: stored.size, mime: row.fileType } });

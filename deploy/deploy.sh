@@ -72,10 +72,18 @@ if dc up -d db && wait_healthy db 120 && dc run --rm tools npx prisma migrate st
 else
   if [ "$MIGRATE" = "1" ]; then
     step "Backup before migrating"
-    if [ "$(psql_in "$(app_db_name)" "SELECT to_regclass('public.\"Account\"') IS NOT NULL" 2>/dev/null || echo f)" = "t" ]; then
-      bash "$ROOT_DIR/deploy/backup-db.sh"
+    # Only a database that was VERIFIED to have no tables skips the backup. If the check itself fails the state is unknown, which is
+    # never treated as "first deployment": stop here, before anything is migrated.
+    DB_STATE="$(database_state)" || die "Could not check whether the database already holds data (is the db container healthy?). Nothing was migrated and no backup was taken. Fix the problem, then re-run."
+    if [ "$DB_STATE" = "existing" ]; then
+      BACKUP_MARKER="$(mktemp)"
+      bash "$ROOT_DIR/deploy/backup-db.sh" || die "The pre-migration backup failed. Nothing was migrated."
+      # backup-db.sh only keeps a dump it could read back and that has the expected tables; also require that a NEW file really appeared.
+      [ -n "$(find "${BACKUP_DIR:-/var/backups/compass-tools}" -maxdepth 1 -type f -newer "$BACKUP_MARKER" \( -name 'compass-*.dump' -o -name 'compass-*.dump.age' \) 2>/dev/null | head -1)" ] \
+        || { rm -f "$BACKUP_MARKER"; die "No new backup file was found after the backup step. Nothing was migrated."; }
+      rm -f "$BACKUP_MARKER"
     else
-      yellow "The database has no tables yet (first deployment): there is nothing to back up."
+      green "Verified: the database has no tables yet (first deployment), so there is nothing to back up."
     fi
     step "Applying pending migrations (prisma migrate deploy: forward-only, never resets)"
     dc run --rm tools npx prisma migrate deploy
@@ -85,6 +93,11 @@ else
 fi
 
 step "Starting the new version"
+if [ -n "$PREVIOUS_IMAGE" ]; then
+  yellow "If the new version does not become healthy, go back to the previous one (nothing is deleted or rolled back automatically):  bash deploy/rollback.sh ${PREVIOUS_IMAGE##*:}"
+else
+  yellow "This is the first deployment, so there is no previous version to roll back to. Inspect a failure with:  docker compose logs --tail=100 app"
+fi
 dc up -d --remove-orphans db app cvv-cleanup cloudflared
 wait_healthy app 240
 
