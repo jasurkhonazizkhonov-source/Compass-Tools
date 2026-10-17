@@ -89,7 +89,21 @@ const apiSchema = flightInquiryBase
   .strict()
   .superRefine(refinePhone);
 
+/**
+ * Safety net only. Every expected outcome below already returns its own documented status; this catches what nothing anticipated (for
+ * example the database failing while the rate limit is checked) so the caller still gets the API's JSON error contract - a generic,
+ * retryable 500 - and never Next's default error page or an exception message. It never reports success, and it logs a fixed tag only.
+ */
 export async function POST(req: Request) {
+  try {
+    return await handle(req);
+  } catch {
+    console.error("[website-api] unexpected error");
+    return fail(500, "internal_error", "The request could not be saved. Retry with the same Idempotency-Key.");
+  }
+}
+
+async function handle(req: Request) {
   // 1. Private network only (see website-api-auth.ts). A plain 404: do not advertise that this API exists on the public hostname.
   if (arrivedViaPublicEdge(req.headers) && !publicRouteAllowed()) return fail(404, "not_found", "Not found.");
 

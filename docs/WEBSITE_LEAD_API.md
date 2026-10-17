@@ -115,7 +115,7 @@ for a developer, never contain an exception, stack trace, SQL, host name, secret
 | `413` | `payload_too_large` | No | Body over 32 KB |
 | `415` | `unsupported_media_type` | No | Not `application/json` |
 | `429` | `rate_limited` | **Yes**, after `Retry-After` seconds, same key | Too many requests, or too many failed authentications |
-| `500` | `internal_error` | **Yes**, same key | The request could not be saved. Nothing is half-saved under the key |
+| `500` | `internal_error` | **Yes**, same key | The request could not be saved (including any unanticipated server error — it is still this JSON shape). Nothing is half-saved under the key |
 | `503` | `not_configured` | **Yes**, later | The API is not enabled on this server (no/short key, or the configured company is missing) |
 
 ## Idempotency, retries and timeouts
@@ -146,9 +146,9 @@ for a developer, never contain an exception, stack trace, SQL, host name, secret
 
 ### Rotating the key without downtime
 
-1. Generate a new key. Set `WEBSITE_API_KEY_NEXT=<new>` in the CRM's `.env`; `docker compose up -d app`. Both keys now work.
+1. Generate a new key. Set `WEBSITE_API_KEY_NEXT=<new>` in the CRM's `.env`; `bash deploy/compose.sh up -d app`. Both keys now work.
 2. Switch the website's backend to the new key and restart it.
-3. In the CRM `.env`, move the new value into `WEBSITE_API_KEY`, delete `WEBSITE_API_KEY_NEXT`; `docker compose up -d app`. The old key stops working.
+3. In the CRM `.env`, move the new value into `WEBSITE_API_KEY`, delete `WEBSITE_API_KEY_NEXT`; `bash deploy/compose.sh up -d app`. The old key stops working.
 
 If a key may have leaked, do steps 1–3 immediately; the old key is refused as soon as step 3 is applied.
 
@@ -179,8 +179,11 @@ networks:
 
 The network exists once the CRM stack is up (`docker compose up -d`). The website does **not** need the CRM's database URL, and must not be given it.
 
-**Public hostname.** The CRM is also reachable from the internet through the Cloudflare tunnel. Every request through the tunnel carries `CF-Ray`; this API
-answers those with `404`, so even a leaked key cannot be used from outside. Only if the website must call the CRM over its public `https://` URL (for example
+**Public hostname.** The CRM is also reachable from the internet through the Cloudflare tunnel. Every request through the tunnel carries `CF-Ray`, and this API answers
+those with `404`. That check is **supplemental only — it is not authentication and not the isolation**: the isolation is the network design above (the website's network
+has no route to the database or the tunnel, and nothing is published), and the authentication is the bearer key. The check only makes sure the endpoint is not
+answered on the public hostname; because Cloudflare adds those headers to every tunnel request and a caller on the internet cannot remove them, it holds, but do not rely on it
+alone: for defence in depth also add a Cloudflare rule that blocks `/api/v1/website/*` on the public hostname. Only if the website must call the CRM over its public `https://` URL (for example
 it runs on another provider) set `WEBSITE_API_ALLOW_PUBLIC_ROUTE=true` — then the bearer key and the rate limits are the only barrier; prefer the private network.
 
 ## Visitor IP and approximate location (optional)
@@ -213,6 +216,70 @@ signature, older than 5 minutes, malformed, private/reserved IP) is ignored the 
 
 Logging: only fixed, data-free tags are ever logged (`[website-api] lead creation failed`, …). No request body, personal data, key or Idempotency-Key is logged.
 
+## Integration contract for the website team (server side only)
+
+Everything here runs in the **website's backend** (for example a Next.js Server Action or Route Handler). Nothing here may run in the browser.
+
+**Endpoint:** `POST http://compass-crm:3000/api/v1/website/flight-inquiries` (private Docker network `compass-tools-website-api`; plain HTTP is fine inside that network).
+**Authentication:** header `Authorization: Bearer <key>`. **Idempotency:** header `Idempotency-Key: <per-submission key>`. **Body:** JSON, fields as in the table above.
+
+**Configuration on the website server** (names are the website's own choice; these are suggestions):
+
+| Variable | Value | Rules |
+| --- | --- | --- |
+| `CRM_API_URL` | `http://compass-crm:3000` | server-side only |
+| `CRM_API_KEY` | the key the CRM operator generated (`openssl rand -hex 32` on the CRM side) | **never** a `NEXT_PUBLIC_*` variable, never imported by client code, never in the repository, a log line, an error message, an analytics event or a response to the browser. Keep it in the website server's `.env` (mode 600) or a secret store |
+
+Do not forward the visitor's own request headers to the CRM (especially anything starting with `cf-`): the CRM refuses calls that look as if they came through the public hostname.
+
+**Per submission:**
+
+1. When the form is rendered (or on first submit) generate one random key, e.g. `crypto.randomUUID()`, and keep it with the submission. It is the `Idempotency-Key` for **every** attempt of that submission and is never reused for a different one.
+2. Build the JSON body from the validated form fields only. Never include `companyId`, `submissionId`, `source`, `status`, an IP address or anything else not in the field table (unknown fields are rejected with `400`).
+3. Send with a **10 second timeout**. Handle the result:
+
+| Result | What the website does |
+| --- | --- |
+| `201` or `200` (`ok: true`) | Success. Store/show `leadId`. `duplicate: true` means this submission was already received — treat exactly like success, do not send a second notification email |
+| network error, timeout, `429`, `500`, `503` | Retry the **same body with the same key**: wait 1 s, 2 s, 4 s, 8 s (honour `Retry-After` on `429`), at most 5 attempts. If all fail, show the visitor a friendly error and keep the submission to resend later — **do not** create a new key |
+| `400` | A bug or a validation mismatch: do not retry. Log the `error.fields` **paths** (not values) and show the visitor a generic error |
+| `401`, `404` | Configuration problem (wrong or rotated key; calling through the public hostname). Do not retry; alert the operator. Never log the key |
+| `409` | The same key was already used for a different request — a bug in key handling. Do not retry with the same key |
+| `413`, `415` | A bug (body over 32 KB, or not JSON). Do not retry |
+
+**Sketch (TypeScript, server only; fake data):**
+
+```ts
+// server-side module of the website — never imported from a client component
+export async function sendInquiry(inquiry: Inquiry, idempotencyKey: string) {
+  const delays = [0, 1000, 2000, 4000, 8000];
+  for (const delay of delays) {
+    if (delay) await new Promise((r) => setTimeout(r, delay));
+    try {
+      const res = await fetch(`${process.env.CRM_API_URL}/api/v1/website/flight-inquiries`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${process.env.CRM_API_KEY}`, "Idempotency-Key": idempotencyKey },
+        body: JSON.stringify(inquiry), // { firstName: "Jane", lastName: "Doe", phone: "+14155552671", ... }
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (res.status === 200 || res.status === 201) return (await res.json()) as { ok: true; leadId: string; duplicate: boolean };
+      if (![429, 500, 503].includes(res.status)) throw new Error(`CRM refused the inquiry (HTTP ${res.status})`); // no retry; never log the body or the key
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith("CRM refused")) throw err;
+      // network error or timeout: loop and retry with the SAME key
+    }
+  }
+  throw new Error("CRM unavailable after retries; keep the submission and resend later with the same key");
+}
+```
+
+**Testing without touching production:**
+
+1. Run a separate CRM stack (a second Compose project on a developer machine or a staging VPS) with its **own** throwaway database, `.env`, and a throwaway `WEBSITE_API_KEY` (`openssl rand -hex 32`). Never reuse the production key or database.
+2. Point the website's `CRM_API_URL` / `CRM_API_KEY` at that stack (join the website container to that stack's `compass-tools-website-api` network, or publish nothing and use `docker compose exec`).
+3. Check, in this order: no key → `401`; wrong key → `401`; right key but no `Idempotency-Key` → `400`; a valid inquiry → `201` and the lead appears in that stack's CRM; the **same** request again → `200` with `duplicate: true` and still one lead; the same key with a changed field → `409`; kill the connection mid-request and retry with the same key → one lead.
+4. Confirm the website's logs and browser network panel contain no key and no customer data from failed calls.
+
 ## Configuration (server-side environment variables)
 
 | Variable | Where | Default | Purpose |
@@ -239,10 +306,10 @@ bash deploy/backup-db.sh
 bash deploy/deploy.sh --migrate
 ```
 
-then add the variables to `.env` (`openssl rand -hex 32` for the key), restart the app, and check:
+then add the variables to `.env` (`openssl rand -hex 32` for the key), restart the app **with `deploy/compose.sh`** (it runs `docker compose` on the version that is installed; a bare `docker compose up -d app` in a fresh shell would look for a non-existent `compass-tools:local` image), and check:
 
 ```bash
-docker compose up -d app
+bash deploy/compose.sh up -d app
 ```
 
 ```bash

@@ -19,6 +19,11 @@ if (enabled) {
 }
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/server/actions/lead-queue", () => ({ distributeNewWebsiteLead: vi.fn(async () => ({ ok: true })) }));
+// The real rate limiter (real database), wrapped so one test can make it fail.
+vi.mock("@/server/security/rate-limit", async (importOriginal) => {
+  const original = await importOriginal<typeof import("@/server/security/rate-limit")>();
+  return { ...original, checkAccountRateLimit: vi.fn(original.checkAccountRateLimit) };
+});
 
 const TAG = `wapi-${Date.now()}`;
 // Throwaway test values, not real secrets.
@@ -533,6 +538,30 @@ describe.skipIf(!enabled)("website API — real PostgreSQL", () => {
       expect(logged).not.toContain(body.phone as string);
       expect(logged).not.toContain(KEY);
       expect(logged).not.toContain(key);
+    });
+
+    it("an unanticipated failure (the database failing while the rate limit is checked) still answers with the JSON error contract: generic 500, nothing saved, no internals", async () => {
+      const errors: string[] = [];
+      vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a.map(String).join(" ")));
+      const body = payload();
+      const key = newKey();
+      const limiter = await import("@/server/security/rate-limit");
+      vi.mocked(limiter.checkAccountRateLimit).mockRejectedValueOnce(new Error("SECRET-DB-DETAIL connection to 10.0.0.5 refused"));
+      const res = await call(body, { key });
+      vi.restoreAllMocks();
+      expect(res.status).toBe(500);
+      expect(res.headers.get("content-type")).toMatch(/application\/json/);
+      const j = await json(res);
+      expect(j).toEqual({ ok: false, error: { code: "internal_error", message: "The request could not be saved. Retry with the same Idempotency-Key." } });
+      expect(JSON.stringify(j)).not.toMatch(/SECRET-DB-DETAIL|10\.0\.0\.5|prisma|stack/i);
+      expect(await prisma.lead.count({ where: { id: deriveId(key) } })).toBe(0);
+      const logged = errors.join("\n");
+      expect(logged).not.toMatch(/SECRET-DB-DETAIL|10\.0\.0\.5/);
+      expect(logged).not.toContain(body.email as string);
+      // the retry with the same key then works and creates exactly one lead
+      const retry = await call(body, { key });
+      expect(retry.status).toBe(201);
+      track((await json(retry)).leadId);
     });
 
     it("logs neither the credential nor customer data on any path", async () => {

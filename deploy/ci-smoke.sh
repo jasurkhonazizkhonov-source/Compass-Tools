@@ -127,6 +127,16 @@ api_ready="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/ap
 [ "$api_ready" = "configured" ] && ok "readiness.websiteApi=configured" || fail "readiness.websiteApi is $api_ready"
 api_net="$(docker compose config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);const n=c.networks.website_api;const app=Object.keys(c.services.app.networks||{});const others=["db","cloudflared"].filter((x)=>Object.keys(c.services[x].networks||{}).includes("website_api"));console.log((n&&n.internal?"internal":"open")+" app:"+app.includes("website_api")+" others:"+others.length)})')"
 [ "$api_net" = "internal app:true others:0" ] && ok "website_api is an internal network that only the app joins" || fail "unexpected website_api network layout: $api_net"
+# What a container on that network (the website's) can actually do, on real Docker: a throwaway container from the app image, attached ONLY to it.
+probe() { docker run --rm --network compass-tools-website-api --entrypoint node "compass-tools:smoke" -e "$1" 2>&1; }
+r="$(probe 'fetch("http://compass-crm:3000/api/v1/website/flight-inquiries",{method:"POST"}).then(r=>console.log(r.status)).catch(e=>console.log("ERR "+(e.cause&&e.cause.code)))')"
+[ "$r" = "401" ] && ok "from the website network, compass-crm resolves and the API answers (401 without a key)" || fail "compass-crm was not reachable from the website network: $r"
+r="$(probe 'require("dns").lookup("db",(e)=>console.log(e?e.code:"RESOLVED"))')"
+case "$r" in RESOLVED) fail "the website network can resolve the database host 'db'" ;; *) ok "the website network cannot resolve 'db' ($r)" ;; esac
+dbip="$(docker inspect -f '{{(index .NetworkSettings.Networks "compass-smoke_data").IPAddress}}' "$(docker compose ps -q db)")"
+[ -n "$dbip" ] || fail "could not read the database container address"
+r="$(probe 'const s=require("net").connect({host:"'"$dbip"'",port:5432,timeout:3000});s.on("connect",()=>{console.log("CONNECTED");s.destroy()});s.on("timeout",()=>{console.log("UNREACHABLE");s.destroy()});s.on("error",()=>console.log("UNREACHABLE"))')"
+[ "$r" = "UNREACHABLE" ] && ok "the website network has no route to PostgreSQL ($dbip:5432)" || fail "a container on the website network reached PostgreSQL: $r"
 
 step "The scheduled CVV-cleanup job runs once against the real endpoint"
 docker compose run --rm cvv-cleanup node scripts/cvv-cleanup-scheduler.mjs --once | tee "$TMP/job.log"
