@@ -208,8 +208,10 @@ signature, older than 5 minutes, malformed, private/reserved IP) is ignored the 
 2. Looks up the configured company (`WEBSITE_API_COMPANY_ID`, default `default-company`).
 3. Resolves airports by IATA code, finds or creates the contact (same de-duplication as an agent-entered lead; a repeat customer's lead goes to that
    contact's owner), and creates in **one insert**: the lead (`source = WEBSITE`, `priority = MEDIUM`, status per ownership), its status history, every
-   multi-city leg, the submission details and the idempotency fingerprint.
-4. Writes the `LEAD_CREATED` activity, and for an unowned lead starts the normal acceptance queue (a failure there never loses the lead; the existing
+   multi-city leg, the submission details, the idempotency fingerprint **and the `LEAD_CREATED` activity** — all or nothing, so a failed attempt leaves no lead
+   without its creation activity (or the reverse). Only a unique-key collision on the lead's own id counts as "already received" (`200`); any other failure
+   is a `500` that is safe to retry with the same key.
+4. For an unowned lead, starts the normal acceptance queue (a failure there never loses the lead; the existing
    sweep picks it up).
 5. Writes an **append-only audit row** (`WEBSITE_API_LEAD_CREATED`, `_DUPLICATE` or `_CONFLICT`; entity `Lead`) holding only the lead id, the company and the
    channel `website-api` — never the request, the customer's details, the key or the Idempotency-Key.

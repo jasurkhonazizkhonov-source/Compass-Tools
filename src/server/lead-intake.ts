@@ -7,7 +7,7 @@ import { resolveAirportCodes } from "@/server/queries/reference-data";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { MAX_LEAD_SEGMENTS } from "@/lib/lead-itinerary";
 import { deriveWebsiteLeadId } from "@/server/website-lead-id";
-import type { LeadStatus, Prisma } from "@/generated/prisma/client";
+import { Prisma, type LeadStatus } from "@/generated/prisma/client";
 
 // The ONE implementation of "a customer's flight request arrives from the company website and becomes a CRM Lead". It is shared by
 //   • POST /api/public/lead-capture            (browser-facing, unauthenticated by design, company chosen by the payload), and
@@ -71,6 +71,26 @@ export function refinePhone(data: { phone: string }, ctx: z.RefinementCtx): void
   if (!normalizePhoneNumberWithRecovery(data.phone)) {
     ctx.addIssue({ code: "custom", path: ["phone"], message: "That doesn't look like a valid phone number" });
   }
+}
+
+/**
+ * True only for a unique-constraint violation on the Lead table's PRIMARY KEY (its `id`), i.e. another request with the same derived id
+ * won the insert. Any other failure - a different unique constraint (say the contact's), a connection error, a timeout, a failed nested
+ * write - is NOT a duplicate and must surface as a failure the caller can retry.
+ *
+ * Shape confirmed against Prisma 7.9.1 + @prisma/adapter-pg on PostgreSQL: code "P2002", meta.modelName "Lead", and the constraint's
+ * columns under meta.driverAdapterError.cause.constraint.fields (["id"]; meta.target is not set by the driver adapter). A violation of
+ * the nested LeadIngestFingerprint primary key reports modelName "LeadIngestFingerprint" instead, so it is not mistaken for this one.
+ * `meta.target` is also honoured in case another engine/driver supplies it. Reads only error metadata, never the message.
+ */
+export function isLeadIdCollision(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
+  const meta = err.meta as { modelName?: unknown; target?: unknown; driverAdapterError?: { cause?: { constraint?: { fields?: unknown } } } } | undefined;
+  if (meta?.modelName !== "Lead") return false;
+  const unquote = (v: unknown) => String(v).replace(/^"|"$/g, "");
+  const columns = meta.driverAdapterError?.cause?.constraint?.fields ?? meta.target;
+  if (Array.isArray(columns)) return columns.length === 1 && unquote(columns[0]) === "id";
+  return typeof columns === "string" && (unquote(columns) === "id" || columns === "Lead_pkey");
 }
 
 export type CreateWebsiteLeadResult = { status: "created"; id: string } | { status: "duplicate"; id: string } | { status: "failed" };
@@ -169,13 +189,14 @@ export async function createWebsiteFlightLead(params: {
         assignedAgentId,
         status: initialStatus,
         statusHistory: { create: [{ toStatus: initialStatus }] },
+        // The creation activity is part of the SAME insert: the Lead exists if and only if its LEAD_CREATED activity does, so a retry
+        // after a failed attempt can never leave a lead with no activity (or, the other way round, an activity for a lead that was not saved).
+        activities: { create: [{ contactId, type: "LEAD_CREATED", description: "Lead created from website" }] },
         ...(submissionInfo ? { submissionInfo: { create: submissionInfo } } : {}),
         ...(idempotency ? { ingestFingerprint: { create: { requestHash: idempotency.requestHash, source: idempotency.source } } } : {}),
       },
       select: { id: true },
     });
-
-    await logActivity({ leadId: lead.id, contactId, type: "LEAD_CREATED", description: "Lead created from website" });
 
     // Best-effort — a cron sweep (/api/cron/leads) also picks up any WEBSITE-sourced, unassigned, never-queued lead, so a failure here
     // never loses the lead, only delays its distribution. A first-time Contact's ownership is never decided here; the REAL "assign the
@@ -184,9 +205,11 @@ export async function createWebsiteFlightLead(params: {
       await distributeNewWebsiteLead(lead.id).catch(() => undefined);
     }
     return { status: "created", id: lead.id };
-  } catch {
-    // A concurrent duplicate of the same submission loses on the primary key: that is success, not an error.
-    if (derivedLeadId) {
+  } catch (err) {
+    // A concurrent duplicate of the same submission loses on the Lead primary key: that is success, not an error. ONLY that exact
+    // violation counts (confirmed again by reading the row); any other failure - even if a lead with this id happens to exist - is a
+    // failure, so it is never reported as "this submission was already saved" when it was not what stopped this insert.
+    if (derivedLeadId && isLeadIdCollision(err)) {
       const existing = await prisma.lead.findUnique({ where: { id: derivedLeadId }, select: { id: true } }).catch(() => null);
       if (existing) return { status: "duplicate", id: existing.id };
     }

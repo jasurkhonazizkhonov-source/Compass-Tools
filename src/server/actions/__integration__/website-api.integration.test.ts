@@ -424,26 +424,49 @@ describe.skipIf(!enabled)("website API — real PostgreSQL", () => {
       const body = payload();
       const responses = await Promise.all(Array.from({ length: 10 }, () => call(body, { key })));
       const results = await Promise.all(responses.map(async (r) => ({ status: r.status, j: await json(r) })));
-      const ids = new Set(results.map((r) => r.j.leadId));
+      // A caller that loses the race on the Lead primary key is told the lead already exists (200). A caller that instead hits a
+      // TRANSIENT database conflict elsewhere (e.g. PostgreSQL serialization failure while the contact is resolved) is honestly told to
+      // retry (generic 500) - it is never reported as "already saved" merely because the winner's lead exists.
+      const saved = results.filter((r) => r.status === 201 || r.status === 200);
+      const retryable = results.filter((r) => r.status === 500);
+      expect(saved.length + retryable.length).toBe(results.length);
+      expect(retryable.every((r) => r.j.ok === false && r.j.error?.code === "internal_error")).toBe(true);
+      expect(saved.every((r) => r.j.ok)).toBe(true);
+      expect(saved.filter((r) => r.status === 201)).toHaveLength(1);
+      const ids = new Set(saved.map((r) => r.j.leadId));
       expect(ids.size).toBe(1);
-      track([...ids][0]);
-      expect(results.every((r) => r.status === 201 || r.status === 200)).toBe(true);
-      expect(results.filter((r) => r.status === 201).length).toBeGreaterThanOrEqual(1);
-      expect(results.every((r) => r.j.ok)).toBe(true);
-      const c = await counts([...ids][0]!);
+      const leadId = [...ids][0]!;
+      track(leadId);
+      // every caller that was told to retry gets the same lead on the retry (the advice in the 500 is true)
+      for (let i = 0; i < retryable.length; i++) {
+        const retry = await call(body, { key });
+        expect(retry.status).toBe(200);
+        expect(await json(retry)).toMatchObject({ ok: true, leadId, duplicate: true });
+      }
+      const c = await counts(leadId);
       expect(c).toMatchObject({ leads: 1, fingerprints: 1, history: 1, created: 1 });
       expect(await prisma.contact.count({ where: { primaryEmail: body.email } })).toBe(1);
     });
 
     it("concurrent requests reusing one key with DIFFERENT content: one wins, the others get 409, still one lead", async () => {
       const key = newKey();
-      const responses = await Promise.all(Array.from({ length: 6 }, (_, i) => call({ ...payload(), adults: i + 1 }, { key })));
+      const bodies = Array.from({ length: 6 }, (_, i) => ({ ...payload(), adults: i + 1 }));
+      const responses = await Promise.all(bodies.map((b) => call(b, { key })));
       const statuses = responses.map((r) => r.status).sort();
       const lead = await prisma.lead.findUnique({ where: { id: deriveId(key) } });
       track(lead?.id);
       expect(lead).not.toBeNull();
       expect(statuses.filter((s) => s === 201)).toHaveLength(1);
-      expect(statuses.every((s) => s === 201 || s === 409 || s === 200)).toBe(true);
+      // 409 for a request that lost on the primary key. A transient database conflict while resolving the contact (PostgreSQL
+      // serialization failure) is a retryable generic 500, NOT a 409/200: the failure is not proof that this request conflicts.
+      expect(statuses.every((s) => s === 201 || s === 409 || s === 200 || s === 500)).toBe(true);
+      // ...and a retry of every request that got the 500 settles to the same answer the others got: 409 (different content, same key).
+      for (const [i, res] of responses.entries()) {
+        if (res.status !== 500) continue;
+        expect((await json(res)).error?.code).toBe("internal_error");
+        const retry = await call(bodies[i], { key });
+        expect(retry.status).toBe(409); // every body differs (own email), and only the winner's body is the one stored under this key
+      }
       expect(await prisma.lead.count({ where: { id: deriveId(key) } })).toBe(1);
     });
 
@@ -538,6 +561,101 @@ describe.skipIf(!enabled)("website API — real PostgreSQL", () => {
       expect(logged).not.toContain(body.phone as string);
       expect(logged).not.toContain(KEY);
       expect(logged).not.toContain(key);
+    });
+
+    // The lead, its fingerprint, its status history and its LEAD_CREATED activity are ONE insert: a failure in any nested write rolls the
+    // whole thing back, so a retry can never find a lead without its creation activity (or the reverse).
+    it("creation is atomic: exactly one lead, one fingerprint, one status-history row and one LEAD_CREATED activity, linked to the lead and its contact", async () => {
+      const key = newKey();
+      const res = await call(payload(), { key });
+      expect(res.status).toBe(201);
+      const j = await json(res);
+      track(j.leadId);
+      expect(await counts(j.leadId!)).toEqual({ leads: 1, fingerprints: 1, history: 1, created: 1, audits: 1 });
+      const lead = await prisma.lead.findUniqueOrThrow({ where: { id: j.leadId }, select: { contactId: true } });
+      const activities = await prisma.activity.findMany({ where: { leadId: j.leadId } });
+      expect(activities).toHaveLength(1); // nothing else is logged against the lead, and no second LEAD_CREATED
+      expect(activities[0]).toMatchObject({ type: "LEAD_CREATED", description: "Lead created from website", contactId: lead.contactId, leadId: j.leadId });
+    });
+
+    it("a failure in the nested activity write (after the lead row was inserted) leaves no partial lead, fingerprint, history or activity; the retry with the same key succeeds with exactly one of each", async () => {
+      const errors: string[] = [];
+      vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => void errors.push(a.map(String).join(" ")));
+      const key = newKey();
+      const leadId = deriveId(key);
+      const body = payload();
+      // A REAL database failure inside the single nested insert: the activity points at a contact that does not exist, so PostgreSQL
+      // rejects the activity row (foreign key) only after the lead row itself has been written within the same statement set.
+      const realCreate = prisma.lead.create.bind(prisma.lead) as (args: unknown) => Promise<unknown>;
+      let nestedTypes: unknown[] = [];
+      const spy = vi.spyOn(prisma.lead, "create").mockImplementationOnce(((args: { data: { activities?: { create: Array<Record<string, unknown>> } } }) => {
+        const nested = args.data.activities?.create ?? [];
+        nestedTypes = nested.map((a) => a.type); // asserted below, OUTSIDE this callback: an assertion thrown in here would be swallowed as an ordinary failure
+        // No nested activity (the old two-step code) means nothing to corrupt: the insert then simply succeeds and the test fails below.
+        return realCreate({ ...args, data: { ...args.data, activities: { create: nested.map((a) => ({ ...a, contactId: `missing-contact-${TAG}` })) } } });
+      }) as never);
+      const failed = await call(body, { key });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(nestedTypes).toEqual(["LEAD_CREATED"]); // the creation activity really is part of the lead's own insert
+      expect(failed.status).toBe(500);
+      const j = await json(failed);
+      expect(j).toEqual({ ok: false, error: { code: "internal_error", message: "The request could not be saved. Retry with the same Idempotency-Key." } });
+      const text = JSON.stringify(j);
+      expect(text).not.toMatch(/foreign key|constraint|Activity|prisma|postgres|P20\d\d|stack|missing-contact/i);
+      expect(text).not.toContain(body.email as string);
+      expect(await counts(leadId)).toEqual({ leads: 0, fingerprints: 0, history: 0, created: 0, audits: 0 });
+      expect(await prisma.activity.count({ where: { leadId } })).toBe(0);
+      expect(await prisma.leadSubmissionInfo.count({ where: { leadId } })).toBe(0);
+      expect(errors.join("\n")).not.toContain(body.email as string);
+      spy.mockRestore();
+
+      const retry = await call(body, { key });
+      expect(retry.status).toBe(201);
+      const r = await json(retry);
+      expect(r).toEqual({ ok: true, leadId, duplicate: false });
+      track(r.leadId);
+      expect(await counts(leadId)).toEqual({ leads: 1, fingerprints: 1, history: 1, created: 1, audits: 1 });
+      expect(await prisma.activity.count({ where: { leadId } })).toBe(1);
+      expect(await prisma.contact.count({ where: { primaryEmail: body.email } })).toBe(1); // the failed attempt's contact is reused
+
+      // and the same key again is now a plain duplicate: still one lead, one activity
+      const again = await call(body, { key });
+      expect(again.status).toBe(200);
+      expect((await json(again)).duplicate).toBe(true);
+      expect(await counts(leadId)).toMatchObject({ leads: 1, fingerprints: 1, history: 1, created: 1 }); // (the duplicate is audited too, so audits is not pinned)
+      expect(await prisma.activity.count({ where: { leadId } })).toBe(1);
+    });
+
+    it("a failure that is NOT a collision on the Lead primary key is never reported as a duplicate, even though a lead with the derived id exists by then: generic 500, and the retry is then the real duplicate", async () => {
+      // The insert succeeds (so the derived-id lead really exists) and the call then fails with a unique violation on ANOTHER table.
+      // The old catch-all would have found that lead and answered "already saved"; the exact classification must answer "failed".
+      const { Prisma } = await import("@/generated/prisma/client");
+      const key = newKey();
+      const leadId = deriveId(key);
+      const body = payload();
+      const realCreate = prisma.lead.create.bind(prisma.lead) as (args: unknown) => Promise<unknown>;
+      const spy = vi.spyOn(prisma.lead, "create").mockImplementationOnce(((args: unknown) =>
+        realCreate(args).then(() => {
+          throw new Prisma.PrismaClientKnownRequestError("Unique constraint failed", {
+            code: "P2002",
+            clientVersion: "test",
+            meta: { modelName: "Contact", driverAdapterError: { cause: { constraint: { fields: ["primaryPhone"] } } } },
+          });
+        })) as never);
+      const failed = await call(body, { key });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(await prisma.lead.count({ where: { id: leadId } })).toBe(1); // the precondition of this test
+      track(leadId);
+      expect(failed.status).toBe(500);
+      const j = await json(failed);
+      expect(j).toEqual({ ok: false, error: { code: "internal_error", message: "The request could not be saved. Retry with the same Idempotency-Key." } });
+      expect(JSON.stringify(j)).not.toMatch(/unique|constraint|Contact|primaryPhone|prisma|P20\d\d/i);
+      spy.mockRestore();
+      // retrying is safe: the lead that did get saved is returned as the duplicate it now truly is, with nothing written twice
+      const retry = await call(body, { key });
+      expect(retry.status).toBe(200);
+      expect(await json(retry)).toEqual({ ok: true, leadId, duplicate: true });
+      expect(await counts(leadId)).toMatchObject({ leads: 1, fingerprints: 1, history: 1, created: 1 });
     });
 
     it("an unanticipated failure (the database failing while the rate limit is checked) still answers with the JSON error contract: generic 500, nothing saved, no internals", async () => {
