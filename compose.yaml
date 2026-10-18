@@ -57,7 +57,7 @@ services:
       - -c
       - log_min_duration_statement=2000
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     networks: [data]
     shm_size: 256mb
     mem_limit: 1g
@@ -163,7 +163,7 @@ services:
     # the container only; /ready answers 200 only while the tunnel has an active connection to Cloudflare.
     command: tunnel --no-autoupdate --metrics 127.0.0.1:2000 run
     environment:
-      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?Set TUNNEL_TOKEN in .env (Cloudflare dashboard -> Networking -> Tunnels -> compass-tools-vps)}
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env (Cloudflare dashboard -> Networking -> Tunnels -> compass-tools-vps)}
     depends_on:
       app:
         condition: service_healthy
@@ -247,4 +247,4 @@ networks:
     internal: true
 
 volumes:
-  postgres-data: {}
+  postgres_data: {}
