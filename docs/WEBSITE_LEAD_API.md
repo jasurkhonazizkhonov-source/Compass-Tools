@@ -111,7 +111,7 @@ for a developer, never contain an exception, stack trace, SQL, host name, secret
 | `400` | `idempotency_key_required` | No | Missing or malformed `Idempotency-Key` |
 | `401` | `unauthorized` | No | Missing or wrong credential (`WWW-Authenticate: Bearer`) |
 | `404` | `not_found` | No | The request came through the public hostname (see *Network*) |
-| `409` | `idempotency_key_reused` | No | This key was already used for a **different** request. Use a new key for a new submission |
+| `409` | `idempotency_key_reused` | No | This key was already used for a different request, or the original request cannot be verified. Use a new key for a new submission |
 | `413` | `payload_too_large` | No | Body over 32 KB |
 | `415` | `unsupported_media_type` | No | Not `application/json` |
 | `429` | `rate_limited` | **Yes**, after `Retry-After` seconds, same key | Too many requests, or too many failed authentications |
@@ -125,7 +125,7 @@ for a developer, never contain an exception, stack trace, SQL, host name, secret
   is answered as a repeat (`200`).
 * The CRM stores a SHA-256 fingerprint of the canonical request (sorted keys, defaults applied, strings trimmed) **in the same insert as the lead**
   (`LeadIngestFingerprint`). Retrying the same request — in any key order or spacing — is a repeat; a different request under the same key is `409`.
-* A lead created by another route (the public endpoint, a direct write) has no fingerprint: a repeat of its key is answered as a repeat (`200`) without a comparison.
+* A lead created by another route (such as the public endpoint or a direct write) may have no fingerprint. In that case, the API cannot verify that the original payload matches and returns `409 idempotency_key_reused` rather than claiming a verified duplicate. The existing lead is not recreated.
 * A key that resolves to a lead of another company is never answered with that lead (`409`).
 * **A `201` is only sent after the lead (contact, status history, itinerary, submission details, fingerprint) is committed.** If the response is lost, the
   retry returns the same lead.

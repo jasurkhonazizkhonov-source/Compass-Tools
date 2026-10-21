@@ -470,7 +470,7 @@ describe.skipIf(!enabled)("website API — real PostgreSQL", () => {
       expect(await prisma.lead.count({ where: { id: deriveId(key) } })).toBe(1);
     });
 
-    it("shares idempotency with the public endpoint and the website's direct write: one submission is one lead whichever route it takes", async () => {
+    it("refuses to claim a duplicate when the public endpoint created a lead without a fingerprint", async () => {
       const key = newKey();
       const viaPublic = await publicPOST(
         new Request("http://localhost/api/public/lead-capture", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ companyId: "default-company", submissionId: key, ...payload() }) })
@@ -478,8 +478,10 @@ describe.skipIf(!enabled)("website API — real PostgreSQL", () => {
       const pj = (await viaPublic.json()) as { id: string };
       track(pj.id);
       const res = await call(payload(), { key });
-      expect(res.status).toBe(200); // created elsewhere: no fingerprint to compare, so it is the same submission by key
-      expect(await json(res)).toEqual({ ok: true, leadId: pj.id, duplicate: true });
+      expect(res.status).toBe(409);
+      const response = await json(res);
+      expect(response.error?.code).toBe("idempotency_key_reused");
+      expect(JSON.stringify(response)).not.toContain(pj.id);
       expect(await prisma.lead.count({ where: { id: pj.id } })).toBe(1);
     });
 

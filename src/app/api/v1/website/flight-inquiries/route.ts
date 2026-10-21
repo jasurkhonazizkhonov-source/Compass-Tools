@@ -186,12 +186,11 @@ async function handle(req: Request) {
     .findUnique({ where: { id: result.id }, select: { contact: { select: { companyId: true } }, ingestFingerprint: { select: { requestHash: true } } } })
     .catch(() => null);
   const sameCompany = existing?.contact.companyId === companyId;
-  // A lead that has no fingerprint was created by another route (the public endpoint, the website's direct write): nothing to compare
-  // against, so it is the same submission by definition of the shared key.
-  const sameRequest = !existing?.ingestFingerprint || existing.ingestFingerprint.requestHash === requestHash;
+  // Without a stored fingerprint, the original request cannot be verified as identical.
+  const sameRequest = existing?.ingestFingerprint?.requestHash === requestHash;
   if (!existing || !sameCompany || !sameRequest) {
     await auditWebsiteApi({ action: "WEBSITE_API_LEAD_CONFLICT", leadId: result.id, companyId });
-    return fail(409, "idempotency_key_reused", "This Idempotency-Key was already used for a different request. Use a new key for a new submission.");
+    return fail(409, "idempotency_key_reused", "This Idempotency-Key is already in use and the original request could not be verified. Use a new key for a new submission.");
   }
   await auditWebsiteApi({ action: "WEBSITE_API_LEAD_DUPLICATE", leadId: result.id, companyId });
   return NextResponse.json({ ok: true, leadId: result.id, duplicate: true }, { status: 200, headers: NO_STORE });
