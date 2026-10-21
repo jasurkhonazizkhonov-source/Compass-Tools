@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { buildLeadSubmissionInfoCreate } from "../lead-submission-info";
 
@@ -85,5 +86,44 @@ describe("buildLeadSubmissionInfoCreate", () => {
     expect(info.ipAddress).toBe("203.0.113.9");
     expect(info.city).toBeNull();
     expect(info.geoSource).toBeNull();
+  });
+});
+
+// The authenticated website API (POST /api/v1/website/flight-inquiries) passes serverToServer: the connection is the website's own server,
+// so without a VERIFIED signed visitor context there must be no IP and no location - the connection headers are never consulted.
+describe("buildLeadSubmissionInfoCreate - serverToServer (authenticated website API)", () => {
+  const SECRET = "test-ingest-secret-0123456789-abcdefghij"; // throwaway test value
+  const now = new Date("2026-10-04T12:00:00Z");
+  const signed = (payload: Record<string, unknown>, secret = SECRET) => {
+    const context = Buffer.from(JSON.stringify({ v: 1, ts: Math.floor(now.getTime() / 1000), ...payload })).toString("base64url");
+    return { "x-ct-visitor-context": context, "x-ct-visitor-signature": createHmac("sha256", secret).update(context).digest("hex") };
+  };
+  const connectionHeaders = { "x-vercel-forwarded-for": "198.51.100.20", "x-vercel-ip-city": "Atlantis", "x-vercel-ip-country": "US" };
+
+  it("never records the connection's own address or location, even behind a trusted proxy that would normally be believed", () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    expect(buildLeadSubmissionInfoCreate(h(connectionHeaders), now)?.ipAddress).toBe("198.51.100.20"); // the browser path, unchanged
+    expect(buildLeadSubmissionInfoCreate(h(connectionHeaders), now, { serverToServer: true })).toBeUndefined();
+  });
+
+  it("keeps the budget currency but still no IP or location", () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    const info = buildLeadSubmissionInfoCreate(h(connectionHeaders), now, { serverToServer: true, budgetCurrency: "EUR" })!;
+    expect(info).toMatchObject({ ipAddress: null, ipVersion: null, city: null, country: null, geoSource: null, budgetCurrency: "EUR" });
+  });
+
+  it("uses a VERIFIED signed visitor context, and only that", () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
+    const info = buildLeadSubmissionInfoCreate(h({ ...connectionHeaders, ...signed({ ip: "203.0.113.77" }) }), now, { serverToServer: true })!;
+    expect(info.ipAddress).toBe("203.0.113.77");
+    expect(info.ipAddress).not.toBe("198.51.100.20");
+  });
+
+  it("a context that fails verification (wrong secret) yields nothing, never the connection's address", () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
+    const forged = signed({ ip: "203.0.113.77" }, "another-secret-0123456789-abcdefghijklm");
+    expect(buildLeadSubmissionInfoCreate(h({ ...connectionHeaders, ...forged }), now, { serverToServer: true })).toBeUndefined();
   });
 });
