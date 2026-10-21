@@ -31,7 +31,7 @@ rand_b64() { openssl rand -base64 32; }
 cat > "$TMP/env" <<EOF
 APP_BASE_URL=https://www.compass-tools.com
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
-TUNNEL_TOKEN=smoke-test-not-a-real-token
+CLOUDFLARE_TUNNEL_TOKEN=smoke-test-not-a-real-token
 GOOGLE_CLIENT_ID=smoke.apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=smoke-not-a-real-secret
 GMAIL_TOKEN_ENCRYPTION_KEY=$(rand_b64)
