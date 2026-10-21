@@ -17,15 +17,18 @@ import type { Prisma } from "@/generated/prisma/client";
 export function buildLeadSubmissionInfoCreate(
   headerList: Headers,
   now: Date = new Date(),
-  options: { budgetCurrency?: string } = {}
+  options: { budgetCurrency?: string; serverToServer?: boolean } = {}
 ): Prisma.LeadSubmissionInfoCreateWithoutLeadInput | undefined {
   // A server-to-server call (the website's server posting on a visitor's behalf) carries a SIGNED visitor context
   // (lead-ingest-context.ts). When one is present it is the only source: verified -> its IP/location; present but not
   // verifiable -> none (never the connection headers, which would describe the website's own server). With no context the
   // request is a direct visitor and the trusted-proxy headers apply, exactly as before.
   const visitor = resolveVisitorContext(headerList, now.getTime());
-  const ip = visitor.state === "verified" ? visitor.ip : visitor.state === "invalid" ? undefined : getClientIp(headerList);
-  const location = visitor.state === "verified" ? visitor.location : visitor.state === "invalid" ? undefined : getRequestLocation(headerList);
+  // `serverToServer` (the authenticated website API): the connection IS the website's own server, never the visitor, so without a verified
+  // context there is simply no IP or location - the connection headers are never consulted.
+  const direct = visitor.state === "absent" && !options.serverToServer;
+  const ip = visitor.state === "verified" ? visitor.ip : direct ? getClientIp(headerList) : undefined;
+  const location = visitor.state === "verified" ? visitor.location : direct ? getRequestLocation(headerList) : undefined;
   const budgetCurrency = options.budgetCurrency;
   if (!ip && !location && !budgetCurrency) return undefined;
   return {

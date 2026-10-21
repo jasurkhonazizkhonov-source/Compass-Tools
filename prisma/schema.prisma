@@ -443,6 +443,10 @@ model Lead {
   // "Lead Submission Information" section of the lead page.
   submissionInfo LeadSubmissionInfo?
 
+  // Present only on leads created through the authenticated website API (POST /api/v1/website/flight-inquiries): the fingerprint of the
+  // request that created it, so a retry with the same Idempotency-Key can be told apart from a different request reusing that key.
+  ingestFingerprint LeadIngestFingerprint?
+
   departureDate  DateTime?
   returnDate     DateTime?
   tripType       TripType   @default(ROUND_TRIP)
@@ -759,6 +763,17 @@ model LeadSubmissionInfo {
   geoSource      String?
   budgetCurrency String?
   capturedAt     DateTime @default(now())
+}
+
+// One row per Lead created through the authenticated website API, written in the SAME insert as the Lead (never separately), so the
+// fingerprint can never be missing for a lead the API reports as created. Holds only a SHA-256 digest of the canonical request and a
+// short source label - no customer data and no credential. Migration 20261016000100_lead_ingest_fingerprint.
+model LeadIngestFingerprint {
+  leadId      String   @id
+  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  requestHash String
+  source      String
+  createdAt   DateTime @default(now())
 }
 
 model Airport {

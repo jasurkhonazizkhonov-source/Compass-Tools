@@ -48,6 +48,8 @@ and Vercel-specific configuration).
   variables, Google OAuth, bootstrap, Vercel cron/config).
 - `docs/LEAD_ATTACHMENTS.md` — Lead documents in private Cloudflare R2: permissions, security model,
   environment variables and Cloudflare/Vercel setup.
+- `docs/WEBSITE_LEAD_API.md` — the authenticated server-to-server API the BusinessFlights.travel backend uses to create flight-inquiry
+  leads: contract, authentication and key rotation, idempotency and retries.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and
   structured-data conventions.
 - `docs/PAYMENT_AUTOFILL_SECURITY.md` — why full card-number autofill is
