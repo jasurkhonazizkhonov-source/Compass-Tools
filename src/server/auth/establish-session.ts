@@ -3,7 +3,7 @@ import { cookies, headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { DEV_ACCOUNT_COOKIE, SESSION_MAX_AGE_MS } from "@/lib/dev-session";
-import { captureSignInContext } from "@/server/auth/sign-in-context";
+import { resolveSignInContext } from "@/server/auth/sign-in-context";
 
 // NOT a "use server" module on purpose. This used to be an exported Server Action, which makes a function reachable over the
 // network by anyone able to name it — and this one takes an account id and returns a session for it. It is only ever called
@@ -28,7 +28,7 @@ const isProd = process.env.NODE_ENV === "production";
 export async function establishSession(accountId: string, headerList?: Headers) {
   const token = randomBytes(32).toString("base64url");
   const now = new Date();
-  const ctx = captureSignInContext(headerList ?? (await headers()));
+  const ctx = await resolveSignInContext(headerList ?? (await headers()));
 
   await prisma.$executeRaw`
     WITH locked AS (
@@ -45,6 +45,8 @@ export async function establishSession(accountId: string, headerList?: Headers) 
         "lastSignInCountry" = ${ctx.country},
         "lastSignInCountryCode" = ${ctx.countryCode},
         "lastSignInTimeZone" = ${ctx.timeZone},
+        "lastSignInLocationSource" = ${ctx.locationSource},
+        "lastSignInLocationAt" = ${ctx.locationResolvedAt},
         "updatedAt" = ${now}
       FROM locked WHERE a."id" = locked."id"
       RETURNING locked."previous" AS "previous"

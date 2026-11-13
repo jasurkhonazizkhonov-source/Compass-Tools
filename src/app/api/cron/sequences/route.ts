@@ -1,6 +1,6 @@
 import { rejectUnauthorizedCron } from "@/server/security/cron-auth";
 import { NextRequest, NextResponse } from "next/server";
-import { processDueSequenceSteps } from "@/server/actions/sequences";
+import { runDueSequenceSteps } from "@/server/due-sequence-steps";
 
 // Extension point for a real scheduler (Vercel Cron, GitHub Actions
 // schedule, an external queue worker, etc.) to trigger sequence sends.
@@ -16,6 +16,6 @@ import { processDueSequenceSteps } from "@/server/actions/sequences";
 export async function GET(request: NextRequest) {
   const denied = rejectUnauthorizedCron(request);
   if (denied) return denied;
-  const result = await processDueSequenceSteps();
+  const result = await runDueSequenceSteps();
   return NextResponse.json(result);
 }

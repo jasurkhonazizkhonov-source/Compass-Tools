@@ -13,5 +13,12 @@ export async function POST(req: Request) {
     source: "BUSINESS_FLIGHTS_WEBSITE",
     rateLimitEndpoint: "CONTACT_INQUIRY",
     rateLimit: RATE_LIMITS.CONTACT_INQUIRY,
+    // The Business Flights website's SERVER posts here for the visitor: this connection is that server, not the visitor. Only a verified signed
+    // visitor context (x-ct-visitor-context/-signature, LEAD_INGEST_SECRET) may supply the visitor's IP/location; without one nothing is recorded.
+    serverToServer: true,
+    // Idempotent contact submissions: the website sends a per-submission key (`submissionId`). A repeat of the same message (double click, retry after
+    // a timeout, a lost answer) lands on the same row and is answered `{ ok: true, duplicate: true }`; a website that sends no key behaves as before.
+    // Only a keyed submission takes the idempotent path; a submission without a key is stored exactly as before (no content-based de-duplication).
+    acceptSubmissionId: true,
   });
 }

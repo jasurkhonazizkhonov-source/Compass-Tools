@@ -13,11 +13,11 @@ const work = {
   sequences: vi.fn(async () => ({ sent: 0 })),
   leads: vi.fn(async () => ({ distributed: 0 })),
 };
-vi.mock("@/server/actions/tasks", () => ({ processDueTaskNotifications: () => work.tasks() }));
+vi.mock("@/server/due-task-notifications", () => ({ runDueTaskNotifications: () => work.tasks() }));
 vi.mock("@/server/security/rate-limit", () => ({ cleanupExpiredRateLimitCounters: () => work.cleanup() }));
 vi.mock("@/server/security/card-retention-schedule", () => ({ runScheduledCardRetention: () => work.retention() }));
 vi.mock("@/server/security/booking-cvv", () => ({ destroyExpiredCvvs: () => work.cvv() }));
-vi.mock("@/server/actions/sequences", () => ({ processDueSequenceSteps: () => work.sequences() }));
+vi.mock("@/server/due-sequence-steps", () => ({ runDueSequenceSteps: () => work.sequences() }));
 vi.mock("@/server/actions/lead-queue", () => ({ distributePendingWebsiteLeads: () => work.leads() }));
 
 const SECRET = "test-only-cron-secret-not-a-real-one";

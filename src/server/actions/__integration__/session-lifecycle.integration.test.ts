@@ -2,6 +2,10 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomBytes } from "node:crypto";
 import { NextRequest } from "next/server";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { buildCityDatabase } from "@/server/geo/__tests__/mmdb-fixture";
 
 // REAL-DATABASE proof of the CRM session lifecycle:
 //   • sign-in records the latest successful sign-in (time, FULL IP, approximate location) from the trusted request path only,
@@ -87,8 +91,8 @@ describe.skipIf(!enabled)("session lifecycle — real PostgreSQL", () => {
   };
   const row = (id: string) => prisma.account.findUniqueOrThrow({ where: { id }, select: { id: true, sessionCreatedAt: true, lastSignInAt: true, location: true, updatedAt: true } });
   const raw = async (id: string) =>
-    (await prisma.$queryRaw<{ activeSessionId: string | null; sessionCreatedAt: Date | null; lastSignInAt: Date | null; lastSignInIp: string | null; lastSignInCity: string | null; lastSignInRegion: string | null; lastSignInCountry: string | null; lastSignInCountryCode: string | null; lastSignInTimeZone: string | null }[]>`
-      SELECT "activeSessionId","sessionCreatedAt","lastSignInAt","lastSignInIp","lastSignInCity","lastSignInRegion","lastSignInCountry","lastSignInCountryCode","lastSignInTimeZone" FROM "Account" WHERE "id" = ${id}`)[0];
+    (await prisma.$queryRaw<{ activeSessionId: string | null; sessionCreatedAt: Date | null; lastSignInAt: Date | null; lastSignInIp: string | null; lastSignInCity: string | null; lastSignInRegion: string | null; lastSignInCountry: string | null; lastSignInCountryCode: string | null; lastSignInTimeZone: string | null; lastSignInLocationSource: string | null; lastSignInLocationAt: Date | null }[]>`
+      SELECT "activeSessionId","sessionCreatedAt","lastSignInAt","lastSignInIp","lastSignInCity","lastSignInRegion","lastSignInCountry","lastSignInCountryCode","lastSignInTimeZone","lastSignInLocationSource","lastSignInLocationAt" FROM "Account" WHERE "id" = ${id}`)[0];
   const setSessionAge = (id: string, ageMs: number) =>
     prisma.$executeRaw`UPDATE "Account" SET "sessionCreatedAt" = ${new Date(Date.now() - ageMs)} WHERE "id" = ${id}`;
   const proxyStatus = async (token: string | null, path = "/dashboard") => {
@@ -125,7 +129,7 @@ describe.skipIf(!enabled)("session lifecycle — real PostgreSQL", () => {
     jar.clear();
     process.env.TRUSTED_PROXY = "vercel";
     // a clean slate for the accounts under test
-    await prisma.$executeRaw`UPDATE "Account" SET "activeSessionId" = NULL, "sessionCreatedAt" = NULL, "lastSignInAt" = NULL, "lastSignInIp" = NULL, "lastSignInCity" = NULL, "lastSignInRegion" = NULL, "lastSignInCountry" = NULL, "lastSignInCountryCode" = NULL, "lastSignInTimeZone" = NULL WHERE "id" = ANY(${accountIds})`;
+    await prisma.$executeRaw`UPDATE "Account" SET "activeSessionId" = NULL, "sessionCreatedAt" = NULL, "lastSignInAt" = NULL, "lastSignInIp" = NULL, "lastSignInCity" = NULL, "lastSignInRegion" = NULL, "lastSignInCountry" = NULL, "lastSignInCountryCode" = NULL, "lastSignInTimeZone" = NULL, "lastSignInLocationSource" = NULL, "lastSignInLocationAt" = NULL WHERE "id" = ANY(${accountIds})`;
     await prisma.revokedSession.deleteMany({ where: { accountId: { in: accountIds } } });
   });
   afterAll(async () => {
@@ -210,6 +214,70 @@ describe.skipIf(!enabled)("session lifecycle — real PostgreSQL", () => {
       expect(after.lastSignInAt!.getTime()).toBe(first.lastSignInAt!.getTime());
       expect(after.activeSessionId).toBe(first.activeSessionId);
     });
+
+    describe("location from the local geolocation database (no platform geo headers: a VPS behind Cloudflare)", () => {
+      const geoDir = mkdtempSync(path.join(tmpdir(), "ses-geo-"));
+      const geoFile = path.join(geoDir, "city.mmdb");
+      const savedGeoPath = process.env.GEOIP_DB_PATH;
+      const CF = { "cf-connecting-ip": "203.0.113.9" };
+      beforeAll(() => {
+        writeFileSync(geoFile, buildCityDatabase({ entries: [{ cidr: "203.0.113.0/24", record: { city: "Frankfurt am Main", subdivision: { name: "Hesse", iso: "HE" }, country: { name: "Germany", iso: "DE" } } }] }));
+      });
+      beforeEach(async () => {
+        process.env.TRUSTED_PROXY = "cloudflare";
+        process.env.GEOIP_DB_PATH = geoFile;
+        (await import("@/server/geo/ip-geolocation")).resetIpGeolocationForTests();
+      });
+      afterAll(() => {
+        if (savedGeoPath === undefined) delete process.env.GEOIP_DB_PATH;
+        else process.env.GEOIP_DB_PATH = savedGeoPath;
+        rmSync(geoDir, { recursive: true, force: true });
+      });
+
+      it("stores the resolved city/region/country with its source and time, and the Users query shows them to an Administrator only", async () => {
+        const before = Date.now();
+        await signInAs(agentId, CF);
+        const r = await raw(agentId);
+        expect(r).toMatchObject({ lastSignInIp: "203.0.113.9", lastSignInCity: "Frankfurt am Main", lastSignInRegion: "Hesse", lastSignInCountry: "Germany", lastSignInCountryCode: "DE", lastSignInLocationSource: "DBIP-City-Lite (2026-11-01)" });
+        expect(r.lastSignInLocationAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+        const admin = { role: "ADMIN" as const, companyId };
+        const d = (await getAccountSignInDetails(admin)).get(agentId)!;
+        expect(d).toMatchObject({ ip: "203.0.113.9", location: "Frankfurt am Main, Hesse, Germany", locationSource: "DBIP-City-Lite (2026-11-01)" });
+        expect(d.locationNote).toContain("Approximate");
+        expect((await getAccountSignInDetails({ role: "TRAVEL_AGENT" as const, companyId })).size).toBe(0); // still Administrator-only
+      });
+
+      it("the location and its provenance never reach an ordinary Account read", async () => {
+        await signInAs(agentId, CF);
+        const plain = (await prisma.account.findUniqueOrThrow({ where: { id: agentId } })) as Record<string, unknown>;
+        for (const k of ["lastSignInIp", "lastSignInCity", "lastSignInRegion", "lastSignInCountry", "lastSignInCountryCode", "lastSignInTimeZone", "lastSignInLocationSource", "lastSignInLocationAt"]) expect(plain, k).not.toHaveProperty(k);
+      });
+
+      it("a missing database does not block the sign-in: the IP is stored, the location is null", async () => {
+        process.env.GEOIP_DB_PATH = path.join(geoDir, "absent.mmdb");
+        (await import("@/server/geo/ip-geolocation")).resetIpGeolocationForTests();
+        const token = await signInAs(agentId, CF);
+        expect(token).toBeTruthy();
+        const r = await raw(agentId);
+        expect(r.lastSignInIp).toBe("203.0.113.9");
+        expect([r.lastSignInCity, r.lastSignInCountry, r.lastSignInLocationSource, r.lastSignInLocationAt]).toEqual([null, null, null, null]);
+      });
+
+      it("a later sign-in from an address the database cannot place clears the old location AND its provenance", async () => {
+        await signInAs(agentId, CF);
+        await signInAs(agentId, { "cf-connecting-ip": "203.0.200.1" });
+        const r = await raw(agentId);
+        expect(r.lastSignInIp).toBe("203.0.200.1");
+        expect([r.lastSignInCity, r.lastSignInCountry, r.lastSignInLocationSource, r.lastSignInLocationAt]).toEqual([null, null, null, null]);
+      });
+
+      it("a forged header cannot choose the stored IP or location when the request is not on the trusted path", async () => {
+        process.env.TRUSTED_PROXY = "none";
+        await signInAs(agentId, { ...CF, "x-forwarded-for": "203.0.113.9", "cf-ipcountry": "DE" });
+        const r = await raw(agentId);
+        expect([r.lastSignInIp, r.lastSignInCity, r.lastSignInCountry, r.lastSignInLocationSource]).toEqual([null, null, null, null]);
+      });
+    });
   });
 
   // ------------------------------------------------------------------------------------------------------------------------------
@@ -242,7 +310,7 @@ describe.skipIf(!enabled)("session lifecycle — real PostgreSQL", () => {
       const viaFind = await prisma.account.findUniqueOrThrow({ where: { id: agentId } });
       const viaMany = await prisma.account.findMany({ where: { companyId } });
       const viaInclude = await prisma.auditLog.findMany({ where: { actorId: agentId }, include: { actor: true }, take: 1 });
-      const hidden = ["activeSessionId", "lastSignInIp", "lastSignInCity", "lastSignInRegion", "lastSignInCountry", "lastSignInCountryCode", "lastSignInTimeZone"];
+      const hidden = ["activeSessionId", "lastSignInIp", "lastSignInCity", "lastSignInRegion", "lastSignInCountry", "lastSignInCountryCode", "lastSignInTimeZone", "lastSignInLocationSource", "lastSignInLocationAt"];
       for (const rowData of [viaFind, ...viaMany, ...viaInclude.map((a) => a.actor!).filter(Boolean)]) {
         for (const key of hidden) expect(rowData, key).not.toHaveProperty(key);
       }

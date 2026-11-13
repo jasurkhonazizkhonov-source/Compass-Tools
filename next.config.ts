@@ -66,6 +66,9 @@ const nextConfig: NextConfig = {
   // outputFileTracingRoot is pinned (not inferred from lockfiles found in parent directories) so server.js is always at the top of
   // .next/standalone, which is where the Dockerfile expects it. The build always runs from the project root.
   ...(standaloneOutput ? { output: "standalone" as const, outputFileTracingRoot: process.cwd() } : {}),
+  // Do not advertise the framework in an `X-Powered-By: Next.js` response header: it tells a scanner which stack (and which advisories) to try. This
+  // is the whole fix - every response (pages, API routes, redirects, error pages) is served by Next, which adds the header from this one switch.
+  poweredByHeader: false,
   ...(cloudflareBuild
     ? {
         serverExternalPackages: CLOUDFLARE_WORKERD_PACKAGES,

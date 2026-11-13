@@ -32,10 +32,15 @@ function common(): string[] {
   ];
 }
 
-export function buildBaseCsp(): string {
+/**
+ * `dev` (default: running under `next dev`) adds 'unsafe-eval' to script-src, exactly as buildNonceCsp already does: React's development
+ * build uses eval() to reconstruct call stacks and logs "eval() is not supported in this environment" when the policy forbids it. React
+ * never uses eval() in production, and a production build (NODE_ENV=production) and the test suite get the unchanged policy.
+ */
+export function buildBaseCsp(dev: boolean = process.env.NODE_ENV === "development"): string {
   return [
     ...common().slice(0, 1),
-    "script-src 'self' 'unsafe-inline' https://accounts.google.com",
+    `script-src 'self' 'unsafe-inline' https://accounts.google.com${dev ? " 'unsafe-eval'" : ""}`,
     // https://accounts.google.com is required for Google's Sign-In button stylesheet.
     "style-src 'self' 'unsafe-inline' https://accounts.google.com",
     ...common().slice(1),

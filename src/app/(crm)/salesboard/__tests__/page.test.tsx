@@ -57,13 +57,13 @@ describe("Salesboard page — the current pay period is the default view and fli
     expect(range.endExclusive.toISOString()).toBe("2026-11-06T08:00:00.000Z"); // Nov 6 00:00 PST
   });
 
-  it("also asks for the previous pay period, for the comparison", async () => {
+  it("queries only the selected pay period (the previous-period comparison, and its query, are gone)", async () => {
     vi.setSystemTime(new Date("2026-11-10T20:00:00Z"));
     await render();
-    expect(getSalesboard).toHaveBeenCalledTimes(2);
-    const prev = getSalesboard.mock.calls[1][1] as { start: Date; endExclusive: Date };
-    expect(prev.start.toISOString()).toBe("2026-10-21T07:00:00.000Z");
-    expect(prev.endExclusive.toISOString()).toBe("2026-11-06T08:00:00.000Z");
+    expect(getSalesboard).toHaveBeenCalledTimes(1);
+    const only = getSalesboard.mock.calls[0][1] as { start: Date; endExclusive: Date };
+    expect(only.start.toISOString()).toBe("2026-11-06T08:00:00.000Z");
+    expect(only.endExclusive.toISOString()).toBe("2026-11-21T08:00:00.000Z");
   });
 });
 
@@ -117,25 +117,38 @@ describe("Salesboard page — From / To and quick selectors use the same query",
   });
 });
 
-describe("Salesboard page — KPIs and comparison", () => {
+describe("Salesboard page — KPIs (no previous-period comparison)", () => {
   beforeEach(() => vi.setSystemTime(new Date("2026-11-10T20:00:00Z")));
 
-  it("totals, average and a percentage change versus the previous period", async () => {
-    getSalesboard.mockReset();
-    getSalesboard.mockResolvedValueOnce(ROWS).mockResolvedValueOnce([{ id: "a1", fullName: "Alice", role: "Travel Agent", profit: 200, bookingCount: 2 }]);
-    const t = text(await render());
+  it("totals and the average are shown, with no percentage change, no 'vs previous' and no previous-period dates", async () => {
+    const html = await render();
+    const t = text(html);
     expect(t).toContain("$400.00"); // 300 + 100
     expect(t).toContain("Average Profit per Booking");
     expect(t).toContain("$100.00"); // 400 / 4
-    expect(t).toContain("+100.0%"); // 400 vs 200
+    const kpis = [...html.matchAll(/data-testid="period-kpi">(.*?)<\/div>/g)].map((m) => text(m[1]).trim());
+    expect(kpis).toEqual(["Profit Generated $400.00", "Confirmed Bookings 4", "Average Profit per Booking $100.00"]);
+    expect(html).not.toContain("period-kpi-comparison");
+    expect(t).not.toMatch(/\bvs\b/i);
+    expect(t).not.toMatch(/[+-]?\d+(\.\d+)?\s?%/);
+    expect(t).not.toContain("No earlier figure to compare");
   });
 
-  it("an empty previous period never produces Infinity/NaN — it says there is nothing to compare with", async () => {
+  it("the leaderboard, rankings and rows are intact", async () => {
+    const t = text(await render());
+    expect(t).toContain("Alice");
+    expect(t).toContain("Bob");
+    expect(t).toContain("$300.00");
+    expect(t).toContain("$100.00");
+    expect(t.indexOf("Alice")).toBeLessThan(t.indexOf("Bob")); // highest profit first
+  });
+
+  it("a zero or empty earlier period changes nothing on screen (no Infinity/NaN, no comparison line)", async () => {
     getSalesboard.mockReset();
     getSalesboard.mockResolvedValueOnce(ROWS).mockResolvedValueOnce([]);
-    const t = text(await render());
-    expect(t).not.toMatch(/Infinity|NaN/);
-    expect(t).toContain("No earlier figure to compare");
+    const html = await render();
+    expect(text(html)).not.toMatch(/Infinity|NaN/);
+    expect(html).not.toContain("period-kpi-comparison");
   });
 
   it("an empty current period shows the empty state and a dash for the average (no NaN)", async () => {

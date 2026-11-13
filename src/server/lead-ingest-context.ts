@@ -18,7 +18,14 @@
 // trusted-proxy headers (request-ip.ts / request-geo.ts).
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { isPrivateOrReservedIp, isValidIpAddress, normalizeIp } from "@/lib/request-ip";
-import { readApproximateLocation, type ApproximateLocation } from "@/lib/request-geo";
+import { CLOUDFLARE_GEO_SOURCE, GEO_SOURCE, readApproximateLocation, type ApproximateLocation } from "@/lib/request-geo";
+
+/**
+ * The only location sources the website may name in its signed context, each mapped to the stored label. The value is looked up here, never copied from
+ * the payload, so a context can never inject an arbitrary text into the stored source. Anything else (or nothing: an older website) keeps the label
+ * this CRM has always used for a signed context, "Vercel edge geolocation (approximate)".
+ */
+const CONTEXT_LOCATION_SOURCES: Readonly<Record<string, string>> = { vercel: GEO_SOURCE, cloudflare: CLOUDFLARE_GEO_SOURCE };
 
 export const VISITOR_CONTEXT_HEADER = "x-ct-visitor-context";
 export const VISITOR_SIGNATURE_HEADER = "x-ct-visitor-signature";
@@ -42,12 +49,14 @@ export type VisitorContextPayload = {
   region?: string;
   country?: string;
   timezone?: string;
+  /** Which edge produced the location fields above: "cloudflare" or "vercel" (anything else is ignored). Optional, so an older website keeps working. */
+  source?: string;
 };
 
 export type VisitorContextResult =
   | { state: "absent" }
   | { state: "invalid" }
-  | { state: "verified"; ip?: string; location?: ApproximateLocation };
+  | { state: "verified"; ip?: string; location?: ApproximateLocation; /** The stored label for `location`; present only with a location. */ locationSource?: string };
 
 export function signVisitorContext(payload: VisitorContextPayload, secret: string): { context: string; signature: string } {
   const context = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
@@ -89,5 +98,7 @@ export function resolveVisitorContext(headers: Headers, nowMs: number = Date.now
   if (region) geoHeaders.set("x-vercel-ip-country-region", region);
   if (country) geoHeaders.set("x-vercel-ip-country", country);
   if (timezone) geoHeaders.set("x-vercel-ip-timezone", timezone);
-  return { state: "verified", ip, location: readApproximateLocation(geoHeaders) };
+  const location = readApproximateLocation(geoHeaders);
+  const named = typeof payload.source === "string" && Object.prototype.hasOwnProperty.call(CONTEXT_LOCATION_SOURCES, payload.source) ? CONTEXT_LOCATION_SOURCES[payload.source] : undefined;
+  return { state: "verified", ip, location, ...(location ? { locationSource: named ?? GEO_SOURCE } : {}) };
 }

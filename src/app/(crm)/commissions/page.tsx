@@ -16,8 +16,8 @@ import { COMMISSION_TRANSACTION_TYPE_META } from "@/lib/status-meta";
 import { cn } from "@/lib/utils";
 import { ReportRangeControls, rangeHeading } from "@/components/crm/report-range-controls";
 import { PeriodKpi } from "@/components/crm/period-kpi";
-import { buildReportHref, civilDateInZone, formatCivilShort, previousEquivalentRange, resolveReportRange } from "@/lib/pay-period";
-import { salesRangeForDays, toSalesRange } from "@/server/queries/sales-range";
+import { buildReportHref, civilDateInZone, formatCivilShort, resolveReportRange } from "@/lib/pay-period";
+import { toSalesRange } from "@/server/queries/sales-range";
 
 export const dynamic = "force-dynamic";
 
@@ -50,13 +50,11 @@ export default async function CommissionsPage({ searchParams }: { searchParams: 
   // one user; Manager / Travel Agent: only their own), whatever dates are asked for.
   const str = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
   const range = resolveReportRange({ period: str(sp.period), from: str(sp.from), to: str(sp.to), payPeriod: str(sp.payPeriod) });
-  const previous = previousEquivalentRange(range);
   const filters = { userId: selectedUserId, range: toSalesRange(range) };
 
-  const [{ rows: commissions, total, pageCount, pageSize: effectivePageSize }, summary, previousSummary, eligibleAgents] = await Promise.all([
+  const [{ rows: commissions, total, pageCount, pageSize: effectivePageSize }, summary, eligibleAgents] = await Promise.all([
     getCommissions(current, filters, page, pageSize),
     getCommissionsSummary(current, filters),
-    previous ? getCommissionsSummary(current, { userId: selectedUserId, range: salesRangeForDays(previous.from, previous.to) }) : Promise.resolve(null),
     canFilterByUser ? listLeadEligibleAgents(current!.companyId, { includeHidden: true }) : Promise.resolve([]),
   ]);
   const heading = rangeHeading(range);
@@ -86,7 +84,7 @@ export default async function CommissionsPage({ searchParams }: { searchParams: 
         </div>
       </div>
 
-      <ReportRangeControls basePath="/commissions" selected={range} preserve={{ user: selectedUserId }} />
+      <ReportRangeControls basePath="/commissions" selected={range} preserve={{ user: selectedUserId }} modernCalendar />
 
       <div className="flex items-center justify-between gap-3 flex-wrap">
         {canFilterByUser && (
@@ -120,9 +118,9 @@ export default async function CommissionsPage({ searchParams }: { searchParams: 
         <CardHeader><CardTitle className="text-sm font-medium" data-testid="commission-summary-title">{commissionTitle} <span className="font-normal text-muted-foreground">· {heading.dates}</span></CardTitle></CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <PeriodKpi label="Bookings" value={String(summary.bookingCount)} current={summary.bookingCount} previous={previousSummary?.bookingCount} previousLabel={previous?.label} />
-            <PeriodKpi label="Total Profit" value={formatMoney(summary.totalProfit, "USD")} current={summary.totalProfit} previous={previousSummary?.totalProfit} previousLabel={previous?.label} />
-            <PeriodKpi label="Total Commission" value={formatMoney(summary.totalCommission, "USD")} current={summary.totalCommission} previous={previousSummary?.totalCommission} previousLabel={previous?.label} />
+            <PeriodKpi label="Bookings" value={String(summary.bookingCount)} />
+            <PeriodKpi label="Total Profit" value={formatMoney(summary.totalProfit, "USD")} />
+            <PeriodKpi label="Total Commission" value={formatMoney(summary.totalCommission, "USD")} />
             <SummaryStat
               label={summary.uniformTipPercent != null ? `Total Tips (${summary.uniformTipPercent}% applied)` : "Total Tips"}
               value={formatMoney(summary.totalTips, "USD")}

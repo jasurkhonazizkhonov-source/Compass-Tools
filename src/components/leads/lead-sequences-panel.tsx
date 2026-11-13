@@ -4,18 +4,15 @@ import { Mail } from "lucide-react";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { ApplySequenceDialog } from "@/components/sequences/apply-sequence-dialog";
+import { ActiveSequenceCard, splitEnrollments, stepLabel, type LeadEnrollment } from "@/components/leads/active-sequences";
 import { ENROLLMENT_STATUS_META } from "@/lib/status-meta";
 
-type Enrollment = {
-  id: string;
-  status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED";
-  currentStepIdx: number;
-  enrolledAt: Date;
-  nextSendAt: Date | null;
-  completedAt: Date | null;
-  sequence: { id: string; name: string; steps: { id: string }[] };
-  enrolledBy: { fullName: string } | null;
-};
+/** What a non-active enrollment looks like in the history list: never a "next email", always where it stopped. */
+function historyDetail(e: LeadEnrollment): string {
+  if (e.status === "COMPLETED") return `Completed${e.completedAt ? ` ${format(e.completedAt, "MMM d, yyyy")}` : ""}`;
+  if (e.status === "FAILED") return `Stopped at ${stepLabel(e).toLowerCase()} - no further emails will be sent`;
+  return `Unsubscribed at ${stepLabel(e).toLowerCase()} - no further emails will be sent`; // UNSUBSCRIBED: unenrolled by staff or the customer's own unsubscribe link
+}
 
 export function LeadSequencesPanel({
   leadId,
@@ -24,13 +21,15 @@ export function LeadSequencesPanel({
   contactEmails = [],
 }: {
   leadId: string;
-  enrollments: Enrollment[];
+  enrollments: LeadEnrollment[];
   availableSequences: { id: string; name: string; description: string | null; stepCount: number }[];
   /** Every email on file for this lead's contact, primary first — passed
    * through to ApplySequenceDialog's recipient picker (Part 4). */
   contactEmails?: string[];
 }) {
-  const activeSequenceIds = new Set(enrollments.filter((e) => e.status === "ACTIVE").map((e) => e.sequence.id));
+  // Only a genuinely ACTIVE enrollment blocks (and is offered as "active"); FAILED / UNSUBSCRIBED / COMPLETED are history and never hide a sequence from the picker.
+  const { active, history } = splitEnrollments(enrollments);
+  const activeSequenceIds = new Set(active.map((e) => e.sequence.id));
   const applicable = availableSequences.filter((s) => !activeSequenceIds.has(s.id));
 
   return (
@@ -42,31 +41,42 @@ export function LeadSequencesPanel({
       {enrollments.length === 0 ? (
         <EmptyState icon={Mail} title="No sequences applied" description="Apply a saved sequence to start following up with this lead automatically." />
       ) : (
-        <ul className="space-y-2">
-          {enrollments.map((e) => {
-            const meta = ENROLLMENT_STATUS_META[e.status];
-            const totalSteps = e.sequence.steps.length;
-            return (
-              <li key={e.id} className="rounded-md border px-3 py-2.5 space-y-1.5">
-                <div className="flex items-center justify-between gap-2">
-                  <Link href={`/sequences/${e.sequence.id}`} className="text-sm font-medium hover:underline">
-                    {e.sequence.name}
-                  </Link>
-                  <StatusBadge label={meta.label} tone={meta.tone} />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Applied {formatDistanceToNow(e.enrolledAt, { addSuffix: true })} by {e.enrolledBy?.fullName ?? "System"}
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {e.status === "COMPLETED"
-                    ? `Completed${e.completedAt ? ` ${format(e.completedAt, "MMM d, yyyy")}` : ""}`
-                    : `Step ${Math.min(e.currentStepIdx + 1, totalSteps)} of ${totalSteps}`}
-                  {e.status === "ACTIVE" && e.nextSendAt && ` · Next: ${format(e.nextSendAt, "MMM d, yyyy h:mm a")}`}
-                </p>
-              </li>
-            );
-          })}
-        </ul>
+        <>
+          {active.length > 0 && (
+            <section aria-label="Active sequences" className="space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Active</h3>
+              <ul className="space-y-2">
+                {active.map((e) => (
+                  <ActiveSequenceCard key={e.id} enrollment={e} leadId={leadId} />
+                ))}
+              </ul>
+            </section>
+          )}
+          {history.length > 0 && (
+            <section aria-label="Sequence history" className="space-y-2">
+              <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">History</h3>
+              <ul className="space-y-2">
+                {history.map((e) => {
+                  const meta = ENROLLMENT_STATUS_META[e.status];
+                  return (
+                    <li key={e.id} className="rounded-md border px-3 py-2.5 space-y-1.5" data-testid="sequence-history-item">
+                      <div className="flex items-center justify-between gap-2">
+                        <Link href={`/sequences/${e.sequence.id}`} className="text-sm font-medium hover:underline">
+                          {e.sequence.name}
+                        </Link>
+                        <StatusBadge label={meta.label} tone={meta.tone} />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Applied {formatDistanceToNow(e.enrolledAt, { addSuffix: true })} by {e.enrolledBy?.fullName ?? "System"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{historyDetail(e)}</p>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+        </>
       )}
     </div>
   );

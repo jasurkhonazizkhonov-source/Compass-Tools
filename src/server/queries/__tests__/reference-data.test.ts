@@ -1,9 +1,15 @@
-import "dotenv/config";
 import { describe, it, expect } from "vitest";
 import { searchAirports, searchAirlines, searchAircraft, resolveAirportCodes, resolveAirlineCodes, resolveAircraftCodes } from "../reference-data";
 import { prisma } from "@/lib/prisma";
 
-describe("searchAirports", () => {
+// REAL-DATABASE test: it reads the seeded reference tables and its last block INSERTS and DELETES an airline row. It must never run against
+// whatever DATABASE_URL (or .env file) happens to be configured, so it follows the same rule as every *.integration.test.ts: it runs only
+// when INTEGRATION_DATABASE_URL points at a DISPOSABLE PostgreSQL that already has this repo's migrations applied, and is skipped otherwise.
+const URL_UNDER_TEST = process.env.INTEGRATION_DATABASE_URL;
+const enabled = !!URL_UNDER_TEST;
+if (enabled) process.env.DATABASE_URL = URL_UNDER_TEST;
+
+describe.skipIf(!enabled)("searchAirports", () => {
   it("finds JFK by exact IATA code", async () => {
     const results = await searchAirports("JFK");
     expect(results.some((a) => a.iata === "JFK" && a.city === "New York")).toBe(true);
@@ -26,7 +32,7 @@ describe("searchAirports", () => {
   });
 });
 
-describe("searchAirlines", () => {
+describe.skipIf(!enabled)("searchAirlines", () => {
   it("resolves LH to Lufthansa", async () => {
     const results = await searchAirlines("LH");
     expect(results[0].name).toMatch(/Lufthansa/i);
@@ -48,7 +54,7 @@ describe("searchAirlines", () => {
   });
 });
 
-describe("searchAircraft", () => {
+describe.skipIf(!enabled)("searchAircraft", () => {
   it("resolves 787 to Boeing 787", async () => {
     const results = await searchAircraft("787");
     expect(results.some((a) => a.displayName.match(/Boeing 787/i))).toBe(true);
@@ -67,7 +73,7 @@ describe("searchAircraft", () => {
 
 // Database-portability pass — edge cases for the resolve*Codes functions
 // (Item 17), run against the real, already-seeded dev database.
-describe("resolveAirportCodes / resolveAirlineCodes / resolveAircraftCodes — edge cases", () => {
+describe.skipIf(!enabled)("resolveAirportCodes / resolveAirlineCodes / resolveAircraftCodes — edge cases", () => {
   it("returns null (never throws) for a completely unknown airport/airline/aircraft code", async () => {
     const airports = await resolveAirportCodes(["ZZZ999"]);
     const airlines = await resolveAirlineCodes(["ZZ99"]);
@@ -173,7 +179,7 @@ describe("resolveAirportCodes / resolveAirlineCodes / resolveAircraftCodes — e
 // test proves the fix directly against the real database — two genuinely
 // concurrent createMany calls targeting the same icao, racing at the
 // database level exactly like two separate processes would.
-describe("Airline icao-only concurrent insert (Item 6 — self-healing race safety)", () => {
+describe.skipIf(!enabled)("Airline icao-only concurrent insert (Item 6 — self-healing race safety)", () => {
   const testIcao = "ZZTESTICAO";
 
   it("two concurrent createMany calls inserting the same icao-only airline never produce a duplicate row", async () => {

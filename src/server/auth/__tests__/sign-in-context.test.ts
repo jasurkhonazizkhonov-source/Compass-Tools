@@ -36,7 +36,7 @@ describe("captureSignInContext", () => {
   it("with no trusted proxy it records NOTHING from forwarded-for / geo headers a client could have forged", () => {
     process.env.TRUSTED_PROXY = "none";
     const ctx = captureSignInContext(headers({ ...VERCEL_HEADERS, "x-forwarded-for": "198.51.100.77" }));
-    expect(ctx).toEqual({ ip: null, city: null, region: null, country: null, countryCode: null, timeZone: null });
+    expect(ctx).toEqual({ ip: null, city: null, region: null, country: null, countryCode: null, timeZone: null, locationSource: null, locationResolvedAt: null });
   });
 
   it("an unconfigured, non-Vercel server trusts nothing either", () => {
@@ -72,6 +72,12 @@ describe("formatSignInLocation", () => {
     expect(formatSignInLocation({ city: null, region: null, country: "Germany" })).toBe("Germany");
     expect(formatSignInLocation({ city: "Frankfurt", region: null, country: null, countryCode: "DE" })).toBe("Frankfurt, DE");
     expect(formatSignInLocation({ city: "  ", region: "", country: null, countryCode: null })).toBeNull();
+  });
+
+  it("never repeats a place name: 'Singapore, Singapore, Singapore' becomes 'Singapore'", () => {
+    expect(formatSignInLocation({ city: "Singapore", region: "Singapore", country: "Singapore" })).toBe("Singapore");
+    expect(formatSignInLocation({ city: "Tokyo", region: "tokyo", country: "Japan" })).toBe("Tokyo, Japan");
+    expect(formatSignInLocation({ city: "Paris", region: "Île-de-France", country: "France" })).toBe("Paris, Île-de-France, France");
   });
 
   it("returns null (the neutral 'Location unavailable' state) when nothing is known", () => {

@@ -14,6 +14,8 @@ vi.mock("@/server/actions/marketing-campaigns", () => ({
   deleteMarketingCampaign: vi.fn(),
   sendMarketingCampaign: (...a: unknown[]) => sendMock(...a),
   sendTestMarketingCampaign: vi.fn(),
+  // The server-side preview sanitiser (src/server/email/sanitize-campaign-html.ts is tested on its own); here it just echoes.
+  previewCampaignHtml: vi.fn(async (html: string) => ({ html })),
 }));
 // TipTap needs a real layout engine; the form only needs to hand it content and read changes back.
 vi.mock("@/components/subscriptions/rich-text-editor", () => ({

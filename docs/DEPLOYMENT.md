@@ -113,6 +113,10 @@ In Google Cloud Console, for the correct **Web application** OAuth client
 > `www`, host-scoped — would not be sent to the apex, so CSRF state
 > validation would fail even though the URI "looks" registered.
 
+> **This checkout (`compass-tools-updated`) runs its dev server on port 3001, not 3000** (`npm run dev` is `next dev -p 3001`;
+> port 3000 belongs to the separate original CRM checkout). Register `http://localhost:3001` and
+> `http://localhost:3001/api/auth/gmail/callback` instead of the `3000` values below; the reasoning is identical.
+
 For **local development**, add a second pair of entries on the same
 client rather than replacing the production ones: JavaScript origin
 `http://localhost:3000` and redirect URI
@@ -305,7 +309,13 @@ could spoof their recorded IP by sending a fake header.
   public booking/inquiry forms.
 - **Cloudflare in front of the origin**: set `TRUSTED_PROXY=cloudflare`
   (reads only `CF-Connecting-IP`; `X-Forwarded-For` is ignored because its
-  left-most value is client-controlled behind Cloudflare).
+  left-most value is client-controlled behind Cloudflare). This is only safe
+  when the app is reachable **solely** through Cloudflare (with Cloudflare
+  Tunnel: no published host port, firewall closed, app reachable only from
+  the `cloudflared` container) - otherwise anyone can send their own
+  `CF-Connecting-IP` and choose the stored IP. The app cannot check this
+  itself. The sign-in location is then resolved from that IP with a local
+  geolocation database (`GEOIP_DB_PATH`, `docs/GEOIP.md`).
 - **A custom nginx reverse proxy**: set `TRUSTED_PROXY=nginx`.
 - **AWS Application Load Balancer (ALB) in front of the origin** (ECS/EC2/
   Fargate deployments): set `TRUSTED_PROXY=generic`. ALB appends the real

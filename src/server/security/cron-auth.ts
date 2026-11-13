@@ -22,6 +22,16 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
 }
 
+/**
+ * True only when CRON_SECRET is configured AND the request carries it as a Bearer token. Unlike rejectUnauthorizedCron this is never "open when the
+ * secret is unset": it gates information (the detailed /api/health report), so an unconfigured deployment simply gets the minimal answer.
+ */
+export function hasValidCronSecret(request: Request): boolean {
+  const secret = process.env.CRON_SECRET?.trim();
+  if (!secret) return false;
+  return safeEqual(request.headers.get("authorization") ?? "", `Bearer ${secret}`);
+}
+
 /** Returns a response to send when the request is NOT allowed to run the cron job, or null when it is. */
 export function rejectUnauthorizedCron(request: Request): NextResponse | null {
   const secret = process.env.CRON_SECRET?.trim();

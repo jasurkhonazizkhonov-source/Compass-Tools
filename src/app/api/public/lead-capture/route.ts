@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
+import { readLimitedJson } from "@/server/security/read-limited-json";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
-import { buildLeadSubmissionInfoCreate } from "@/server/lead-submission-info";
+import { buildLeadSubmissionInfoCreate, withLocalLocation } from "@/server/lead-submission-info";
 import { createWebsiteFlightLead, flightInquiryBase, refinePhone } from "@/server/lead-intake";
 
 // Part 12/25 — the public company website's flight-request form posts
@@ -30,12 +31,10 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
-  }
+  // Bounded read (see read-limited-json.ts): an unauthenticated caller cannot make the server buffer an arbitrarily large body.
+  const limited = await readLimitedJson(req);
+  if (!limited.ok) return limited.response;
+  const body: unknown = limited.value;
 
   const parsed = leadCaptureSchema.safeParse(body);
   if (!parsed.success) {
@@ -56,7 +55,7 @@ export async function POST(req: Request) {
 
   // The submitting connection's IP and approximate location, from the request's own trusted headers only (see lead-submission-info.ts)
   // — written in the SAME insert as the lead, so it can never be lost or detached from it.
-  const submissionInfo = buildLeadSubmissionInfoCreate(req.headers, new Date(), { budgetCurrency: data.approximateBudget !== undefined ? data.budgetCurrency : undefined });
+  const submissionInfo = await withLocalLocation(buildLeadSubmissionInfoCreate(req.headers, new Date(), { budgetCurrency: data.approximateBudget !== undefined ? data.budgetCurrency : undefined }));
 
   const result = await createWebsiteFlightLead({ data, companyId, submissionInfo });
   if (result.status === "failed") {

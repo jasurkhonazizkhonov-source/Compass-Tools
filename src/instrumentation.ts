@@ -6,6 +6,14 @@
 // src/lib/prisma.ts) so Next dev's fast-refresh never double-registers the
 // interval, and skipped entirely on the edge runtime since it depends on
 // Prisma/Node APIs.
+//
+// It calls the sweep (src/server/due-task-notifications.ts), which is not a Server Action. The signed-in "Process Due Tasks" button uses a separate,
+// role-checked action (processDueTaskNotifications in actions/tasks.ts), because this poller has no signed-in user to check.
+//
+// Default: ON, exactly as before - the VPS deployment relies on it for task-due notifications (docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md). Setting
+// DISABLE_IN_PROCESS_POLLER=true turns it off for a process that must not run background work at boot: a local or review instance pointed at a
+// database it should not touch, a one-off script, or a deployment that schedules /api/cron/tasks externally instead. Overlap with an external
+// scheduler is safe either way: each task is claimed atomically, so it is notified once.
 declare global {
   var __taskNotifierStarted: boolean | undefined;
 }
@@ -14,14 +22,16 @@ const POLL_INTERVAL_MS = 60_000;
 
 export async function register() {
   if (process.env.NEXT_RUNTIME === "edge") return;
+  const { inProcessPollerDisabled } = await import("@/lib/poller-config");
+  if (inProcessPollerDisabled()) return;
   if (globalThis.__taskNotifierStarted) return;
   globalThis.__taskNotifierStarted = true;
 
-  const { processDueTaskNotifications } = await import("@/server/actions/tasks");
+  const { runDueTaskNotifications } = await import("@/server/due-task-notifications");
 
   setInterval(() => {
-    processDueTaskNotifications().catch((err) => {
-      console.error("[task-notifier] processDueTaskNotifications failed:", err);
+    runDueTaskNotifications().catch((err) => {
+      console.error("[task-notifier] runDueTaskNotifications failed:", err);
     });
   }, POLL_INTERVAL_MS);
 }

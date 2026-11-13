@@ -3,6 +3,7 @@ import { CalendarRange } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { buildReportHref, recentPayPeriods, payPeriodContaining, civilDateInZone, payPeriodName, payPeriodRangeLabel, toIsoDate, type ResolvedReportRange } from "@/lib/pay-period";
 import { cn } from "@/lib/utils";
+import { CommissionRangeDateFields } from "@/components/commissions/range-date-fields";
 
 /**
  * The shared "which dates?" control for Salesboard and Commissions: quick selectors (current / previous pay period, this / last
@@ -27,6 +28,7 @@ export function ReportRangeControls({
   preserve = {},
   options = DEFAULT_RANGE_OPTIONS,
   now = new Date(),
+  modernCalendar = false,
 }: {
   basePath: string;
   selected: ResolvedReportRange;
@@ -34,6 +36,8 @@ export function ReportRangeControls({
   preserve?: Record<string, string | null | undefined>;
   options?: RangeQuickOption[];
   now?: Date;
+  /** Draw the From / To fields as a calendar popover instead of the browser's native date inputs. Only the Commissions page sets this. */
+  modernCalendar?: boolean;
 }) {
   const current = payPeriodContaining(civilDateInZone(now));
   const periods = recentPayPeriods(current, 12);
@@ -89,26 +93,35 @@ export function ReportRangeControls({
           {preservedEntries.map(([k, v]) => (
             <input key={k} type="hidden" name={k} value={v} />
           ))}
-          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-            From
-            <input
-              type="date"
-              name="from"
-              required
-              defaultValue={selected.kind === "custom" && selected.from ? toIsoDate(selected.from) : ""}
-              className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30"
+          {modernCalendar ? (
+            <CommissionRangeDateFields
+              initialFrom={selected.kind === "custom" && selected.from ? toIsoDate(selected.from) : ""}
+              initialTo={selected.kind === "custom" && selected.to ? toIsoDate(selected.to) : ""}
             />
-          </label>
-          <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-            To
-            <input
-              type="date"
-              name="to"
-              required
-              defaultValue={selected.kind === "custom" && selected.to ? toIsoDate(selected.to) : ""}
-              className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30"
-            />
-          </label>
+          ) : (
+            <>
+              <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                From
+                <input
+                  type="date"
+                  name="from"
+                  required
+                  defaultValue={selected.kind === "custom" && selected.from ? toIsoDate(selected.from) : ""}
+                  className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
+                To
+                <input
+                  type="date"
+                  name="to"
+                  required
+                  defaultValue={selected.kind === "custom" && selected.to ? toIsoDate(selected.to) : ""}
+                  className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30"
+                />
+              </label>
+            </>
+          )}
           <Button type="submit" size="sm" variant="outline" className="gap-1.5">
             <CalendarRange className="h-3.5 w-3.5" /> Apply range
           </Button>

@@ -8,7 +8,7 @@ const cvv = vi.fn<() => Promise<{ deleted: number; failed?: true }>>(async () =>
 const otherWork = vi.fn();
 vi.mock("@/server/security/booking-cvv", () => ({ destroyExpiredCvvs: () => cvv() }));
 // Anything else the notification/maintenance endpoint does must never be reachable from this route.
-vi.mock("@/server/actions/tasks", () => ({ processDueTaskNotifications: () => otherWork("tasks") }));
+vi.mock("@/server/due-task-notifications", () => ({ runDueTaskNotifications: () => otherWork("tasks") }));
 vi.mock("@/server/security/card-retention-schedule", () => ({ runScheduledCardRetention: () => otherWork("retention") }));
 vi.mock("@/server/security/rate-limit", () => ({ cleanupExpiredRateLimitCounters: () => otherWork("rate-limit") }));
 vi.mock("@/server/attachments/cleanup", () => ({ sweepStalePendingAttachments: () => otherWork("attachments") }));

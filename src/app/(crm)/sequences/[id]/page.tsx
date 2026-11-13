@@ -64,7 +64,7 @@ export default async function SequenceDetailPage({ params, searchParams }: { par
           <div className="flex flex-wrap items-center gap-3">
             <SequenceActiveToggle sequenceId={sequence.id} isActive={sequence.isActive} />
             <ProcessDueButton />
-            <EnrollLeadsDialog sequenceId={sequence.id} leads={leads} />
+            <EnrollLeadsDialog sequenceId={sequence.id} sequenceName={sequence.name} leads={leads} />
             {canDelete && <SequenceDeleteButton sequenceId={sequence.id} name={sequence.name} redirectTo="/sequences" />}
           </div>
         </div>

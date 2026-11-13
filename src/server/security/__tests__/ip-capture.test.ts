@@ -55,6 +55,10 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
+// The local geolocation database is mocked: its own behaviour is tested in geo/. Default = unresolved, so the existing tests see no location.
+const geoLookup = vi.hoisted(() => vi.fn<(ip: string) => Promise<unknown>>(async () => ({ status: "unresolved", reason: "not-found" })));
+vi.mock("@/server/geo/ip-geolocation", () => ({ lookupIpLocation: (ip: string) => geoLookup(ip) }));
+
 beforeEach(() => {
   vi.stubEnv("IP_ENCRYPTION_KEY", ENCRYPTION_KEY);
   vi.stubEnv("IP_HASH_KEY", HASH_KEY);
@@ -188,5 +192,37 @@ describe("recordIpCapture — high-risk Notification alert", () => {
     await recordIpCapture({ ip, userAgent: undefined, formType: "NEW_BOOKING", bookingId: "booking-8" });
     expect(createCalls).toHaveLength(1);
     expect(notificationCreateManyCalls).toHaveLength(0);
+  });
+});
+
+describe("recordIpCapture — approximate location", () => {
+  const found = { status: "resolved", location: { city: "Sydney", region: "New South Wales", regionCode: "NSW", country: "Australia", countryCode: "AU", timeZone: "Australia/Sydney", latitude: -33.8, longitude: 151.2, accuracyRadiusKm: null }, source: "DBIP-City-Lite (2026-11-01)", databaseBuiltAt: new Date(), databaseStale: false };
+
+  it("a platform-supplied location is stored as is and the local database is not asked", async () => {
+    geoLookup.mockClear();
+    const { recordIpCapture } = await import("../ip-capture");
+    await recordIpCapture({ ip: "203.0.113.42", userAgent: undefined, location: { city: "Los Angeles", countryCode: "US", country: "United States" }, formType: "NEW_BOOKING", bookingId: "b1" });
+    expect(createCalls[0].data).toMatchObject({ geoCity: "Los Angeles", geoCountryCode: "US", geoSource: "Vercel edge geolocation (approximate)" });
+    expect(geoLookup).not.toHaveBeenCalled();
+  });
+
+  it("with no platform location the LOCAL database supplies it, recording its source; no coordinates are stored", async () => {
+    geoLookup.mockResolvedValueOnce(found);
+    const { recordIpCapture } = await import("../ip-capture");
+    await recordIpCapture({ ip: "203.0.113.42", userAgent: undefined, formType: "NEW_BOOKING", bookingId: "b1" });
+    expect(geoLookup).toHaveBeenCalledWith("203.0.113.42");
+    expect(createCalls[0].data).toMatchObject({ geoCity: "Sydney", geoRegion: "New South Wales", geoCountry: "Australia", geoCountryCode: "AU", geoTimeZone: "Australia/Sydney", geoSource: "DBIP-City-Lite (2026-11-01)" });
+    expect(Object.keys(createCalls[0].data).join()).not.toMatch(/lat|lon/i);
+  });
+
+  it("an unresolved or failing lookup still stores the encrypted IP, with no location and no source", async () => {
+    geoLookup.mockResolvedValueOnce({ status: "unresolved", reason: "not-found" });
+    const { recordIpCapture } = await import("../ip-capture");
+    await recordIpCapture({ ip: "203.0.113.42", userAgent: undefined, formType: "NEW_BOOKING", bookingId: "b1" });
+    expect(createCalls[0].data).toMatchObject({ geoCity: null, geoCountryCode: null, geoSource: null });
+    geoLookup.mockRejectedValueOnce(new Error("mmdb exploded"));
+    await recordIpCapture({ ip: "203.0.113.43", userAgent: undefined, formType: "NEW_BOOKING", bookingId: "b2" });
+    expect(createCalls).toHaveLength(2);
+    expect(createCalls[1].data).toMatchObject({ geoCity: null, geoSource: null });
   });
 });

@@ -64,7 +64,18 @@ export function ApplySequenceDialog({
         return;
       }
       if (result.enrolled === 0) {
-        toast.error("This lead is already actively enrolled in that sequence");
+        // Say what actually happened: only an ACTIVE enrollment blocks a new one, and enrollLeads reports every other reason separately.
+        toast.error(
+          result.alreadyActive > 0
+            ? "This lead is already actively enrolled in that sequence"
+            : result.missingEmail > 0
+              ? "This lead has no email address, so a sequence cannot be applied. Add one to the contact first."
+              : result.noAssignedAgent > 0
+                ? "This lead has no assigned agent to send the emails from. Assign an agent first."
+                : result.inaccessible > 0
+                  ? "That lead is not available."
+                  : "The sequence could not be applied to this lead."
+        );
         return;
       }
       toast.success("Sequence applied");

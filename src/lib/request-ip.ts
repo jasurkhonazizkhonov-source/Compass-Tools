@@ -55,37 +55,57 @@
 //   Next.js (this app, reads that header via `getClientIp`) → CRM record.
 // ─────────────────────────────────────────────────────────────────────────
 
+import { isIP } from "node:net";
 import { isProductionEnvironment } from "@/lib/env";
 
-const IPV4_RE = /^(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}$/;
+// Address parsing is done by Node's own parser (net.isIP), not by hand-written patterns: the previous IPv6 pattern was "pragmatic, not exhaustive"
+// and rejected valid addresses with an embedded IPv4 tail that is not written with "::" (for example 0:0:0:0:0:ffff:1.2.3.4 or 2001:db8:0:0:0:0:192.0.2.1),
+// which some proxies emit. A differential test against net.isIP (see request-ip-parsing.test.ts) keeps the two in step.
 
-// A pragmatic (not exhaustively RFC-4291-complete) IPv6 matcher: full
-// 8-group form, "::" zero-compression, and an embedded-IPv4 tail — enough
-// to validate real client addresses without accepting garbage strings.
-const IPV6_RE =
-  /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]+|::(ffff(:0{1,4})?:)?((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)|([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d))$/;
-
+/**
+ * Whether the value is a single, complete IPv4 or IPv6 address as text. Anything else is false: a port, a prefix length ("/64"), brackets, a
+ * scope/zone id ("fe80::1%eth0" - a zone names a local interface and is never a visitor's address), whitespace, an empty or oversized string.
+ */
 export function isValidIpAddress(value: string): boolean {
-  return IPV4_RE.test(value) || IPV6_RE.test(value);
+  if (typeof value !== "string" || value.length === 0 || value.length > 45) return false;
+  if (value.includes("%")) return false;
+  return isIP(value) !== 0;
+}
+
+/** The canonical text of a VALID IPv6 address: lower case, leading zeros dropped, the longest zero run compressed (RFC 5952, as the WHATWG URL serializer writes it). */
+function canonicalIpv6(ip: string): string | undefined {
+  try {
+    const host = new URL(`http://[${ip}]/`).hostname;
+    return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The IPv4 text of an IPv4-mapped IPv6 address in canonical form ("::ffff:cb00:7109"), or undefined when it is not one. */
+function ipv4FromMapped(canonical: string): string | undefined {
+  const m = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (!m) return undefined;
+  const hi = parseInt(m[1], 16);
+  const lo = parseInt(m[2], 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
 }
 
 /**
- * Collapses an IPv4-mapped IPv6 address (e.g. "::ffff:203.0.113.9",
- * emitted by some load balancers/proxies for an underlying IPv4 peer, and
- * already accepted as valid by isValidIpAddress's own IPV6_RE branch) down
- * to its plain IPv4 form. Every other address — including a genuine IPv6
- * address and the deprecated IPv4-COMPATIBLE "::203.0.113.9" form (no
- * "ffff:" marker, intentionally NOT touched here) — is returned unchanged.
- * Without this, the exact same real client could be captured/stored as two
- * different strings depending on which proxy hop produced the header,
- * which would silently break the vault's exact-match blind-index search
- * and velocity/pattern fraud detection (both key on an exact string
- * match) — so every caller that captures/stores/searches an IP should
- * normalize through this first, not just validate it.
+ * ONE stored text per address, so the same visitor can never be recorded (or hashed for the vault's exact-match search and velocity checks) as two different
+ * strings:
+ *   - an IPv4-mapped IPv6 address, in ANY spelling ("::ffff:203.0.113.9", "::ffff:cb00:7109", "0:0:0:0:0:ffff:cb00:7109"), is the plain IPv4 it stands for;
+ *   - every other IPv6 address is written canonically (lower case, compressed per RFC 5952), so "2001:DB8:0:0:0:0:0:1" and "2001:db8::1" are one value;
+ *     the deprecated IPv4-COMPATIBLE form ("::203.0.113.9") is NOT turned into IPv4 (it is not the same thing), only written canonically ("::cb00:7109");
+ *   - IPv4 has a single valid spelling and is returned unchanged; anything that is not a valid address is returned unchanged (callers validate separately).
+ * Nothing is truncated: the longest result is a full 39-character IPv6 address, far inside the TEXT columns it is stored in.
  */
 export function normalizeIp(ip: string): string {
-  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i.exec(ip.trim());
-  return mapped ? mapped[1] : ip;
+  const trimmed = typeof ip === "string" ? ip.trim() : ip;
+  if (typeof trimmed !== "string" || !isValidIpAddress(trimmed) || isIP(trimmed) !== 6) return trimmed;
+  const canonical = canonicalIpv6(trimmed);
+  if (!canonical) return trimmed;
+  return ipv4FromMapped(canonical) ?? canonical;
 }
 
 export type TrustedProxyMode = "none" | "vercel" | "cloudflare" | "nginx" | "generic";
@@ -177,37 +197,42 @@ function warnIfTrustedProxyMissingInProduction(mode: TrustedProxyMode) {
 
 function isPrivateOrReservedIpv4(ip: string): boolean {
   const octets = ip.split(".").map(Number);
-  const [a, b] = octets;
+  const [a, b, c] = octets;
   if (a === 10) return true; // 10.0.0.0/8
   if (a === 172 && b >= 16 && b <= 31) return true; // 172.16.0.0/12
   if (a === 192 && b === 168) return true; // 192.168.0.0/16
   if (a === 127) return true; // 127.0.0.0/8 — loopback (the original "::1 problem", IPv4 form)
   if (a === 169 && b === 254) return true; // 169.254.0.0/16 — link-local
+  if (a === 100 && b >= 64 && b <= 127) return true; // 100.64.0.0/10 — carrier-grade NAT / overlay-network hop (RFC 6598), never a visitor's public address
   if (a === 0) return true; // 0.0.0.0/8 — "this network"
+  if (a === 192 && b === 0 && c === 0) return true; // 192.0.0.0/24 — IETF protocol assignments
+  if (a === 198 && (b === 18 || b === 19)) return true; // 198.18.0.0/15 — network benchmarking
+  if (a >= 224) return true; // 224.0.0.0/4 multicast and 240.0.0.0/4 reserved (incl. 255.255.255.255) — never a client
+  // The documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24) are deliberately NOT listed: real traffic never uses them, and
+  // they are what every test and example in this code base uses as a stand-in for "a public visitor".
   return false;
 }
 
-function isPrivateOrReservedIpv6(ip: string): boolean {
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "::") return true; // loopback / unspecified
-  if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true; // fc00::/7 — unique local (RFC 4193)
-  if (/^fe[89ab][0-9a-f]:/.test(lower)) return true; // fe80::/10 — link-local
+function isPrivateOrReservedIpv6(canonical: string): boolean {
+  if (canonical === "::1" || canonical === "::") return true; // loopback / unspecified
+  if (/^f[cd][0-9a-f]{2}:/.test(canonical)) return true; // fc00::/7 — unique local (RFC 4193)
+  if (/^fe[89ab][0-9a-f]:/.test(canonical)) return true; // fe80::/10 — link-local
+  if (/^fe[c-f][0-9a-f]:/.test(canonical)) return true; // fec0::/10 — deprecated site-local
+  if (/^ff[0-9a-f]{2}:/.test(canonical)) return true; // ff00::/8 — multicast, never a client
   return false;
 }
 
 /**
- * Whether an address is a private/reserved range (RFC 1918, loopback,
- * link-local, "this network", or IPv6 unique-local/link-local/loopback) —
- * never a real customer's own public IP. getClientIp() treats a resolved
- * value in one of these ranges as untrustworthy, for the same reason it
- * already refused a bare ::1: such a value only ever indicates a
- * misconfigured proxy chain leaking an internal hop's address (or a
- * client's own machine talking to itself in dev), not a genuine signer.
- * This generalizes that one specific historical case (see the module
- * comment) into the general rule, rather than only special-casing ::1.
+ * Whether an address is a private/reserved range (RFC 1918, loopback, link-local, carrier-grade NAT, "this network", multicast/reserved, or IPv6
+ * unique-local/link-local/site-local/multicast/loopback/unspecified) — never a real customer's own public IP. getClientIp() treats a resolved
+ * value in one of these ranges as untrustworthy, for the same reason it already refused a bare ::1: such a value only ever indicates a
+ * misconfigured proxy chain leaking an internal hop's address (or a client's own machine talking to itself in dev), not a genuine signer.
+ * An IPv4-mapped IPv6 address is judged as the IPv4 it stands for (in any spelling), so "::ffff:10.0.0.1" and "::ffff:a00:1" are private too.
  */
 export function isPrivateOrReservedIp(ip: string): boolean {
-  return ip.includes(":") ? isPrivateOrReservedIpv6(ip) : isPrivateOrReservedIpv4(ip);
+  const normalized = normalizeIp(ip);
+  if (!normalized.includes(":")) return isValidIpAddress(normalized) ? isPrivateOrReservedIpv4(normalized) : false;
+  return isPrivateOrReservedIpv6(canonicalIpv6(normalized) ?? normalized.toLowerCase());
 }
 
 /**

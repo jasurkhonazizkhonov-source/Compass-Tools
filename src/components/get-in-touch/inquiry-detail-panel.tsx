@@ -2,13 +2,13 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { toast } from "sonner";
-import { formatDistanceToNow } from "date-fns";
 import { Phone, MessageSquare, Loader2, Send, StickyNote } from "lucide-react";
 import { InquiryEmailComposerButton } from "@/components/get-in-touch/inquiry-email-composer-dialog";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { EmptyState } from "@/components/crm/empty-state";
+import { NoteMeta } from "@/components/crm/note-meta";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -143,9 +143,7 @@ export function InquiryDetailPanel({
               {notes.map((n) => (
                 <li key={n.id} className="rounded-md border p-3">
                   <p className="text-sm whitespace-pre-wrap">{n.body}</p>
-                  <p className="mt-1.5 text-xs text-muted-foreground">
-                    {n.author?.fullName ?? "Unknown"} · {formatDistanceToNow(n.createdAt, { addSuffix: true })}
-                  </p>
+                  <NoteMeta className="mt-1.5" authorName={n.author?.fullName} createdAt={n.createdAt} />
                 </li>
               ))}
             </ul>

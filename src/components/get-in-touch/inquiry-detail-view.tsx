@@ -3,6 +3,8 @@ import Link from "next/link";
 import { format } from "date-fns";
 import { ArrowLeft } from "lucide-react";
 import { getContactInquiryDetail } from "@/server/queries/contact-inquiries";
+import { getInquirySubmissionInfo } from "@/server/queries/inquiry-submission-info";
+import { InquirySubmissionInformation } from "@/components/get-in-touch/inquiry-submission-information";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewGetInTouch } from "@/lib/permissions";
 import { InquiryDetailPanel } from "@/components/get-in-touch/inquiry-detail-panel";
@@ -25,6 +27,8 @@ export async function InquiryDetailView({ source, id }: { source: InquirySource;
 
   const inquiry = await getContactInquiryDetail(id, current!.companyId, source);
   if (!inquiry) notFound();
+  // Admin-only IP + approximate location of the submitter (masked; audited Reveal). A separate query so it never rides along with the inquiry payload.
+  const submissionInfo = await getInquirySubmissionInfo(inquiry.id, current!.companyId, source, current!.role);
 
   return (
     <div className="max-w-3xl space-y-4">
@@ -83,6 +87,8 @@ export async function InquiryDetailView({ source, id }: { source: InquirySource;
           </div>
         </CardContent>
       </Card>
+
+      <InquirySubmissionInformation inquiryId={inquiry.id} source={source} createdAt={inquiry.createdAt} info={submissionInfo} />
 
       <Card className="shadow-none">
         <CardContent className="pt-5">

@@ -10,8 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ReportRangeControls, rangeHeading, DEFAULT_RANGE_OPTIONS } from "@/components/crm/report-range-controls";
 import { PeriodKpi } from "@/components/crm/period-kpi";
 import { formatMoney } from "@/lib/currency";
-import { previousEquivalentRange, resolveReportRange } from "@/lib/pay-period";
-import { salesRangeForDays, toSalesRange } from "@/server/queries/sales-range";
+import { resolveReportRange } from "@/lib/pay-period";
+import { toSalesRange } from "@/server/queries/sales-range";
 
 export const dynamic = "force-dynamic";
 
@@ -36,14 +36,9 @@ export default async function SalesboardPage({ searchParams }: { searchParams: S
 
   const sp = await searchParams;
   const range = resolveReportRange({ period: one(sp.period), from: one(sp.from), to: one(sp.to), payPeriod: one(sp.payPeriod) });
-  const previous = previousEquivalentRange(range);
 
-  const [rows, previousRows] = await Promise.all([
-    getSalesboard(current, toSalesRange(range)),
-    previous ? getSalesboard(current, salesRangeForDays(previous.from, previous.to)) : Promise.resolve(null),
-  ]);
+  const rows = await getSalesboard(current, toSalesRange(range));
   const totals = summarizeSalesboard(rows);
-  const previousTotals = previousRows ? summarizeSalesboard(previousRows) : null;
   const heading = rangeHeading(range);
 
   return (
@@ -68,21 +63,8 @@ export default async function SalesboardPage({ searchParams }: { searchParams: S
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-            <PeriodKpi
-              label="Profit Generated"
-              value={formatMoney(totals.totalProfit, "USD")}
-              current={totals.totalProfit}
-              previous={previousTotals?.totalProfit}
-              previousLabel={previous?.label}
-              emphasize
-            />
-            <PeriodKpi
-              label="Confirmed Bookings"
-              value={String(totals.bookingCount)}
-              current={totals.bookingCount}
-              previous={previousTotals?.bookingCount}
-              previousLabel={previous?.label}
-            />
+            <PeriodKpi label="Profit Generated" value={formatMoney(totals.totalProfit, "USD")} emphasize />
+            <PeriodKpi label="Confirmed Bookings" value={String(totals.bookingCount)} />
             <PeriodKpi label="Average Profit per Booking" value={totals.averageProfit === null ? "—" : formatMoney(totals.averageProfit, "USD")} />
           </div>
         </CardContent>

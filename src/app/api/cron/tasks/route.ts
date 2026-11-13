@@ -1,6 +1,6 @@
 import { rejectUnauthorizedCron } from "@/server/security/cron-auth";
 import { NextRequest, NextResponse } from "next/server";
-import { processDueTaskNotifications } from "@/server/actions/tasks";
+import { runDueTaskNotifications } from "@/server/due-task-notifications";
 import { cleanupExpiredRateLimitCounters } from "@/server/security/rate-limit";
 import { runScheduledCardRetention } from "@/server/security/card-retention-schedule";
 import { destroyExpiredCvvs } from "@/server/security/booking-cvv";
@@ -20,7 +20,7 @@ import { sweepStalePendingAttachments } from "@/server/attachments/cleanup";
 export async function GET(request: NextRequest) {
   const denied = rejectUnauthorizedCron(request);
   if (denied) return denied;
-  const result = await processDueTaskNotifications();
+  const result = await runDueTaskNotifications();
   // Pass 28 §30 — best-effort, never lets a cleanup failure fail the
   // actual task-notification cron run this route exists for.
   const rateLimitCleanup = await cleanupExpiredRateLimitCounters().catch(() => ({ deleted: 0 }));

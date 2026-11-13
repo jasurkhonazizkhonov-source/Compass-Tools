@@ -64,24 +64,47 @@ describe("Commissions page — period-aware", () => {
     expect(t).toContain("Oct 21 – Nov 5, 2026");
   });
 
-  it("the commission figures follow the selected range, and the comparison asks for the previous equivalent period", async () => {
+  it("the commission figures follow the selected range; only that range is queried (the previous-period comparison is gone)", async () => {
     await render();
-    expect(getCommissionsSummary).toHaveBeenCalledTimes(2);
-    const previous = getCommissionsSummary.mock.calls[1][1] as { range: { start: Date; endExclusive: Date } };
-    expect(previous.range.start.toISOString()).toBe("2026-10-21T07:00:00.000Z");
-    expect(previous.range.endExclusive.toISOString()).toBe("2026-11-06T08:00:00.000Z");
+    expect(getCommissionsSummary).toHaveBeenCalledTimes(1);
+    const only = getCommissionsSummary.mock.calls[0][1] as { range: { start: Date; endExclusive: Date } };
+    expect(only.range.start.toISOString()).toBe("2026-11-06T08:00:00.000Z");
+    expect(only.range.endExclusive.toISOString()).toBe("2026-11-21T08:00:00.000Z");
   });
 
   it("shows the sale date in the BUSINESS zone: a sale confirmed at 23:59 on the 5th (Pacific) reads Nov 5, not Nov 6", async () => {
     expect(text(await render({ period: "previous-pay-period" }))).toContain("Nov 5, 2026");
   });
 
-  it("no previous equivalent for All Time; a zero previous period never yields Infinity/NaN", async () => {
+  it("no previous-period comparison is shown in any view: no percentage change, no 'vs previous', no previous pay-period dates under the figures", async () => {
+    for (const sp of [{}, { period: "previous-pay-period" }, { period: "all" }, { from: "2026-01-01", to: "2026-03-31" }] as Record<string, string>[]) {
+      const html = await render(sp);
+      expect(html, JSON.stringify(sp)).not.toContain("period-kpi-comparison");
+      const t = text(html);
+      expect(t, JSON.stringify(sp)).not.toMatch(/\bvs\b/i);
+      expect(t, JSON.stringify(sp)).not.toMatch(/[+-]\d+(\.\d+)?%|\d+\.\d+%/); // a percentage change such as "-100.0%" or "+12.5%" (the plain "10%" commission rate column is fine)
+      expect(t, JSON.stringify(sp)).not.toContain("No earlier figure to compare");
+      expect(t, JSON.stringify(sp)).not.toMatch(/Infinity|NaN/);
+    }
+  });
+
+  it("even when the previous period would have had zero, nothing comparing the two is drawn", async () => {
     getCommissionsSummary.mockReset();
     getCommissionsSummary.mockResolvedValueOnce(SUMMARY).mockResolvedValueOnce({ ...SUMMARY, bookingCount: 0, totalProfit: 0, totalCommission: 0, totalEarnings: 0 });
-    const t = text(await render());
-    expect(t).not.toMatch(/Infinity|NaN/);
-    expect(t).toContain("No earlier figure to compare");
+    const html = await render();
+    expect(html).not.toContain("period-kpi-comparison");
+    expect(text(html)).not.toContain("previous period was 0");
+  });
+
+  it("the commission figures themselves are unchanged and still visible: bookings, profit, commission, tips and earnings", async () => {
+    const html = await render();
+    const kpis = [...html.matchAll(/data-testid="period-kpi">(.*?)<\/div>/g)].map((m) => text(m[1]).trim());
+    expect(kpis).toEqual(["Bookings 2", "Total Profit $500.00", "Total Commission $50.00"]);
+    const t = text(html);
+    expect(t).toContain("Total Tips (10% applied)");
+    expect(t).toContain("Tip Earnings");
+    expect(t).toContain("Total Earnings");
+    expect(t).toContain("2 confirmed bookings · $50.00 commission");
   });
 
   it("an empty period shows an empty state that points at earlier pay periods", async () => {

@@ -3,6 +3,7 @@ import MailComposer from "nodemailer/lib/mail-composer";
 import { prisma } from "@/lib/prisma";
 import { getGoogleClientId, getGoogleClientSecret } from "@/server/auth/google-config";
 import { decryptRefreshToken } from "@/server/security/gmail-token-encryption";
+import { GMAIL_SEND_SCOPE } from "@/server/auth/gmail-oauth-config";
 
 // Sends email via the Gmail API (users.messages.send), authenticated as
 // whichever CRM Account owns the GmailConnection — never a shared/global
@@ -104,6 +105,50 @@ function classifyGmailApiFailure(status: number, body: unknown): { code: "REAUTH
     return { code: "SEND_FAILED", error: "Gmail is temporarily unable to send (rate limit reached). Please try again shortly." };
   }
   return { code: "SEND_FAILED", error: "Gmail could not send this email. Please try again." };
+}
+
+/**
+ * Can this account's Gmail send RIGHT NOW? Answered without sending anything and without touching the Gmail API: the connection must exist and
+ * not be REVOKED, Google must have granted the send scope, and the stored refresh token must be decryptable with the current key and OAuth
+ * config (the same three failures sendViaGmail turns into NOT_CONNECTED / REAUTH_REQUIRED). With `verifyToken` it also asks Google's token
+ * endpoint for an access token (no mail is sent): `invalid_grant` marks the connection REVOKED exactly like a real send would; any other
+ * refresh error (network, Google outage) is NOT proof the account is broken, so it reports ready-but-unverified and lets the sender's own
+ * bounded retry decide. A successful refresh is still no guarantee that a later send succeeds (rate limits, quota), which is why callers must
+ * keep handling send failures. Never returns or logs token material.
+ */
+export type GmailReadiness =
+  | { ready: true; verified: boolean }
+  | { ready: false; code: "NOT_CONNECTED" | "REAUTH_REQUIRED"; error: string };
+
+export async function checkGmailSendReadiness(accountId: string, options: { verifyToken?: boolean } = {}): Promise<GmailReadiness> {
+  const connection = await prisma.gmailConnection.findUnique({
+    where: { accountId },
+    select: { status: true, scopes: true, encryptedRefreshToken: true },
+  });
+  if (!connection) return { ready: false, code: "NOT_CONNECTED", error: NOT_CONNECTED_MESSAGE };
+  if (connection.status === "REVOKED") return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
+  if (!connection.scopes.includes(GMAIL_SEND_SCOPE)) return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
+
+  let client: OAuth2Client;
+  try {
+    client = new OAuth2Client(getGoogleClientId(), getGoogleClientSecret());
+    client.setCredentials({ refresh_token: decryptRefreshToken(connection.encryptedRefreshToken) });
+  } catch {
+    return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
+  }
+  if (!options.verifyToken) return { ready: true, verified: false };
+
+  try {
+    const { token } = await client.getAccessToken();
+    if (!token) throw new Error("no access token returned");
+    return { ready: true, verified: true };
+  } catch (err) {
+    if (isInvalidGrantError(err)) {
+      await markRevoked(accountId);
+      return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
+    }
+    return { ready: true, verified: false };
+  }
 }
 
 export async function sendViaGmail(input: GmailSendInput): Promise<GmailSendResult> {

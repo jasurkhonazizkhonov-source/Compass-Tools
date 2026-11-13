@@ -48,6 +48,23 @@ describe("security headers", () => {
     }
   );
 
+  it("the framework is not advertised: poweredByHeader is off, and no configured header re-adds X-Powered-By", async () => {
+    expect(nextConfig.poweredByHeader).toBe(false);
+    const rules = (await nextConfig.headers!()) as Array<{ headers: Array<{ key: string }> }>;
+    expect(rules.flatMap((r) => r.headers.map((h) => h.key.toLowerCase()))).not.toContain("x-powered-by");
+  });
+
+  it("turning the framework banner off removes none of the security headers", async () => {
+    // The same assertions as the first test, for a page, an API route and an error-ish path: poweredByHeader is independent of headers().
+    for (const path of ["/login", "/dashboard", "/api/health", "/does-not-exist"]) {
+      const h = await headersFor(path);
+      expect(h.get("x-content-type-options"), path).toBe("nosniff");
+      expect(h.get("x-frame-options"), path).toBe("DENY");
+      expect(h.get("content-security-policy"), path).toMatch(/frame-ancestors 'none'/);
+      expect(h.get("strict-transport-security"), path).toBeTruthy();
+    }
+  });
+
   it("static assets are not forced to no-store (they stay cacheable)", async () => {
     expect((await headersFor("/_next/static/chunks/app.js")).get("cache-control")).toBeUndefined();
   });

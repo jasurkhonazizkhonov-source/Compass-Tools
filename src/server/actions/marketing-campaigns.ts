@@ -8,6 +8,7 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSubscriptions } from "@/lib/permissions";
 import { sendEmail } from "@/server/email/service";
 import { buildMarketingCampaignEmail } from "@/server/email/templates";
+import { sanitizeCampaignHtml } from "@/server/email/sanitize-campaign-html";
 import { getCompanyForAccountId } from "@/server/queries/company";
 import { resolveBaseUrl } from "@/lib/company-config";
 import { firstUnfilledPlaceholder } from "@/lib/campaign-starters";
@@ -37,7 +38,11 @@ const campaignSchema = z.object({
 
 export async function createMarketingCampaign(input: z.infer<typeof campaignSchema>) {
   const admin = await assertMarketingAccess();
-  const data = campaignSchema.parse(input);
+  const parsed = campaignSchema.parse(input);
+  // Server-side trust boundary: what is stored is already cleaned (see sanitize-campaign-html.ts). Previewing and sending clean again, so a record
+  // saved before this existed is protected too, without being rewritten.
+  const data = { ...parsed, htmlContent: sanitizeCampaignHtml(parsed.htmlContent) };
+  if (!data.htmlContent.trim()) throw new Error("The campaign content is empty once unsupported markup is removed");
   const campaign = await prisma.marketingCampaign.create({
     data: { ...data, companyId: admin.companyId, createdById: admin.id },
   });
@@ -47,7 +52,9 @@ export async function createMarketingCampaign(input: z.infer<typeof campaignSche
 
 export async function updateMarketingCampaign(campaignId: string, input: z.infer<typeof campaignSchema>) {
   const admin = await assertMarketingAccess();
-  const data = campaignSchema.parse(input);
+  const parsed = campaignSchema.parse(input);
+  const data = { ...parsed, htmlContent: sanitizeCampaignHtml(parsed.htmlContent) };
+  if (!data.htmlContent.trim()) throw new Error("The campaign content is empty once unsupported markup is removed");
   const campaign = await assertCampaignAccess(admin.companyId, campaignId);
   if (campaign.status !== "DRAFT") {
     throw new Error("Only draft campaigns can be edited");
@@ -55,6 +62,16 @@ export async function updateMarketingCampaign(campaignId: string, input: z.infer
   await prisma.marketingCampaign.update({ where: { id: campaignId }, data });
   revalidatePath("/subscriptions");
   revalidatePath(`/subscriptions/campaigns/${campaignId}`);
+}
+
+/**
+ * The preview the campaign editor shows. The browser never renders the author's raw HTML: it asks the server for the cleaned version (the same
+ * sanitizer the stored copy and the sent email go through) and shows that inside a sandboxed iframe. Admin / Marketing Agent only, like every action here.
+ */
+export async function previewCampaignHtml(html: string): Promise<{ html: string }> {
+  await assertMarketingAccess();
+  if (typeof html !== "string") return { html: "" };
+  return { html: sanitizeCampaignHtml(html) };
 }
 
 export async function deleteMarketingCampaign(campaignId: string) {

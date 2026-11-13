@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { AccountRole } from "@/generated/prisma/client";
 import { canManageAccounts } from "@/lib/permissions";
 import { formatSignInLocation } from "@/server/auth/sign-in-context";
+import { describeLocationSource } from "@/server/geo/geoip-attribution";
 
 /**
  * Every field on every Account IN ONE COMPANY — the full, unfiltered
@@ -24,8 +25,12 @@ export type AccountSignInDetails = {
   lastSignInAt: Date | null;
   /** The FULL address the latest successful sign-in came from. Administrator-only; never returned for any other role. */
   ip: string | null;
-  /** "City, Region, Country" from the trusted proxy's geo headers (approximate); null when none was available. */
+  /** "City, Region, Country" — approximate, resolved from the sign-in IP (platform geo headers or the local geolocation database); null when none could be resolved. */
   location: string | null;
+  /** Which database/header produced `location` (e.g. "DBIP-City-Lite (2026-11-01)"); null when there is no location or it predates this record. */
+  locationSource: string | null;
+  /** Tooltip text: that the location is an estimate, and where it came from. Null when there is nothing to add. */
+  locationNote: string | null;
 };
 
 /**
@@ -40,13 +45,16 @@ export async function getAccountSignInDetails(viewer: { role: AccountRole; compa
   if (!viewer || !canManageAccounts(viewer.role)) return out;
   const rows = await prisma.account.findMany({
     where: { companyId: viewer.companyId },
-    select: { id: true, lastSignInAt: true, lastSignInIp: true, lastSignInCity: true, lastSignInRegion: true, lastSignInCountry: true, lastSignInCountryCode: true },
+    select: { id: true, lastSignInAt: true, lastSignInIp: true, lastSignInCity: true, lastSignInRegion: true, lastSignInCountry: true, lastSignInCountryCode: true, lastSignInLocationSource: true, lastSignInLocationAt: true },
   });
   for (const r of rows) {
+    const location = formatSignInLocation({ city: r.lastSignInCity, region: r.lastSignInRegion, country: r.lastSignInCountry, countryCode: r.lastSignInCountryCode });
     out.set(r.id, {
       lastSignInAt: r.lastSignInAt,
       ip: r.lastSignInIp,
-      location: formatSignInLocation({ city: r.lastSignInCity, region: r.lastSignInRegion, country: r.lastSignInCountry, countryCode: r.lastSignInCountryCode }),
+      location,
+      locationSource: location ? r.lastSignInLocationSource : null,
+      locationNote: location ? describeLocationSource(r.lastSignInLocationSource, r.lastSignInLocationAt) : null,
     });
   }
   return out;

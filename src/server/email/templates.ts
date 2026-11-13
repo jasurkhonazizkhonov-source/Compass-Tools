@@ -14,6 +14,7 @@
 // see them, but still show the relevant Company's own logo where useful.
 
 import { maskIp } from "@/server/security/ip-encryption";
+import { sanitizeCampaignHtml } from "@/server/email/sanitize-campaign-html";
 import { PRODUCT_NAME, type ResolvedCompanyBranding } from "@/lib/company-config";
 import { LEAD_STATUS_META, leadSourceLabel } from "@/lib/status-meta";
 import type { LeadSource, LeadStatus } from "@/generated/prisma/client";
@@ -2111,9 +2112,12 @@ export function buildBookingProfitNotificationEmail(params: {
  * the same professional branding conventions (logo, brand-color accent,
  * footer) so a subscriber sees a consistent look across every email this
  * company sends. htmlContent is the campaign author's own rich-text HTML
- * (from the TipTap editor) — inserted as-is, since it was authored by an
- * Admin/Marketing Agent inside the CRM, not user-submitted from an
- * untrusted public form.
+ * (from the TipTap editor, or pasted) — NOT trusted as-is: it is cleaned
+ * here, on the server, by sanitizeCampaignHtml (an allow-list sanitizer; see
+ * src/server/email/sanitize-campaign-html.ts) every time an email is built,
+ * so a test send and every real send carry only allow-listed markup no
+ * matter what was saved, including campaigns stored before the sanitizer
+ * existed (those records are not rewritten).
  */
 export function buildMarketingCampaignEmail(params: {
   subject: string;
@@ -2125,6 +2129,7 @@ export function buildMarketingCampaignEmail(params: {
    * header chrome. */
   preheader?: string;
 }) {
+  const safeContent = sanitizeCampaignHtml(params.htmlContent);
   const contactLine = renderContactLine(params.company);
   const footerHtml = `
     <p style="margin:0 0 4px; font-size:13px; font-weight:700; color:${EMAIL_TOKENS.ink};">${escapeHtml(params.company.name)}</p>
@@ -2139,8 +2144,8 @@ export function buildMarketingCampaignEmail(params: {
     // The subject is the campaign's headline; the "[TEST]" marker added to a
     // test send's subject line is not part of the design.
     title: params.subject.replace(/^\[TEST\]\s*/, ""),
-    bodyHtml: promoteLoneLinksToButtons(params.htmlContent, params.company.brandColor),
-    preheader: params.preheader ?? (summarizeForPreheader(params.htmlContent) || undefined),
+    bodyHtml: promoteLoneLinksToButtons(safeContent, params.company.brandColor),
+    preheader: params.preheader ?? (summarizeForPreheader(safeContent) || undefined),
     footerHtml,
   });
   return { subject: params.subject, html };

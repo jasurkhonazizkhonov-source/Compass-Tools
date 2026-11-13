@@ -117,6 +117,20 @@ export function canDeleteLead(role: AccountRole | undefined) {
   return role === "ADMIN" || role === "MANAGER";
 }
 
+// Bulk delete from the Leads / Contacts lists (checkbox selection). Deliberately NARROWER than canDeleteLead / canDeleteContact above:
+// a Manager may still delete a single record through its own row action, but deleting many at once is Admin-only. Enforced again
+// inside the bulk server action - hiding the button is never the control.
+export function canBulkDeleteLeadsAndContacts(role: AccountRole | undefined) {
+  return role === "ADMIN";
+}
+
+// Bulk "Add to sequence" from the Leads / Contacts lists. NOT Admin-only: it is exactly the existing rule for enrolling a lead in a
+// sequence (canManageSequences - Admin, Manager, Travel Agent) combined with having the list at all (canViewLeads / canViewContacts).
+// Per-record and per-sequence access (leadVisibilityWhere, contactVisibilityWhere, sequenceVisibilityWhere) is checked on the server.
+export function canBulkEnrollInSequence(role: AccountRole | undefined, kind: "leads" | "contacts") {
+  return canManageSequences(role) && (kind === "leads" ? canViewLeads(role) : canViewContacts(role));
+}
+
 export function canDeleteQuote(role: AccountRole | undefined) {
   return role === "ADMIN";
 }

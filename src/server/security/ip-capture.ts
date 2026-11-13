@@ -13,9 +13,36 @@ import { safeErrorTag } from "@/lib/safe-error-log";
 import { recordHealthEvent } from "@/server/system/health-events";
 import { isValidIpAddress, normalizeIp } from "@/lib/request-ip";
 import { locationToIpCaptureColumns, type ApproximateLocation } from "@/lib/request-geo";
+import { lookupIpLocation } from "@/server/geo/ip-geolocation";
 import { encryptIp, hashIpForSearch, hashSubnetForSearch } from "./ip-encryption";
 import { assessRisk, HIGH_RISK_THRESHOLD, VELOCITY_WINDOW_MS } from "./ip-risk";
 import type { IpCaptureFormType } from "@/generated/prisma/client";
+
+/**
+ * The geo columns stored with a signing event. The platform's own location (read only behind the trusted proxy) wins; when it supplied none, the
+ * LOCAL geolocation database is asked about the already-validated, trusted-path IP - so a booking signed from behind a non-Vercel proxy still gets an
+ * approximate location, with its source recorded. A lookup failure leaves the columns null (never an error, never a guess); no coordinates are kept.
+ */
+async function geoColumnsFor(ip: string, location: ApproximateLocation | undefined) {
+  if (location) return locationToIpCaptureColumns(location);
+  try {
+    const found = await lookupIpLocation(ip);
+    if (found.status === "resolved") {
+      const l = found.location;
+      return {
+        geoCity: l.city,
+        geoRegion: l.region ?? l.regionCode,
+        geoCountry: l.country,
+        geoCountryCode: l.countryCode,
+        geoTimeZone: l.timeZone,
+        geoSource: found.source,
+      };
+    }
+  } catch {
+    // best-effort: the capture itself must never fail over its location
+  }
+  return locationToIpCaptureColumns(undefined);
+}
 
 export async function recordIpCapture(params: {
   ip: string | undefined;
@@ -50,6 +77,7 @@ export async function recordIpCapture(params: {
 
   try {
     const ipVersion: "v4" | "v6" = ip.includes(":") ? "v6" : "v4";
+    const geoColumns = await geoColumnsFor(ip, params.location);
     const ipHash = hashIpForSearch(ip);
     const subnetHash = hashSubnetForSearch(ip, ipVersion);
     const windowStart = new Date(Date.now() - VELOCITY_WINDOW_MS);
@@ -102,7 +130,7 @@ export async function recordIpCapture(params: {
         signerName: params.signerName ?? null,
         signerEmail: params.signerEmail ?? null,
         userAgent: params.userAgent ?? null,
-        ...locationToIpCaptureColumns(params.location),
+        ...geoColumns,
         riskScore: assessment.score,
       },
     });

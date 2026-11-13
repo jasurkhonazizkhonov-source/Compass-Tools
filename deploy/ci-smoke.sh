@@ -73,14 +73,14 @@ docker compose up -d app
 for _ in $(seq 1 60); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ] && break; sleep 3; done
 [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ] || fail "the app did not become healthy"
 docker compose exec -T app node scripts/healthcheck.mjs && ok "app healthy (database reachable, schema current)"
-tls="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health").then(r=>r.json()).then(h=>console.log(h.readiness.databaseTls+" "+h.readiness.schema+" vault="+h.readiness.cardVaultEnabled))')"
+tls="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health",{headers:{authorization:"Bearer "+(process.env.CRON_SECRET||"")}}).then(r=>r.json()).then(h=>console.log(h.readiness.databaseTls+" "+h.readiness.schema+" vault="+h.readiness.cardVaultEnabled))')"
 [ "$tls" = "disabled current vault=false" ] && ok "databaseTls=disabled, schema=current, card vault CLOSED (as required): $tls" || fail "unexpected readiness: $tls"
 
 step "sharp's native libraries load on Linux (company-logo processing)"
 docker compose exec -T app node -e 'const s=require("sharp");s({create:{width:4,height:4,channels:3,background:"#fff"}}).png().toBuffer().then(b=>{console.log("png bytes",b.length)}).catch(e=>{console.error(e.message);process.exit(1)})' && ok "sharp works"
 
 step "Lead document storage: a writable, persistent, private bind mount"
-up="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health").then(r=>r.json()).then(h=>console.log(h.readiness.uploadStorage))')"
+up="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health",{headers:{authorization:"Bearer "+(process.env.CRON_SECRET||"")}}).then(r=>r.json()).then(h=>console.log(h.readiness.uploadStorage))')"
 [ "$up" = "ready" ] && ok "readiness.uploadStorage=ready" || fail "uploadStorage is $up (expected ready)"
 docker compose exec -T app sh -c 'printf smoke > /var/lib/compass-tools/uploads/.probe && [ "$(cat /var/lib/compass-tools/uploads/.probe)" = smoke ]' && ok "the app user can write and read in the mount" || fail "cannot write in the uploads mount"
 { [ -f "$UPLOADS/.probe" ] || sudo test -f "$UPLOADS/.probe"; } && ok "the file appears in the HOST directory (a real bind mount)" || fail "the file did not reach the host directory"
@@ -123,7 +123,7 @@ api() { docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/v1/
 [ "$(api "{authorization:'Bearer wrong-wrong-wrong-wrong-wrong-wrong-wrong'}")" = "401" ] && ok "wrong key -> 401" || fail "the website API accepted a wrong key"
 [ "$(api "{authorization:'Bearer $WEBSITE_API_KEY','content-type':'application/json'}")" = "400" ] && ok "right key passes authentication (400: no Idempotency-Key yet)" || fail "the right key was not accepted"
 [ "$(api "{authorization:'Bearer $WEBSITE_API_KEY','cf-ray':'smoke-FRA'}")" = "404" ] && ok "a request that came through the public Cloudflare edge -> 404" || fail "the website API answered a public-edge request"
-api_ready="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health").then(r=>r.json()).then(h=>console.log(h.readiness.websiteApi))')"
+api_ready="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health",{headers:{authorization:"Bearer "+(process.env.CRON_SECRET||"")}}).then(r=>r.json()).then(h=>console.log(h.readiness.websiteApi))')"
 [ "$api_ready" = "configured" ] && ok "readiness.websiteApi=configured" || fail "readiness.websiteApi is $api_ready"
 api_net="$(docker compose config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s);const n=c.networks.website_api;const app=Object.keys(c.services.app.networks||{});const others=["db","cloudflared"].filter((x)=>Object.keys(c.services[x].networks||{}).includes("website_api"));console.log((n&&n.internal?"internal":"open")+" app:"+app.includes("website_api")+" others:"+others.length)})')"
 [ "$api_net" = "internal app:true others:0" ] && ok "website_api is an internal network that only the app joins" || fail "unexpected website_api network layout: $api_net"

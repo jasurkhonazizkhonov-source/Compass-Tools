@@ -42,15 +42,16 @@ describe("normalizeIp", () => {
   });
 
   it("leaves a genuine IPv6 address unchanged", () => {
-    expect(normalizeIp("2001:0db8:85a3:0000:0000:8a2e:0370:7334")).toBe("2001:0db8:85a3:0000:0000:8a2e:0370:7334");
+    // one stored text per address: the canonical (RFC 5952) form, nothing dropped - 8 groups of the original are all still represented
+    expect(normalizeIp("2001:0db8:85a3:0000:0000:8a2e:0370:7334")).toBe("2001:db8:85a3::8a2e:370:7334");
   });
 
   it("leaves a plain IPv4 address unchanged", () => {
     expect(normalizeIp("203.0.113.42")).toBe("203.0.113.42");
   });
 
-  it("leaves the deprecated IPv4-COMPATIBLE form (no ffff marker) unchanged — deliberately not touched", () => {
-    expect(normalizeIp("::203.0.113.42")).toBe("::203.0.113.42");
+  it("does NOT turn the deprecated IPv4-COMPATIBLE form (no ffff marker) into IPv4 - it is only written canonically", () => {
+    expect(normalizeIp("::203.0.113.42")).toBe("::cb00:712a");
   });
 });
 
@@ -65,6 +66,14 @@ describe("isPrivateOrReservedIp", () => {
   it("does not treat 172.15.x or 172.32.x as private (just outside the /12 range)", () => {
     expect(isPrivateOrReservedIp("172.15.0.1")).toBe(false);
     expect(isPrivateOrReservedIp("172.32.0.1")).toBe(false);
+  });
+
+  it("recognizes carrier-grade NAT space (100.64.0.0/10) as an internal hop, and only that block", () => {
+    expect(isPrivateOrReservedIp("100.64.0.1")).toBe(true);
+    expect(isPrivateOrReservedIp("100.100.100.100")).toBe(true);
+    expect(isPrivateOrReservedIp("100.127.255.254")).toBe(true);
+    expect(isPrivateOrReservedIp("100.63.255.255")).toBe(false);
+    expect(isPrivateOrReservedIp("100.128.0.1")).toBe(false);
   });
 
   it("recognizes IPv4 loopback, link-local, and 'this network'", () => {
@@ -234,9 +243,9 @@ describe("getClientIp — TRUSTED_PROXY=vercel", () => {
     expect(getClientIp(new Headers({ "cf-connecting-ip": "8.8.8.8" }))).toBeUndefined();
   });
 
-  it("returns a full, untruncated IPv6 address", () => {
+  it("returns a full, untruncated IPv6 address (in its canonical, compressed form)", () => {
     const full = "2001:0db8:85a3:0000:0000:8a2e:0370:7334";
-    expect(getClientIp(new Headers({ "x-vercel-forwarded-for": full }))).toBe(full);
+    expect(getClientIp(new Headers({ "x-vercel-forwarded-for": full }))).toBe("2001:db8:85a3::8a2e:370:7334");
   });
 
   it("resolves a valid IPv6 address", () => {

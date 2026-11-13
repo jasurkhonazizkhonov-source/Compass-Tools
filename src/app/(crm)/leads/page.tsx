@@ -6,7 +6,9 @@ import { getLeads } from "@/server/queries/leads";
 import { PaginationControls } from "@/components/crm/pagination-controls";
 import { listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canViewAllRecords, canViewLeads } from "@/lib/permissions";
+import { canBulkDeleteLeadsAndContacts, canBulkEnrollInSequence, canReassignLeads, canViewAllRecords, canViewLeads } from "@/lib/permissions";
+import { getApplicableSequences } from "@/server/queries/sequences";
+import { BulkActionBar, BulkRowCheckbox, BulkSelectAllCheckbox, BulkSelectionProvider } from "@/components/crm/bulk-selection";
 import { LeadFilters } from "@/components/leads/lead-filters";
 import { NewLeadDialog } from "@/components/leads/new-lead-dialog";
 import { LeadStatusSelect } from "@/components/leads/lead-status-select";
@@ -35,8 +37,13 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
   const viewer = currentAccount ? { id: currentAccount.id, role: currentAccount.role, companyId: currentAccount.companyId } : null;
   const canReassign = canReassignLeads(currentAccount?.role);
   const canFilterByOtherAgents = canViewAllRecords(currentAccount?.role);
+  // Checkbox selection exists for its two bulk actions: "Add to sequence" (anyone who may enroll a lead in a sequence) and "Delete"
+  // (Admin only). Both are re-checked on the server; these flags only decide what is drawn.
+  const canBulkEnroll = canBulkEnrollInSequence(currentAccount?.role, "leads");
+  const canBulkDelete = canBulkDeleteLeadsAndContacts(currentAccount?.role);
+  const showSelection = canBulkEnroll || canBulkDelete;
 
-  const [{ leads, total, pageCount, pageSize: effectivePageSize }, agents] = await Promise.all([
+  const [{ leads, total, pageCount, pageSize: effectivePageSize }, agents, bulkSequences] = await Promise.all([
     getLeads({
       q: typeof sp.q === "string" ? sp.q : undefined,
       status: typeof sp.status === "string" ? [sp.status as LeadStatus] : undefined,
@@ -54,6 +61,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
       viewer,
     }),
     currentAccount ? listLeadEligibleAgents(currentAccount.companyId) : Promise.resolve([]),
+    canBulkEnroll && viewer ? getApplicableSequences(viewer) : Promise.resolve([]),
   ]);
   redirectToValidPageIfNeeded(sp, "/leads", page, pageCount);
 
@@ -76,7 +84,8 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
           description="Try adjusting your filters, or create a new lead to get started."
         />
       ) : (
-        <>
+        <BulkSelectionProvider kind="leads" pageIds={leads.map((l) => l.id)}>
+          {showSelection && <BulkActionBar canEnroll={canBulkEnroll} canDelete={canBulkDelete} sequences={bulkSequences} />}
           {/* Tablet/desktop: the table. The actions column is pinned to the right
               edge, so Call / Email / Reassign stay visible however far the
               other columns have to scroll. */}
@@ -84,6 +93,11 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
             <Table>
               <TableHeader>
                 <TableRow>
+                  {showSelection && (
+                    <TableHead className="w-px pr-0">
+                      <BulkSelectAllCheckbox />
+                    </TableHead>
+                  )}
                   <TableHead>Customer</TableHead>
                   <TableHead>Route</TableHead>
                   <TableHead>Travel Date</TableHead>
@@ -103,6 +117,11 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                   const customerName = `${lead.contact.firstName} ${lead.contact.lastName}`;
                   return (
                     <TableRow key={lead.id} className="group hover:bg-muted/40">
+                      {showSelection && (
+                        <TableCell className="w-px pr-0">
+                          <BulkRowCheckbox id={lead.id} label={customerName} />
+                        </TableCell>
+                      )}
                       <TableCell className="max-w-[200px]">
                         <Link href={`/leads/${lead.id}`} className="block truncate font-medium hover:underline hover:text-primary" title={customerName}>
                           {customerName}
@@ -158,7 +177,12 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
               return (
                 <li key={lead.id} className="rounded-lg border bg-card p-4 space-y-3">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    {showSelection && (
+                      <div className="pt-0.5">
+                        <BulkRowCheckbox id={lead.id} label={customerName} />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
                       <Link href={`/leads/${lead.id}`} className="block break-words font-medium hover:underline hover:text-primary">
                         {customerName}
                       </Link>
@@ -208,7 +232,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
               );
             })}
           </ul>
-        </>
+        </BulkSelectionProvider>
       )}
 
       <PaginationControls page={page} pageCount={pageCount} total={total} pageSize={effectivePageSize} />

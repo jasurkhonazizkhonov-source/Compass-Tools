@@ -151,6 +151,10 @@ model Account {
   lastSignInCountry     String?
   lastSignInCountryCode String?
   lastSignInTimeZone    String?
+  // Provenance of the location above (database product + build date, e.g. "DBIP-City-Lite (2026-11-01)") and when it was
+  // resolved. Null whenever the location columns are null. Same Admin-only treatment as the rest of the block.
+  lastSignInLocationSource String?
+  lastSignInLocationAt     DateTime?
 
   revokedSessions RevokedSession[]
 
@@ -749,17 +753,6 @@ model LeadSegment {
 // separate table so an ordinary Lead query never loads these values. Plaintext,
 // like the Contact email/phone beside it. Migration
 // 20261004000100_lead_submission_info.
-// One row per Lead created through the authenticated website API, written in the SAME insert as the Lead (never separately), so the
-// fingerprint can never be missing for a lead the API reports as created. Holds only a SHA-256 digest of the canonical request and a
-// short source label - no customer data.
-model LeadIngestFingerprint {
-  leadId      String   @id
-  lead        Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  requestHash String
-  source      String
-  createdAt   DateTime @default(now())
-}
-
 model LeadSubmissionInfo {
   id             String   @id @default(cuid())
   leadId         String   @unique
@@ -2055,6 +2048,10 @@ model ContactInquiry {
   // contactId traceability convention).
   emailLogs EmailLog[]
 
+  // What the SERVER learned about the request that created this inquiry (full IP + approximate location); null when nothing trustworthy was
+  // known. A separate table on purpose - see InquirySubmissionInfo.
+  submissionInfo InquirySubmissionInfo?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -2062,6 +2059,26 @@ model ContactInquiry {
   @@index([status])
   @@index([matchedContactId])
   @@index([companyId, source, createdAt])
+}
+
+// One row per ContactInquiry (both inboxes: Business Flights "Get In Touch" and "CRM Inquiries"): the full client IP the server received through
+// its trusted path and the approximate, IP-derived location. Mirrors LeadSubmissionInfo - a separate table so these values are never loaded with
+// an ordinary inquiry query and can only reach a screen through the Admin-only, masked, audited path. Plaintext, like the email/phone stored on
+// the inquiry itself. Written in the SAME insert as the inquiry; never taken from the request body. Migration 20261113000100_inquiry_submission_info.
+model InquirySubmissionInfo {
+  id          String         @id @default(cuid())
+  inquiryId   String         @unique
+  inquiry     ContactInquiry @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  ipAddress   String?
+  ipVersion   String?
+  city        String?
+  region      String?
+  country     String?
+  countryCode String?
+  timeZone    String?
+  /** Where the location came from (e.g. "DBIP-City-Lite (2026-11-01)"); null when there is no location. */
+  geoSource   String?
+  capturedAt  DateTime       @default(now())
 }
 
 model InquiryNote {

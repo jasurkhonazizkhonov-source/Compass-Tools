@@ -4,7 +4,9 @@ import { Contact2 } from "lucide-react";
 import { getContacts } from "@/server/queries/contacts";
 import { listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canViewAllRecords, canViewContacts } from "@/lib/permissions";
+import { canBulkDeleteLeadsAndContacts, canBulkEnrollInSequence, canReassignLeads, canViewAllRecords, canViewContacts } from "@/lib/permissions";
+import { getApplicableSequences } from "@/server/queries/sequences";
+import { BulkActionBar, BulkRowCheckbox, BulkSelectAllCheckbox, BulkSelectionProvider } from "@/components/crm/bulk-selection";
 import { EmptyState } from "@/components/crm/empty-state";
 import { ContactRowActions } from "@/components/contacts/contact-row-actions";
 import { ContactFilters } from "@/components/contacts/contact-filters";
@@ -36,8 +38,12 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
   // scope, but there's no point offering it to someone who can only ever
   // see their own contacts anyway.
   const canFilterByOtherAgents = canViewAllRecords(currentAccount?.role);
+  // See leads/page.tsx: selection exists for "Add to sequence" (anyone who may enroll) and "Delete" (Admin only), both re-checked on the server.
+  const canBulkEnroll = canBulkEnrollInSequence(currentAccount?.role, "contacts");
+  const canBulkDelete = canBulkDeleteLeadsAndContacts(currentAccount?.role);
+  const showSelection = canBulkEnroll || canBulkDelete;
 
-  const [{ contacts, total, pageCount, pageSize: effectivePageSize }, agents] = await Promise.all([
+  const [{ contacts, total, pageCount, pageSize: effectivePageSize }, agents, bulkSequences] = await Promise.all([
     getContacts({
       q,
       agentId: canFilterByOtherAgents && typeof sp.agent === "string" ? sp.agent : undefined,
@@ -48,6 +54,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
       viewer,
     }),
     (canReassign || canFilterByOtherAgents) && currentAccount ? listLeadEligibleAgents(currentAccount.companyId) : Promise.resolve([]),
+    canBulkEnroll && viewer ? getApplicableSequences(viewer) : Promise.resolve([]),
   ]);
   redirectToValidPageIfNeeded(sp, "/contacts", page, pageCount);
 
@@ -63,7 +70,8 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
       {contacts.length === 0 ? (
         <EmptyState icon={Contact2} title="No contacts found" description="Contacts are created automatically when you add a lead." />
       ) : (
-        <>
+        <BulkSelectionProvider kind="contacts" pageIds={contacts.map((c) => c.id)}>
+          {showSelection && <BulkActionBar canEnroll={canBulkEnroll} canDelete={canBulkDelete} sequences={bulkSequences} />}
           {/* Tablet/desktop: the table, with the actions column pinned to the
               right edge so Call / Email / Reassign / Delete stay visible however
               far the other columns have to scroll. */}
@@ -71,6 +79,11 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
             <Table>
               <TableHeader>
                 <TableRow>
+                  {showSelection && (
+                    <TableHead className="w-px pr-0">
+                      <BulkSelectAllCheckbox />
+                    </TableHead>
+                  )}
                   <TableHead>Name</TableHead>
                   <TableHead>Phone</TableHead>
                   <TableHead>Email</TableHead>
@@ -88,6 +101,11 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
                   const contactName = `${c.firstName} ${c.lastName}`;
                   return (
                     <TableRow key={c.id} className="group hover:bg-muted/40">
+                      {showSelection && (
+                        <TableCell className="w-px pr-0">
+                          <BulkRowCheckbox id={c.id} label={contactName} />
+                        </TableCell>
+                      )}
                       <TableCell className="max-w-[200px]">
                         <Link href={`/contacts/${c.id}`} className="block truncate font-medium hover:underline hover:text-primary" title={contactName}>
                           {contactName}
@@ -139,11 +157,18 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
               const contactName = `${c.firstName} ${c.lastName}`;
               return (
                 <li key={c.id} className="rounded-lg border bg-card p-4 space-y-3">
-                  <div className="min-w-0">
-                    <Link href={`/contacts/${c.id}`} className="block break-words font-medium hover:underline hover:text-primary">
-                      {contactName}
-                    </Link>
-                    <p className="break-all text-xs text-muted-foreground">{c.primaryEmail ?? (c.primaryPhone ? formatPhoneInternational(c.primaryPhone) : "—")}</p>
+                  <div className="flex items-start gap-3">
+                    {showSelection && (
+                      <div className="pt-0.5">
+                        <BulkRowCheckbox id={c.id} label={contactName} />
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <Link href={`/contacts/${c.id}`} className="block break-words font-medium hover:underline hover:text-primary">
+                        {contactName}
+                      </Link>
+                      <p className="break-all text-xs text-muted-foreground">{c.primaryEmail ?? (c.primaryPhone ? formatPhoneInternational(c.primaryPhone) : "—")}</p>
+                    </div>
                   </div>
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
                     <div>
@@ -181,7 +206,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
               );
             })}
           </ul>
-        </>
+        </BulkSelectionProvider>
       )}
 
       <PaginationControls page={page} pageCount={pageCount} total={total} pageSize={effectivePageSize} />

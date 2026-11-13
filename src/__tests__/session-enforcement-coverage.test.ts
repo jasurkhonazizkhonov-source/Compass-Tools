@@ -60,7 +60,7 @@ describe("the sign-in IP / location stays Administrator-only", () => {
 
   it("the global Prisma omit lists every sign-in field and the session token", () => {
     const prismaSrc = read(path.join(SRC, "lib", "prisma.ts"));
-    for (const f of ["activeSessionId", "lastSignInIp", "lastSignInCity", "lastSignInRegion", "lastSignInCountry", "lastSignInCountryCode", "lastSignInTimeZone"]) {
+    for (const f of ["activeSessionId", "lastSignInIp", "lastSignInCity", "lastSignInRegion", "lastSignInCountry", "lastSignInCountryCode", "lastSignInTimeZone", "lastSignInLocationSource", "lastSignInLocationAt"]) {
       expect(prismaSrc, f).toMatch(new RegExp(`${f}: true`));
     }
   });

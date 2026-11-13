@@ -42,7 +42,7 @@ fi
 step "3. Application health (the app's own /api/health, which also queries the database)"
 # Runs inside the app container (it has Node; the host may not) and prints one non-secret summary line.
 summary="$(dc exec -T app node -e '
-  fetch("http://127.0.0.1:" + (process.env.PORT || 3000) + "/api/health").then(r => r.json()).then(h => {
+  fetch("http://127.0.0.1:" + (process.env.PORT || 3000) + "/api/health", { headers: { authorization: "Bearer " + (process.env.CRON_SECRET || "") } }).then(r => r.json()).then(h => {
     const r = h.readiness || {};
     const ok = h.status === "ok" && h.database && h.database.ok;
     console.log([(ok ? "OK" : "BAD") + " status=" + h.status + " db=" + (h.database && h.database.ok),

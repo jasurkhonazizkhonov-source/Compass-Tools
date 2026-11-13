@@ -10,8 +10,9 @@
 // When either cannot be determined it is simply absent — nothing is invented, and
 // when neither is known no row is written at all.
 import { getClientIp } from "@/lib/request-ip";
-import { GEO_SOURCE, getRequestLocation } from "@/lib/request-geo";
+import { GEO_SOURCE, geoSourceOf, getRequestLocation } from "@/lib/request-geo";
 import { resolveVisitorContext } from "@/server/lead-ingest-context";
+import { lookupIpLocation } from "@/server/geo/ip-geolocation";
 import type { Prisma } from "@/generated/prisma/client";
 
 export function buildLeadSubmissionInfoCreate(
@@ -39,8 +40,28 @@ export function buildLeadSubmissionInfoCreate(
     country: location?.country ?? null,
     countryCode: location?.countryCode ?? null,
     timeZone: location?.timeZone ?? null,
-    geoSource: location ? GEO_SOURCE : null,
+    geoSource: location ? (visitor.state === "verified" ? (visitor.locationSource ?? GEO_SOURCE) : geoSourceOf(location)) : null,
     ...(budgetCurrency ? { budgetCurrency } : {}),
     capturedAt: now,
   };
+}
+
+/**
+ * When the trusted path produced an IP but the platform supplied no location, ask the LOCAL geolocation database about that same validated IP
+ * (the address never leaves this server) and fill the location columns, recording the database as the source. Never throws and never changes
+ * anything that was already known: a failure simply leaves the location as it was.
+ */
+export async function withLocalLocation(
+  info: Prisma.LeadSubmissionInfoCreateWithoutLeadInput | undefined
+): Promise<Prisma.LeadSubmissionInfoCreateWithoutLeadInput | undefined> {
+  if (!info || !info.ipAddress) return info;
+  if (info.city || info.region || info.country || info.countryCode || info.timeZone) return info;
+  try {
+    const found = await lookupIpLocation(info.ipAddress);
+    if (found.status !== "resolved") return info;
+    const l = found.location;
+    return { ...info, city: l.city, region: l.region ?? l.regionCode, country: l.country, countryCode: l.countryCode, timeZone: l.timeZone, geoSource: found.source };
+  } catch {
+    return info;
+  }
 }

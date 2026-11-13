@@ -4,7 +4,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Eye, EyeOff, Loader2, ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { revealLeadSubmissionIp } from "@/server/actions/lead-submission";
+import { revealLeadSubmissionIp, type LeadIpRevealResult } from "@/server/actions/lead-submission";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import { useTimedReveal } from "@/components/bookings/use-timed-reveal";
 
@@ -16,7 +16,7 @@ import { useTimedReveal } from "@/components/bookings/use-timed-reveal";
  * pattern as the booking signer's IP. A refusal is shown inline (a returned message), never as an
  * opaque thrown error.
  */
-export function LeadIpReveal({ leadId, masked, canReveal }: { leadId: string; masked: string; canReveal: boolean }) {
+export function LeadIpReveal({ leadId, masked, canReveal, revealAction }: { leadId: string; masked: string; canReveal: boolean; revealAction?: () => Promise<LeadIpRevealResult> }) {
   const { value: revealed, secondsLeft, show, hide } = useTimedReveal<{ ip: string; version: "v4" | "v6" }>(30);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +25,8 @@ export function LeadIpReveal({ leadId, masked, canReveal }: { leadId: string; ma
     setPending(true);
     setError(null);
     try {
-      const result = await revealLeadSubmissionIp(leadId);
+      // A public inquiry passes its own audited action (actions/inquiry-submission.ts); the default is the lead's.
+      const result = await (revealAction ? revealAction() : revealLeadSubmissionIp(leadId));
       if ("error" in result) {
         setError(result.error);
         toast.error(result.error, { duration: 8000 });

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { notifyNewSubscriber } from "@/server/admin-notifications";
+import { readLimitedJson } from "@/server/security/read-limited-json";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 
 // Part 10 — the public company website's newsletter/marketing signup form
@@ -25,12 +26,10 @@ export async function POST(req: Request) {
     );
   }
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
-  }
+  // Bounded read (see read-limited-json.ts): an unauthenticated caller cannot make the server buffer an arbitrarily large body.
+  const limited = await readLimitedJson(req);
+  if (!limited.ok) return limited.response;
+  const body: unknown = limited.value;
 
   const parsed = subscribeSchema.safeParse(body);
   if (!parsed.success) {

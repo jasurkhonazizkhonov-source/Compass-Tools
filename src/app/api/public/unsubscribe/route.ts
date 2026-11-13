@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { maskEmail, unsubscribeResponse } from "@/server/unsubscribe-page";
 import { normalizeUnsubscribeReason } from "@/lib/unsubscribe-reasons";
+import { readLimitedForm } from "@/server/security/read-limited-form";
 
 // The public unsubscribe page for MARKETING email (see buildMarketingCampaignEmail).
 // The link in every marketing email is this URL with an opaque, unguessable
@@ -86,12 +87,11 @@ export async function POST(req: Request) {
   // (the token is a capability, this is defence in depth).
   if (!isSameOriginPost(req)) return unsubscribeResponse({ kind: "error" });
 
-  let form: FormData;
-  try {
-    form = await req.formData();
-  } catch {
-    return unsubscribeResponse({ kind: "missing" });
-  }
+  // Bounded read: an unauthenticated caller cannot make the server buffer an arbitrarily large body (see read-limited-form.ts).
+  const limitedForm = await readLimitedForm(req);
+  // A refused or unreadable body is the sender's problem (HTTP 400, "the link is incomplete"), not a server fault.
+  if (!limitedForm.ok) return unsubscribeResponse({ kind: "missing" });
+  const form = limitedForm.form;
   const token = form.get(NO_TOKEN_FIELD);
   if (typeof token !== "string" || !token) return unsubscribeResponse({ kind: "missing" });
 

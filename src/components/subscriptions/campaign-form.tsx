@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Loader2, Send, Eye, Save, Trash2, Monitor, Smartphone } from "lucide-react";
@@ -16,7 +16,18 @@ import {
   deleteMarketingCampaign,
   sendMarketingCampaign,
   sendTestMarketingCampaign,
+  previewCampaignHtml,
 } from "@/server/actions/marketing-campaigns";
+
+// What the preview iframe itself may load: its own inline styles and images only. No scripts, frames, forms or connections.
+const PREVIEW_CSP = "default-src 'none'; img-src https: http: data:; style-src 'unsafe-inline'; font-src https: data:";
+
+function CampaignPreviewFrame({ html, empty }: { html: string | null; empty: boolean }) {
+  const body = html === null ? '<p style="color:#6b7280">Loading preview…</p>' : empty || !html.trim() ? '<p style="color:#6b7280">Nothing to preview yet.</p>' : html;
+  const doc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><base target="_blank"><style>body{margin:16px;font:14px/1.6 system-ui,sans-serif;color:#111827;word-wrap:break-word}img{max-width:100%;height:auto}table{max-width:100%}</style></head><body>${body}</body></html>`;
+  // sandbox="" = every restriction on: no scripts, no same-origin access to the CRM, no forms, no popups, no top-level navigation.
+  return <iframe title="Campaign preview" sandbox="" referrerPolicy="no-referrer" srcDoc={doc} className="w-full min-h-[320px] h-[480px] rounded-md border bg-white" />;
+}
 
 export function CampaignForm({
   campaignId,
@@ -65,6 +76,25 @@ export function CampaignForm({
   const [sendConfirmOpen, setSendConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [isPending, startTransition] = useTransition();
+  // The preview shows the SERVER-sanitised copy of the HTML (previewCampaignHtml), never the raw text in the editor. The result is stored together
+  // with the exact html it was made from, so "still loading" is simply "the stored result is for different html" (no state reset inside the effect).
+  const [sanitised, setSanitised] = useState<{ source: string; html: string } | null>(null);
+  const showingHtml = preview || readOnly;
+  const safeHtml = sanitised && sanitised.source === html ? sanitised.html : null;
+  useEffect(() => {
+    if (!showingHtml) return;
+    let cancelled = false;
+    previewCampaignHtml(html)
+      .then((r) => {
+        if (!cancelled) setSanitised({ source: html, html: r.html });
+      })
+      .catch(() => {
+        if (!cancelled) setSanitised({ source: html, html: "" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showingHtml, html]);
 
   function save() {
     if (!name.trim() || !subject.trim() || !html.trim()) {
@@ -195,22 +225,19 @@ export function CampaignForm({
             </Button>
           </div>
         </div>
-        {/* Rendering this campaign's own HTML directly is safe here: it was
-            authored by this same Admin/Marketing Agent via the TipTap
-            editor above (a trusted CRM user), never submitted by an
-            anonymous/public visitor — the same trust boundary as any other
-            admin-authored content in this app. */}
+        {/* The campaign HTML is cleaned on the server (sanitize-campaign-html.ts) and shown inside a sandboxed iframe: no scripts, no same-origin
+            access to this page, no forms, no navigation, and a CSP of its own - so even markup the sanitizer did not anticipate cannot run here. */}
         {preview ? (
           <div className={previewWidth === "mobile" ? "flex justify-center bg-muted/30 rounded-md p-3" : ""}>
             <div className={previewWidth === "mobile" ? "w-[375px] max-w-full" : "w-full"}>
-              <div className="rounded-md border p-4 prose prose-sm max-w-none min-h-[240px] bg-background" dangerouslySetInnerHTML={{ __html: html || "<p class='text-muted-foreground'>Nothing to preview yet.</p>" }} />
+              <CampaignPreviewFrame html={safeHtml} empty={!html.trim()} />
               <p className="text-[11px] text-muted-foreground mt-2 px-1">
                 Sent emails are laid out in the company&apos;s branded design — logo header, your subject as the headline, then your content — with an unsubscribe link in the footer. Use Send Test to see the exact result in your inbox.
               </p>
             </div>
           </div>
         ) : readOnly ? (
-          <div className="rounded-md border p-4 prose prose-sm max-w-none min-h-[240px]" dangerouslySetInnerHTML={{ __html: html }} />
+          <CampaignPreviewFrame html={safeHtml} empty={!html.trim()} />
         ) : (
           <RichTextEditor key={editorKey} value={html} onChange={setHtml} />
         )}

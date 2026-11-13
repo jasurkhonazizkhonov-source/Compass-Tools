@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const queryRaw = vi.fn();
 vi.mock("@/server/system/migration-status", () => ({ getMigrationStatus: vi.fn(async () => ({ state: "current", expected: 55, applied: 55, pending: [] })) }));
@@ -8,18 +8,90 @@ vi.mock("@/lib/prisma", () => ({
   getPoolSettings: () => ({ max: 5, connectionTimeoutMillis: 8000, idleTimeoutMillis: 10000, connectRetries: 2 }),
 }));
 
+// The detailed report needs the internal secret; the public answer is minimal (see the "public answer" block below). A throwaway test value.
+const INTERNAL_SECRET = "unit-test-cron-secret-0123456789-abcdef";
+const detail = () => new Request("http://localhost/api/health", { headers: { authorization: `Bearer ${INTERNAL_SECRET}` } });
+const anonymous = () => new Request("http://localhost/api/health");
+
 beforeEach(async () => {
   queryRaw.mockReset();
+  vi.stubEnv("CRON_SECRET", INTERNAL_SECRET);
   const { resetHealthCacheForTests } = await import("@/lib/health-check");
   resetHealthCacheForTests();
 });
+afterEach(() => vi.unstubAllEnvs());
 
-describe("GET /api/health", () => {
+describe("GET /api/health - the PUBLIC answer is minimal", () => {
+  it("an anonymous caller gets only a generic status and the HTTP code: 200 + {status:ok} when the database answers", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const { GET } = await import("../route");
+    const res = await GET(anonymous());
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(await res.json()).toEqual({ status: "ok" });
+  });
+
+  it("an anonymous caller gets 503 + {status:down} when the database is down - never the error category, timings, pool or readiness", async () => {
+    queryRaw.mockRejectedValue(new Error("connect ECONNREFUSED postgres://user:s3cret@db.internal:5432/app"));
+    const { GET } = await import("../route");
+    const res = await GET(anonymous());
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ status: "down" });
+  });
+
+  it("no detail leaks without the secret: a wrong secret, a malformed header, an empty Bearer, and the secret in a query string are all the minimal answer", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const { GET } = await import("../route");
+    const attempts = [
+      new Request("http://localhost/api/health", { headers: { authorization: "Bearer wrong-secret-value" } }),
+      new Request("http://localhost/api/health", { headers: { authorization: INTERNAL_SECRET } }), // no "Bearer "
+      new Request("http://localhost/api/health", { headers: { authorization: "Bearer " } }),
+      new Request(`http://localhost/api/health?token=${INTERNAL_SECRET}&detail=1`),
+      new Request("http://localhost/api/health", { headers: { "x-forwarded-for": "127.0.0.1", "x-real-ip": "127.0.0.1", host: "localhost" } }), // looking "internal" is not credentials
+    ];
+    for (const req of attempts) expect(await (await GET(req)).json(), req.url).toEqual({ status: "ok" });
+    expect(await (await GET()).json()).toEqual({ status: "ok" }); // and a call with no request object at all
+  });
+
+  it("when CRON_SECRET is not configured nobody gets the detail - not even a request that sends an empty or guessed token", async () => {
+    vi.stubEnv("CRON_SECRET", "");
+    queryRaw.mockResolvedValue([{}]);
+    const { GET } = await import("../route");
+    for (const auth of ["Bearer ", "Bearer undefined", "Bearer null", ""]) {
+      const res = await GET(new Request("http://localhost/api/health", { headers: { authorization: auth } }));
+      expect(await res.json(), auth).toEqual({ status: "ok" });
+    }
+  });
+
+  it("the public body never contains configuration, versions, environment, hostnames or counts - however the deployment is set up", async () => {
+    vi.stubEnv("DATABASE_URL", "postgresql://compass:secret-pw@db.internal:5432/compass");
+    vi.stubEnv("APP_ENV", "production");
+    queryRaw.mockResolvedValue([{}]);
+    const { GET } = await import("../route");
+    const text = await (await GET(anonymous())).text();
+    expect(text).toBe('{"status":"ok"}');
+    expect(text).not.toMatch(/readiness|database|pool|schema|migrat|cardVault|databaseTls|environment|upload|websiteApi|leadIngest|checkedAt|production|secret-pw|db\.internal/i);
+  });
+
+  it("the Docker/monitor contract is intact: the HTTP code alone tells up (200) from down (503), and the body is JSON with a string status", async () => {
+    const { GET } = await import("../route");
+    queryRaw.mockResolvedValue([{}]);
+    let res = await GET(anonymous());
+    expect([res.status, res.headers.get("content-type")?.includes("application/json"), typeof (await res.json()).status]).toEqual([200, true, "string"]);
+    const { resetHealthCacheForTests } = await import("@/lib/health-check");
+    resetHealthCacheForTests();
+    queryRaw.mockRejectedValue(new Error("down"));
+    res = await GET(anonymous());
+    expect([res.status, typeof (await res.json()).status]).toEqual([503, "string"]);
+  });
+});
+
+describe("GET /api/health - the detailed report (internal secret required)", () => {
   it("reports ok with round-trip timings and pool occupancy when the database answers", async () => {
     queryRaw.mockResolvedValue([{ "?column?": 1 }]);
     const { GET } = await import("../route");
 
-    const res = await GET();
+    const res = await GET(detail());
     const body = await res.json();
 
     expect(res.status).toBe(200);
@@ -41,7 +113,7 @@ describe("GET /api/health", () => {
       const { GET } = await import("../route");
       await fn(async () => {
         resetHealthCacheForTests();
-        return (await GET()).json();
+        return (await GET(detail())).json();
       });
     } finally {
       for (const [k, v] of Object.entries(saved)) {
@@ -165,10 +237,10 @@ describe("GET /api/health", () => {
       const { resetHealthCacheForTests } = await import("@/lib/health-check");
       resetHealthCacheForTests();
       const { GET } = await import("../route");
-      expect((await (await GET()).json()).readiness.signerIpCapture).toBe("enabled");
+      expect((await (await GET(detail())).json()).readiness.signerIpCapture).toBe("enabled");
       process.env.TRUSTED_PROXY = "none";
       resetHealthCacheForTests();
-      expect((await (await GET()).json()).readiness.signerIpCapture).toBe("disabled");
+      expect((await (await GET(detail())).json()).readiness.signerIpCapture).toBe("disabled");
     } finally {
       for (const [k, v] of Object.entries(original)) {
         if (v === undefined) delete process.env[k];
@@ -181,7 +253,7 @@ describe("GET /api/health", () => {
     queryRaw.mockRejectedValue(new Error("connect ECONNREFUSED postgres://user:s3cret@db.internal:5432/app"));
     const { GET } = await import("../route");
 
-    const res = await GET();
+    const res = await GET(detail());
     const text = await res.text();
 
     expect(res.status).toBe(503);
@@ -195,8 +267,8 @@ describe("GET /api/health", () => {
     queryRaw.mockResolvedValue([{}]);
     const { GET } = await import("../route");
 
-    await Promise.all([GET(), GET(), GET()]);
-    await GET();
+    await Promise.all([GET(detail()), GET(detail()), GET(detail())]);
+    await GET(detail());
 
     // Two queries per real check, one real check for the whole burst.
     expect(queryRaw).toHaveBeenCalledTimes(2);
@@ -214,7 +286,7 @@ describe("GET /api/health", () => {
     const read = async () => {
       resetStatusCacheForTests();
       resetHealthCacheForTests();
-      const text = JSON.stringify(await (await GET()).json());
+      const text = JSON.stringify(await (await GET(detail())).json());
       expect(text).not.toContain(dir);
       expect(text).not.toMatch(/compass-health-uploads|UPLOAD_|freeBytes/);
       return JSON.parse(text).readiness.uploadStorage as string;
@@ -241,7 +313,7 @@ describe("GET /api/health", () => {
     const { GET } = await import("../route");
     const readTls = async () => {
       resetHealthCacheForTests();
-      const body = await (await GET()).json();
+      const body = await (await GET(detail())).json();
       expect(JSON.stringify(body)).not.toMatch(/postgresql:|secret-pw|BEGIN CERTIFICATE|@db/);
       return body.readiness.databaseTls;
     };

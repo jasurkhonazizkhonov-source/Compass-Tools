@@ -343,7 +343,8 @@ describe("processDueTaskNotifications — concurrency (Pass 20)", () => {
 
   it("notifies exactly once for a single invocation", async () => {
     seedDueTask("task-1");
-    const { processDueTaskNotifications } = await import("../tasks");
+    // The sweep itself (the logic under test) - the role-checked button action around it is covered in due-work-authorization.test.ts.
+    const { runDueTaskNotifications: processDueTaskNotifications } = await import("@/server/due-task-notifications");
     const result = await processDueTaskNotifications();
     expect(result.notified).toBe(1);
     expect(notifications).toHaveLength(1);
@@ -352,7 +353,8 @@ describe("processDueTaskNotifications — concurrency (Pass 20)", () => {
 
   it("two concurrent invocations processing the SAME due task notify exactly once, not twice", async () => {
     seedDueTask("task-1");
-    const { processDueTaskNotifications } = await import("../tasks");
+    // The sweep itself (the logic under test) - the role-checked button action around it is covered in due-work-authorization.test.ts.
+    const { runDueTaskNotifications: processDueTaskNotifications } = await import("@/server/due-task-notifications");
     const [first, second] = await Promise.all([processDueTaskNotifications(), processDueTaskNotifications()]);
     expect(first.notified + second.notified).toBe(1); // NEVER 2 — this is the actual bug this pass fixed
     expect(notifications).toHaveLength(1);
@@ -360,7 +362,8 @@ describe("processDueTaskNotifications — concurrency (Pass 20)", () => {
 
   it("a task with no assignee is skipped without error and never counted as notified", async () => {
     seedTask("task-1", { assigneeId: null, dueAt: new Date(Date.now() - 1000) });
-    const { processDueTaskNotifications } = await import("../tasks");
+    // The sweep itself (the logic under test) - the role-checked button action around it is covered in due-work-authorization.test.ts.
+    const { runDueTaskNotifications: processDueTaskNotifications } = await import("@/server/due-task-notifications");
     const result = await processDueTaskNotifications();
     expect(result.notified).toBe(0);
     expect(notifications).toHaveLength(0);
@@ -368,7 +371,8 @@ describe("processDueTaskNotifications — concurrency (Pass 20)", () => {
 
   it("does not re-notify a task that was already notified in a previous scan", async () => {
     seedDueTask("task-1", { dueNotifiedAt: new Date() });
-    const { processDueTaskNotifications } = await import("../tasks");
+    // The sweep itself (the logic under test) - the role-checked button action around it is covered in due-work-authorization.test.ts.
+    const { runDueTaskNotifications: processDueTaskNotifications } = await import("@/server/due-task-notifications");
     const result = await processDueTaskNotifications();
     expect(result.notified).toBe(0);
     expect(notifications).toHaveLength(0);

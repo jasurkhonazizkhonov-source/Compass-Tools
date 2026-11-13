@@ -1,0 +1,1189 @@
+Compass Tools — UI, Quote, Itinerary, Booking, Email, Sequence and Task Improvements
+You are continuing development of the existing Compass Tools CRM for Business Flights Travel.
+This is an existing application. Do not rebuild it from scratch.
+Inspect the current implementation first, identify the relevant components, routes, database models, APIs, services, email templates, parsers, and workflows, then modify the existing architecture cleanly.
+The purpose of this task is to improve the existing CRM and complete the specific UX and workflow requirements below.
+1. IMPORTANT: PRESERVE EXISTING REQUIREMENTS
+Continue following all previous Compass Tools requirements, especially:
+
+* Do not install authentication yet.
+* Preserve existing data.
+* Reuse existing architecture.
+* Do not create duplicate services/models unnecessarily.
+* Keep Leads, Contacts, Quotes, Bookings, Accounts, Sequences and Tasks properly related.
+* Make real workflows functional rather than creating mock UI.
+* Validate important data server-side.
+* Test the actual end-to-end workflows.
+* Keep the application responsive and professional.
+
+2. MODERN CALENDAR
+Replace any outdated/default-looking calendars with a modern professional calendar/date-picker.
+The calendar should feel like a modern premium SaaS application.
+Requirements:
+
+* Modern visual design
+* Clean typography
+* Professional spacing
+* Clear selected date
+* Clear today indicator
+* Month/year navigation
+* Previous/next controls
+* Keyboard navigation
+* Touch-friendly controls
+* Responsive behavior
+* Light mode
+* Dark mode
+* Accessible focus states
+* Disabled dates where appropriate
+* Date-range support where required
+
+Add subtle modern motion effects:
+
+* Smooth calendar opening
+* Smooth calendar closing
+* Subtle date selection animation
+* Subtle hover transitions
+* Smooth month transition where appropriate
+* Professional popover animation
+
+Do not over-animate.
+Motion should feel polished and fast rather than decorative.
+Use the existing design system/component library where possible.
+3. PAYMENT / CREDIT CARD information collection
+There is a requirement for the customer booking form to collect payment information.
+
+please store CVV or full raw credit-card numbers in the CRM database.
+ implement a system that stores:
+
+* Full card number
+* CVV
+* Raw magnetic/card data
+
+for later manual charging.
+
+please do
+Store CVV in PostgreSQL
+Store credit card numbers, expiration dates and cvv, show all the infomration in the crm when the quote is signed
+
+However please avoid:
+
+* Store CVV in logs
+* Store CVV in frontend state longer than necessary
+* Return CVV through API responses
+* Put card data into email (provide inly last 4 digits and expiration, not showsn CVV in emails)
+* Put card data into browser localStorage
+* Put card data into analytics
+* Put card data into activity logs
+
+
+
+4. BOOKING FORM — PAYMENT SECTION
+The payment section should still look complete and professional.
+Support card types such as:
+
+* Visa
+* Mastercard
+* American Express
+* Discover
+
+Use an appropriate secure payment-provider card element/hosted field when a provider is configured.
+The customer should receive clear confirmation that their payment information has been securely submitted.
+The CRM should display safe payment information such as:
+Visa •••• 4242
+and:
+Expires 08/29
+where available.
+Never display the CVV after submission to the customer.
+5. CUSTOMER-FACING QUOTE — MAJOR IMPROVEMENT
+The current quote email is too simple.
+At the moment, the customer receives an email that essentially says:
+"Your flight itinerary from X to Y"
+with a View Deal button.
+This is not sufficient.
+Redesign the customer quote email into a professional travel quotation email.
+The email should contain meaningful itinerary information directly inside the email.
+Include:
+
+* Business Flights Travel branding
+* Business Flights Travel logo where appropriate
+* Customer name
+* Professional introduction
+* Trip summary
+* Departure location
+* Arrival location
+* Trip type
+* Passenger count
+* Flight segments
+* Airline logos
+* Airline names
+* Airline codes
+* Flight numbers
+* Cabin class
+* Aircraft
+* Departure date
+* Departure time
+* Arrival date
+* Arrival time
+* Flight duration
+* Layover information where applicable
+* Price per passenger
+* Passenger pricing breakdown
+* Taxes where applicable
+* Service fee where applicable
+* Total cost
+* View Deal button
+
+The email should look like a professional travel quote rather than a plain transactional text email.
+6. EMAIL BRANDING
+When sending anything customer-facing:
+The company name must be:
+Business Flights Travel
+Do NOT expose the CRM name:
+Compass Tools
+Do not put "Compass Tools" into:
+
+* Customer email subject
+* Customer email body
+* Customer quote page
+* Customer booking page
+* Customer confirmation page
+* Customer confirmation email
+
+The CRM is an internal tool.
+The customer-facing brand is:
+Business Flights Travel
+7. CUSTOMER QUOTE EMAIL LAYOUT
+Create a modern email structure.
+Suggested structure:
+Header
+Business Flights Travel logo
+Business Flights Travel
+Greeting
+Hello [Customer First Name],
+Thank you for considering Business Flights Travel.
+We have prepared the following flight option for your trip.
+Trip Summary
+From:
+London (LHR)
+To:
+Edinburgh (EDI)
+Travel dates:
+25 Sep — 07 Oct
+Passengers:
+2 Adults
+Flight Itinerary
+Each segment should be clearly presented.
+Example:
+British Airways (BA)
+BA1460
+Economy
+25 September
+London Heathrow (LHR)
+6:00 PM
+↓
+1h 25m
+↓
+Edinburgh (EDI)
+7:25 PM
+Aircraft: Airbus/Boeing aircraft where available
+For return flights, show the return segment separately.
+Use actual database information.
+Do not fabricate airline or aircraft data.
+Pricing
+Show:
+Adult × 2
+$XXX per person
+Taxes
+$XXX
+Service fee
+$XXX
+Total
+$XXX
+Make the total visually prominent.
+CTA
+Include a highly visible professional button:
+View Deal
+The button should clearly look clickable.
+Clicking it should take the customer to the secure customer-facing quote/booking page.
+8. AIRLINE LOGOS
+Improve airline branding throughout the quote system.
+The system should maintain airline logo information associated with airlines in the airline database. please add all the airlines logos over 1200 to the database and use the accordingly.
+For each airline, where reliable logo data is available, maintain:
+
+* Airline name
+* IATA code
+* Country
+* Logo asset/reference
+* Active status
+
+Do not fabricate logos.
+Use legitimate/accurate airline logo assets or an appropriate licensed airline-data/logo source.
+Store the appropriate logo reference in the database or asset system rather than embedding random external images directly into every quote.
+9. AIRLINE LOGOS IN QUOTES
+When a quote contains:
+BA
+the quote should show the corresponding:
+British Airways
+logo.
+When it contains:
+LH
+show:
+Lufthansa
+logo.
+When it contains:
+JL
+show:
+Japan Airlines
+logo.
+Use the airline associated with each flight segment.
+Do not show a generic aircraft icon when an airline logo is available.
+If a valid airline logo is unavailable, gracefully fall back to the airline name/code.
+Never fabricate an airline logo.
+10. CUSTOMER QUOTE PAGE
+The customer-facing quote page should be significantly more informative and professional.
+It should include:
+
+* Business Flights Travel header
+* Customer name
+* Trip summary
+* Flight itinerary
+* Airline logos
+* Airline names
+* Flight numbers
+* Cabin class
+* Aircraft
+* Departure date
+* Departure time
+* Arrival date
+* Arrival time
+* Flight duration
+* Layover information
+* Passenger count
+* Price per passenger
+* Taxes
+* Service fee
+* Total
+* Terms
+* View Deal button
+
+Use clear visual hierarchy.
+The customer should immediately understand:
+Where am I flying?
+When am I flying?
+Which airline?
+What flight?
+What cabin?
+How long is the flight?
+What are the layovers?
+How much does it cost?
+11. FLIGHT SEGMENT DESIGN
+Improve the itinerary display substantially.
+The current design places the day/date and time too close together and at similar visual sizes, making it difficult to understand.
+Create a professional airline-style itinerary layout.
+For each segment:
+Departure
+25 Sep
+6:00 PM
+London Heathrow
+LHR
+Flight information
+British Airways logo
+British Airways
+BA1460
+Economy
+Aircraft
+1h 25m
+Arrival
+25 Sep
+7:25 PM
+Edinburgh
+EDI
+The date should be visually distinct from the time.
+The time should be prominent.
+The airport code should be clearly visible.
+The city/airport name should be readable.
+12. FLIGHT DURATION
+Always display duration separately.
+Examples:
+1h 25m
+7h 45m
+12h 10m
+Do not force customers to calculate duration from departure and arrival times.
+13. ARRIVAL DATE
+Always display the arrival date independently.
+For overnight flights:
+Departure:
+25 Sep — 11:30 PM
+Arrival:
+26 Sep — 7:15 AM
+Never assume the arrival date is the departure date.
+14. LAYOVER VS MULTI-CITY
+Add a configuration option between consecutive flight segments.
+For each relationship between flight segments, allow:
+Layover
+or:
+Multi City
+This setting primarily controls how the itinerary is displayed on the customer-facing quote.
+15. LAYOVER DISPLAY
+When:
+Layover
+is selected:
+The two flight segments should visually appear connected.
+Show the layover between them.
+Example:
+Flight 1
+London → Frankfurt
+10:00 AM → 12:00 PM
+Layover: 2h 15m
+Flight 2
+Frankfurt → New York
+2:15 PM → 5:00 PM
+The layover should be visually obvious.
+Do not place the segments unnecessarily far apart.
+Make it feel like one connected journey.
+16. MULTI-CITY DISPLAY
+When:
+Multi City
+is selected:
+Do not display a layover duration between those segments.
+Instead, visually separate the segments.
+Example:
+Flight 1
+London → Frankfurt
+Flight 2
+Frankfurt → New York
+The customer should understand that these are separate itinerary legs rather than a connected layover presentation.
+This distinction should affect the customer-facing quote presentation.
+17. LAYOVER CALCULATION
+When displaying a layover:
+Calculate it from:
+Previous segment arrival datetime
+to:
+Next segment departure datetime.
+Example:
+Arrival:
+12:00 PM
+Next departure:
+2:15 PM
+Layover:
+2h 15m
+If dates differ, calculate using the full date/time.
+Never calculate using time-of-day only.
+18. APOLLO PARSER — FIX COMPLETELY
+The Apollo parser is currently unreliable.
+It sometimes:
+
+* Fails to identify cabin class
+* Misses arrival time
+* Misses departure time
+* Misses airline
+* Misses airports
+* Fails to populate fields
+* Misinterprets codes
+
+Fix the parser rather than adding frontend workarounds.
+19. APOLLO CABIN CLASS
+Apollo/GDS booking class letters must be interpreted correctly.
+For example:
+`BA1460Y`
+contains:
+Airline:
+BA
+Flight:
+1460
+Booking class:
+Y
+The parser must distinguish the booking class from:
+
+* Flight number
+* Airline code
+* Airport codes
+* Status
+* Equipment
+* Other GDS fields
+
+Do not assume every letter means cabin class.
+The parser should use a proper mapping/configuration for booking classes.
+For example, `Y` commonly represents Economy, but the implementation must use the appropriate airline/GDS mapping rather than blindly assuming every carrier uses every booking code identically.
+Where exact cabin mapping cannot be confidently determined:
+
+* Preserve the booking class
+* Mark cabin as requiring confirmation/manual correction
+* Do not silently invent a cabin
+
+20. APOLLO EXAMPLE
+The parser must correctly handle examples such as:
+`1 BA1460Y 25SEP LHREDI SS1 600P 725P * FR E`
+It should identify:
+Segment:
+1
+Airline:
+BA
+Flight:
+1460
+Booking class:
+Y
+Date:
+25SEP
+Departure:
+LHR
+Arrival:
+EDI
+Status:
+SS1
+Departure time:
+6:00 PM
+Arrival time:
+7:25 PM
+Day:
+FR
+Additional equipment/data:
+E where appropriate according to the format
+Do not incorrectly interpret:
+`LHREDI`
+as a single airport.
+It should be:
+`LHR`
+→
+`EDI`
+21. APOLLO PARSER ROBUSTNESS
+Support reasonable variations in:
+
+* Whitespace
+* Alignment
+* Optional fields
+* Missing equipment
+* Different status values
+* Different date formatting
+* Different time formatting
+* Multiple segments
+* Overnight flights
+
+Do not write a parser that only works for one copied example.
+Create automated tests using several realistic examples.
+22. SABRE/SWAN PARSER
+Fix the Sabre/SWAN parser using the same principles.
+It must correctly extract:
+
+* Airline
+* Flight number
+* Booking class
+* Cabin
+* Departure airport
+* Arrival airport
+* Departure date
+* Arrival date
+* Departure time
+* Arrival time
+* Aircraft
+* Duration where available
+
+If data is absent:
+Leave it missing and flag it for correction.
+Do not populate incorrect values just to make the form appear complete.
+23. PARSER AUTO-FILL UX
+After pasting an itinerary and clicking:
+Parse Itinerary
+the system should:
+
+1. Parse the input.
+2. Show loading state.
+3. Populate the flight segments.
+4. Highlight fields successfully recognized.
+5. Highlight uncertain/missing fields.
+6. Allow manual correction.
+7. Validate the result before saving.
+
+Do not require the user to manually re-enter information that the parser successfully extracted.
+24. PARSER TESTING
+Add tests for:
+
+* Apollo
+* Sabre/SWAN
+* Multiple segments
+* One-way
+* Round trip
+* Multi-city
+* Overnight flights
+* Missing fields
+* Different spacing
+* Cabin class
+* Airline code
+* Flight number
+* Airport codes
+* Arrival date
+* Departure time
+* Arrival time
+
+The test suite should verify the actual parsed values.
+25. BOOK FLIGHT → REVIEW PAGE
+Improve the booking workflow.
+When the customer clicks:
+Book Flight
+do not immediately submit the booking.
+Instead:
+Book Flight
+↓
+Review Your Booking
+↓
+Finish Booking
+26. REVIEW PAGE
+Create a professional review page containing all information entered by the customer.
+Sections:
+Flight itinerary
+Show all segments exactly as they will be booked.
+Passenger information
+Show each passenger separately.
+Use explicit labels:
+First Name
+Middle Name
+Last Name
+Date of Birth
+Gender
+etc.
+Contact information
+Show:
+Phone
+Email
+Billing information
+Show billing address.
+Payment
+Only display safe payment information.
+Example:
+Visa •••• 4242
+Expires 08/29
+Never display CVV or the full card number on that part only. however save all the credit card infomartion to the crm and show all the information to an agent as the payment is done manually.
+Pricing
+Show complete price breakdown.
+Gratuity
+Show selected gratuity.
+Terms
+Show acknowledgment status.
+Signature
+Show signed name.
+Provide editing controls where appropriate.
+27. PASSENGER NAME DISPLAY
+After submission/review, do not combine names into an ambiguous string.
+Display according to the actual form fields:
+First Name: John
+Middle Name: Michael
+Last Name: Smith
+Repeat this structure for every passenger.
+Do not accidentally display:
+"John Michael Smith"
+without identifying which portion is first/middle/last.
+28. BOOKING SUCCESS PAGE
+After successful submission, show a modern professional success page.
+Use Business Flights Travel branding.
+Do not mention Compass Tools.
+Suggested content:
+Thank you for booking with Business Flights Travel.
+We received your booking request.
+We are currently working on your ticket issuance.
+As soon as your tickets are booked, you will receive an automatic email containing your final flight itinerary, complete charge breakdown, and airline confirmation number(s).
+Include:
+
+* Booking reference
+* Customer name
+* Flight summary
+* Current booking status
+
+Use a polished success state with appropriate iconography and subtle motion.
+Do not falsely say tickets have already been issued.
+29. BOOKING SUBMITTED EMAIL
+When a new booking is submitted, send the internal notification only to the sender/travel agent associated with the quote/lead.
+Do not send the notification to:
+`admin@compasstools.dev`
+unless explicitly configured as an additional recipient later.
+The sender agent should receive:
+New Booking Submitted
+The email should include:
+
+* Customer name
+* Booking reference
+* Lead link
+* Quote link
+* Flight itinerary
+* Passenger count
+* Total
+* Booking date/time
+* Relevant booking information
+
+The customer should not receive the internal booking-submitted notification.
+30. CUSTOMER BOOKING CONFIRMATION EMAIL
+Improve the final customer confirmation email.
+Start with a professional thank-you message.
+Example:
+Thank you for booking with Business Flights Travel.
+Your flight booking is being processed, and we are working on the ticket issuance.
+Then provide:
+Flight itinerary
+
+* Airline logo
+* Airline name
+* Flight number
+* Cabin
+* Aircraft
+* Departure date
+* Departure time
+* Arrival date
+* Arrival time
+* Duration
+* Layovers
+
+Price breakdown
+
+* Ticket cost
+* Passenger breakdown
+* Taxes
+* Service fee
+* Gratuity
+* Total
+
+Payment information
+Display only safe information:
+
+* Card type
+* Last four digits
+* Expiration date
+
+Never include:
+
+* Full card number
+* CVV
+
+Contact information
+Include:
+
+* Name
+* Email
+* Phone
+
+Passenger information
+Include where appropriate:
+
+* First name
+* Middle name
+* Last name
+* Date of birth
+
+Airline confirmation
+When available:
+
+* Airline confirmation number
+* PNR
+* Ticket number when actually issued
+
+Do not fabricate confirmation numbers.
+If ticketing has not yet occurred, clearly state that the confirmation number will be provided once available.
+31. CUSTOMER CONFIRMATION EMAIL BRANDING
+The email must use:
+Business Flights Travel
+Do not mention:
+Compass Tools
+anywhere in the customer-facing email.
+32. SEQUENCE VARIABLE UI
+The current sequence editor displays variables like:
+`{{contact_first_name}}`
+directly inside the text.
+This looks technical and unprofessional.
+Improve the variable insertion UI.
+When the user clicks:
+Insert Variable
+display a professional variable picker.
+Categories:
+Contact
+
+* First Name
+* Last Name
+* Email
+* Phone
+
+Travel
+
+* Departure City
+* Departure Airport
+* Arrival City
+* Arrival Airport
+* Departure Date
+* Return Date
+* Trip Type
+* Cabin Class
+
+Agent
+
+* Agent First Name
+* Agent Last Name
+* Agent Email
+* Agent Phone
+* Company Name
+
+33. VARIABLE CHIPS
+Instead of displaying raw syntax while composing the email, use visually distinct variable chips/tokens.
+For example:
+Hi [First Name],
+where `[First Name]` appears as a subtle editable variable chip.
+Or:
+`Hi` [Contact First Name],
+The variable should be visually distinguishable from normal text.
+When clicked, it should allow editing/removal.
+The underlying saved representation can still use:
+`{{contact_first_name}}`
+internally.
+But the composer UI should render it as a polished variable component.
+34. VARIABLE PREVIEW
+Add a preview mode where the agent can see how the email will actually look.
+For example:
+Instead of:
+`Hi [Contact First Name],`
+preview:
+`Hi John,`
+Use actual lead/contact data when available.
+If no real data exists, use realistic placeholders such as:
+`John`
+without exposing the raw variable syntax to the user.
+35. EMPTY SEQUENCE STEP
+There is currently a bug:
+When Step 2 is added but nothing has been written yet, there is no way to remove it.
+Fix this.
+Every sequence step must have a clear:
+Remove Step
+button.
+This must work even when the step is completely empty.
+Do not require the user to enter content before they can remove the step.
+Use a confirmation only where appropriate.
+36. SEQUENCE STEP UX
+Each sequence step should clearly display:
+
+* Step number
+* Delay
+* Subject
+* Content
+* Enabled/disabled state
+* Remove button
+* Duplicate step if useful
+
+Use subtle animation when:
+
+* Adding step
+* Removing step
+* Reordering step
+* Expanding/collapsing step
+
+Do not over-animate.
+37. TASKS MODULE
+Add a dedicated:
+Tasks
+section to the CRM sidebar.
+Place it logically around:
+
+* Quotes
+* Sequences
+* Tasks
+
+Based on priority and workflow, a sensible order could be:
+Quotes
+Sequences
+Tasks
+Bookings
+Accounts
+But use the existing sidebar structure if another arrangement is more appropriate.
+38. TASKS PAGE
+The Tasks page must show all relevant CRM tasks.
+Each task should display:
+
+* Task title
+* Customer
+* Lead
+* Assigned account/agent
+* Due date
+* Due time
+* Status
+* Days remaining
+* Priority where applicable
+
+Tasks should support:
+
+* Search
+* Filtering
+* Sorting
+* Status filtering
+* Due-date filtering
+* Assigned-user filtering
+
+39. TASK COUNTDOWN
+Clearly show how much time remains.
+Examples:
+Due today
+Due tomorrow
+2 days left
+5 days left
+Overdue by 2 days
+Use accessible status indicators.
+Do not rely only on colors.
+40. TASK ACTIONS
+Users should be able to:
+
+* Create task
+* Edit task
+* Complete task
+* Reopen task
+* Change due date
+* Change due time
+* Reassign task
+* Delete/remove task
+
+Use professional confirmation dialogs for destructive actions.
+41. TASK DETAIL
+A task should be linked to the appropriate CRM context.
+For example:
+Task:
+Follow up regarding London → New York quote
+Customer:
+John Smith
+Clicking the customer name should open the customer's relevant CRM page.
+Clicking the lead should open the lead.
+Use proper links rather than plain text.
+42. TASK NOTIFICATION
+When a task's due time arrives, notify the assigned CRM account user.
+The notification should clearly mention:
+
+* Customer name
+* Task name
+* Due status
+* Link to the relevant customer/lead
+
+For example:
+Task due: Follow up with John Smith
+The customer name should be clickable and take the CRM user to the relevant customer/lead page.
+Do not send this notification to unrelated users.
+The notification should be associated with the assigned CRM account.
+43. TASK NOTIFICATION DELIVERY
+Use the application's appropriate notification architecture.
+Possible mechanisms:
+
+* In-app notification
+* Email notification
+* Browser notification where supported
+
+Prefer an in-app CRM notification as the primary mechanism if the existing application supports notifications.
+If email notifications are also configured, send them to the assigned agent.
+Do not create unnecessary duplicate notifications.
+44. TASK SCHEDULING
+Task notifications must use actual due date/time.
+Do not rely solely on a frontend timer.
+Use an appropriate backend/scheduled-job mechanism.
+The notification system should continue working even if the user's browser is closed.
+45. TASK COMPLETION
+When a task is completed:
+
+* Mark completed
+* Record completion timestamp
+* Record completing user where available
+* Add activity/timeline event
+* Stop future reminders for that task
+
+If reopened:
+
+* Restore appropriate future reminder behavior
+
+46. QUOTE CUSTOMER EMAIL — FINAL QUALITY REQUIREMENT
+The customer should never receive a plain text quote that only says:
+"Your itinerary is from X to Y."
+The customer should receive a polished quote containing:
+
+* Business Flights Travel branding
+* Customer greeting
+* Trip summary
+* Airline logos
+* Airline names
+* Flight numbers
+* Cabin
+* Aircraft
+* Departure date/time
+* Arrival date/time
+* Flight duration
+* Layover information
+* Passenger count
+* Price per person
+* Taxes
+* Fees
+* Total
+* View Deal button
+
+The email should look like a real professional travel agency quotation.
+47. EMAIL RESPONSIVENESS
+Customer emails must be designed for:
+
+* Desktop email clients
+* Mobile email clients
+* Gmail
+* Outlook
+* Apple Mail
+
+Use email-compatible HTML/CSS.
+Do not rely on modern browser-only CSS features that email clients may not support.
+The CTA must remain clearly visible on mobile.
+48. CUSTOMER QUOTE → BOOKING FLOW
+Verify this complete workflow:
+Quote created
+↓
+Quote saved
+↓
+Quote sent
+↓
+Customer receives professional email
+↓
+Customer sees itinerary directly inside email
+↓
+Customer clicks View Deal
+↓
+Customer sees professional quote page
+↓
+Customer clicks Book Flight
+↓
+Customer enters/reviews information
+↓
+Customer goes to Review page
+↓
+Customer verifies information
+↓
+Customer clicks Finish Booking
+↓
+Booking created
+↓
+Success page
+↓
+Internal agent receives new booking notification
+↓
+Customer receives appropriate confirmation email/status
+49. DATA CONSISTENCY
+The same information must remain consistent throughout:
+Lead
+→ Quote
+→ Customer Email
+→ Customer Quote
+→ Booking Form
+→ Review
+→ Booking
+→ Confirmation Email
+If the quote says:
+$1,250
+the booking review should not unexpectedly say:
+$1,300
+unless a legitimate recalculation/change occurred.
+If a flight is:
+BA1460
+throughout the workflow it should remain:
+BA1460.
+Do not duplicate information into unrelated manually maintained fields where existing relationships can be used.
+50. TESTING REQUIREMENTS
+Add or update tests for:
+Calendar
+
+* Date selection
+* Date ranges
+* Navigation
+* Mobile behavior
+* Motion/state transitions
+
+Airline
+
+* Airline lookup
+* Logo lookup
+* Missing logo fallback
+
+Apollo
+
+* Airline
+* Flight number
+* Booking class
+* Cabin
+* Airports
+* Dates
+* Times
+* Multiple segments
+
+Sabre/SWAN
+Same coverage.
+Quote
+
+* Create
+* Save
+* Send
+* Email rendering
+* Secure URL
+* View Deal
+* Status tracking
+
+Booking
+
+* Form validation
+* Review page
+* Signature
+* Payment-provider reference
+* Booking creation
+* Relationships
+* Success page
+
+Sequence
+
+* Variable chips
+* Variable replacement
+* Step creation
+* Empty-step removal
+* Multi-step sequence
+* Enrollment
+
+Tasks
+
+* Creation
+* Editing
+* Completion
+* Countdown
+* Assignment
+* Notification
+* Overdue state
+
+51. SECURITY TESTING
+Verify that:
+
+* Payment information is not included in emails.
+* Public quote URLs cannot expose other customers.
+* Customer pages cannot access unrelated quotes.
+* Internal CRM information is not exposed publicly.
+* Email credentials are not committed.
+* Email credentials are not returned by APIs.
+
+52. FINAL UI REVIEW
+After implementation, use the application as a real travel agent and as a customer.
+Agent
+Create a quote.
+Send it.
+Open the Quotes page.
+Open the quote.
+Review itinerary.
+Review pricing.
+Create a task.
+Create a sequence.
+Enroll a lead.
+Open Accounts.
+Open Bookings.
+Customer
+Open quote email.
+Review itinerary.
+See airline logos.
+See schedule.
+See pricing.
+Click View Deal.
+Review quote.
+Click Book Flight.
+Complete form.
+Review booking.
+Finish Booking.
+See success page.
+Receive appropriate confirmation.
+Look for confusing UI.
+Fix anything that looks unfinished.
+53. DO NOT MARK COMPLETE TOO EARLY
+Do not declare this task complete merely because:
+
+* The page loads
+* A component renders
+* A button exists
+* A database record exists
+
+The functionality must actually work end-to-end.
+Especially verify:
+
+* Quote creation
+* Quote sending
+* Airline logos
+* Customer quote email
+* View Deal
+* Booking form
+* Review
+* Signature
+* Booking submission
+* Agent notification
+* Confirmation email
+* Sequence variables
+* Empty sequence step removal
+* Tasks
+* Task notifications
+* Apollo parser
+* Sabre/SWAN parser
+
+54. FINAL IMPLEMENTATION REPORT
+After completing the implementation, provide:
+UI Changes
+
+* Calendar
+* Quote design
+* Booking review
+* Success page
+* Itinerary layout
+* Airline logos
+* Sequence variable UI
+* Tasks
+
+Quote Workflow
+Explain the complete:
+Create → Save → Send → View Deal → Booking → Review → Finish Booking
+workflow.
+Booking Workflow
+Explain database persistence and relationships.
+Email
+Explain:
+
+* Quote email
+* Booking notification
+* Customer confirmation
+* Email templates
+* Branding
+
+Confirm customer-facing emails use:
+Business Flights Travel
+and never:
+Compass Tools
+Parsers
+Explain Apollo and Sabre/SWAN improvements.
+Tasks
+Explain task management and notifications.
+Tests
+List tests executed.
+Remaining Limitations
+Clearly state any functionality requiring:
+
+* Airline API credentials
+* Email-provider configuration
+* External datasets
+* Other third-party services
+
+MOST IMPORTANT FINAL REQUIREMENT
+Do not treat this as a cosmetic UI task.
+The goal is to make Compass Tools feel like a professional airline-sales CRM and travel quotation platform.
+The customer experience should be:
+Professional
+Clear
+Trustworthy
+Modern
+Easy to understand
+The complete journey should feel cohesive:
+Travel Agent
+→ Creates professional quote
+→ Sends professional itinerary email
+→ Customer sees airline, schedule, pricing and logos
+→ Customer clicks View Deal
+→ Customer reviews quote
+→ Customer clicks Book Flight
+→ Customer completes information
+→ Customer reviews everything
+→ Customer signs
+→ Customer submits
+→ Booking is created
+→ Assigned agent is notified
+→ Customer receives professional confirmation/status email
+→ Ticketing process continues
+Do not leave partially implemented pages, placeholder buttons, broken parsers, empty workflow steps, 404 routes, fake success messages, or disconnected data relationships.
+Inspect the existing code first, implement carefully, test every workflow, and fix all issues discovered before declaring the task complete.

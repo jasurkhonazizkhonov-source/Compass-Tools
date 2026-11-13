@@ -38,9 +38,17 @@ export type ApproximateLocation = {
   countryCode?: string;
   /** IANA zone, e.g. "America/Los_Angeles". */
   timeZone?: string;
+  /** Which edge produced this location, when it is not Vercel (see geoSourceOf). Never read from a request body; set only by the readers below. */
+  source?: string;
 };
 
 export const GEO_SOURCE = "Vercel edge geolocation (approximate)";
+export const CLOUDFLARE_GEO_SOURCE = "Cloudflare edge geolocation (approximate)";
+
+/** The stored "where did this location come from" label for a location read from request headers. */
+export function geoSourceOf(location: ApproximateLocation): string {
+  return location.source ?? GEO_SOURCE;
+}
 
 const US_STATES: Record<string, string> = {
   AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado", CT: "Connecticut", DE: "Delaware",
@@ -120,13 +128,46 @@ export function readApproximateLocation(headerList: Headers): ApproximateLocatio
 }
 
 /**
- * The location to store with a request-derived record, or undefined. Honours the
- * trusted-proxy gate described in the module comment: with no trusted Vercel edge
- * in front of the app nothing is read, whatever headers the request carries.
+ * Reads the visitor-location headers Cloudflare adds when the zone's "Add visitor location headers" managed transform is enabled (it is OFF by default;
+ * only CF-IPCountry is always present): CF-IPCountry (ISO 3166-1 alpha-2; "XX" = unknown and "T1" = Tor name no place), CF-IPCity, CF-Region (name),
+ * CF-Region-Code, CF-Timezone. Latitude/longitude (CF-IPLatitude/-Longitude) and the postal code are deliberately NOT read or stored - the established
+ * policy for every IP-derived record in this CRM is "no coordinates"; they would add precision this data does not have.
+ *
+ * Returns a location only when it says MORE than the country (a city or a region). A country-only answer is left to the existing last-resort path
+ * (resolveSignInContext: local geolocation database first, then CF-IPCountry), so enabling nothing in Cloudflare changes nothing here.
+ */
+export function readCloudflareLocation(headerList: Headers): ApproximateLocation | undefined {
+  const countryRaw = headerList.get("cf-ipcountry")?.trim().toUpperCase();
+  const countryCode = countryRaw && /^[A-Z]{2}$/.test(countryRaw) && countryRaw !== "XX" && countryRaw !== "T1" ? countryRaw : undefined;
+  const regionCodeRaw = headerList.get("cf-region-code")?.trim().toUpperCase();
+  const regionCode = regionCodeRaw && /^[A-Z0-9]{1,4}$/.test(regionCodeRaw) ? regionCodeRaw : undefined;
+  const city = cleanText(headerList.get("cf-ipcity"), 80);
+  const regionName = cleanText(headerList.get("cf-region"), 80);
+  const region = regionName ?? (countryCode && regionCode ? REGION_NAMES[countryCode]?.[regionCode] : undefined);
+  if (!city && !region && !regionCode) return undefined; // country only (or nothing): not enough to be "the" location
+
+  const location: ApproximateLocation = {
+    city,
+    regionCode,
+    region,
+    country: countryCode ? countryName(countryCode) : undefined,
+    countryCode,
+    timeZone: validTimeZone(cleanText(headerList.get("cf-timezone"), 64)),
+    source: CLOUDFLARE_GEO_SOURCE,
+  };
+  return Object.fromEntries(Object.entries(location).filter(([, v]) => v !== undefined)) as ApproximateLocation;
+}
+
+/**
+ * The location to store with a request-derived record, or undefined. Honours the trusted-proxy gate described in the module comment: a platform's
+ * location headers are read ONLY when the trusted-proxy resolution says that platform is in front of the app ("vercel" -> x-vercel-ip-*,
+ * "cloudflare" -> CF-IP*); in every other mode nothing is read, whatever headers the request carries.
  */
 export function getRequestLocation(headerList: Headers): ApproximateLocation | undefined {
-  if (trustedProxyMode() !== "vercel") return undefined;
-  return readApproximateLocation(headerList);
+  const mode = trustedProxyMode();
+  if (mode === "vercel") return readApproximateLocation(headerList);
+  if (mode === "cloudflare") return readCloudflareLocation(headerList);
+  return undefined;
 }
 
 /** "San Francisco, California, United States" — only the parts that exist, comma-joined. */
@@ -142,6 +183,6 @@ export function locationToIpCaptureColumns(location: ApproximateLocation | undef
     geoCountry: location?.country ?? null,
     geoCountryCode: location?.countryCode ?? null,
     geoTimeZone: location?.timeZone ?? null,
-    geoSource: location ? GEO_SOURCE : null,
+    geoSource: location ? geoSourceOf(location) : null,
   };
 }

@@ -176,6 +176,8 @@ function createPrismaClient() {
         lastSignInCountry: true,
         lastSignInCountryCode: true,
         lastSignInTimeZone: true,
+        lastSignInLocationSource: true,
+        lastSignInLocationAt: true,
       },
     },
   });

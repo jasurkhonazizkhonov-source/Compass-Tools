@@ -34,7 +34,7 @@ and Vercel-specific configuration).
 
 | Command | Purpose |
 |---|---|
-| `npm run dev` | Local development server |
+| `npm run dev` | Local development server (this checkout: port 3001) |
 | `npm run build` | Production build (runs `prisma generate` first via `postinstall`) |
 | `npm start` | Run a production build |
 | `npm test` | Run the test suite (Vitest) |
@@ -44,6 +44,8 @@ and Vercel-specific configuration).
 
 ## Documentation
 
+- `docs/UPDATED_PROJECT.md` — this checkout (`compass-tools-updated`, dev port 3001): setup, checks, included features,
+  where the IP-geolocation database lives, and how the working tree was assembled.
 - `docs/DEPLOYMENT.md` — full deployment walkthrough (database, environment
   variables, Google OAuth, bootstrap, Vercel cron/config).
 - `docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` — self-hosted production on an OVHcloud VPS: Docker Compose,

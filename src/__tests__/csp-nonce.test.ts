@@ -41,6 +41,26 @@ describe("policies", () => {
     expect(scriptSrc(buildBaseCsp())).toBe("script-src 'self' 'unsafe-inline' https://accounts.google.com");
   });
 
+  it("'unsafe-eval' is development-only on the base policy too: never in production or test, only when dev is requested or NODE_ENV is development", () => {
+    const original = process.env.NODE_ENV;
+    try {
+      for (const env of ["production", "test", undefined]) {
+        if (env === undefined) delete (process.env as Record<string, string | undefined>).NODE_ENV;
+        else (process.env as Record<string, string | undefined>).NODE_ENV = env;
+        expect(buildBaseCsp(), String(env)).not.toContain("unsafe-eval");
+        expect(scriptSrc(buildBaseCsp()), String(env)).toBe("script-src 'self' 'unsafe-inline' https://accounts.google.com");
+      }
+      (process.env as Record<string, string | undefined>).NODE_ENV = "development";
+      expect(scriptSrc(buildBaseCsp())).toBe("script-src 'self' 'unsafe-inline' https://accounts.google.com 'unsafe-eval'");
+    } finally {
+      (process.env as Record<string, string | undefined>).NODE_ENV = original;
+    }
+    expect(scriptSrc(buildBaseCsp(true))).toContain("'unsafe-eval'");
+    expect(scriptSrc(buildBaseCsp(false))).not.toContain("unsafe-eval");
+    // nothing else about the policy changes with the flag
+    expect(buildBaseCsp(true).replace(" 'unsafe-eval'", "")).toBe(buildBaseCsp(false));
+  });
+
   it("neither policy loads anything from a payment provider or an unexpected third party", () => {
     for (const csp of [buildBaseCsp(), buildNonceCsp("n")]) {
       const hosts = [...new Set(csp.match(/https:\/\/[a-z0-9.-]+/g) ?? [])].sort();

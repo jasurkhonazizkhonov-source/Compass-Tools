@@ -2,12 +2,12 @@
 
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
-import { formatDistanceToNow } from "date-fns";
 import { StickyNote, Send, Pencil, Trash2, Loader2, Check, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "@/components/crm/empty-state";
+import { NoteMeta } from "@/components/crm/note-meta";
 import { addNote, updateNote, deleteNote } from "@/server/actions/leads";
 
 type NoteRow = {
@@ -88,9 +88,7 @@ export function NotesPanel({
                 <>
                   <p className="text-sm whitespace-pre-wrap">{n.body}</p>
                   <div className="mt-2 flex items-center justify-between">
-                    <p className="text-xs text-muted-foreground">
-                      {n.author?.fullName ?? "Unknown"} · {formatDistanceToNow(n.createdAt, { addSuffix: true })}
-                    </p>
+                    <NoteMeta authorName={n.author?.fullName} createdAt={n.createdAt} />
                     <div className="opacity-0 group-hover:opacity-100 flex gap-1">
                       <Button
                         variant="ghost"

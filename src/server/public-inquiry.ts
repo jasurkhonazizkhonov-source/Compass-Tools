@@ -7,7 +7,10 @@ import { duplicateContactWhere } from "@/lib/contact-matching";
 import { INVALID_EMAIL_MESSAGE, isDisposableEmail } from "@/lib/email-quality";
 import { normalizePhoneNumber, isSupportedCountry, type CountryCode } from "@/lib/phone";
 import { notifyNewInquiry } from "@/server/admin-notifications";
+import { deriveInquiryId } from "@/server/inquiry-id";
+import { buildInquirySubmissionInfo } from "@/server/inquiry-submission-info";
 import { checkPublicRateLimit, type RateLimitConfig } from "@/server/security/rate-limit";
+import { readLimitedJson } from "@/server/security/read-limited-json";
 
 // The one implementation behind BOTH public inquiry endpoints. Each endpoint
 // is a thin route file that names the inquiry SOURCE it stands for:
@@ -45,6 +48,16 @@ const inquirySchema = z.object({
   // frequently do. Named generically so its purpose isn't obvious from the
   // wire format either.
   companyWebsite: z.string().max(200).optional(),
+  // The submitter's per-submission key (opt-in per route, see `acceptSubmissionId`): a repeat of the SAME submission (a double click, a retry after a
+  // timeout, an answer that was lost) is recognised and answered as a duplicate instead of being stored twice. Optional, so a caller that never
+  // sends it is completely unaffected. Same shape as the lead endpoint's key.
+  submissionId: z
+    .string()
+    .trim()
+    .min(8)
+    .max(200)
+    .regex(/^[A-Za-z0-9._-]+$/)
+    .optional(),
 });
 
 export type HandlePublicInquiryOptions = {
@@ -68,6 +81,14 @@ export type HandlePublicInquiryOptions = {
    * "invalid email" message (the screening rule is never described to the
    * visitor). Off by default. */
   rejectDisposableEmail?: boolean;
+  /** True when the caller is another SERVER posting on a visitor's behalf (the Business Flights website's own backend), not the visitor's browser.
+   * The connection and forwarded headers then describe THAT server, so they are never used as the visitor's IP; only a verified signed visitor
+   * context is (see inquiry-submission-info.ts). Off by default = the request itself is the visitor. */
+  serverToServer?: boolean;
+  /** When true, a `submissionId` in the body makes the submission idempotent: the inquiry's id is derived from (company, source, key) and a repeat of
+   * the same key with the same content is answered as a duplicate (`{ ok: true, id, duplicate: true }`), while the same key with DIFFERENT content is
+   * refused (409). Off by default: a route that does not opt in ignores the field. */
+  acceptSubmissionId?: boolean;
 };
 
 const GENERIC_PHONE_ERROR = "Please check the phone number and country code.";
@@ -83,12 +104,10 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
     );
   }
 
-  let body: unknown;
-  try {
-    body = await req.json();
-  } catch {
-    return NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
-  }
+  // Bounded read (see read-limited-json.ts): an unauthenticated caller cannot make the server buffer an arbitrarily large body.
+  const limited = await readLimitedJson(req);
+  if (!limited.ok) return limited.response;
+  const body: unknown = limited.value;
 
   const parsed = inquirySchema.safeParse(body);
   if (!parsed.success) {
@@ -127,8 +146,15 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
   // same route's own clean { ok:false, error } JSON every other failure path
   // already returns. Every database call in this handler is now inside one
   // guarded block.
+  // Full IP + approximate location of whoever submitted, from the server's own trusted view of the request - never from the body. Best effort:
+  // it returns undefined (and never throws) when nothing trustworthy is known, so it can never cost the business an inquiry.
+  const submissionInfo = await buildInquirySubmissionInfo(req.headers, { serverToServer: options.serverToServer === true });
+
   let inquiryId = "";
   let isDuplicate = false;
+  let keyConflict = false;
+  // The id a keyed submission always lands on (see inquiry-id.ts); undefined for a caller or route that does not use submission keys.
+  const keyedId = options.acceptSubmissionId && data.submissionId ? deriveInquiryId(data.companyId, options.source, data.submissionId) : undefined;
   try {
     const company = await prisma.company.findUnique({ where: { id: data.companyId }, select: { id: true } });
     if (!company) {
@@ -153,36 +179,58 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
       subject: data.subject,
       message: data.message,
       matchedContactId: matchedContact?.id,
+      submissionInfo: submissionInfo ? { create: submissionInfo } : undefined,
     };
 
-    if (options.duplicateWindowMs) {
+    if (options.duplicateWindowMs || keyedId) {
       const windowMs = options.duplicateWindowMs;
       // A double-click fires two requests within milliseconds, so a plain
       // "look for a recent copy, else insert" races. A transaction-scoped
       // advisory lock keyed on the submission's identity makes the second
-      // request wait for the first to commit, then see its row.
+      // request wait for the first to commit, then see its row. The content
+      // lock (as before) serialises identical messages; a keyed submission
+      // ALSO takes a lock on its derived id, always in the same order
+      // (content, then key) so two requests can never deadlock, which
+      // serialises simultaneous requests that share a key but differ in
+      // content (one stored, the other refused as a key conflict).
       const lockKey = createHash("sha256")
         .update(JSON.stringify([data.companyId, options.source, data.email.trim().toLowerCase(), data.message]))
         .digest("hex");
       const result = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
-        const recent = await tx.contactInquiry.findFirst({
-          where: {
-            companyId: data.companyId,
-            source: options.source,
-            email: { equals: data.email.trim(), mode: "insensitive" },
-            message: data.message,
-            createdAt: { gte: new Date(Date.now() - windowMs) },
-          },
-          select: { id: true },
-          orderBy: { createdAt: "desc" },
-        });
-        if (recent) return { id: recent.id, duplicate: true };
-        const created = await tx.contactInquiry.create({ data: createData });
-        return { id: created.id, duplicate: false };
+        if (keyedId) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${keyedId}, 0))`;
+          const existing = await tx.contactInquiry.findUnique({ where: { id: keyedId }, select: { id: true, companyId: true, source: true, email: true, message: true } });
+          if (existing) {
+            // A repeat is only a clean repeat when it is the same message from the same address in the same company and inbox.
+            const same =
+              existing.companyId === data.companyId &&
+              existing.source === options.source &&
+              existing.email.trim().toLowerCase() === data.email.trim().toLowerCase() &&
+              existing.message === data.message;
+            return { id: existing.id, duplicate: same, conflict: !same };
+          }
+        }
+        if (windowMs) {
+          const recent = await tx.contactInquiry.findFirst({
+            where: {
+              companyId: data.companyId,
+              source: options.source,
+              email: { equals: data.email.trim(), mode: "insensitive" },
+              message: data.message,
+              createdAt: { gte: new Date(Date.now() - windowMs) },
+            },
+            select: { id: true },
+            orderBy: { createdAt: "desc" },
+          });
+          if (recent) return { id: recent.id, duplicate: true, conflict: false };
+        }
+        const created = await tx.contactInquiry.create({ data: keyedId ? { ...createData, id: keyedId } : createData });
+        return { id: created.id, duplicate: false, conflict: false };
       });
       inquiryId = result.id;
       isDuplicate = result.duplicate;
+      keyConflict = result.conflict;
     } else {
       inquiryId = (await prisma.contactInquiry.create({ data: createData })).id;
     }
@@ -194,9 +242,16 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
     return NextResponse.json({ ok: false, error: "Could not submit your request. Please try again or contact us directly." }, { status: 500 });
   }
 
+  // The same key was already used for a DIFFERENT message: nothing was stored and the caller is told so (the website derives its key from the content,
+  // so this only happens if a key is reused by mistake). The existing inquiry is never overwritten and its id is not revealed.
+  if (keyConflict) {
+    return NextResponse.json({ ok: false, error: "This submission key was already used for a different message." }, { status: 409 });
+  }
+
   if (!isDuplicate) {
     await notifyNewInquiry(data.companyId, inquiryId, `${data.firstName} ${data.lastName}`, options.source).catch(() => undefined);
   }
 
-  return NextResponse.json({ ok: true, id: inquiryId });
+  // `duplicate` is additive: it appears only when this was a repeat, so every existing caller's response is unchanged.
+  return NextResponse.json({ ok: true, id: inquiryId, ...(isDuplicate ? { duplicate: true } : {}) });
 }

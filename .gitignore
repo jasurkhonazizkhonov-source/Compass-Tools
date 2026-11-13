@@ -43,6 +43,11 @@ next-env.d.ts
 
 /src/generated/prisma
 
+# IP-geolocation database files (licensed third-party data - installed per environment, never committed; see docs/GEOIP.md)
+/data/geoip/
+*.mmdb
+*.mmdb.gz
+
 # local AI-coding-tool state/config — not part of the application
 .agents/
 .claude/

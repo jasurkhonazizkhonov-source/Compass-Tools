@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { arrivedViaPublicEdge, authenticateWebsiteApi, publicRouteAllowed, websiteApiCompanyId } from "@/server/security/website-api-auth";
-import { buildLeadSubmissionInfoCreate } from "@/server/lead-submission-info";
+import { buildLeadSubmissionInfoCreate, withLocalLocation } from "@/server/lead-submission-info";
 import { createWebsiteFlightLead, flightInquiryBase, refinePhone } from "@/server/lead-intake";
 import { auditWebsiteApi } from "@/server/website-api-audit";
 
@@ -159,10 +159,12 @@ async function handle(req: Request) {
   // website's direct write use, so a submission can never become two leads by arriving through two routes; concurrent retries lose on
   // the primary key and are answered as repeats.
   const requestHash = createHash("sha256").update(canonical(data)).digest("hex");
-  const submissionInfo = buildLeadSubmissionInfoCreate(req.headers, new Date(), {
-    budgetCurrency: data.approximateBudget !== undefined ? data.budgetCurrency : undefined,
-    serverToServer: true,
-  });
+  const submissionInfo = await withLocalLocation(
+    buildLeadSubmissionInfoCreate(req.headers, new Date(), {
+      budgetCurrency: data.approximateBudget !== undefined ? data.budgetCurrency : undefined,
+      serverToServer: true,
+    })
+  );
 
   const result = await createWebsiteFlightLead({
     data: { ...data, submissionId: idempotencyKey },

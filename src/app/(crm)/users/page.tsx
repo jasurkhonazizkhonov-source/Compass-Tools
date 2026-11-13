@@ -12,6 +12,7 @@ import { ManagerTeamEditor, type TeamCandidate } from "@/components/accounts/man
 import { EmptyState } from "@/components/crm/empty-state";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { geoAttributionFor } from "@/server/geo/geoip-attribution";
 
 export const dynamic = "force-dynamic";
 
@@ -31,6 +32,7 @@ export default async function UsersPage() {
   const accounts = await getAllAccounts(current!.companyId);
   // Latest successful sign-in (time, full IP, approximate location) — Administrator-only, read through its own query.
   const signIns = await getAccountSignInDetails(current);
+  const geoAttribution = geoAttributionFor([...signIns.values()].map((s) => s.locationSource));
   const activeAdminCount = accounts.filter((a) => a.role === "ADMIN" && a.status === "ACTIVE").length;
 
   // Manager teams. The editor offers every Travel Agent (hidden and inactive
@@ -157,7 +159,7 @@ export default async function UsersPage() {
                         <TableCell className="text-xs font-mono whitespace-nowrap" data-testid="last-sign-in-ip" title={si?.ip ?? undefined}>
                           {si?.ip ?? <span className="text-muted-foreground font-sans">{si?.lastSignInAt ? "Not recorded" : "—"}</span>}
                         </TableCell>
-                        <TableCell className="text-xs max-w-[14rem] truncate" data-testid="last-sign-in-location" title={si?.location ?? undefined}>
+                        <TableCell className="text-xs max-w-[14rem] whitespace-normal break-words" data-testid="last-sign-in-location" title={si?.location ? (si.locationNote ? `${si.location} — ${si.locationNote}` : si.location) : undefined}>
                           {si?.location ?? <span className="text-muted-foreground">{si?.lastSignInAt ? "Location unavailable" : "—"}</span>}
                         </TableCell>
                       </>
@@ -179,6 +181,11 @@ export default async function UsersPage() {
       <p className="text-xs text-muted-foreground">
         Role labels: {Object.values(ROLE_LABELS).join(" · ")}. Disabling a user revokes CRM access immediately but preserves all of their historical leads, quotes, bookings, and activity — nothing is deleted. Hiding a user from the Accounts directory only affects whether their row appears on the general /accounts page — it does not change their access, ownership, history, or online status.
       </p>
+      {geoAttribution.length > 0 && (
+        <p className="text-xs text-muted-foreground" data-testid="geoip-attribution">
+          Last sign-in locations are approximate estimates from the IP address (a network&apos;s likely area), not where a person is. {geoAttribution.join(" ")}
+        </p>
+      )}
     </div>
   );
 }

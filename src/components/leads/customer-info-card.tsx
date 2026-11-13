@@ -41,8 +41,9 @@ export function CustomerInfoCard({
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="text-sm font-medium">Customer</CardTitle>
         {showProfileLink && (
-          <Link href={`/contacts/${contactId}`} className="text-xs text-primary flex items-center gap-1 hover:underline">
-            View full profile <ExternalLink className="h-3 w-3" />
+          /* Opens the same contact page in a NEW tab, so this lead page (and anything half-typed on it) stays open. noopener/noreferrer: the new page gets no handle back to this one. */
+          <Link href={`/contacts/${contactId}`} target="_blank" rel="noopener noreferrer" className="text-xs text-primary flex items-center gap-1 hover:underline">
+            View full profile <ExternalLink className="h-3 w-3" aria-hidden /> <span className="sr-only">(opens in a new tab)</span>
           </Link>
         )}
       </CardHeader>
