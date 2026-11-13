@@ -3,8 +3,8 @@ import { readFileSync, readdirSync, statSync, existsSync } from "fs";
 import path from "path";
 
 // Source-level guards for the authenticated website API (POST /api/v1/website/flight-inquiries): the credential stays server-side and in one
-// module, nothing browser-facing can reach it, the route keeps its order of checks, and the documented variables stay empty. These
-// complement the real-database tests, which prove the behaviour.
+// module, nothing browser-facing can reach it, the route keeps its order of checks, and the deployment files wire it to the right places
+// only. These complement the real-database tests, which prove the behaviour.
 const ROOT = path.resolve(__dirname, "..", "..");
 const SRC = path.join(ROOT, "src");
 const read = (...p: string[]) => readFileSync(path.join(ROOT, ...p), "utf-8").replace(/\r\n/g, "\n");
@@ -89,8 +89,29 @@ describe("shared lead creation", () => {
   });
 });
 
-describe("environment documentation", () => {
+describe("deployment wiring", () => {
+  const compose = read("compose.yaml");
   const envExample = read(".env.example");
+  const service = (name: string) => {
+    const block = compose.slice(compose.indexOf("\nservices:\n"), compose.indexOf("\nnetworks:\n"));
+    const parts = block.split(/^  ([a-z][a-z0-9-]*):\n/m);
+    return parts[parts.indexOf(name) + 1];
+  };
+
+  it("only the app receives the keys, and they come from .env (empty by default)", () => {
+    for (const v of ["WEBSITE_API_KEY", "WEBSITE_API_KEY_NEXT", "WEBSITE_API_COMPANY_ID", "WEBSITE_API_ALLOW_PUBLIC_ROUTE"]) {
+      expect(service("app")).toContain(`${v}: \${${v}:-}`);
+      for (const other of ["db", "cloudflared", "cvv-cleanup", "tools"]) expect(service(other), `${other} must not get ${v}`).not.toContain(v);
+    }
+    expect(compose).not.toMatch(/WEBSITE_API_KEY(_NEXT)?:\s*["']?[A-Za-z0-9+/=_-]{16,}/); // no literal key
+  });
+
+  it("the website reaches the CRM on a dedicated internal network with no database and no tunnel access, and nothing is published", () => {
+    expect(compose).toMatch(/\n  website_api:\n    name: compass-tools-website-api\n    internal: true/);
+    expect(service("app")).toMatch(/website_api:\s*\n\s+aliases: \[compass-crm\]/);
+    for (const other of ["db", "cloudflared", "cvv-cleanup", "tools"]) expect(service(other), other).not.toContain("website_api");
+    expect(compose.split("\n").filter((l) => !/^\s*#/.test(l)).join("\n")).not.toMatch(/^\s+ports:/m);
+  });
 
   it(".env.example documents the variables and leaves every one empty", () => {
     for (const v of ["WEBSITE_API_KEY", "WEBSITE_API_KEY_NEXT", "WEBSITE_API_COMPANY_ID", "WEBSITE_API_ALLOW_PUBLIC_ROUTE"]) {

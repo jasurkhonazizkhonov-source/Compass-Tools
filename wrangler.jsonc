@@ -9,7 +9,7 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": [
     "nodejs_compat", // Node.js APIs (crypto, buffer, net/tls for the Postgres driver, …)
-    "global_fetch_strictly_public" // the app fetches public URLs (Google APIs, R2 presigned URLs, …)
+    "global_fetch_strictly_public" // the app fetches public URLs (Google APIs, …)
   ],
   "assets": {
     "directory": ".open-next/assets",
@@ -22,7 +22,7 @@
       "service": "compass-tools"
     }
   ],
-  // NON-SECRET runtime variables only. Secrets (DATABASE_URL, CARD_ENCRYPTION_KEY, GOOGLE_CLIENT_SECRET, CRON_SECRET, R2_*, …) are
+  // NON-SECRET runtime variables only. Secrets (DATABASE_URL, CARD_ENCRYPTION_KEY, GOOGLE_CLIENT_SECRET, CRON_SECRET, …) are
   // set in the Cloudflare dashboard (Worker → Settings → Variables and Secrets) and are never written to this file.
   // APP_BASE_URL is also read by scripts/cloudflare-build.mjs as the build-time default for the statically generated pages.
   "vars": {

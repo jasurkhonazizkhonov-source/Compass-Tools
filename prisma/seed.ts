@@ -6,6 +6,7 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient, AccountRole } from "../src/generated/prisma/client";
 import { parseAirportsCsv, parseAirlinesDat, parseAircraftDat } from "./seed-data/parse";
+import { resolveDatabaseSsl } from "../src/lib/db-tls";
 
 function connectionStringWithoutSslMode(url: string): string {
   const u = new URL(url);
@@ -15,7 +16,8 @@ function connectionStringWithoutSslMode(url: string): string {
 
 const adapter = new PrismaPg({
   connectionString: connectionStringWithoutSslMode(process.env.DATABASE_URL!),
-  ssl: { rejectUnauthorized: false },
+  // Same TLS rules as the application (src/lib/db-tls.ts): verified when a CA is configured, off only for a private Docker database.
+  ssl: resolveDatabaseSsl(),
 });
 const prisma = new PrismaClient({ adapter });
 

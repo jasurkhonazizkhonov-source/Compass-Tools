@@ -10,6 +10,7 @@ import "dotenv/config";
 import { PrismaPg } from "@prisma/adapter-pg";
 import tzlookup from "tz-lookup";
 import { PrismaClient } from "../src/generated/prisma/client";
+import { resolveDatabaseSsl } from "../src/lib/db-tls";
 
 function connectionStringWithoutSslMode(url: string): string {
   const u = new URL(url);
@@ -29,7 +30,7 @@ function timezoneFromCoords(latitude: number | null, longitude: number | null): 
 async function main() {
   const adapter = new PrismaPg({
     connectionString: connectionStringWithoutSslMode(process.env.DATABASE_URL!),
-    ssl: { rejectUnauthorized: false },
+    ssl: resolveDatabaseSsl(),
   });
   const prisma = new PrismaClient({ adapter });
 

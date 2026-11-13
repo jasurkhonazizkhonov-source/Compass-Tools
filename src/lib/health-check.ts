@@ -4,7 +4,9 @@ import { trustedProxyMode } from "@/lib/request-ip";
 import { getMigrationStatus } from "@/server/system/migration-status";
 import { getCardVaultStatus } from "@/server/security/card-vault-status";
 import { getDatabaseTlsMode } from "@/lib/db-tls";
+import { isWebsiteApiConfigured } from "@/server/security/website-api-auth";
 import { isLeadIngestSecretConfigured } from "@/server/lead-ingest-context";
+import { status as uploadStorageStatus } from "@/server/storage/local";
 
 // Database liveness/latency probe behind /api/health. Exposes numbers and a
 // safe error category only — never a hostname, credential, connection
@@ -38,12 +40,20 @@ export type HealthBody = {
     cardVaultEnabled: boolean;
     /** What this process treats itself as — a production deployment is always identifiable as one. */
     environment: "production" | "preview" | "development" | "test";
-    /** Whether the database connection verifies the server's certificate and host name (DATABASE_SSL_CA / DATABASE_SSL_VERIFY=system) or is only encrypted. */
-    databaseTls: "verified" | "unverified";
+    /** Whether the database connection verifies the server's certificate and host name (DATABASE_SSL_CA / DATABASE_SSL_VERIFY=system), is only encrypted, or has TLS explicitly disabled for a private-network database (DATABASE_SSL_MODE=disable). */
+    databaseTls: "verified" | "unverified" | "disabled";
     /** "not_configured" = signed website visitor context (IP / location of a website lead) cannot be verified, so website leads carry no visitor IP. A boolean category only — never the secret. */
     leadIngestSecret: "configured" | "not_configured";
+    /** "configured" = the authenticated website API (POST /api/v1/website/flight-inquiries) has a usable key and is enabled; "not_configured" = it answers 503. A category only — never the key. */
+    websiteApi: "configured" | "not_configured";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
+    /**
+     * The Lead-document store on the VPS disk: "ready"; "low_space" = free space is below the reserve (UPLOAD_MIN_FREE_MB), so NEW uploads are
+     * refused while existing files stay readable; "unavailable" = the directory is missing / not writable / misconfigured (for example the
+     * bind mount is absent). A category only - never a path or a size.
+     */
+    uploadStorage: "ready" | "low_space" | "unavailable";
     /** "pending" = this build expects a database migration the database has not applied (count only; names are Admin-only). */
     schema: "current" | "pending" | "unknown";
     pendingMigrations: number;
@@ -54,7 +64,7 @@ type HealthResult = { body: HealthBody; status: number };
 let cached: { at: number; result: HealthResult } | null = null;
 let inflight: Promise<HealthResult> | null = null;
 
-function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null): HealthBody["readiness"] {
+function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null, uploadStorage: HealthBody["readiness"]["uploadStorage"]): HealthBody["readiness"] {
   const vault = getCardVaultStatus();
   return {
     bookingCardStorage: vault.storageAvailable ? "available" : "unavailable",
@@ -63,9 +73,11 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
     cardVaultKeyVersion: vault.keyVersion,
     cardVaultEnabled: !vault.productionClass || vault.modeAccepted,
     environment: vault.environment,
-    databaseTls: getDatabaseTlsMode() === "unverified" ? "unverified" : "verified",
+    databaseTls: ((mode) => (mode === "unverified" ? "unverified" : mode === "disabled" ? "disabled" : "verified"))(getDatabaseTlsMode()),
     leadIngestSecret: isLeadIngestSecretConfigured() ? "configured" : "not_configured",
+    websiteApi: isWebsiteApiConfigured() ? "configured" : "not_configured",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
+    uploadStorage,
     schema: schema?.state ?? "unknown",
     pendingMigrations: schema && schema.state !== "unknown" ? schema.pending.length : 0,
   };
@@ -93,14 +105,14 @@ async function runCheck(): Promise<HealthResult> {
         // is the steady-state round trip to the database.
         database: { ok: true, firstQueryMs: Math.round(t1 - t0), secondQueryMs: Math.round(t2 - t1) },
         pool: poolSnapshot(),
-        readiness: readiness(schema),
+        readiness: readiness(schema, (await uploadStorageStatus()).state),
       },
     };
   } catch (err) {
     console.error(`[health] DATABASE_CHECK_FAILED (${safeErrorTag(err)})`);
     return {
       status: 503,
-      body: { status: "down", checkedAt: new Date().toISOString(), database: { ok: false, error: safeErrorTag(err) }, pool: poolSnapshot(), readiness: readiness(null) },
+      body: { status: "down", checkedAt: new Date().toISOString(), database: { ok: false, error: safeErrorTag(err) }, pool: poolSnapshot(), readiness: readiness(null, (await uploadStorageStatus()).state) },
     };
   }
 }

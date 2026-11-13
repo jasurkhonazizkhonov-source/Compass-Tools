@@ -57,7 +57,15 @@ const cloudflareBuild = process.env.CLOUDFLARE_BUILD === "1";
 // external in the Worker bundle: the bundle still inlines the real implementation.)
 const CLOUDFLARE_WORKERD_PACKAGES = ["pg-cloudflare"];
 
+// Self-hosted Docker image (the Dockerfile sets NEXT_OUTPUT=standalone): trace only the files the server needs into
+// .next/standalone so the runtime image does not carry the whole dependency tree. Off by default, so the Vercel build and the
+// Cloudflare/OpenNext build (which sets its own standalone mode) are unaffected.
+const standaloneOutput = process.env.NEXT_OUTPUT === "standalone";
+
 const nextConfig: NextConfig = {
+  // outputFileTracingRoot is pinned (not inferred from lockfiles found in parent directories) so server.js is always at the top of
+  // .next/standalone, which is where the Dockerfile expects it. The build always runs from the project root.
+  ...(standaloneOutput ? { output: "standalone" as const, outputFileTracingRoot: process.cwd() } : {}),
   ...(cloudflareBuild
     ? {
         serverExternalPackages: CLOUDFLARE_WORKERD_PACKAGES,

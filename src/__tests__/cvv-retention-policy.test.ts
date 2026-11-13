@@ -19,6 +19,7 @@ const RETENTION_CODE = [
   ["src", "server", "actions", "booking-cvv.ts"],
   ["src", "server", "queries", "booking-cvv.ts"],
   ["src", "components", "bookings", "cvv-reveal.tsx"],
+  ["src", "app", "api", "cron", "cvv-cleanup", "route.ts"], // the dedicated cleanup endpoint is held to the same rules: no env-driven window, no weekend/renewal logic
 ];
 
 describe("the retention code has no weekend, Monday, business-day, renewal or configuration behaviour", () => {

@@ -1,6 +1,6 @@
 "use server";
 
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
@@ -9,7 +9,7 @@ import { canUploadLeadAttachments, canManageLeadAttachments } from "@/lib/permis
 import { leadVisibilityWhere } from "@/server/visibility";
 import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { logActivity } from "@/server/activity-log";
-import { objectStorage, isStorageConfigured } from "@/server/storage/r2";
+import { localStorage, newKey, hasRoomFor, status as storageStatus } from "@/server/storage/local";
 import { matchesSignature, SIGNATURE_PROBE_BYTES } from "@/server/attachments/signature";
 import { auditAttachment } from "@/server/attachments/audit";
 import { safeActionMessage } from "@/lib/safe-action-message";
@@ -17,7 +17,6 @@ import {
   MAX_ATTACHMENTS_PER_LEAD,
   MAX_DESCRIPTION_LENGTH,
   allowedTypeForMime,
-  buildStorageKey,
   maxFileSizeBytes,
   sanitizeDescription,
   validateFile,
@@ -38,6 +37,8 @@ export type ActionResult<T = object> = ({ ok: true } & T) | { ok: false; error: 
 const DENIED = "You can't access this file.";
 const UPLOAD_DENIED = "You can't add files to this lead.";
 const STORAGE_DOWN = "File storage is unavailable right now. Please try again in a moment.";
+const STORAGE_NOT_READY = "File uploads are not set up yet. Ask an administrator to check the file storage.";
+const STORAGE_LOW = "File storage is almost full, so new files can't be added right now. Please ask an administrator.";
 const RETRY = "Something went wrong. Please try again.";
 
 type Actor = NonNullable<Awaited<ReturnType<typeof getCurrentAccount>>>;
@@ -64,7 +65,8 @@ const requestSchema = z.object({
 
 /**
  * Step 1 of an upload. Validates the file (type, size, name) and the caller's access to the lead, records a PENDING attachment with an
- * opaque server-generated key, and returns a short-lived presigned URL for exactly that object. Nothing is visible to anyone yet.
+ * opaque server-generated key, and returns the same-origin address the browser then PUTs the bytes to (PUT /api/attachments/{id}/upload,
+ * which re-authorises, streams to disk and checks size + content before anything is published). Nothing is visible to anyone yet.
  */
 export async function requestLeadAttachmentUpload(
   input: unknown,
@@ -93,10 +95,12 @@ export async function requestLeadAttachmentUpload(
       return { ok: false, error: checked.error };
     }
     if (lead._count.attachments >= MAX_ATTACHMENTS_PER_LEAD) return { ok: false, error: "This lead has reached the maximum number of files." };
-    if (!isStorageConfigured()) return { ok: false, error: "File uploads are not set up yet. Ask an administrator to configure file storage." };
+    const disk = await storageStatus();
+    if (disk.state === "unavailable") return { ok: false, error: STORAGE_NOT_READY };
+    if (disk.state === "low_space" || !(await hasRoomFor(size))) return { ok: false, error: STORAGE_LOW };
 
     const attachmentId = randomUUID();
-    const storageKey = buildStorageKey({ companyId: lead.contact.companyId, leadId: lead.id, attachmentId, random: randomBytes(16).toString("hex") });
+    const storageKey = newKey(); // 256 random bits - nothing from the file name, the lead or the browser
     await prisma.attachment.create({
       data: {
         id: attachmentId,
@@ -113,28 +117,37 @@ export async function requestLeadAttachmentUpload(
       },
     });
 
-    try {
-      const { url } = await objectStorage.presignUpload(storageKey, checked.type.mime, size);
-      return { ok: true, attachmentId, uploadUrl: url, headers: { "Content-Type": checked.type.mime } };
-    } catch {
-      await prisma.attachment.deleteMany({ where: { id: attachmentId, status: "PENDING" } });
-      return { ok: false, error: STORAGE_DOWN };
-    }
+    return { ok: true, attachmentId, uploadUrl: `/api/attachments/${attachmentId}/upload`, headers: { "Content-Type": checked.type.mime } };
   } catch (err) {
     return { ok: false, error: safeActionMessage(err, RETRY) };
   }
 }
 
 // ── 2. complete (verify) an upload ──────────────────────────────────────────────────────────────────────────────────────────
+/**
+ * Drops a PENDING upload: its stored bytes (if any were received) and then its row. A file that cannot be removed right now is not
+ * orphaned silently - the row is kept (and swept later) rather than deleted, so a transient filesystem error is retried.
+ */
 async function discardPending(id: string, storageKey: string | null) {
-  if (storageKey) await objectStorage.remove(storageKey).catch(() => {});
-  await prisma.attachment.deleteMany({ where: { id, status: "PENDING" } });
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Lock the row while it is still PENDING. A completion running at the same moment waits for this lock and then finds no row; if
+      // it committed first the row is READY, is not matched here, and neither its file nor its row is touched.
+      const locked = await tx.$queryRaw<{ id: string }[]>`SELECT "id" FROM "Attachment" WHERE "id" = ${id} AND "status" = 'PENDING' FOR UPDATE`;
+      if (locked.length === 0) return;
+      if (storageKey) await localStorage.remove(storageKey); // throws -> rolls back: the row stays and the stale sweep retries
+      await tx.attachment.delete({ where: { id } });
+    });
+  } catch {
+    // keep the PENDING row: the stale sweep retries the file removal, then removes the row
+  }
 }
 
 /**
- * Step 2. Only the uploader can complete their own pending upload. The stored object is checked (it exists, its size is exactly what was
- * authorised and within the limit, and its first bytes match what the extension claims) before the attachment becomes READY; anything
- * that fails is removed from storage and from the database.
+ * Step 2. Only the uploader can complete their own pending upload. The stored file is checked AGAIN here (it exists, its size is exactly
+ * what was authorised and within the limit, and its first bytes match what the extension claims) before the attachment becomes READY -
+ * the upload route already checked it before publishing, and this re-check is deliberate defence in depth. Anything that fails is removed
+ * from storage and from the database. Safe to call twice: an already-READY attachment just answers ok.
  */
 export async function completeLeadAttachmentUpload(attachmentId: unknown): Promise<ActionResult<{ attachmentId: string }>> {
   try {
@@ -162,8 +175,8 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
     let stored: { size: number } | null;
     let head: Uint8Array | null;
     try {
-      stored = await objectStorage.head(row.storageKey);
-      head = stored ? await objectStorage.readHead(row.storageKey, SIGNATURE_PROBE_BYTES) : null;
+      stored = await localStorage.head(row.storageKey);
+      head = stored ? await localStorage.readHead(row.storageKey, SIGNATURE_PROBE_BYTES) : null;
     } catch {
       // Storage unreachable: leave the row PENDING so the user can retry completing; the sweep removes it if they never do.
       return { ok: false, error: STORAGE_DOWN };
@@ -173,6 +186,12 @@ export async function completeLeadAttachmentUpload(attachmentId: unknown): Promi
     if (!matchesSignature(type.signature, head)) return await reject("SIGNATURE_MISMATCH", "This file's contents don't match its file type, so it was not saved.");
 
     const done = await prisma.attachment.updateMany({ where: { id: row.id, status: "PENDING" }, data: { status: "READY" } });
+    if (done.count === 0) {
+      // Not PENDING any more: either another request completed it (fine - idempotent) or it was swept / cancelled while we verified it.
+      // Never report success for an attachment that no longer exists.
+      const ready = await prisma.attachment.count({ where: { id: row.id, status: "READY" } }); // a COUNT of the id already authorised above
+      if (ready === 0) return { ok: false, error: "The upload didn't finish. Please try again." };
+    }
     if (done.count === 1) {
       await auditAttachment({ action: "ATTACHMENT_UPLOADED", actorId: actor.id, attachmentId: row.id, leadId: row.leadId, contactId: row.contactId, companyId: actor.companyId, metadata: { size: stored.size, mime: row.fileType } });
       await logActivity({ leadId: row.leadId, contactId: row.contactId ?? undefined, actorId: actor.id, type: "DOCUMENT_ADDED", description: `Uploaded a document: ${row.fileName}` }).catch(() => {});
@@ -193,7 +212,7 @@ const diagnosticsSchema = z.object({
 });
 
 /**
- * The browser's PUT failed or was cancelled: drop the caller's own pending upload. When the browser says why (stage / kind / status), it is
+ * The browser's upload failed or was cancelled: drop the caller's own pending upload (and any bytes already received for it). When the browser says why (stage / kind / status), it is
  * written to the audit log and the server log so a failure in production can be traced without access to the user's browser.
  */
 export async function abandonLeadAttachmentUpload(attachmentId: unknown, diagnostics?: unknown): Promise<ActionResult> {
@@ -269,10 +288,10 @@ export async function deleteLeadAttachment(attachmentId: unknown): Promise<Actio
       return { ok: false, error: DENIED };
     }
 
-    // Object first, row second. If the object delete fails the row stays (nothing is lost, the user can retry); if the row delete fails
-    // after the object is gone, a retry succeeds because deleting a missing object is a no-op.
+    // File first, row second. If the file delete fails the row stays (nothing is lost, the user can retry); if the row delete fails
+    // after the file is gone, a retry succeeds because deleting a missing file is a no-op.
     try {
-      await objectStorage.remove(row.storageKey);
+      await localStorage.remove(row.storageKey);
     } catch {
       return { ok: false, error: "The file couldn't be deleted right now. Please try again." };
     }

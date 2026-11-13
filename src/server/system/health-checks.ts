@@ -96,6 +96,13 @@ export function overallState(results: readonly Pick<HealthCheckResult, "state">[
   return "HEALTHY";
 }
 
+/** The wording shown for the database connection's TLS state (never includes a host, certificate or connection string). */
+function describeDatabaseTls(mode: ReturnType<typeof getDatabaseTlsMode>): string {
+  if (mode === "unverified") return "Encrypted, server identity NOT verified (set DATABASE_SSL_CA)";
+  if (mode === "disabled") return "Not encrypted - allowed only for a database on a private Docker/host network (DATABASE_SSL_MODE=disable)";
+  return "Encrypted and verified";
+}
+
 async function guarded(id: string, category: string, title: string, run: () => Promise<Omit<HealthCheckResult, "id" | "category" | "title">>): Promise<HealthCheckResult> {
   try {
     return { id, category, title, ...(await run()) };
@@ -221,9 +228,9 @@ async function checkCardVault(): Promise<HealthCheckResult> {
       { label: "Current key version", value: vault.keyVersion ?? "None" },
       { label: "Keys in ring", value: String(vault.keyIds.length) },
       { label: "Card storage", value: vault.storageAvailable ? "Available" : "Unavailable" },
-      { label: "Card security code", value: "Never collected or stored" },
+      { label: "Card security code", value: "Retained encrypted for at most 24 hours after the signed booking form, then destroyed" },
       { label: "Scheduled card retention purge", value: getCardRetentionDays() === null ? "Disabled (CARD_RETENTION_DAYS not set — a business decision)" : `Enabled: cards older than ${getCardRetentionDays()} days are destroyed daily` },
-      { label: "Database TLS", value: getDatabaseTlsMode() === "unverified" ? "Encrypted, server identity NOT verified (set DATABASE_SSL_CA)" : "Encrypted and verified" },
+      { label: "Database TLS", value: describeDatabaseTls(getDatabaseTlsMode()) },
     ];
     if (vault.problems.length > 0) facts.push({ label: "Key ring problems", value: vault.problems.join("; ") });
 

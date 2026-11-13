@@ -11,6 +11,7 @@
 // It never writes, and prints only references/ids/statuses — no names,
 // emails, phone numbers or card data.
 import pg from "pg";
+import { resolveDatabaseSsl } from "../src/lib/db-tls";
 
 async function main() {
   const raw = process.env.DATABASE_URL;
@@ -20,7 +21,7 @@ async function main() {
   }
   const u = new URL(raw);
   u.searchParams.delete("sslmode");
-  const client = new pg.Client({ connectionString: u.toString(), ssl: { rejectUnauthorized: false } });
+  const client = new pg.Client({ connectionString: u.toString(), ssl: resolveDatabaseSsl() });
   await client.connect();
   try {
     const { rows } = await client.query(`

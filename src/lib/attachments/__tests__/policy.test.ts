@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   ALLOWED_EXTENSIONS,
   ACCEPT_ATTRIBUTE,
-  buildStorageKey,
   contentDisposition,
   extensionOf,
   formatFileSize,
@@ -146,23 +145,7 @@ describe("file names are untrusted", () => {
   });
 });
 
-describe("storage keys and headers", () => {
-  const parts = { companyId: "default-company", leadId: "cmuabc123def", attachmentId: "0b9c1d52-aaaa-bbbb-cccc-1234567890ab", random: "a".repeat(32) };
-
-  it("builds an opaque key that contains nothing from the file name", () => {
-    const key = buildStorageKey(parts);
-    expect(key).toBe(`companies/default-company/leads/cmuabc123def/attachments/${parts.attachmentId}/${"a".repeat(32)}`);
-    expect(key).not.toMatch(/\.\./);
-  });
-
-  it("refuses an id that could inject a path segment", () => {
-    for (const bad of ["../x", "a/b", "a b", "", "x".repeat(65), "a\nb", "a%2fb"]) {
-      expect(() => buildStorageKey({ ...parts, leadId: bad })).toThrow();
-      expect(() => buildStorageKey({ ...parts, companyId: bad })).toThrow();
-      expect(() => buildStorageKey({ ...parts, attachmentId: bad })).toThrow();
-    }
-  });
-
+describe("response headers", () => {
   it("Content-Disposition can't be header-injected and carries a UTF-8 name", () => {
     const h = contentDisposition("attachment", 'evil"\r\nX-Injected: 1.pdf');
     expect(h).not.toMatch(/[\r\n]/);

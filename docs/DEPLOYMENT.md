@@ -6,9 +6,11 @@ in-app "switch company" concept — isolation between companies comes from
 each deployment only ever having access to its own database, not from
 tenant filtering inside a shared one.
 
-> Hosting: Vercel is the supported production platform. A Cloudflare Workers
-> (OpenNext) build exists but is **not production-ready** — see
-> [docs/CLOUDFLARE_DEPLOYMENT.md](CLOUDFLARE_DEPLOYMENT.md) for its status and blockers.
+> Hosting options: **Vercel** (this document) and a **self-hosted OVHcloud VPS with Docker Compose
+> behind a Cloudflare Tunnel** — see [DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md](DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md)
+> (Dockerfile, `compose.yaml`, controlled deploy / rollback / backup scripts). A Cloudflare **Workers**
+> (OpenNext) build also exists but is **not production-ready** — see
+> [CLOUDFLARE_DEPLOYMENT.md](CLOUDFLARE_DEPLOYMENT.md) for its status and blockers.
 
 ```
 Compass Tools (same codebase)
@@ -47,7 +49,7 @@ Project → Settings → Environment Variables) for a real deployment:
 | `DATABASE_SSL_CA` / `DATABASE_SSL_VERIFY` | Recommended | Turns on database TLS **verification**: `DATABASE_SSL_CA` = the provider's CA certificate (PEM; Aiven: the project CA certificate), or `DATABASE_SSL_VERIFY=system` for a publicly trusted CA. Unset = encrypted but the server's identity is not verified (System Health says so). |
 | `CARD_RETENTION_DAYS` | Optional (business decision) | Enables the daily purge of stored card numbers older than N days. **Unset = nothing is purged automatically.** Runs in production only with `CRON_SECRET` set. See `docs/CARD_VAULT_SECURITY.md` §10. |
 | `APP_ENV` | Optional | Only `APP_ENV=production` has any effect (it forces production rules). Every other value is ignored — it can **not** relax a production build or a Vercel deployment and can no longer be used to open the card vault. |
-| `R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_BUCKET_NAME` / `R2_REGION` / `R2_ENDPOINT` | Optional — only to enable Lead document uploads | A **private** Cloudflare R2 bucket and a bucket-scoped Object Read & Write token. Unset = the Files tab says uploads are not set up; nothing else changes. `MAX_LEAD_ATTACHMENT_SIZE_MB` (default 10) is optional too. Full setup, CORS and Vercel steps: [docs/LEAD_ATTACHMENTS.md](LEAD_ATTACHMENTS.md). |
+| `UPLOAD_STORAGE_DIR` | Not for Vercel | Lead documents are stored on a persistent local disk, which Vercel (and Cloudflare Workers) do not have: **uploads work only on the Docker/VPS deployment** and are reported as unavailable here. See `docs/LEAD_ATTACHMENTS.md`. |
 | `BOOKING_IP_RETENTION_DAYS` | Deprecated — do not set | Pass 33: booking submission IP data is retained indefinitely by design; this variable is no longer read anywhere. Setting it does nothing. See `docs/ip-vault-compliance.md`. |
 
 ## 2a. Configure the Google OAuth client for THIS deployment's domain

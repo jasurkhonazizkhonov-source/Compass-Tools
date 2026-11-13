@@ -4,8 +4,7 @@ The authenticated **server-to-server** way for the BusinessFlights.travel websit
 The website never receives database credentials and never touches the database: it makes one private-network HTTP call to the
 CRM, which applies all of the CRM's own business rules.
 
-> **Status.** Implemented and tested in this repository; **not deployed**. Nothing here has been run against production, and the one
-> migration it needs (`20261016000100_lead_ingest_fingerprint`) has not been applied to any production database. The website
+> **Status.** Implemented and tested in this repository; **not deployed**. Nothing here has been run against production. The website
 > repository is separate and is not changed by this work — the call it must make is described below.
 
 ## Why a separate endpoint
@@ -21,7 +20,7 @@ payload, protection is per-IP rate limiting). It stays exactly as it was. A trus
 | Idempotency | optional `submissionId` in the body | **required** `Idempotency-Key` header; reuse with a different request → `409` |
 | Input | tolerant | strict: unknown fields are rejected, body ≤ 32 KB, JSON only |
 | Rate limit | per connection IP | one shared budget for the authenticated caller + a separate budget for failed authentication |
-| Network | public | private network only; a request that arrived through the public Cloudflare hostname gets `404` |
+| Network | public | private Docker network only; a request that arrived through the public Cloudflare hostname gets `404` |
 | Visitor IP / location | from the request's own trusted headers | **only** from a verified signed context — the connection is the website's server, never believed |
 
 Both endpoints create leads through **one shared implementation** (`src/server/lead-intake.ts`): contact de-duplication, ownership of repeat
@@ -147,25 +146,45 @@ for a developer, never contain an exception, stack trace, SQL, host name, secret
 
 ### Rotating the key without downtime
 
-1. Generate a new key. Set `WEBSITE_API_KEY_NEXT=<new>` in the CRM's environment and restart the CRM application so it reloads it. Both keys now work.
+1. Generate a new key. Set `WEBSITE_API_KEY_NEXT=<new>` in the CRM's `.env`; `bash deploy/compose.sh up -d app`. Both keys now work.
 2. Switch the website's backend to the new key and restart it.
-3. In the CRM's environment, move the new value into `WEBSITE_API_KEY` and remove `WEBSITE_API_KEY_NEXT`; restart the CRM application. The old key stops working.
+3. In the CRM `.env`, move the new value into `WEBSITE_API_KEY`, delete `WEBSITE_API_KEY_NEXT`; `bash deploy/compose.sh up -d app`. The old key stops working.
 
 If a key may have leaked, do steps 1–3 immediately; the old key is refused as soon as step 3 is applied.
 
-## Network (private network)
+## Network (private Docker network)
 
-This API is meant for a **private** path between the website's backend and the CRM, not for the internet. This repository does not define that network:
-how the two servers reach each other (for example a private container network, where the CRM could answer as `http://compass-crm:3000`) is a deployment
-decision. Whatever it is, the website's backend needs only the CRM's URL and the bearer key — **never** the CRM's database URL — and nothing should be
-published on the CRM's host for this purpose.
+The CRM publishes **no** port on the VPS. The website's container reaches it over a dedicated internal Docker network, `compass-tools-website-api`
+(defined in `compose.yaml`), where the CRM answers as **`http://compass-crm:3000`**. That network:
 
-**Public hostname.** If the CRM is also reachable from the internet through a Cloudflare tunnel, every request through the tunnel carries `CF-Ray`, and this API answers
-those with `404`. That check is **supplemental only — it is not authentication and not the isolation**: the isolation is the private network, and the authentication is the
-bearer key. The check only makes sure the endpoint is not answered on the public hostname; because Cloudflare adds those headers to every tunnel request and a caller on the
-internet cannot remove them, it holds, but do not rely on it alone: for defence in depth also add a Cloudflare rule that blocks `/api/v1/website/*` on the public hostname.
-Only if the website must call the CRM over its public `https://` URL (for example it runs on another provider) set `WEBSITE_API_ALLOW_PUBLIC_ROUTE=true` — then the bearer
-key and the rate limits are the only barrier; prefer the private network.
+* is `internal: true` (no route to the internet),
+* contains only the CRM `app` container and whatever you attach to it — **not** PostgreSQL (`data`) and **not** the Cloudflare tunnel (`web`), so the
+  website's container has no path to the database or to the tunnel.
+
+In the **website's** Compose file:
+
+```yaml
+services:
+  website:
+    # ...
+    environment:
+      CRM_API_URL: http://compass-crm:3000
+      CRM_API_KEY: ${WEBSITE_API_KEY}     # the same value as the CRM's WEBSITE_API_KEY, in the website's own .env
+    networks: [default, crm]
+networks:
+  crm:
+    name: compass-tools-website-api
+    external: true
+```
+
+The network exists once the CRM stack is up (`docker compose up -d`). The website does **not** need the CRM's database URL, and must not be given it.
+
+**Public hostname.** The CRM is also reachable from the internet through the Cloudflare tunnel. Every request through the tunnel carries `CF-Ray`, and this API answers
+those with `404`. That check is **supplemental only — it is not authentication and not the isolation**: the isolation is the network design above (the website's network
+has no route to the database or the tunnel, and nothing is published), and the authentication is the bearer key. The check only makes sure the endpoint is not
+answered on the public hostname; because Cloudflare adds those headers to every tunnel request and a caller on the internet cannot remove them, it holds, but do not rely on it
+alone: for defence in depth also add a Cloudflare rule that blocks `/api/v1/website/*` on the public hostname. Only if the website must call the CRM over its public `https://` URL (for example
+it runs on another provider) set `WEBSITE_API_ALLOW_PUBLIC_ROUTE=true` — then the bearer key and the rate limits are the only barrier; prefer the private network.
 
 ## Visitor IP and approximate location (optional)
 
@@ -203,7 +222,7 @@ Logging: only fixed, data-free tags are ever logged (`[website-api] lead creatio
 
 Everything here runs in the **website's backend** (for example a Next.js Server Action or Route Handler). Nothing here may run in the browser.
 
-**Endpoint:** `POST <CRM_API_URL>/api/v1/website/flight-inquiries` (for example `http://compass-crm:3000` on a private network; plain HTTP is fine inside a private network).
+**Endpoint:** `POST http://compass-crm:3000/api/v1/website/flight-inquiries` (private Docker network `compass-tools-website-api`; plain HTTP is fine inside that network).
 **Authentication:** header `Authorization: Bearer <key>`. **Idempotency:** header `Idempotency-Key: <per-submission key>`. **Body:** JSON, fields as in the table above.
 
 **Configuration on the website server** (names are the website's own choice; these are suggestions):
@@ -258,9 +277,9 @@ export async function sendInquiry(inquiry: Inquiry, idempotencyKey: string) {
 
 **Testing without touching production:**
 
-1. Run a separate CRM instance (on a developer machine or a staging server) with its **own** throwaway database, environment, and a throwaway `WEBSITE_API_KEY` (`openssl rand -hex 32`). Never reuse the production key or database.
-2. Point the website's `CRM_API_URL` / `CRM_API_KEY` at that instance.
-3. Check, in this order: no key → `401`; wrong key → `401`; right key but no `Idempotency-Key` → `400`; a valid inquiry → `201` and the lead appears in that instance's CRM; the **same** request again → `200` with `duplicate: true` and still one lead; the same key with a changed field → `409`; kill the connection mid-request and retry with the same key → one lead.
+1. Run a separate CRM stack (a second Compose project on a developer machine or a staging VPS) with its **own** throwaway database, `.env`, and a throwaway `WEBSITE_API_KEY` (`openssl rand -hex 32`). Never reuse the production key or database.
+2. Point the website's `CRM_API_URL` / `CRM_API_KEY` at that stack (join the website container to that stack's `compass-tools-website-api` network, or publish nothing and use `docker compose exec`).
+3. Check, in this order: no key → `401`; wrong key → `401`; right key but no `Idempotency-Key` → `400`; a valid inquiry → `201` and the lead appears in that stack's CRM; the **same** request again → `200` with `duplicate: true` and still one lead; the same key with a changed field → `409`; kill the connection mid-request and retry with the same key → one lead.
 4. Confirm the website's logs and browser network panel contain no key and no customer data from failed calls.
 
 ## Configuration (server-side environment variables)
@@ -273,21 +292,34 @@ export async function sendInquiry(inquiry: Inquiry, idempotencyKey: string) {
 | `WEBSITE_API_ALLOW_PUBLIC_ROUTE` | CRM `.env` | unset (refuse tunnel traffic) | `true` to accept calls that arrived via the public hostname |
 | `LEAD_INGEST_SECRET` | both | unset | optional: signs the visitor context |
 
-The values live only in the CRM server's environment (never in Git, an image, a log or a browser-visible variable), and are read by the CRM application only.
+`/api/health` reports `readiness.websiteApi` (`configured` / `not_configured`) — a category only; `bash deploy/verify.sh` shows it and warns when unset.
+The values live in `.env` (mode 600, never in Git). `compose.yaml` passes them to the `app` container only.
 
 ## Deploying
 
-This change adds **one additive migration** (`20261016000100_lead_ingest_fingerprint`: a new table and its foreign key; nothing existing is touched). It has **not**
-been applied to any production database. When the code is approved and merged, follow your normal controlled deployment:
+This change adds **one additive migration** (`20261016000100_lead_ingest_fingerprint`: a new table, nothing else touched). On the VPS, after the code is merged
+to `main`:
 
-1. Take a verified database backup first.
-2. Apply the migration with your usual forward-only step (`prisma migrate deploy` — it never resets or drops anything) **before** starting the new code: older code ignores
-   the extra table, but the new endpoint needs it.
-3. Add `WEBSITE_API_KEY` (generate with `openssl rand -hex 32`) and `WEBSITE_API_COMPANY_ID` to the CRM's environment (and `LEAD_INGEST_SECRET` if you forward the visitor
-   context), then restart the CRM application.
-4. Smoke-test from the private network: a call with a wrong key must return `401`, and one without a key `401`; with the API key unset the endpoint returns `503`.
+```bash
+bash deploy/backup-db.sh
+```
 
-Rollback: redeploy the previous application version. The new table is unused by older code and can stay.
+```bash
+bash deploy/deploy.sh --migrate
+```
+
+then add the variables to `.env` (`openssl rand -hex 32` for the key), restart the app **with `deploy/compose.sh`** (it runs `docker compose` on the version that is installed; a bare `docker compose up -d app` in a fresh shell would look for a non-existent `compass-tools:local` image), and check:
+
+```bash
+bash deploy/compose.sh up -d app
+```
+
+```bash
+bash deploy/verify.sh
+```
+
+`verify.sh` must show `websiteApi=configured`. A smoke call from the website's container (or any container on the network) with a wrong key must return `401`.
+Rollback: `bash deploy/rollback.sh <previous-version>`; the new table is unused by older code and can stay.
 
 ## Tests
 
@@ -296,5 +328,5 @@ Rollback: redeploy the previous application version. The new table is unused by 
   (sequential, concurrent, different-content, mixed with the public endpoint, cross-company), visitor-context handling, audit rows, failure handling that
   leaks nothing and loses nothing.
 * `src/server/security/__tests__/website-api-auth.test.ts` — the credential logic.
-* `src/__tests__/website-api-guards.test.ts` — the key is read in one module, never reaches a client, the route's order of checks, the documented variables.
+* `src/__tests__/website-api-guards.test.ts` — the key is read in one module, never reaches a client, the route's order of checks, deployment wiring.
 * The existing `/api/public/lead-capture` tests (unit + real database) still pass unchanged against the shared core.

@@ -297,7 +297,7 @@ describe.skipIf(!enabled)("System Health — real PostgreSQL", () => {
           if (r.state !== "HEALTHY") expect(r.summary).toMatch(/not encrypted under the current key version/i);
           expect(r.state).not.toBe("CRITICAL");
           expect(JSON.stringify(r.facts)).toContain("Available");
-          expect(JSON.stringify(r.facts)).toContain("Never collected or stored");
+          expect(JSON.stringify(r.facts)).toContain("at most 24 hours");
           expect(JSON.stringify(r.facts)).toContain("Current key version");
         });
       });

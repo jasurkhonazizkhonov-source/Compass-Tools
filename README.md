@@ -46,10 +46,12 @@ and Vercel-specific configuration).
 
 - `docs/DEPLOYMENT.md` — full deployment walkthrough (database, environment
   variables, Google OAuth, bootstrap, Vercel cron/config).
-- `docs/LEAD_ATTACHMENTS.md` — Lead documents in private Cloudflare R2: permissions, security model,
-  environment variables and Cloudflare/Vercel setup.
+- `docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md` — self-hosted production on an OVHcloud VPS: Docker Compose,
+  PostgreSQL in a private network, Cloudflare Tunnel, controlled deploys, backups, rollback, daily CVV cleanup.
+- `docs/LEAD_ATTACHMENTS.md` — Lead documents stored on the VPS disk (persistent bind mount): permissions, security
+  model, VPS directory setup, backup/restore, and disk monitoring.
 - `docs/WEBSITE_LEAD_API.md` — the authenticated server-to-server API the BusinessFlights.travel backend uses to create flight-inquiry
-  leads: contract, authentication and key rotation, idempotency and retries.
+  leads: contract, authentication and key rotation, idempotency and retries, private Docker network setup.
 - `docs/SEO.md` — public-site metadata, sitemap, robots.txt, canonical and
   structured-data conventions.
 - `docs/PAYMENT_AUTOFILL_SECURITY.md` — why full card-number autofill is

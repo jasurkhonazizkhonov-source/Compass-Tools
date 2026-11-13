@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Compass Tools PostgreSQL backup
+
+[Timer]
+# 02:15 UTC every day; if the server was off at that time, run once when it is next up.
+OnCalendar=*-*-* 02:15:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

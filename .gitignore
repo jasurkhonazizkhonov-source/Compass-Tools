@@ -53,3 +53,13 @@ skills-lock.json
 .open-next
 .wrangler
 .dev.vars
+
+# self-hosted VPS deployment: backups and local state never belong in Git
+/backups/
+*.dump
+*.dump.age
+*.dump.partial
+
+# uploaded Lead documents (development default of UPLOAD_STORAGE_DIR) - customer files never belong in Git
+/.local-uploads/
+/uploads/
