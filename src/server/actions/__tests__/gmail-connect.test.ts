@@ -190,3 +190,28 @@ describe("disconnectGmail", () => {
     expect(deletedForAccountIds).toEqual(["acct-1"]);
   });
 });
+
+describe("startGmailConnect - coming back to the lead it was started from", () => {
+  it("remembers a lead page as the return target (cookie), and still starts the normal flow", async () => {
+    const { startGmailConnect } = await import("../gmail-connect");
+    await expect(startGmailConnect("/leads/cl9x2abc123")).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(cookieJar.get("gmail_return_to")).toBe("/leads/cl9x2abc123");
+    expect(cookieJar.get("gmail_oauth_state")).toBeTruthy();
+  });
+
+  it.each(["https://evil.example/leads/abc", "//evil.example", "/dashboard", "/leads/abc?next=/x", "/leads/../admin", "/leads/", "/leads/a/b", "javascript:alert(1)", "/leads/%2e%2e"])(
+    "refuses to remember %j (only a plain lead page is ever accepted - never an open redirect)",
+    async (bad) => {
+      const { startGmailConnect } = await import("../gmail-connect");
+      await expect(startGmailConnect(bad)).rejects.toThrow(/NEXT_REDIRECT/);
+      expect(cookieJar.get("gmail_return_to") ?? "").toBe("");
+    }
+  );
+
+  it("started without a target, any stale target from an earlier attempt is cleared", async () => {
+    cookieJar.set("gmail_return_to", "/leads/old");
+    const { startGmailConnect } = await import("../gmail-connect");
+    await expect(startGmailConnect()).rejects.toThrow(/NEXT_REDIRECT/);
+    expect(cookieJar.get("gmail_return_to")).toBe("");
+  });
+});

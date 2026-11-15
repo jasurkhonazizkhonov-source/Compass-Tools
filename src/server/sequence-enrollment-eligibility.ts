@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { leadVisibilityWhere, type Viewer } from "@/server/visibility";
-import { checkGmailSendReadiness, type GmailReadiness } from "@/server/email/gmail-send";
+import { checkGmailSendReadiness, type GmailReadiness, type GmailReadinessFailure } from "@/server/email/gmail-send";
 
 // The ONE place that decides whether a lead can be enrolled in a sequence. enrollLeads (the enrollment itself), bulkEnrollInSequence (through
 // enrollLeads) and the Sequences section's status-based preview/enrollment all call classifyLeadsForEnrollment, so the counts a person is shown
@@ -12,7 +12,12 @@ import { checkGmailSendReadiness, type GmailReadiness } from "@/server/email/gma
 // sequence emails are sent from) and that agent's Gmail is usable.
 
 export type LeadVerdict = "eligible" | "alreadyActive" | "missingEmail" | "noAssignedAgent" | "gmailUnavailable" | "inaccessible";
-export type GmailProblemCode = "NOT_CONNECTED" | "REAUTH_REQUIRED";
+export type GmailProblemCode = GmailReadinessFailure;
+
+/** True when the user must (re)connect Gmail to fix it; false for a temporary problem where "connect Gmail" would be the wrong advice. */
+export function gmailProblemNeedsReconnect(code: GmailProblemCode): boolean {
+  return code !== "TEMPORARILY_UNAVAILABLE";
+}
 export type SendingAgent = { id: string; fullName: string };
 
 /** Distinct sending accounts whose refresh token is checked against Google in ONE classification; the rest get the local-only check. */
@@ -22,9 +27,19 @@ export function describeGmailProblem(code: GmailProblemCode, agent: SendingAgent
   const mine = agent.id === actorId;
   const who = mine ? "Your Gmail" : `${agent.fullName}'s Gmail`;
   const how = mine ? "Use the account menu (top right) > Connect Gmail, then try again." : `Ask ${agent.fullName} to connect Gmail from their account menu, then try again.`;
-  return code === "NOT_CONNECTED"
-    ? `Gmail is not connected. ${who} is not connected, and it is the account that sends this lead's sequence emails. ${how}`
-    : `Gmail needs to be reconnected. ${who} authorization has expired or been revoked. ${how}`;
+  const nothing = "No emails have been sent and this lead has not been enrolled.";
+  switch (code) {
+    case "NOT_CONNECTED":
+      return `Gmail is not connected. ${who} is not connected, and it is the account that sends this lead's sequence emails. ${nothing} ${how}`;
+    case "REAUTH_REQUIRED":
+      return `Gmail needs to be reconnected. ${who} authorization has expired or been revoked. ${nothing} ${how}`;
+    case "MISSING_PERMISSION":
+      return `Gmail cannot send email. ${who} is connected, but the permission to send email was not granted. ${nothing} ${mine ? "Reconnect Gmail from the account menu and allow sending, then try again." : `Ask ${agent.fullName} to reconnect Gmail and allow sending, then try again.`}`;
+    case "TEMPORARILY_UNAVAILABLE":
+    default:
+      // Not a connection problem: do NOT tell the user to connect Gmail.
+      return `Gmail could not be checked right now. ${who} may be connected, but Google did not answer. ${nothing} Nothing needs to be reconnected - try again in a moment.`;
+  }
 }
 
 export type EnrollmentClassification = {
@@ -83,7 +98,7 @@ export async function classifyLeadsForEnrollment(params: {
           select: {
             id: true,
             contact: { select: { primaryEmail: true, emails: { select: { email: true } } } },
-            assignedAgent: { select: { id: true, fullName: true } },
+            assignedAgent: { select: { id: true, fullName: true, companyId: true } },
           },
         })
       : [];
@@ -102,6 +117,12 @@ export async function classifyLeadsForEnrollment(params: {
     }
     if (!lead.assignedAgent) {
       verdicts.set(lead.id, "noAssignedAgent"); // no sender to send from: the worker would only fail this enrollment on its first run
+      continue;
+    }
+    // The emails are sent from the assigned agent's own Gmail. That account must belong to the SAME company as the person enrolling: one company can never
+    // send through another company's Gmail connection, whatever the data says.
+    if (actor && lead.assignedAgent.companyId !== actor.companyId) {
+      verdicts.set(lead.id, "inaccessible");
       continue;
     }
     if (validated.length > 0) recipientByLead.set(lead.id, validated.join(", "));

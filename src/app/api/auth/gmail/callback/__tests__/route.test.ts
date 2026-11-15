@@ -281,3 +281,28 @@ describe("Gmail OAuth callback", () => {
     expect(response.headers.get("location")).toBe("http://localhost:3000/subscriptions?gmail=connected");
   });
 });
+
+describe("Gmail OAuth callback - back to the lead", () => {
+  it("a connection started from a lead lands on THAT lead (with the ?gmail= result), not the dashboard - for success and for the other outcomes", async () => {
+    cookieJar.set("gmail_return_to", "/leads/cl9x2abc123");
+    const { GET } = await import("../route");
+    const response = await GET(makeRequest("?error=access_denied&state=expected-state-value"));
+    expect(response.headers.get("location")).toBe("http://localhost:3000/leads/cl9x2abc123?gmail=cancelled");
+    expect(cookieJar.has("gmail_return_to")).toBe(false); // single use
+  });
+
+  it("the cookie is not trusted: a tampered value falls back to the user's normal route", async () => {
+    for (const bad of ["https://evil.example/", "//evil.example", "/leads/x?y=z", "/admin"]) {
+      cookieJar.set("gmail_return_to", bad);
+      const { GET } = await import("../route");
+      const response = await GET(makeRequest("?error=access_denied&state=expected-state-value"));
+      expect(response.headers.get("location")).toBe("http://localhost:3000/dashboard?gmail=cancelled");
+    }
+  });
+
+  it("without a return target nothing changes (the normal route)", async () => {
+    const { GET } = await import("../route");
+    const response = await GET(makeRequest("?error=access_denied&state=expected-state-value"));
+    expect(response.headers.get("location")).toBe("http://localhost:3000/dashboard?gmail=cancelled");
+  });
+});

@@ -5,7 +5,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { resolveBaseUrl } from "@/lib/company-config";
 import { getGmailOAuth2Client } from "@/server/auth/gmail-oauth-config";
-import { GMAIL_OAUTH_STATE_COOKIE } from "@/server/auth/gmail-oauth-state";
+import { GMAIL_OAUTH_STATE_COOKIE, GMAIL_RETURN_COOKIE, safeGmailReturnPath } from "@/server/auth/gmail-oauth-state";
 import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
 import { normalizeEmail } from "@/server/auth/google-authorization";
 import { encryptRefreshToken } from "@/server/security/gmail-token-encryption";
@@ -44,6 +44,9 @@ export async function GET(request: NextRequest) {
   const cookieStore = await cookies();
   const expectedState = cookieStore.get(GMAIL_OAUTH_STATE_COOKIE)?.value;
   cookieStore.delete(GMAIL_OAUTH_STATE_COOKIE);
+  // Where the user started from (a lead page), if they started from one. Re-validated here: the cookie itself is never trusted.
+  const returnPath = safeGmailReturnPath(cookieStore.get(GMAIL_RETURN_COOKIE)?.value);
+  cookieStore.delete(GMAIL_RETURN_COOKIE);
 
   // Real defect found and fixed: this used to redirect unconditionally to
   // /dashboard. For any role that cannot view the Dashboard (Ticketing
@@ -67,7 +70,8 @@ export async function GET(request: NextRequest) {
   // chance of one being missed and silently regressing to /dashboard.
   const session: { role?: AccountRole } = {};
   function toDashboard(gmailParam: string) {
-    return NextResponse.redirect(`${baseUrl}${defaultRouteForRole(session.role)}?gmail=${gmailParam}`);
+    // Back to the lead the user came from when there is one (the ?gmail= toast is shown by the shared CRM layout on any route), otherwise their own route.
+    return NextResponse.redirect(`${baseUrl}${returnPath ?? defaultRouteForRole(session.role)}?gmail=${gmailParam}`);
   }
 
   // The user declined consent on Google's screen, or Google reported some

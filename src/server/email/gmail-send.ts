@@ -31,7 +31,20 @@ export type GmailSendInput = {
 
 export type GmailSendResult =
   | { ok: true; messageId: string }
-  | { ok: false; error: string; code: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "SEND_FAILED" };
+  | {
+      ok: false;
+      error: string;
+      code: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "SEND_FAILED";
+      /**
+       * true = the request may have REACHED Gmail and been accepted even though no confirmation came back (a timeout, a dropped connection, a 5xx): the
+       * message might have been sent. A caller that sends to a customer must NOT blindly resend. Absent/false = Gmail definitely did not send it (no
+       * request was made, or Gmail answered with a definite refusal such as 401/403/429/other 4xx).
+       */
+      ambiguous?: boolean;
+    };
+
+/** How long the Gmail send request may take before it is abandoned as an UNKNOWN outcome. */
+export const GMAIL_SEND_TIMEOUT_MS = 30_000;
 
 const NOT_CONNECTED_MESSAGE = "Gmail is not connected. Connect Gmail to send emails from your account.";
 const REAUTH_MESSAGE = "Your Gmail authorization has expired or been revoked. Please reconnect Gmail.";
@@ -112,13 +125,24 @@ function classifyGmailApiFailure(status: number, body: unknown): { code: "REAUTH
  * not be REVOKED, Google must have granted the send scope, and the stored refresh token must be decryptable with the current key and OAuth
  * config (the same three failures sendViaGmail turns into NOT_CONNECTED / REAUTH_REQUIRED). With `verifyToken` it also asks Google's token
  * endpoint for an access token (no mail is sent): `invalid_grant` marks the connection REVOKED exactly like a real send would; any other
- * refresh error (network, Google outage) is NOT proof the account is broken, so it reports ready-but-unverified and lets the sender's own
- * bounded retry decide. A successful refresh is still no guarantee that a later send succeeds (rate limits, quota), which is why callers must
+ * refresh error (network, Google outage) is NOT proof the account is broken, so it reports TEMPORARILY_UNAVAILABLE (not "connect Gmail") and is NOT ready:
+ * sending ability was not verified. A successful refresh is still no guarantee that a later send succeeds (rate limits, quota), which is why callers must
  * keep handling send failures. Never returns or logs token material.
  */
+/**
+ * Why Gmail cannot send right now, as distinct situations (each needs a different instruction for the user):
+ *   NOT_CONNECTED          - no Gmail connection exists for the sending account: connect Gmail.
+ *   REAUTH_REQUIRED        - the connection exists but Google no longer honours it (revoked, expired, undecryptable): reconnect Gmail.
+ *   MISSING_PERMISSION     - Google did not grant the "send email" permission: reconnect and tick the send permission.
+ *   TEMPORARILY_UNAVAILABLE- Google's token service could not be reached or failed: nothing is wrong with the connection, try again shortly.
+ */
+export type GmailReadinessFailure = "NOT_CONNECTED" | "REAUTH_REQUIRED" | "MISSING_PERMISSION" | "TEMPORARILY_UNAVAILABLE";
 export type GmailReadiness =
   | { ready: true; verified: boolean }
-  | { ready: false; code: "NOT_CONNECTED" | "REAUTH_REQUIRED"; error: string };
+  | { ready: false; code: GmailReadinessFailure; error: string };
+
+const MISSING_PERMISSION_MESSAGE = "Gmail is connected, but permission to send email was not granted. Reconnect Gmail and allow sending.";
+const UNAVAILABLE_MESSAGE = "Gmail could not be checked right now. This is usually temporary - try again in a moment.";
 
 export async function checkGmailSendReadiness(accountId: string, options: { verifyToken?: boolean } = {}): Promise<GmailReadiness> {
   const connection = await prisma.gmailConnection.findUnique({
@@ -127,7 +151,7 @@ export async function checkGmailSendReadiness(accountId: string, options: { veri
   });
   if (!connection) return { ready: false, code: "NOT_CONNECTED", error: NOT_CONNECTED_MESSAGE };
   if (connection.status === "REVOKED") return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
-  if (!connection.scopes.includes(GMAIL_SEND_SCOPE)) return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
+  if (!connection.scopes.includes(GMAIL_SEND_SCOPE)) return { ready: false, code: "MISSING_PERMISSION", error: MISSING_PERMISSION_MESSAGE };
 
   let client: OAuth2Client;
   try {
@@ -147,7 +171,9 @@ export async function checkGmailSendReadiness(accountId: string, options: { veri
       await markRevoked(accountId);
       return { ready: false, code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
     }
-    return { ready: true, verified: false };
+    // Google's token service failed or could not be reached. That is NOT proof the connection is broken (so do not tell the user to reconnect), but it
+    // also means sending ability was not verified, so a caller that asked for verification must not treat the account as ready.
+    return { ready: false, code: "TEMPORARILY_UNAVAILABLE", error: UNAVAILABLE_MESSAGE };
   }
 }
 
@@ -219,19 +245,25 @@ export async function sendViaGmail(input: GmailSendInput): Promise<GmailSendResu
       method: "POST",
       headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ raw }),
+      // Without a deadline a hung connection would hold the caller (and a sequence worker's claim) indefinitely. A timeout is an UNKNOWN outcome, below.
+      signal: AbortSignal.timeout(GMAIL_SEND_TIMEOUT_MS),
     });
 
     if (!response.ok) {
       const body = await response.json().catch(() => null);
       const { code, error } = classifyGmailApiFailure(response.status, body);
       if (code === "REAUTH_REQUIRED") await markRevoked(input.accountId);
-      return { ok: false, code, error };
+      // A 5xx means Gmail itself failed while handling the request; whether it had already queued the message is not knowable. 4xx answers are definite.
+      return response.status >= 500 ? { ok: false, code, error, ambiguous: true } : { ok: false, code, error };
     }
 
-    const data = (await response.json()) as { id: string };
-    return { ok: true, messageId: data.id };
+    // Gmail ACCEPTED the message (2xx). An unreadable body must not turn that into a failure - the message is gone, and reporting a failure here would make
+    // a retry send it a second time.
+    const data = (await response.json().catch(() => null)) as { id?: string } | null;
+    return { ok: true, messageId: typeof data?.id === "string" && data.id ? data.id : "accepted-without-id" };
   } catch {
     console.error("[gmail-send] request to Gmail API failed");
-    return { ok: false, code: "SEND_FAILED", error: "Could not reach Gmail. Please try again." };
+    // The request was sent (or may have been) and no answer arrived: timeout, reset connection, aborted. The message may or may not have been delivered.
+    return { ok: false, code: "SEND_FAILED", error: "Could not confirm that Gmail sent this email (no response). It may or may not have been sent.", ambiguous: true };
   }
 }

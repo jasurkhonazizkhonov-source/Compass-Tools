@@ -30,7 +30,7 @@ export type SendEmailInput = {
 
 export type SendEmailResult =
   | { ok: true; messageId: string }
-  | { ok: false; error: string; code?: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "SEND_FAILED" };
+  | { ok: false; error: string; code?: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "SEND_FAILED"; ambiguous?: boolean };
 
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
   const result = await sendViaGmail(input);

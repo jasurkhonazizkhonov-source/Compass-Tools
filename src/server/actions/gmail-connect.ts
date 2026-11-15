@@ -9,7 +9,7 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { getGoogleClientId, getGoogleClientSecret } from "@/server/auth/google-config";
 import { getGmailOAuth2Client, getGmailRedirectUri, GMAIL_CONNECT_SCOPES } from "@/server/auth/gmail-oauth-config";
-import { GMAIL_OAUTH_STATE_COOKIE } from "@/server/auth/gmail-oauth-state";
+import { GMAIL_OAUTH_STATE_COOKIE, GMAIL_RETURN_COOKIE, safeGmailReturnPath } from "@/server/auth/gmail-oauth-state";
 import { decryptRefreshToken } from "@/server/security/gmail-token-encryption";
 
 const isProd = process.env.NODE_ENV === "production";
@@ -21,7 +21,7 @@ const STATE_MAX_AGE_SECONDS = 10 * 60;
  * returns a refresh token every time (including on a reconnect), not just
  * on first-ever consent.
  */
-export async function startGmailConnect() {
+export async function startGmailConnect(returnTo?: string) {
   const current = await getCurrentAccount();
   if (!current) {
     redirect("/login");
@@ -36,6 +36,14 @@ export async function startGmailConnect() {
     path: "/",
     maxAge: STATE_MAX_AGE_SECONDS,
   });
+
+  // Started from a Lead's sequence panel: remember that lead page so the callback can bring the user straight back to it (validated, same-origin path only).
+  const returnPath = safeGmailReturnPath(returnTo);
+  if (returnPath) {
+    cookieStore.set(GMAIL_RETURN_COOKIE, returnPath, { httpOnly: true, secure: isProd, sameSite: "lax", path: "/", maxAge: STATE_MAX_AGE_SECONDS });
+  } else {
+    cookieStore.set(GMAIL_RETURN_COOKIE, "", { httpOnly: true, secure: isProd, sameSite: "lax", path: "/", maxAge: 0 });
+  }
 
   const client = getGmailOAuth2Client();
   const url = client.generateAuthUrl({
