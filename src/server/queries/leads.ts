@@ -147,7 +147,12 @@ export async function getLeadDetail(leadId: string, viewer: Viewer) {
       bookings: { orderBy: { createdAt: "desc" } },
       enrollments: {
         orderBy: { enrolledAt: "desc" },
-        include: { sequence: { include: { steps: { orderBy: { order: "asc" } } } }, enrolledBy: { select: ACCOUNT_NAME_SELECT } },
+        include: {
+          sequence: { include: { steps: { orderBy: { order: "asc" } } } },
+          enrolledBy: { select: ACCOUNT_NAME_SELECT },
+          // The per-step send log: what the lead page needs to show the SAME status the sequence page shows (see lib/sequence-progress.ts deriveEnrollmentState).
+          stepLogs: { orderBy: { createdAt: "desc" }, select: { id: true, stepId: true, status: true, sentAt: true, createdAt: true, error: true } },
+        },
       },
     },
   });

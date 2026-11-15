@@ -57,20 +57,19 @@ describe("processDueTaskNotifications (the Tasks page button) is a role-checked 
   });
 });
 
-describe("processDueSequenceSteps (the Sequence page button) is a role-checked Server Action", () => {
-  it("refuses an unauthenticated call and never runs the sweep", async () => {
-    const { processDueSequenceSteps } = await import("../sequences");
-    await expect(processDueSequenceSteps()).rejects.toThrow(/not authorized/i);
-    expect(runSequences).not.toHaveBeenCalled();
-  });
-
-  it("runs the sweep for a role that can see the Sequences page", async () => {
-    const { processDueSequenceSteps } = await import("../sequences");
-    const { canViewSequencesPage } = await import("@/lib/permissions");
-    const role = ROLES_WITH_PAGE.find((r) => canViewSequencesPage(r as never))!;
-    account = { id: "a1", role };
-    expect(await processDueSequenceSteps()).toEqual({ sent: 3, failed: 0 });
-    expect(runSequences).toHaveBeenCalledTimes(1);
+describe("there is no manual 'process due sequence steps' operation any more", () => {
+  it("the sequences action module exports no such action, and no component or page offers one", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const actions = await import("../sequences");
+    expect(Object.keys(actions).some((k) => /processDue/i.test(k))).toBe(false);
+    const walk = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? (e.name === "__tests__" ? [] : walk(path.join(dir, e.name))) : [path.join(dir, e.name)]));
+    for (const dir of ["src/components/sequences", "src/components/leads", "src/app/(crm)/sequences", "src/app/(crm)/leads"]) {
+      for (const file of walk(path.join(process.cwd(), dir))) {
+        expect(fs.readFileSync(file, "utf8"), file).not.toMatch(/Process Due Steps|processDueSequenceSteps|ProcessDueButton/);
+      }
+    }
   });
 });
 
