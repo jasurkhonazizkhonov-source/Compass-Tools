@@ -39,19 +39,18 @@ function CommandDialog({
   children,
   className,
   showCloseButton = false,
+  commandProps,
   ...props
 }: React.ComponentProps<typeof Dialog> & {
   title?: string
   description?: string
   className?: string
   showCloseButton?: boolean
+  /** Passed to the <Command> that wraps the children, e.g. shouldFilter={false} when the results are already filtered on the server. */
+  commandProps?: Omit<React.ComponentProps<typeof CommandPrimitive>, "children">
 }) {
   return (
     <Dialog {...props}>
-      <DialogHeader className="sr-only">
-        <DialogTitle>{title}</DialogTitle>
-        <DialogDescription>{description}</DialogDescription>
-      </DialogHeader>
       <DialogContent
         className={cn(
           "top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0",
@@ -59,7 +58,13 @@ function CommandDialog({
         )}
         showCloseButton={showCloseButton}
       >
-        {children}
+        <DialogHeader className="sr-only">
+          <DialogTitle>{title}</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
+        {/* cmdk's Input/List/Item read their store from <Command>; without this wrapper CommandInput throws on open
+            ("Cannot read properties of undefined (reading 'subscribe')") and the app's error boundary replaces the page. */}
+        <Command {...commandProps}>{children}</Command>
       </DialogContent>
     </Dialog>
   )

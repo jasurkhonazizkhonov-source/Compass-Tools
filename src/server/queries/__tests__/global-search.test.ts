@@ -68,9 +68,11 @@ vi.mock("@/lib/prisma", () => ({
           if (!visOk) return false;
           return textOr.OR.some((cond) => {
             if ("contact" in cond) {
-              const c = cond as { contact: { firstName?: { contains: string }; lastName?: { contains: string } } };
+              const c = cond as { contact: { firstName?: { contains: string }; lastName?: { contains: string }; primaryEmail?: { contains: string }; primaryPhone?: { contains: string } } };
               if (c.contact.firstName) return textMatch(contact.firstName, c.contact.firstName.contains);
               if (c.contact.lastName) return textMatch(contact.lastName, c.contact.lastName.contains);
+              if (c.contact.primaryEmail) return textMatch(contact.primaryEmail, c.contact.primaryEmail.contains);
+              if (c.contact.primaryPhone) return textMatch(contact.primaryPhone, c.contact.primaryPhone.contains);
             }
             return false;
           });
@@ -209,5 +211,48 @@ describe("globalSearch — visibility scoping (Pass 34 fix)", () => {
     const { globalSearch } = await import("../global-search");
     const result = await globalSearch("Xander");
     expect(result.contacts).toHaveLength(0);
+  });
+});
+
+describe("globalSearch - which kinds of record each role may find", () => {
+  it("a Ticketing Agent finds quotes and bookings, never leads or contacts (the roles that are barred from those pages)", async () => {
+    currentActor = { id: "ticketing-1", role: "TICKETING_AGENT", companyId: "company-1" };
+    const { globalSearch } = await import("../global-search");
+    const r = await globalSearch("Baker");
+    expect(r.contacts).toEqual([]);
+    expect(r.leads).toEqual([]);
+    expect(r.quotes.map((q) => q.id)).toEqual(["quote-b"]);
+    expect((await globalSearch("REF-BBB")).bookings.map((b) => b.id)).toEqual(["booking-b"]);
+  });
+
+  it("a Travel Agent has no Bookings area, so no booking is ever returned to them, even their own", async () => {
+    currentActor = { id: "agent-b", role: "TRAVEL_AGENT", companyId: "company-1" };
+    const { globalSearch } = await import("../global-search");
+    expect((await globalSearch("REF-BBB")).bookings).toEqual([]);
+    expect((await globalSearch("Baker")).contacts.map((c) => c.id)).toEqual(["contact-b"]);
+  });
+
+  it("a Flight Expert finds quotes and bookings but not leads or contacts; a Marketing Agent finds nothing", async () => {
+    const { globalSearch } = await import("../global-search");
+    currentActor = { id: "fe-1", role: "FLIGHT_EXPERT", companyId: "company-1" };
+    const fe = await globalSearch("Baker");
+    expect([fe.contacts.length, fe.leads.length, fe.quotes.length]).toEqual([0, 0, 1]);
+    currentActor = { id: "mk-1", role: "MARKETING_AGENT", companyId: "company-1" };
+    expect(await globalSearch("Baker")).toEqual({ contacts: [], leads: [], quotes: [], bookings: [] });
+  });
+
+  it("leads are found by the contact's email and phone as well as name (what the search box says it searches)", async () => {
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    contacts[0].primaryPhone = "+14155550123";
+    const { globalSearch } = await import("../global-search");
+    expect((await globalSearch("alice@example")).leads.map((l) => l.id)).toEqual(["lead-a"]);
+    expect((await globalSearch("4155550123")).leads.map((l) => l.id)).toEqual(["lead-a"]);
+  });
+
+  it("the Admin's booking search is company-scoped: another company's booking reference finds nothing", async () => {
+    bookings.push({ id: "booking-x", contactId: "contact-x", quoteId: null, bookingReference: "REF-XXX", pnr: null });
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    const { globalSearch } = await import("../global-search");
+    expect((await globalSearch("REF-XXX")).bookings).toEqual([]);
   });
 });

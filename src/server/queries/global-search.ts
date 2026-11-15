@@ -2,6 +2,7 @@
 
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
+import { canViewBookings, canViewContacts, canViewLeads, canViewQuotesPage } from "@/lib/permissions";
 import { contactVisibilityWhere, leadVisibilityWhere, quoteVisibilityWhere, bookingVisibilityWhere } from "@/server/visibility";
 
 export type GlobalSearchResult = {
@@ -30,9 +31,16 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
   // `*VisibilityWhere` helpers into its own query — this now does the
   // same, `AND`-ed alongside the existing text-search OR clause.
   const actor = await getCurrentAccount();
+  if (!actor) return { contacts: [], leads: [], quotes: [], bookings: [] };
+
+  // Each group is searched only when the viewer may open that area of the CRM at all. Row visibility (below) answers "which records"; this answers "which
+  // kinds". Without it a back-office role that is barred from Leads and Contacts (Ticketing Agent, Flight Expert) still got every company lead and contact
+  // back from this search, and a Travel Agent - who has no Bookings area - got bookings. The booking group therefore appears exactly for the roles that
+  // have the Bookings area (Admin, Manager, Ticketing Agent, Flight Expert), never for the others.
+  const none = Promise.resolve([] as never[]);
 
   const [contacts, leads, quotes, bookings] = await Promise.all([
-    prisma.contact.findMany({
+    !canViewContacts(actor.role) ? none : prisma.contact.findMany({
       where: {
         AND: [
           contactVisibilityWhere(actor),
@@ -48,7 +56,7 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
       },
       take: 5,
     }),
-    prisma.lead.findMany({
+    !canViewLeads(actor.role) ? none : prisma.lead.findMany({
       where: {
         AND: [
           leadVisibilityWhere(actor),
@@ -56,6 +64,8 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
             OR: [
               { contact: { firstName: { contains: query, mode: "insensitive" } } },
               { contact: { lastName: { contains: query, mode: "insensitive" } } },
+              { contact: { primaryEmail: { contains: query, mode: "insensitive" } } },
+              { contact: { primaryPhone: { contains: query, mode: "insensitive" } } },
               { departureAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
               { arrivalAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
             ],
@@ -65,7 +75,7 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
       include: { contact: true, departureAirport: true, arrivalAirport: true },
       take: 5,
     }),
-    prisma.quote.findMany({
+    !canViewQuotesPage(actor.role) ? none : prisma.quote.findMany({
       where: {
         AND: [
           quoteVisibilityWhere(actor),
@@ -74,6 +84,8 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
               { quoteNumber: { contains: query, mode: "insensitive" } },
               { contact: { firstName: { contains: query, mode: "insensitive" } } },
               { contact: { lastName: { contains: query, mode: "insensitive" } } },
+              { contact: { primaryEmail: { contains: query, mode: "insensitive" } } },
+              { contact: { primaryPhone: { contains: query, mode: "insensitive" } } },
             ],
           },
         ],
@@ -81,7 +93,7 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
       include: { contact: true },
       take: 5,
     }),
-    prisma.booking.findMany({
+    !canViewBookings(actor.role) ? none : prisma.booking.findMany({
       where: {
         AND: [
           bookingVisibilityWhere(actor),

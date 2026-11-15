@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Search } from "lucide-react";
 import {
@@ -20,7 +20,9 @@ export function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<GlobalSearchResult>(EMPTY);
+  const [failed, setFailed] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const latest = useRef(0);
   const router = useRouter();
 
   useEffect(() => {
@@ -37,9 +39,19 @@ export function GlobalSearch() {
   useEffect(() => {
     if (!open) return;
     const handle = setTimeout(() => {
+      const mine = ++latest.current;
       startTransition(async () => {
-        const r = await globalSearch(query);
-        setResults(r);
+        try {
+          const r = await globalSearch(query);
+          if (mine !== latest.current) return; // a newer keystroke already started another search: never let a slow answer overwrite it
+          setFailed(false);
+          setResults(r);
+        } catch {
+          // A failed search (network drop, expired session, server error) must not reach the error boundary and replace the whole page.
+          if (mine !== latest.current) return;
+          setFailed(true);
+          setResults(EMPTY);
+        }
       });
     }, 200);
     return () => clearTimeout(handle);
@@ -70,7 +82,7 @@ export function GlobalSearch() {
           Ctrl K
         </kbd>
       </Button>
-      <CommandDialog open={open} onOpenChange={setOpen} title="Global search" description="Search across Compass Tools">
+      <CommandDialog open={open} onOpenChange={setOpen} title="Global search" description="Search across Compass Tools" commandProps={{ shouldFilter: false }}>
         <CommandInput
           placeholder="Search customer name, phone, email, route, booking #..."
           value={query}
@@ -80,7 +92,10 @@ export function GlobalSearch() {
           {query.trim().length < 2 && (
             <CommandEmpty>Type at least 2 characters to search.</CommandEmpty>
           )}
-          {query.trim().length >= 2 && !isPending && !hasResults && (
+          {query.trim().length >= 2 && !isPending && failed && (
+            <CommandEmpty role="alert">Search is unavailable right now. Check your connection and try again.</CommandEmpty>
+          )}
+          {query.trim().length >= 2 && !isPending && !failed && !hasResults && (
             <CommandEmpty>No results found.</CommandEmpty>
           )}
           {results.leads.length > 0 && (
