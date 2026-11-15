@@ -3,8 +3,9 @@ import { format } from "date-fns";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { UnenrollSequenceButton } from "@/components/leads/unenroll-sequence-button";
-import { ENROLLMENT_STATUS_META } from "@/lib/status-meta";
-import { computeStepProgress, STEP_PROGRESS_LABEL, type StepProgressStatus } from "@/lib/sequence-progress";
+import { EnrollmentRecoveryActions } from "@/components/sequences/enrollment-recovery-actions";
+import { computeStepProgress, deriveEnrollmentState, STEP_PROGRESS_LABEL, type StepProgressStatus } from "@/lib/sequence-progress";
+import { isInFlightMarker, isRealFailure, isUncertainMarker, markerReason } from "@/lib/sequence-delivery";
 
 export type SequenceEnrollmentRow = {
   id: string;
@@ -21,6 +22,8 @@ export type SequenceEnrollmentRow = {
 };
 
 const CHIP_TONE: Record<StepProgressStatus, string> = {
+  sending: "border-info/40 bg-info/10 text-foreground",
+  uncertain: "border-warning/50 bg-warning/10 text-foreground",
   sent: "border-success/40 bg-success/10 text-foreground",
   scheduled: "border-info/40 bg-info/10 text-foreground",
   paused: "border-warning/50 bg-warning/10 text-foreground",
@@ -66,14 +69,15 @@ export function SequenceEnrollmentsTable({
         </TableHeader>
         <TableBody>
           {enrollments.map((e) => {
-            const meta = ENROLLMENT_STATUS_META[e.status];
+            const state = deriveEnrollmentState({ steps, enrollment: e, logs: e.stepLogs, sequenceActive });
             const progress = computeStepProgress({ steps, enrollment: e, logs: e.stepLogs, sequenceActive });
             const sentCount = progress.filter((p) => p.status === "sent").length;
             const lastSent = progress.filter((p) => p.status === "sent" && p.at).sort((a, b) => b.at!.getTime() - a.at!.getTime())[0];
             const lastSentPosition = [...progress].reverse().find((p) => p.status === "sent")?.position;
             const waiting = progress.find((p) => p.status === "scheduled" || p.status === "paused" || (p.status === "failed" && p.retrying));
             const failedStep = progress.find((p) => p.status === "failed");
-            const lastError = e.stepLogs.find((l) => l.status === "FAILED")?.error ?? null;
+            const lastError = e.stepLogs.find((l) => isRealFailure(l))?.error ?? null;
+            const uncertainNote = state.key === "unconfirmed" ? markerReason(e.stepLogs.find((l) => isUncertainMarker(l) || isInFlightMarker(l))?.error) : null;
             const email = e.recipientEmail ?? e.lead.contact.primaryEmail;
             return (
               <TableRow key={e.id} data-testid="enrollment-row" data-status={e.status}>
@@ -85,7 +89,7 @@ export function SequenceEnrollmentsTable({
                 <TableCell className="max-w-[16rem] truncate">{e.leadVisible ? (email ?? <span className="text-muted-foreground">No email</span>) : <span className="text-muted-foreground">Hidden</span>}</TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{stamp(e.enrolledAt)}</TableCell>
                 <TableCell>
-                  <StatusBadge label={meta.label} tone={meta.tone} />
+                  <StatusBadge label={state.label} tone={state.tone} />
                 </TableCell>
                 <TableCell>
                   <p className="text-xs text-muted-foreground whitespace-nowrap">
@@ -107,19 +111,30 @@ export function SequenceEnrollmentsTable({
                     <p className="mt-1 text-xs text-destructive">Stopped at step {failedStep.position}{lastError ? `: ${lastError}` : ""}</p>
                   )}
                   {e.status === "ACTIVE" && !sequenceActive && <p className="mt-1 text-xs text-muted-foreground">Paused: the sequence is switched off.</p>}
+                  {state.key === "retry_scheduled" && lastError && <p className="mt-1 text-xs text-muted-foreground">Last attempt failed: {lastError}</p>}
+                  {state.key === "unconfirmed" && (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Gmail did not confirm this email{uncertainNote ? ` (${uncertainNote})` : ""}. It will not be resent automatically.
+                    </p>
+                  )}
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-xs">
                   {lastSent?.at ? `Step ${lastSentPosition ?? lastSent.position} · ${stamp(lastSent.at)}` : lastSentPosition ? `Step ${lastSentPosition}` : <span className="text-muted-foreground">None yet</span>}
                 </TableCell>
                 <TableCell className="whitespace-nowrap text-xs">
-                  {e.status === "ACTIVE" && waiting
+                  {state.key === "unconfirmed" ? <span className="text-muted-foreground">Held for you</span> : e.status === "ACTIVE" && waiting
                     ? sequenceActive
                       ? `Step ${waiting.position}${waiting.at ? ` · ${stamp(waiting.at)}` : ""}`
                       : `Step ${waiting.position} · paused`
                     : <span className="text-muted-foreground">{e.status === "ACTIVE" ? "-" : "No further steps"}</span>}
                 </TableCell>
                 <TableCell className="text-right">
-                  {e.status === "ACTIVE" && canUnenroll ? <UnenrollSequenceButton enrollmentId={e.id} leadId={e.leadId} sequenceName={sequenceName} /> : null}
+                  {canUnenroll ? (
+                    <div className="flex flex-col items-end gap-1.5">
+                      <EnrollmentRecoveryActions enrollmentId={e.id} leadId={e.leadId} state={state.key} sequenceName={sequenceName} />
+                      {e.status === "ACTIVE" ? <UnenrollSequenceButton enrollmentId={e.id} leadId={e.leadId} sequenceName={sequenceName} /> : null}
+                    </div>
+                  ) : null}
                 </TableCell>
               </TableRow>
             );

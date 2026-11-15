@@ -4,13 +4,17 @@ import { Mail } from "lucide-react";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { ApplySequenceDialog } from "@/components/sequences/apply-sequence-dialog";
-import { ActiveSequenceCard, splitEnrollments, stepLabel, type LeadEnrollment } from "@/components/leads/active-sequences";
-import { ENROLLMENT_STATUS_META } from "@/lib/status-meta";
+import { ActiveSequenceCard, enrollmentStateOf, splitEnrollments, stepLabel, type LeadEnrollment } from "@/components/leads/active-sequences";
+import { EnrollmentRecoveryActions } from "@/components/sequences/enrollment-recovery-actions";
+import { isRealFailure } from "@/lib/sequence-delivery";
 
 /** What a non-active enrollment looks like in the history list: never a "next email", always where it stopped. */
 function historyDetail(e: LeadEnrollment): string {
   if (e.status === "COMPLETED") return `Completed${e.completedAt ? ` ${format(e.completedAt, "MMM d, yyyy")}` : ""}`;
-  if (e.status === "FAILED") return `Stopped at ${stepLabel(e).toLowerCase()} - no further emails will be sent`;
+  if (e.status === "FAILED") {
+    const reason = (e.stepLogs ?? []).find((l) => isRealFailure(l))?.error;
+    return `Stopped at ${stepLabel(e).toLowerCase()}${reason ? `: ${reason}` : ""} - no further emails will be sent unless it is retried`;
+  }
   return `Unsubscribed at ${stepLabel(e).toLowerCase()} - no further emails will be sent`; // UNSUBSCRIBED: unenrolled by staff or the customer's own unsubscribe link
 }
 
@@ -57,19 +61,20 @@ export function LeadSequencesPanel({
               <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">History</h3>
               <ul className="space-y-2">
                 {history.map((e) => {
-                  const meta = ENROLLMENT_STATUS_META[e.status];
+                  const state = enrollmentStateOf(e);
                   return (
                     <li key={e.id} className="rounded-md border px-3 py-2.5 space-y-1.5" data-testid="sequence-history-item">
                       <div className="flex items-center justify-between gap-2">
                         <Link href={`/sequences/${e.sequence.id}`} className="text-sm font-medium hover:underline">
                           {e.sequence.name}
                         </Link>
-                        <StatusBadge label={meta.label} tone={meta.tone} />
+                        <StatusBadge label={state.label} tone={state.tone} />
                       </div>
                       <p className="text-xs text-muted-foreground">
                         Applied {formatDistanceToNow(e.enrolledAt, { addSuffix: true })} by {e.enrolledBy?.fullName ?? "System"}
                       </p>
                       <p className="text-xs text-muted-foreground">{historyDetail(e)}</p>
+                      {e.status === "FAILED" && <EnrollmentRecoveryActions enrollmentId={e.id} leadId={leadId} state={state.key} sequenceName={e.sequence.name} />}
                     </li>
                   );
                 })}

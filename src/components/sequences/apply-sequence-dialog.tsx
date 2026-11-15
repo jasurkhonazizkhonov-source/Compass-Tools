@@ -17,13 +17,15 @@ import {
 import { Button } from "@/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
-import { startSequenceForLead } from "@/server/actions/sequences";
+import { GmailProblemNotice } from "@/components/sequences/gmail-problem-notice";
+import { getSequenceStartReadiness, startSequenceForLead, type GmailBlock } from "@/server/actions/sequences";
 
 type SequenceOption = { id: string; name: string; description: string | null; stepCount: number; firstStepDelayMinutes?: number };
+type Blocked = { error: string; gmail?: GmailBlock };
 
-/** "right away", "in 30 minutes", "in 2 hours", "in 3 days" - the wait before step 1, as the approval prompt states it. */
+/** "immediately", "in 30 minutes", "in 2 hours", "in 3 days" - the wait before step 1, as the approval prompt states it. */
 function describeDelay(minutes: number): string {
-  if (minutes <= 0) return "right away";
+  if (minutes <= 0) return "immediately";
   if (minutes < 60) return `in ${minutes} minute${minutes === 1 ? "" : "s"}`;
   if (minutes < 60 * 24) {
     const h = Math.round(minutes / 60);
@@ -34,9 +36,12 @@ function describeDelay(minutes: number): string {
 }
 
 /**
- * Apply a sequence to ONE lead in a single approved action: choose the sequence, review the confirmation, press "Approve and start". Cancel at any point
- * enrolls nothing and sends nothing. Approving enrolls the lead and, if step 1 has no delay, sends it immediately; later steps are sent automatically by
- * the scheduler - there is no separate "process due" step for the user. The server action does every check and reports exactly what happened.
+ * Apply a sequence to ONE lead: choose the sequence -> the CRM checks that the Gmail account which sends this lead's emails can really send -> confirmation ->
+ * "Approve and Start" (one action) | Cancel (nothing happens).
+ *   - If Gmail cannot be used the user is told why, in the dialog, BEFORE any confirmation: nothing is enrolled, scheduled or sent, and after fixing it the same
+ *     choice is simply made again ("Check again" / reconnect and come back to this lead).
+ *   - Approving re-checks on the server (the authority) and enrolls; if the first step has no delay it is sent immediately, later steps are sent automatically by
+ *     the scheduler. The result shown is what actually happened.
  */
 export function ApplySequenceDialog({
   leadId,
@@ -54,7 +59,10 @@ export function ApplySequenceDialog({
   const [stage, setStage] = useState<"choose" | "confirm">("choose");
   const [selected, setSelected] = useState<string | undefined>(sequences[0]?.id);
   const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set(contactEmails[0] ? [contactEmails[0]] : []));
+  const [blocked, setBlocked] = useState<Blocked | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [sender, setSender] = useState<{ name: string; isViewer: boolean } | null>(null);
+  const [checking, startChecking] = useTransition();
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
@@ -74,6 +82,8 @@ export function ApplySequenceDialog({
     setOpen(false);
     setStage("choose");
     setProblem(null);
+    setBlocked(null);
+    setSender(null);
   }
 
   function review() {
@@ -86,7 +96,20 @@ export function ApplySequenceDialog({
       return;
     }
     setProblem(null);
-    setStage("confirm");
+    setBlocked(null);
+    startChecking(async () => {
+      try {
+        const readiness = await getSequenceStartReadiness(selected, leadId);
+        if (!readiness.ok) {
+          setBlocked({ error: readiness.error, gmail: readiness.gmail });
+          return;
+        }
+        setSender({ name: readiness.senderName, isViewer: readiness.senderIsViewer });
+        setStage("confirm");
+      } catch {
+        setBlocked({ error: "Gmail and the sequence could not be checked right now. Nothing was changed - try again in a moment." });
+      }
+    });
   }
 
   function approve() {
@@ -97,7 +120,12 @@ export function ApplySequenceDialog({
       try {
         const result = await startSequenceForLead(selected, leadId, recipientEmail);
         if (!result.ok) {
-          // Stay in the dialog and say exactly why nothing (or nothing more) happened.
+          // Gmail stopped working between the check and the approval: back to the chooser with the same notification. Nothing was enrolled.
+          if (result.gmail) {
+            setBlocked({ error: result.error, gmail: result.gmail });
+            setStage("choose");
+            return;
+          }
           setProblem(result.error);
           if (result.code === "ALREADY_ENROLLED" || result.code === "SEND_FAILED") router.refresh();
           return;
@@ -105,6 +133,8 @@ export function ApplySequenceDialog({
         const when = result.nextSendAt ? format(new Date(result.nextSendAt), "MMM d, yyyy 'at' h:mm a") : null;
         if (result.firstStep === "sent") toast.success(`"${result.sequenceName}" started - the first email was sent${when ? `; the next goes out ${when}` : ""}.`);
         else if (result.firstStep === "scheduled") toast.success(`"${result.sequenceName}" started - the first email is scheduled${when ? ` for ${when}` : ""} and will be sent automatically.`);
+        else if (result.firstStep === "unconfirmed")
+          toast.warning(`"${result.sequenceName}" started, but Gmail did not confirm whether the first email was sent. It was not resent - open the lead to decide.`);
         else toast.warning(`"${result.sequenceName}" started, but the first email could not be sent yet (${result.note ?? "temporary problem"}). It will be retried automatically${when ? ` at ${when}` : ""}.`);
         close();
         router.refresh();
@@ -135,7 +165,14 @@ export function ApplySequenceDialog({
                 No active sequences with steps exist yet — create one in the Sequences section first.
               </p>
             ) : (
-              <RadioGroup value={selected} onValueChange={setSelected} className="max-h-72 overflow-y-auto space-y-1">
+              <RadioGroup
+                value={selected}
+                onValueChange={(v) => {
+                  setSelected(v);
+                  setBlocked(null);
+                }}
+                className="max-h-72 overflow-y-auto space-y-1"
+              >
                 {sequences.map((s) => (
                   <label
                     key={s.id}
@@ -164,24 +201,36 @@ export function ApplySequenceDialog({
                 </div>
               </div>
             )}
+            {blocked?.gmail && <GmailProblemNotice gmail={blocked.gmail} message={blocked.error} leadId={leadId} onCheckAgain={review} checking={checking} />}
+            {blocked && !blocked.gmail && (
+              <p role="alert" data-testid="start-blocked" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+                {blocked.error}
+              </p>
+            )}
             <DialogFooter>
               <Button variant="outline" onClick={close}>Cancel</Button>
-              <Button onClick={review} disabled={sequences.length === 0}>Continue</Button>
+              <Button onClick={review} disabled={sequences.length === 0 || checking} className="gap-2">
+                {checking && <Loader2 className="h-4 w-4 animate-spin" />}
+                {checking ? "Checking Gmail..." : "Continue"}
+              </Button>
             </DialogFooter>
           </>
         ) : (
           <>
             <DialogHeader>
-              <DialogTitle>Start this sequence?</DialogTitle>
+              <DialogTitle>Start this email sequence?</DialogTitle>
               <DialogDescription>Nothing is sent or enrolled until you approve.</DialogDescription>
             </DialogHeader>
             <div className="space-y-2 text-sm" data-testid="sequence-approval">
               <p>
-                Start <strong>{chosen?.name}</strong> ({chosen?.stepCount} step{chosen?.stepCount === 1 ? "" : "s"}) for this lead?
+                The lead will be enrolled in <strong>{chosen?.name}</strong> ({chosen?.stepCount} step{chosen?.stepCount === 1 ? "" : "s"}). The first eligible email will be sent{" "}
+                {describeDelay(chosen?.firstStepDelayMinutes ?? 0)}, and the remaining steps will be sent automatically according to the sequence schedule.
               </p>
               <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
-                <li>The first email will be sent {describeDelay(chosen?.firstStepDelayMinutes ?? 0)}{recipients.length > 0 ? ` to ${recipients.join(", ")}` : ""}.</li>
-                <li>Each later step is sent automatically at its own delay - you do not need to do anything else.</li>
+                <li>
+                  Sent from {sender?.isViewer ? "your Gmail" : `${sender?.name ?? "the assigned agent"}'s Gmail`}
+                  {recipients.length > 0 ? ` to ${recipients.join(", ")}` : ""}.
+                </li>
                 <li>You can unenroll the lead at any time from this page; nothing more is sent afterwards.</li>
               </ul>
             </div>
@@ -194,7 +243,7 @@ export function ApplySequenceDialog({
               <Button variant="outline" onClick={close} disabled={isPending}>Cancel</Button>
               <Button onClick={approve} disabled={isPending} className="gap-2">
                 {isPending && <Loader2 className="h-4 w-4 animate-spin" />}
-                Approve and start
+                Approve and Start
               </Button>
             </DialogFooter>
           </>
