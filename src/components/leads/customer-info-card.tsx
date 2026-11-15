@@ -22,6 +22,7 @@ export function CustomerInfoCard({
   emails,
   showProfileLink = true,
   leadId,
+  canEditContactDetails = true,
 }: {
   contactId: string;
   firstName: string;
@@ -35,6 +36,9 @@ export function CustomerInfoCard({
    * assertContactAccess's doc comment in server/actions/contacts.ts).
    * Omitted on the Contact detail page, where no Lead context exists. */
   leadId?: string;
+  /** Whether the viewer may change phone numbers and email addresses (an Administrator's per-user switch). When false the values are shown read-only.
+   * The server actions enforce the same rule; this only avoids offering controls that would be refused. Names stay editable. */
+  canEditContactDetails?: boolean;
 }) {
   return (
     <Card className="shadow-none">
@@ -72,6 +76,7 @@ export function CustomerInfoCard({
           editor={(value, setValue) => <PhoneValueInput value={value} onChange={setValue} />}
           onSave={(v) => updatePrimaryPhoneNumber(contactId, v, leadId)}
           successMessage="Phone updated"
+          readOnly={!canEditContactDetails}
         />
 
         <InlineEditField<string>
@@ -81,12 +86,16 @@ export function CustomerInfoCard({
           editor={(value, setValue) => <Input type="email" value={value} onChange={(e) => setValue(e.target.value)} />}
           onSave={(v) => updatePrimaryEmailAddress(contactId, v, leadId)}
           successMessage="Email updated"
+          readOnly={!canEditContactDetails}
         />
 
         <Separator />
-        <PhoneManager contactId={contactId} phones={phones} leadId={leadId} />
+        <PhoneManager contactId={contactId} phones={phones} leadId={leadId} readOnly={!canEditContactDetails} />
         <Separator />
-        <EmailManager contactId={contactId} emails={emails} leadId={leadId} />
+        <EmailManager contactId={contactId} emails={emails} leadId={leadId} readOnly={!canEditContactDetails} />
+        {!canEditContactDetails && (
+          <p className="text-xs text-muted-foreground">You do not have permission to change phone numbers or email addresses. Ask an Administrator if one needs updating.</p>
+        )}
       </CardContent>
     </Card>
   );

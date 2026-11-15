@@ -560,3 +560,36 @@ export async function updateBookingPermissions(accountId: string, permissions: s
   revalidatePath("/users");
   return undefined;
 }
+
+/**
+ * Admin-only switch for the per-user "Can edit Lead/Contact phone and email" permission (Account.canEditContactDetails). The decision is enforced on the
+ * server in every action that writes those fields (see assertContactDetailEditAccess in actions/contacts.ts); this action only records it.
+ *   - Same company only (a target in another company is "not found").
+ *   - An Administrator cannot be restricted: they keep the ability whatever the flag says, and the switch is refused for an Administrator target, so an
+ *     Admin can never lock themselves or another Admin out of managing contact data.
+ *   - Turning it ON gives someone more reach, so it needs the same recent-sign-in step-up as the other grants; turning it OFF never does.
+ *   - Audited (who, which account, from/to), never with any contact value.
+ */
+export async function updateContactDetailEditPermission(accountId: string, enabled: boolean) {
+  const current = await assertAdmin();
+  if (typeof enabled !== "boolean" || typeof accountId !== "string" || !accountId) throw new Error("Invalid request");
+
+  const target = await prisma.account.findUnique({ where: { id: accountId }, select: { role: true, companyId: true, canEditContactDetails: true } });
+  if (!target || target.companyId !== current!.companyId) throw new Error("Account not found");
+  if (target.role === "ADMIN") return { error: "Administrators can always edit phone numbers and email addresses." };
+  if (target.canEditContactDetails === enabled) return undefined;
+
+  if (enabled) {
+    const refused = await stepUpOrRefuse(current!, accountId, "grant-contact-detail-edit");
+    if (refused) return refused;
+  }
+  await prisma.account.update({ where: { id: accountId }, data: { canEditContactDetails: enabled } });
+  await auditAccountEvent(prisma, {
+    actorId: current!.id,
+    action: "CONTACT_DETAIL_EDIT_PERMISSION_CHANGED",
+    accountId,
+    metadata: { targetRole: target.role, from: target.canEditContactDetails, to: enabled },
+  });
+  revalidatePath("/users");
+  return undefined;
+}

@@ -6,7 +6,7 @@ import { AccessRestricted } from "@/components/crm/access-restricted";
 import { listTaskEligibleAgents, listLeadEligibleAgents } from "@/server/queries/reference-data";
 import { getApplicableSequences } from "@/server/queries/sequences";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads, canRevealBookingIp, canManageLeadAttachments } from "@/lib/permissions";
+import { canReassignLeads, canOfferLeadReassign, canDeleteLead, canViewLeads, canRevealLeadSubmissionIp, canManageLeadAttachments, canEditContactDetails } from "@/lib/permissions";
 import { listLeadAttachments } from "@/server/queries/lead-attachments";
 import { LeadFilesPanel } from "@/components/leads/lead-files-panel";
 import { status as uploadStorageStatus } from "@/server/storage/local";
@@ -160,6 +160,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             phones={lead.contact.phones}
             emails={lead.contact.emails}
             leadId={lead.id}
+            canEditContactDetails={canEditContactDetails(currentAccount)}
           />
           <TravelRequestCard
             leadId={lead.id}
@@ -287,7 +288,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
               <TabsContent value="activity" className="pt-4">
                 <LeadCapturedEvent createdAt={lead.createdAt} source={lead.source} />
-                <LeadSubmissionInformation leadId={lead.id} createdAt={lead.createdAt} info={submissionInfo} fromWebsite={lead.source === "WEBSITE"} canRevealIp={canRevealBookingIp(currentAccount)} />
+                <LeadSubmissionInformation leadId={lead.id} createdAt={lead.createdAt} info={submissionInfo} fromWebsite={lead.source === "WEBSITE"} canRevealIp={canRevealLeadSubmissionIp(currentAccount)} />
                 <ActivityTimeline activities={lead.activities} leadId={lead.id} />
               </TabsContent>
 

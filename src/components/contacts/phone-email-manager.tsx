@@ -28,7 +28,7 @@ import {
 type PhoneRow = { id: string; number: string; type: string; isPrimary: boolean };
 type EmailRow = { id: string; email: string; type: string; isPrimary: boolean };
 
-export function PhoneManager({ contactId, phones, leadId }: { contactId: string; phones: PhoneRow[]; leadId?: string }) {
+export function PhoneManager({ contactId, phones, leadId, readOnly = false }: { contactId: string; phones: PhoneRow[]; leadId?: string; /** the viewer may not change phone numbers: list only, no add / make-primary / delete controls */ readOnly?: boolean }) {
   const [adding, setAdding] = useState(false);
   const [newNumber, setNewNumber] = useState("");
   const [newType, setNewType] = useState("MOBILE");
@@ -55,9 +55,11 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
         <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
           <Phone className="h-3.5 w-3.5" /> Phone Numbers
         </p>
-        <Button variant="ghost" size="icon-sm" onClick={() => setAdding((v) => !v)} aria-label="Add phone number" aria-expanded={adding}>
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
+        {!readOnly && (
+          <Button variant="ghost" size="icon-sm" onClick={() => setAdding((v) => !v)} aria-label="Add phone number" aria-expanded={adding}>
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
       <ul className="space-y-1.5">
         {phones.map((p) => (
@@ -70,7 +72,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
               )}
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              {!p.isPrimary && (
+              {!readOnly && !p.isPrimary && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -85,7 +87,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
                   <TooltipContent>Make primary</TooltipContent>
                 </Tooltip>
               )}
-              {phones.length > 1 && (
+              {!readOnly && phones.length > 1 && (
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -99,7 +101,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
           </li>
         ))}
       </ul>
-      {adding && (
+      {!readOnly && adding && (
         <div className="flex items-center gap-1.5">
           <PhoneValueInput value={newNumber} onChange={setNewNumber} placeholder="Phone number" />
           <Select value={newType} onValueChange={setNewType}>
@@ -128,7 +130,7 @@ export function PhoneManager({ contactId, phones, leadId }: { contactId: string;
   );
 }
 
-export function EmailManager({ contactId, emails, leadId }: { contactId: string; emails: EmailRow[]; leadId?: string }) {
+export function EmailManager({ contactId, emails, leadId, readOnly = false }: { contactId: string; emails: EmailRow[]; leadId?: string; /** the viewer may not change email addresses: list only, no add / make-primary / delete controls */ readOnly?: boolean }) {
   const [adding, setAdding] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newType, setNewType] = useState("PERSONAL");
@@ -155,9 +157,11 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
         <p className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
           <Mail className="h-3.5 w-3.5" /> Email Addresses
         </p>
-        <Button variant="ghost" size="icon-sm" onClick={() => setAdding((v) => !v)} aria-label="Add email address" aria-expanded={adding}>
-          <Plus className="h-3.5 w-3.5" />
-        </Button>
+        {!readOnly && (
+          <Button variant="ghost" size="icon-sm" onClick={() => setAdding((v) => !v)} aria-label="Add email address" aria-expanded={adding}>
+            <Plus className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
       <ul className="space-y-1.5">
         {emails.map((e) => (
@@ -168,7 +172,7 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
               {e.isPrimary && <span className="text-[10px] font-medium text-primary shrink-0">Primary</span>}
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              {!e.isPrimary && (
+              {!readOnly && !e.isPrimary && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -183,7 +187,7 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
                   <TooltipContent>Make primary</TooltipContent>
                 </Tooltip>
               )}
-              {emails.length > 1 && (
+              {!readOnly && emails.length > 1 && (
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -197,7 +201,7 @@ export function EmailManager({ contactId, emails, leadId }: { contactId: string;
           </li>
         ))}
       </ul>
-      {adding && (
+      {!readOnly && adding && (
         <div className="flex items-center gap-1.5">
           <Input
             value={newEmail}

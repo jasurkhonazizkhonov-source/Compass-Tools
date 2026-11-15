@@ -333,3 +333,15 @@ describe("canRevealPaymentMethod — the approved roles for 'Reveal Card Informa
     }
   });
 });
+
+describe("canRevealLeadSubmissionIp - Administrators only", () => {
+  it("is true for an Administrator and false for every other role, grant or no grant", async () => {
+    const { canRevealLeadSubmissionIp } = await import("../permissions");
+    expect(canRevealLeadSubmissionIp({ role: "ADMIN" })).toBe(true);
+    for (const role of ["MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] as const) {
+      expect(canRevealLeadSubmissionIp({ role, ...{ bookingPermissions: ["bookings.reveal_ip"] } } as { role: typeof role }), role).toBe(false);
+    }
+    expect(canRevealLeadSubmissionIp(null)).toBe(false);
+    expect(canRevealLeadSubmissionIp(undefined)).toBe(false);
+  });
+});

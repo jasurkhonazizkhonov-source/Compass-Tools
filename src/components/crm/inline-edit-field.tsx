@@ -12,6 +12,7 @@ export function InlineEditField<T>({
   currentValue,
   onSave,
   successMessage = "Updated",
+  readOnly = false,
 }: {
   label?: string;
   displayValue: ReactNode;
@@ -19,6 +20,8 @@ export function InlineEditField<T>({
   editor: (value: T, setValue: (v: T) => void) => ReactNode;
   onSave: (value: T) => Promise<unknown>;
   successMessage?: string;
+  /** Show the value with no edit control (the viewer is not allowed to change it). The server action still enforces the rule. */
+  readOnly?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState<T>(currentValue);
@@ -48,18 +51,20 @@ export function InlineEditField<T>({
           {label && <p className="text-xs text-muted-foreground mb-0.5">{label}</p>}
           <div className="text-sm">{displayValue}</div>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="opacity-0 group-hover:opacity-100 shrink-0"
-          onClick={() => {
-            setValue(currentValue);
-            setEditing(true);
-          }}
-          aria-label={`Edit ${label ?? "field"}`}
-        >
-          <Pencil className="h-3.5 w-3.5" />
-        </Button>
+        {!readOnly && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="opacity-0 group-hover:opacity-100 shrink-0"
+            onClick={() => {
+              setValue(currentValue);
+              setEditing(true);
+            }}
+            aria-label={`Edit ${label ?? "field"}`}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
     );
   }

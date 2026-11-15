@@ -17,7 +17,7 @@ let emails: Map<string, FakeEmail>;
 let contactPrimaryPhone: string | null;
 let contactPrimaryEmail: string | null;
 
-vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => ({ id: "agent-1", role: "TRAVEL_AGENT", companyId: "company-1" })) }));
+vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => ({ id: "agent-1", role: "TRAVEL_AGENT", companyId: "company-1", canEditContactDetails: true })) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/server/activity-log", () => ({ logActivity: vi.fn(async () => {}) }));
 vi.mock("@/server/visibility", () => ({

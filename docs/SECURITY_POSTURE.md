@@ -7,13 +7,13 @@ Status labels: **SOURCE** = read in the code · **TEST** = proven by an automate
 | Role | Masked lead IP (`203.x.x.x`) | Full lead IP (Reveal) | Masked / full booking signer IP | Notes |
 |---|---|---|---|---|
 | Admin | any lead in the company | **yes** (role-based, no grant needed) | masked; **Reveal yes** | step-up + rate limit + audit |
-| Manager | own + team's leads | **only with the `bookings.reveal_ip` grant**, and only for leads in scope | masked; Reveal only with the grant | |
+| Manager | own + team's leads | **no** (Administrator only; a `bookings.reveal_ip` grant does not open the lead reveal) | masked; Reveal only with the grant | |
 | Travel Agent | own leads, masked only | **never** (role not eligible; a forged grant is refused) | masked only | the internal "Booking Form Signed" email also shows the signer IP **masked** |
-| Ticketing Agent | no Leads area | no (has no access to leads) | masked; Reveal only with the grant | eligible role for booking IP |
+| Ticketing Agent | no Leads area | no (has no access to leads) | masked; Reveal only with the grant | eligible role for booking IP (a booking-IP delegation by an Administrator, separate from lead IPs) |
 | Flight Expert | no Leads area | no | masked only | |
 | Marketing Agent | no | no | no | |
 
-SOURCE: `permissions.ts` (`canViewLeadSubmissionInfo`, `REVEAL_IP_ELIGIBLE_ROLES`, `canRevealBookingIp`), `queries/lead-submission-info.ts`, `actions/lead-submission.ts`, `actions/booking-security.ts`. REAL PG: `lead-ip-authorization.integration.test.ts` (22 tests: Admin, owning Manager, owning Agent, other-team Manager, other-team Agent, Marketing, Ticketing, unauthenticated, inactive; stale sign-in; missing sign-in; rate limit; audit without the IP; lead-id tampering; forged grant).
+SOURCE: `permissions.ts` (`canViewLeadSubmissionInfo`, `canRevealLeadSubmissionIp` - Administrator only since 2026-11-15, `REVEAL_IP_ELIGIBLE_ROLES`, `canRevealBookingIp`), `queries/lead-submission-info.ts`, `actions/lead-submission.ts`, `actions/booking-security.ts`. REAL PG: `lead-ip-authorization.integration.test.ts` (22 tests: Admin, owning Manager, owning Agent, other-team Manager, other-team Agent, Marketing, Ticketing, unauthenticated, inactive; stale sign-in; missing sign-in; rate limit; audit without the IP; lead-id tampering; forged grant).
 
 The full lead IP is read in exactly two places: the explicit Reveal action and nothing else; it is never in a list payload, the page HTML, a log line, an email the CRM sends, or a search. (The website's own internal notification email keeps the full IP — that is the website's, by decision.) Whether Admin/Manager/Ticketing *should* see full addresses at all is a business/legal decision: the implementation is deliberately conservative (masked by default, audited, time-limited) and unchanged.
 
@@ -24,7 +24,8 @@ The full lead IP is read in exactly two places: the explicit Reveal action and n
 | Action | Guards |
 |---|---|
 | Reveal a full card number | explicit `payments.reveal` grant on an eligible role, row-level visibility, rate limit, **recent sign-in**, audit |
-| Reveal booking signer IP / lead IP / IP vault history | eligible role + `bookings.reveal_ip` (Admin by role), row-level visibility, rate limit, **recent sign-in**, audit (denied + rate-limited attempts too) |
+| Reveal lead IP | **Administrator only** (no grant), row-level visibility, rate limit, **recent sign-in**, audit (denied + rate-limited attempts too) |
+| Reveal booking signer IP / IP vault history | eligible role + `bookings.reveal_ip` (Admin by role), row-level visibility, rate limit, **recent sign-in**, audit (denied + rate-limited attempts too) |
 | **Change a role, change a login email, grant a payment or booking permission, create an Admin** *(new in this pass)* | Admin only + **recent sign-in** (returned message, never a masked error); refusal audited as `ACCOUNT_PRIVILEGE_CHANGE_DENIED` without values; revocations and ordinary profile edits are not blocked. REAL PG: `account-privilege-stepup.integration.test.ts` |
 | Create / edit / remove a stored payment method | payment permissions on an eligible role, row-level visibility, rate limit, audit (denied + rate-limited). No recent-sign-in requirement: these actions do not reveal card data. |
 | Deactivate an account, hide/show it, change a Manager's team | Admin only, audited. Deliberately no step-up: they reduce or reshape reach rather than grant new privileges. |

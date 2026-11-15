@@ -211,12 +211,32 @@ export function canViewLeadSubmissionInfo(role: AccountRole | undefined) {
 }
 
 /**
+ * Revealing the FULL IP address a lead was submitted from: Administrators only. (It used to follow the booking-IP rule - Admin, or a Manager/Ticketing
+ * user holding the explicit bookings.reveal_ip grant; the owner's decision is that only an Administrator may see a full IP in the CRM, so a grant no longer
+ * opens the lead reveal.) Always combined with leadVisibilityWhere, a recent sign-in, a rate limit and an audit row - see revealLeadSubmissionIp.
+ */
+export function canRevealLeadSubmissionIp(account: { role: AccountRole } | null | undefined): boolean {
+  return account?.role === "ADMIN";
+}
+
+/**
  * Lead documents ("Files" tab). Anyone with the Leads area may UPLOAD to a lead they can already see and VIEW/download that lead's
  * documents; only Admin and Manager may change a document's description or delete it (a Travel Agent can add a document but never
  * alter or remove one). Both are always combined with leadVisibilityWhere — a role alone never grants access to a particular lead.
  */
 export function canUploadLeadAttachments(role: AccountRole | undefined) {
   return canViewLeads(role);
+}
+
+/**
+ * May this account change a Lead's / Contact's phone numbers and email addresses? Administrators always may; everyone else only when an Administrator has
+ * left the per-user switch on (Account.canEditContactDetails, default true so existing users keep today's ability). An account object that does not
+ * carry the flag at all is refused - the check fails closed rather than assuming the default.
+ */
+export function canEditContactDetails(account: { role: AccountRole; canEditContactDetails?: boolean } | null | undefined): boolean {
+  if (!account) return false;
+  if (account.role === "ADMIN") return true;
+  return account.canEditContactDetails === true;
 }
 
 export function canManageLeadAttachments(role: AccountRole | undefined) {

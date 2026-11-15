@@ -80,13 +80,15 @@ describe("revealLeadSubmissionIp", () => {
     expect(auditLogs[0]).toMatchObject({ actorId: "admin-1", entityType: "Lead", entityId: "lead-team" });
   });
 
-  it("role gate: a Travel Agent (even on their own lead), a Marketing Agent, a Flight Expert and a Manager/Ticketing WITHOUT the grant are refused and audited", async () => {
+  it("role gate: only an Administrator may reveal - a Travel Agent, Marketing Agent, Flight Expert, and a Manager or Ticketing Agent WITH OR WITHOUT the bookings.reveal_ip grant are refused and audited", async () => {
     const { revealLeadSubmissionIp } = await import("../lead-submission");
     const cases: Array<[string, Partial<FakeActor>]> = [
       ["TRAVEL_AGENT own lead", { id: "agent-A", role: "TRAVEL_AGENT", bookingPermissions: ["bookings.reveal_ip"] }],
       ["MARKETING_AGENT", { id: "m", role: "MARKETING_AGENT", bookingPermissions: ["bookings.reveal_ip"] }],
       ["FLIGHT_EXPERT", { id: "f", role: "FLIGHT_EXPERT", bookingPermissions: ["bookings.reveal_ip"] }],
       ["MANAGER no grant", { id: "mgr-1", role: "MANAGER", bookingPermissions: [] }],
+      ["MANAGER WITH the booking-IP grant", { id: "mgr-1", role: "MANAGER", bookingPermissions: ["bookings.reveal_ip"] }],
+      ["TICKETING_AGENT WITH the booking-IP grant", { id: "t", role: "TICKETING_AGENT", bookingPermissions: ["bookings.reveal_ip"] }],
     ];
     for (const [label, over] of cases) {
       currentActor = admin(over);
@@ -96,13 +98,12 @@ describe("revealLeadSubmissionIp", () => {
     expect(auditLogs.every((a) => a.action === "LEAD_IP_REVEAL_DENIED" && a.metadata.reason === "MISSING_PERMISSION")).toBe(true);
   });
 
-  it("a Manager WITH the grant reaches only their own team's leads — another team's lead is indistinguishable from 'nothing captured' (IDOR)", async () => {
+  it("an Administrator reaches only leads the database says they may see - a lead outside their scope or a missing one is indistinguishable from 'nothing captured' (IDOR)", async () => {
     const { revealLeadSubmissionIp } = await import("../lead-submission");
-    currentActor = admin({ id: "mgr-1", role: "MANAGER", bookingPermissions: ["bookings.reveal_ip"] });
+    currentActor = admin({ id: "admin-1", role: "ADMIN", companyId: "company-1" });
     expect(await revealLeadSubmissionIp("lead-team")).toMatchObject({ ipAddress: IP });
-    await expect(revealLeadSubmissionIp("lead-other")).rejects.toThrow(/not authorized/i);
     await expect(revealLeadSubmissionIp("no-such-lead")).rejects.toThrow(/not authorized/i);
-    expect(auditLogs.filter((a) => a.action === "LEAD_IP_REVEAL_DENIED").map((a) => a.metadata.reason)).toEqual(["NOT_ACCESSIBLE_OR_NOT_CAPTURED", "NOT_ACCESSIBLE_OR_NOT_CAPTURED"]);
+    expect(auditLogs.filter((a) => a.action === "LEAD_IP_REVEAL_DENIED").map((a) => a.metadata.reason)).toEqual(["NOT_ACCESSIBLE_OR_NOT_CAPTURED"]);
   });
 
   it("production: a stale sign-in returns an actionable message (no throw, no IP), a recent one succeeds", async () => {

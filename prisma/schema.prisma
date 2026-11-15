@@ -117,6 +117,11 @@ model Account {
   // BOOKING_PERMISSIONS list server-side on every write.
   bookingPermissions String[] @default([])
 
+  // May this user change a Lead's / Contact's phone numbers and email addresses (add, edit, delete, make primary)? Switched per user by an Administrator
+  // on the Users page and enforced on the server in every action that writes those fields (src/server/actions/contacts.ts); the UI merely hides the
+  // controls. Defaults to true so that adding the column changes nobody's current ability; an Administrator is never restricted by it.
+  canEditContactDetails Boolean @default(true)
+
   // Presence: heartbeat-based "online" approximation. Updated by a client
   // heartbeat while a dev-user is active. Real presence requires authenticated
   // sessions/websockets later — this is architected to slot in behind the

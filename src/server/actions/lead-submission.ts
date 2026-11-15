@@ -3,7 +3,7 @@
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canRevealBookingIp, canViewLeadSubmissionInfo } from "@/lib/permissions";
+import { canRevealLeadSubmissionIp, canViewLeadSubmissionInfo } from "@/lib/permissions";
 import { leadVisibilityWhere } from "@/server/visibility";
 import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
 import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
@@ -37,8 +37,7 @@ async function audit(params: { actorId: string | undefined; leadId: string; succ
  * form (first octet / hextet) to everyone; the whole address is sensitive personal data, so it uses
  * the SAME gate as a booking signer's IP (booking-security.ts → revealBookingIp), not a looser one:
  *   • an active, signed-in account whose role has the Leads area;
- *   • the IP-reveal permission: Admin, or Manager / Ticketing with the explicit bookings.reveal_ip
- *     grant (canRevealBookingIp) — a Travel Agent never has it;
+ *   • the Administrator role (canRevealLeadSubmissionIp) - no other role, and no per-user grant, can reveal a lead's IP;
  *   • the lead is one this account may see (leadVisibilityWhere, evaluated by the database against
  *     the requested id — IDOR/BOLA-safe, and a Manager only reaches their own team's);
  *   • a sign-in within the last 15 minutes (requireRecentLogin) — returned as an actionable message,
@@ -60,7 +59,7 @@ export async function revealLeadSubmissionIp(leadId: string): Promise<LeadIpReve
     return { error: `Too many Reveal attempts. Please wait ${Math.max(1, Math.ceil(limit.retryAfterSeconds / 60))} minute(s) and try again.` };
   }
 
-  if (!canViewLeadSubmissionInfo(actor.role) || !canRevealBookingIp(actor)) {
+  if (!canViewLeadSubmissionInfo(actor.role) || !canRevealLeadSubmissionIp(actor)) {
     await audit({ actorId: actor.id, leadId, success: false, reason: "MISSING_PERMISSION" });
     throw new Error(GENERIC_DENIAL);
   }

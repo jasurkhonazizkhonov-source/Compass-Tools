@@ -5,7 +5,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
-import { canReassignLeads, canDeleteContact } from "@/lib/permissions";
+import { canReassignLeads, canDeleteContact, canEditContactDetails } from "@/lib/permissions";
 import { contactVisibilityWhere, leadVisibilityWhere } from "@/server/visibility";
 import { touchContactLeads } from "@/server/record-touch";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
@@ -53,6 +53,21 @@ async function assertContactAccess(
   }
 
   throw new Error("Contact not found");
+}
+
+const DETAIL_EDIT_DENIAL = "You do not have permission to edit phone numbers or email addresses";
+
+/**
+ * Every action that adds, changes, deletes or re-prioritises a contact's phone number or email address goes through here. Two independent checks: the
+ * per-user permission an Administrator switches on the Users page (canEditContactDetails - the SERVER decision; the buttons the UI hides are only a
+ * convenience), and the existing record-access rule (assertContactAccess: the contact, or the lead it is edited from, must be one the actor may see).
+ * The permission is checked first, so a user without it is refused identically whatever the id they send.
+ */
+async function assertContactDetailEditAccess(contactId: string, leadId?: string) {
+  const actor = await getCurrentAccount();
+  if (!actor) throw new Error("Not authenticated");
+  if (!canEditContactDetails(actor)) throw new Error(DETAIL_EDIT_DENIAL);
+  return assertContactAccess(actor, contactId, leadId);
 }
 
 /**
@@ -123,14 +138,25 @@ export async function updateContactField(
   leadId?: string
 ) {
   const actor = await assertContactAccess(await getCurrentAccount(), contactId, leadId);
-  await prisma.contact.update({ where: { id: contactId }, data: patch });
+  // The TypeScript type is not a runtime guard: this is a public Server Action, so a direct caller could send { primaryEmail, primaryPhone, ownerId,
+  // companyId ... } and have it written straight to the row - bypassing the phone/email permission and the ownership rules. Only the name fields pass.
+  const data: Record<string, string | null> = {};
+  for (const key of ["firstName", "middleName", "lastName"] as const) {
+    const value = (patch as Record<string, unknown>)?.[key];
+    if (value === undefined) continue;
+    if (value !== null && typeof value !== "string") throw new Error("Invalid contact field");
+    if (key !== "middleName" && (value === null || value.trim() === "")) throw new Error("Invalid contact field");
+    data[key] = value;
+  }
+  if (Object.keys(data).length === 0) return;
+  await prisma.contact.update({ where: { id: contactId }, data });
   // The customer's name changed — that is an update to each of their leads too.
   await touchContactLeads(contactId);
   await logActivity({
     contactId,
     actorId: actor?.id,
     type: "CONTACT_UPDATED",
-    description: `Updated ${Object.keys(patch).join(", ")}`,
+    description: `Updated ${Object.keys(data).join(", ")}`,
   });
   revalidatePath(`/contacts/${contactId}`);
   revalidatePath("/contacts");
@@ -202,7 +228,7 @@ export async function reassignContact(contactId: string, newOwnerId: string, rea
 }
 
 export async function updatePrimaryPhoneNumber(contactId: string, number: string, leadId?: string) {
-  const actor = await assertContactAccess(await getCurrentAccount(), contactId, leadId);
+  const actor = await assertContactDetailEditAccess(contactId, leadId);
   const normalized = normalizePhoneNumberWithRecovery(number) ?? number;
   const primary = await prisma.contactPhone.findFirst({ where: { contactId, isPrimary: true } });
 
@@ -233,7 +259,7 @@ export async function updatePrimaryPhoneNumber(contactId: string, number: string
 /** Mirrors updatePrimaryPhoneNumber — the pencil-edit action for the
  * Primary Email field on the Lead/Contact detail page (Part 14). */
 export async function updatePrimaryEmailAddress(contactId: string, email: string, leadId?: string) {
-  const actor = await assertContactAccess(await getCurrentAccount(), contactId, leadId);
+  const actor = await assertContactDetailEditAccess(contactId, leadId);
   const trimmed = email.trim().toLowerCase();
   const primary = await prisma.contactEmail.findFirst({ where: { contactId, isPrimary: true } });
 
@@ -307,7 +333,7 @@ const phoneSchema = z.object({
 export async function addContactPhone(input: z.infer<typeof phoneSchema>) {
   const { leadId, ...parsed } = phoneSchema.parse(input);
   const data = { ...parsed, number: normalizePhoneNumberWithRecovery(parsed.number) ?? parsed.number };
-  const actor = await assertContactAccess(await getCurrentAccount(), parsed.contactId, leadId);
+  const actor = await assertContactDetailEditAccess(parsed.contactId, leadId);
 
   if (data.isPrimary) {
     await prisma.contactPhone.updateMany({ where: { contactId: data.contactId }, data: { isPrimary: false } });
@@ -331,7 +357,7 @@ export async function addContactPhone(input: z.infer<typeof phoneSchema>) {
 }
 
 export async function setPrimaryPhone(contactId: string, phoneId: string, leadId?: string) {
-  await assertContactAccess(await getCurrentAccount(), contactId, leadId);
+  await assertContactDetailEditAccess(contactId, leadId);
   await prisma.contactPhone.updateMany({ where: { contactId }, data: { isPrimary: false } });
   // Scoped by contactId, not just phoneId — a phoneId belonging to a
   // DIFFERENT contact must never be settable as this contact's primary.
@@ -342,7 +368,7 @@ export async function setPrimaryPhone(contactId: string, phoneId: string, leadId
 }
 
 export async function deleteContactPhone(contactId: string, phoneId: string, leadId?: string) {
-  await assertContactAccess(await getCurrentAccount(), contactId, leadId);
+  await assertContactDetailEditAccess(contactId, leadId);
   // Scoped by contactId — previously deleted by phoneId alone, so a
   // phoneId for a DIFFERENT (even inaccessible) contact could be deleted by
   // anyone who could merely guess/enumerate its id.
@@ -362,7 +388,7 @@ const emailSchema = z.object({
 
 export async function addContactEmail(input: z.infer<typeof emailSchema>) {
   const { leadId, ...data } = emailSchema.parse(input);
-  const actor = await assertContactAccess(await getCurrentAccount(), data.contactId, leadId);
+  const actor = await assertContactDetailEditAccess(data.contactId, leadId);
 
   if (data.isPrimary) {
     await prisma.contactEmail.updateMany({ where: { contactId: data.contactId }, data: { isPrimary: false } });
@@ -386,7 +412,7 @@ export async function addContactEmail(input: z.infer<typeof emailSchema>) {
 }
 
 export async function setPrimaryEmail(contactId: string, emailId: string, leadId?: string) {
-  await assertContactAccess(await getCurrentAccount(), contactId, leadId);
+  await assertContactDetailEditAccess(contactId, leadId);
   await prisma.contactEmail.updateMany({ where: { contactId }, data: { isPrimary: false } });
   // Scoped by contactId, not just emailId — same reasoning as setPrimaryPhone.
   await prisma.contactEmail.updateMany({ where: { id: emailId, contactId }, data: { isPrimary: true } });
@@ -396,7 +422,7 @@ export async function setPrimaryEmail(contactId: string, emailId: string, leadId
 }
 
 export async function deleteContactEmail(contactId: string, emailId: string, leadId?: string) {
-  await assertContactAccess(await getCurrentAccount(), contactId, leadId);
+  await assertContactDetailEditAccess(contactId, leadId);
   // Scoped by contactId — same reasoning as deleteContactPhone.
   await prisma.contactEmail.deleteMany({ where: { id: emailId, contactId } });
   await syncPrimaryEmail(contactId);

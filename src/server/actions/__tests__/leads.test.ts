@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // they run for real against this same fake prisma client), so this
 // exercises the actual "add as secondary, never overwrite" logic end to end.
 
-type FakeAccount = { id: string; role: string };
+type FakeAccount = { id: string; role: string; canEditContactDetails?: boolean };
 type FakeContact = { id: string; firstName: string; lastName: string; primaryPhone: string | null; primaryEmail: string | null; ownerId: string | null };
 type FakeContactPhone = { id: string; contactId: string; number: string; type: string; isPrimary: boolean };
 type FakeContactEmail = { id: string; contactId: string; email: string; type: string; isPrimary: boolean };
@@ -254,6 +254,35 @@ describe("createLead — pre-selected contact (New Lead for Customer)", () => {
     expect(result.autoAssignedToOwner).toEqual({ id: "agent-owner", name: "Jane Owner" });
     expect(leads.get(result.leadId)?.assignedAgentId).toBe("agent-owner");
     expect(leads.get(result.leadId)?.status).toBe("ACCEPTED");
+  });
+
+  it("a user WITHOUT the phone/email permission can still create the lead for an existing contact; the extra number/address is simply not added to the contact", async () => {
+    seedContact();
+    currentActor = { id: "agent-1", role: "TRAVEL_AGENT", canEditContactDetails: false };
+    const before = { phones: contactPhones.size, emails: contactEmails.size };
+    const { createLead } = await import("../leads");
+    const result = await createLead({ ...BASE_LEAD_INPUT, contactId: "contact-1", phone: "+14155550199", email: "brand.new@example.com" });
+    expect(leads.get(result.leadId)?.contactId).toBe("contact-1");
+    expect(contactPhones.size).toBe(before.phones);
+    expect(contactEmails.size).toBe(before.emails);
+  });
+
+  it("a user WITH the permission (and an Administrator) still gets the extra number and address attached to the existing contact", async () => {
+    for (const actor of [
+      { id: "agent-1", role: "TRAVEL_AGENT", canEditContactDetails: true },
+      { id: "admin-1", role: "ADMIN", canEditContactDetails: false },
+    ]) {
+      contactPhones.clear();
+      contactEmails.clear();
+      leads.clear();
+      contacts.clear();
+      seedContact();
+      currentActor = actor;
+      const { createLead } = await import("../leads");
+      await createLead({ ...BASE_LEAD_INPUT, contactId: "contact-1", phone: "+14155550199", email: "brand.new@example.com" });
+      expect([...contactPhones.values()].some((p) => p.number === "+14155550199"), actor.role).toBe(true);
+      expect([...contactEmails.values()].some((e) => e.email === "brand.new@example.com"), actor.role).toBe(true);
+    }
   });
 
   it("a second lead for the same contact does not create a second contact — multiple leads per contact", async () => {

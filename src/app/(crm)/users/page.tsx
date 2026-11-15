@@ -5,7 +5,7 @@ import { getAccountSignInDetails, getAllAccounts } from "@/server/queries/accoun
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canManageAccounts, ROLE_LABELS } from "@/lib/permissions";
 import { OnlineIndicator } from "@/components/accounts/online-indicator";
-import { AccountFullNameEditor, AccountRoleSelect, AccountStatusSwitch, AccountVisibilityToggle, AccountPhoneEditor, AccountEmailEditor, AccountHiredAtEditor, AccountLocationEditor, AccountCommissionPercentEditor, AccountTipPercentEditor, AccountPaymentPermissionsEditor, AccountBookingPermissionsEditor, RemoveUserButton } from "@/components/accounts/account-row-editor";
+import { AccountFullNameEditor, AccountRoleSelect, AccountStatusSwitch, AccountVisibilityToggle, AccountContactDetailEditToggle, AccountPhoneEditor, AccountEmailEditor, AccountHiredAtEditor, AccountLocationEditor, AccountCommissionPercentEditor, AccountTipPercentEditor, AccountPaymentPermissionsEditor, AccountBookingPermissionsEditor, RemoveUserButton } from "@/components/accounts/account-row-editor";
 import { NewAccountDialog } from "@/components/accounts/new-account-dialog";
 import { SignOutAllUsersButton } from "@/components/accounts/sign-out-all-users-button";
 import { ManagerTeamEditor, type TeamCandidate } from "@/components/accounts/manager-team-editor";
@@ -74,6 +74,7 @@ export default async function UsersPage() {
                 <TableHead>Accounts Directory</TableHead>
                 <TableHead>Payment Permissions</TableHead>
                 <TableHead>Booking Security</TableHead>
+                <TableHead title="Whether this user may add, change or delete the phone numbers and email addresses on Leads and Contacts. Administrators always can.">Can Edit Lead/Contact Phone &amp; Email</TableHead>
                 <TableHead>Hired</TableHead>
                 <TableHead title="The work location an Administrator assigned to this user">Location</TableHead>
                 <TableHead>Commission %</TableHead>
@@ -143,6 +144,9 @@ export default async function UsersPage() {
                   </TableCell>
                   <TableCell>
                     <AccountBookingPermissionsEditor accountId={a.id} role={a.role} permissions={a.bookingPermissions} />
+                  </TableCell>
+                  <TableCell>
+                    <AccountContactDetailEditToggle accountId={a.id} role={a.role} canEdit={a.canEditContactDetails} />
                   </TableCell>
                   <TableCell><AccountHiredAtEditor accountId={a.id} hiredAt={a.hiredAt} canEdit /></TableCell>
                   <TableCell><AccountLocationEditor accountId={a.id} location={a.location} canEdit /></TableCell>

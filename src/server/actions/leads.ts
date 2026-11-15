@@ -8,7 +8,7 @@ import { logActivity } from "@/server/activity-log";
 import { distributeNewWebsiteLead } from "@/server/actions/lead-queue";
 import { addContactPhone, addContactEmail } from "@/server/actions/contacts";
 import { searchContacts } from "@/server/queries/contacts";
-import { canReassignLeads, canDeleteLead, canChangeBookedLeadStatus } from "@/lib/permissions";
+import { canReassignLeads, canDeleteLead, canChangeBookedLeadStatus, canEditContactDetails } from "@/lib/permissions";
 import { leadVisibilityWhere, contactVisibilityWhere } from "@/server/visibility";
 import { sendLeadReassignmentEmails } from "@/server/reassignment-email";
 import { applyLeadStatusChange } from "@/server/lead-status-change";
@@ -227,12 +227,16 @@ export async function createLead(input: CreateLeadInput) {
     // app's data model already supports multiple phones/emails per
     // contact via ContactPhone/ContactEmail) — never overwrite or discard
     // the contact's existing primary value.
+    // Attaching a number/address to an EXISTING contact is an edit of that contact's phone/email, so it needs the per-user permission (the same rule the
+    // contact actions enforce). Without it the lead is still created - just without adding the extra details to the contact - instead of the permission
+    // refusal from addContactPhone/addContactEmail aborting the whole lead creation.
+    const mayAttachDetails = canEditContactDetails(actor);
     const normalizedPhone = parsed.phone ? (normalizePhoneNumberWithRecovery(parsed.phone) ?? parsed.phone) : "";
-    const existingPhones = await prisma.contactPhone.findMany({ where: { contactId }, select: { number: true } });
-    if (normalizedPhone && !existingPhones.some((p) => p.number === normalizedPhone)) {
+    const existingPhones = mayAttachDetails ? await prisma.contactPhone.findMany({ where: { contactId }, select: { number: true } }) : [];
+    if (mayAttachDetails && normalizedPhone && !existingPhones.some((p) => p.number === normalizedPhone)) {
       await addContactPhone({ contactId, number: normalizedPhone, type: "MOBILE", isPrimary: false });
     }
-    if (parsed.email) {
+    if (mayAttachDetails && parsed.email) {
       const existingEmails = await prisma.contactEmail.findMany({ where: { contactId }, select: { email: true } });
       if (!existingEmails.some((e) => e.email === parsed.email)) {
         await addContactEmail({ contactId, email: parsed.email, type: "PERSONAL", isPrimary: false });

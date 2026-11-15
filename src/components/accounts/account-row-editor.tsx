@@ -31,7 +31,7 @@ import {
   isBookingPermission,
   type BookingPermission,
 } from "@/lib/permissions";
-import { updateAccount, setAccountStatus, setAccountsVisibility, updatePaymentPermissions, updateBookingPermissions } from "@/server/actions/accounts";
+import { updateAccount, setAccountStatus, setAccountsVisibility, updatePaymentPermissions, updateBookingPermissions, updateContactDetailEditPermission } from "@/server/actions/accounts";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import type { AccountRole, AccountStatus } from "@/generated/prisma/client";
 
@@ -985,5 +985,45 @@ export function AccountBookingPermissionsEditor({
       </PopoverContent>
     </Popover>
     </>
+  );
+}
+
+/**
+ * Per-user switch: may this user edit Lead/Contact phone numbers and email addresses? Administrators are always allowed (shown as a fixed "Always" label,
+ * no switch, so an Admin can never be restricted by accident). Turning it on can be refused with a returned message (recent-sign-in step-up); the
+ * server action is the authority - this component is only the control.
+ */
+export function AccountContactDetailEditToggle({ accountId, role, canEdit }: { accountId: string; role: string; canEdit: boolean }) {
+  const [isPending, startTransition] = useTransition();
+  const [value, setValue] = useState(canEdit);
+
+  if (role === "ADMIN") {
+    return <span className="text-xs text-muted-foreground" title="Administrators can always edit phone numbers and email addresses.">Always</span>;
+  }
+
+  function toggle(checked: boolean) {
+    const previous = value;
+    setValue(checked);
+    startTransition(async () => {
+      try {
+        const result = await updateContactDetailEditPermission(accountId, checked);
+        if (result && "error" in result) {
+          setValue(previous);
+          toast.error(result.error);
+          return;
+        }
+        toast.success(checked ? "This user can now edit Lead/Contact phone numbers and emails" : "This user can no longer edit Lead/Contact phone numbers and emails");
+      } catch (err) {
+        setValue(previous);
+        toast.error(err instanceof Error ? err.message : "Failed to update this permission");
+      }
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Switch checked={value} disabled={isPending} aria-label="Can edit Lead/Contact phone numbers and email addresses" onCheckedChange={toggle} />
+      <span className="text-xs text-muted-foreground">{value ? "Allowed" : "Not allowed"}</span>
+    </div>
   );
 }
