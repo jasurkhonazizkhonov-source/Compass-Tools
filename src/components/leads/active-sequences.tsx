@@ -11,7 +11,7 @@ export type LeadEnrollment = {
   enrolledAt: Date;
   nextSendAt: Date | null;
   completedAt: Date | null;
-  sequence: { id: string; name: string; steps: { id: string }[] };
+  sequence: { id: string; name: string; isActive?: boolean; steps: { id: string }[] };
   enrolledBy: { fullName: string } | null;
 };
 
@@ -36,12 +36,17 @@ export function ActiveSequenceCard({ enrollment: e, leadId }: { enrollment: Lead
         <StatusBadge label={meta.label} tone={meta.tone} />
       </div>
       <p className="text-xs text-muted-foreground">
-        Applied {formatDistanceToNow(e.enrolledAt, { addSuffix: true })} by {e.enrolledBy?.fullName ?? "System"}
+        Enrolled {format(e.enrolledAt, "MMM d, yyyy 'at' h:mm a")} ({formatDistanceToNow(e.enrolledAt, { addSuffix: true })}) by {e.enrolledBy?.fullName ?? "System"}
       </p>
+      {e.sequence.isActive === false && (
+        <p className="text-xs font-medium text-warning-foreground" data-testid="sequence-inactive-note">
+          This sequence is switched off, so no further emails are being sent. They resume if it is switched back on.
+        </p>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs text-muted-foreground">
           {stepLabel(e)}
-          {e.nextSendAt && ` · Next email: ${format(e.nextSendAt, "MMM d, yyyy 'at' h:mm a")}`}
+          {e.nextSendAt && e.sequence.isActive !== false && ` · Next email: ${format(e.nextSendAt, "MMM d, yyyy 'at' h:mm a")}`}
         </p>
         <UnenrollSequenceButton enrollmentId={e.id} leadId={leadId} sequenceName={e.sequence.name} />
       </div>

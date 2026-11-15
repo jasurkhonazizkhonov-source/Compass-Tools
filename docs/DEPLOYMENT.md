@@ -344,7 +344,7 @@ The server captures the client IP, and an **approximate, IP-derived location**, 
 |---|---|---|
 | Booking form signing (new booking / exchange) | `Signature.ipAddress` + the encrypted `IpCapture` row (with `geoCity`/`geoRegion`/`geoCountry`/`geoCountryCode`/`geoTimeZone`) | Location is stored WITH the signing event so it stays historically stable. Shown only through the audited, permission-gated Reveal. |
 | Customer cancellation confirmation | `IpCapture` | Same columns. |
-| Website lead (public `/api/public/lead-capture`, and the website's own form handler) | `LeadSubmissionInfo` (one row per Lead, plaintext) | Shown only in the lead's "Lead Submission Information" section to someone who can see that lead (own leads; a Manager's own + team; Admin/Ticketing company-wide). City/country/region/timezone are shown to them; the **full IP is masked** ("203.x.x.x") and revealed only through `revealLeadSubmissionIp` — Admin, or a Manager/Ticketing account holding `bookings.reveal_ip`, for a lead they can see, with a sign-in in the last 15 minutes, a per-account rate limit and an audit row (`LEAD_IP_REVEALED` / `LEAD_IP_REVEAL_DENIED`, never containing the address). Never part of a lead list or the ordinary lead query. |
+| Website lead (public `/api/public/lead-capture`, and the website's own form handler) | `LeadSubmissionInfo` (one row per Lead, plaintext) | Shown only in the lead's "Lead Submission Information" section to someone who can see that lead (own leads; a Manager's own + team; Admin/Ticketing company-wide). City/country/region/timezone are shown to them; the **full IP is masked** ("203.x.x.x") and revealed only through `revealLeadSubmissionIp` (Administrator only) — an Administrator, for a lead they can see, with a sign-in in the last 15 minutes, a per-account rate limit and an audit row (`LEAD_IP_REVEALED` / `LEAD_IP_REVEAL_DENIED`, never containing the address). Never part of a lead list or the ordinary lead query. |
 
 How it is determined, and what that means:
 
@@ -417,10 +417,16 @@ its due time before its overdue notification fires. `processDueSequenceSteps`
 but is unaffected by this change since it isn't registered in `vercel.json`.
 
 Two other maintenance routes exist at the same URL shape, `/api/cron/leads`
-and `/api/cron/sequences`, but neither is currently registered in
-`vercel.json` — they're reachable for manual/external triggering (e.g. an
-external scheduler, or the in-app "Process Due Steps" button) but nothing
-on Vercel calls them automatically today. Do not add duplicate cron
+and `/api/cron/sequences`, but neither is registered in
+`vercel.json` — they're reachable for external triggering (e.g. an
+external scheduler) but nothing on Vercel calls them. **On the self-hosted
+(VPS / Docker) deployment sequence steps do NOT depend on any of this:** the
+server process sends every due sequence step itself, once a minute, from the
+in-process poller (`src/instrumentation.ts`, on unless
+`DISABLE_IN_PROCESS_POLLER` is set). On Vercel's serverless runtime there is no
+long-lived process, so a scheduler MUST call `/api/cron/sequences` (about once a
+minute) or sequence steps are never sent. There is no manual "Process Due
+Steps" button any more. Do not add duplicate cron
 entries for them without a real product reason (and note that adding any
 additional cron job on Hobby must also stay within once-per-day-per-job).
 

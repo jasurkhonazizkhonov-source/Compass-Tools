@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { sequenceVisibilityWhere, type Viewer } from "@/server/visibility";
+import { leadVisibilityWhere, sequenceVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
 
 // Pass 7 §17/§18 — the top-level Sequence list itself, database-paginated
@@ -65,11 +65,18 @@ export async function getApplicableSequences(viewer: Viewer) {
   const sequences = await prisma.sequence.findMany({
     where: { isActive: true, ...sequenceVisibilityWhere(viewer) },
     orderBy: { name: "asc" },
-    select: { id: true, name: true, description: true, _count: { select: { steps: true } } },
+    select: {
+      id: true,
+      name: true,
+      description: true,
+      _count: { select: { steps: true } },
+      // The first step's delay, so the approval prompt can say whether the first email goes out immediately or after a wait.
+      steps: { orderBy: { order: "asc" }, take: 1, select: { delayMinutes: true } },
+    },
   });
   return sequences
     .filter((s) => s._count.steps > 0)
-    .map((s) => ({ id: s.id, name: s.name, description: s.description, stepCount: s._count.steps }));
+    .map((s) => ({ id: s.id, name: s.name, description: s.description, stepCount: s._count.steps, firstStepDelayMinutes: s.steps[0]?.delayMinutes ?? 0 }));
 }
 
 // Pass 8 — the sequence's own record (name, steps, createdBy) only.
@@ -131,5 +138,15 @@ export async function getSequenceEnrollments(params: { sequenceId: string; viewe
     prisma.sequenceEnrollment.count({ where }),
   ]);
 
-  return { enrollments, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
+  // The contact's email address is shown only for leads this viewer may see (the same row-level rule as the Leads list). A sequence can be visible to someone
+  // for whom a particular enrolled lead is not (for example a Manager looking at a sequence an agent outside their team used), and seeing the sequence must not
+  // reveal that lead's contact details.
+  const leadIds = [...new Set(enrollments.map((e) => e.leadId))];
+  const visibleLeads = leadIds.length
+    ? await prisma.lead.findMany({ where: { AND: [{ id: { in: leadIds } }, leadVisibilityWhere(params.viewer)] }, select: { id: true } })
+    : [];
+  const visible = new Set(visibleLeads.map((l) => l.id));
+  const withVisibility = enrollments.map((e) => ({ ...e, leadVisible: visible.has(e.leadId) }));
+
+  return { enrollments: withVisibility, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }

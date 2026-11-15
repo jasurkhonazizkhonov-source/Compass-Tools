@@ -1,0 +1,12 @@
+[Unit]
+Description=Compass Tools sequence sweep, every minute
+
+[Timer]
+# Every minute, starting one minute after boot. A run that is still going is never started a second time by systemd (the oneshot unit is still active), and
+# the application claims every enrollment atomically, so an overlap with the in-process poller or with a slow previous run cannot send a step twice.
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

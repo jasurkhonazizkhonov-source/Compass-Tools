@@ -934,3 +934,223 @@ describe("the sequence's Active/Inactive switch", () => {
     expect(gmailChecks).toHaveLength(0);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// startSequenceForLead - the single "Approve and start" action. Real enrollLeads + the real due-step sweep against the fake database; only the mail
+// provider is mocked (no email leaves the process).
+// ─────────────────────────────────────────────────────────────────────────
+function useFullEnrollmentFakes() {
+  const enr = fakePrismaClient.sequenceEnrollment as unknown as Record<string, unknown>;
+  enr.createMany = vi.fn(async ({ data }: { data: Array<{ sequenceId: string; leadId: string; nextSendAt: Date; recipientEmail?: string }> }) => {
+    for (const d of data) {
+      const s = sequences.get(d.sequenceId)!;
+      const ordered = [...steps.values()].filter((x) => x.sequenceId === d.sequenceId).sort((a, b) => a.order - b.order);
+      enrollments.push({
+        id: `enr-${enrollments.length + 1}`,
+        status: "ACTIVE",
+        currentStepIdx: 0,
+        nextSendAt: d.nextSendAt,
+        recipientEmail: d.recipientEmail ?? null,
+        leadId: d.leadId,
+        sequenceId: d.sequenceId,
+        sequence: { name: s.name, isActive: s.isActive, steps: ordered },
+        lead: {
+          contactId: `contact-${d.leadId}`,
+          contact: { firstName: "Ada", lastName: "Lovelace", primaryPhone: null, primaryEmail: leads.get(d.leadId)!.contactEmail },
+          assignedAgent: { id: "agent-1", fullName: "Jane Doe", email: "jane@example.com", phone: null },
+          departureAirport: null, arrivalAirport: null, departureDate: null, returnDate: null, tripType: "ONE_WAY", cabinClass: "ECONOMY",
+        },
+      } as never);
+      enrolledRows.push({ sequenceId: d.sequenceId, leadId: d.leadId, status: "ACTIVE" });
+    }
+    return { count: data.length };
+  });
+  enr.findFirst = vi.fn(async ({ where }: { where: { sequenceId: string; leadId: string; status: string } }) => {
+    const row = [...enrollments].reverse().find((e) => e.sequenceId === where.sequenceId && e.leadId === where.leadId && e.status === where.status);
+    return row ? { id: row.id, nextSendAt: row.nextSendAt, sequence: { name: row.sequence.name } } : null;
+  });
+  enr.findUnique = vi.fn(async ({ where }: { where: { id: string } }) => {
+    const row = enrollments.find((e) => e.id === where.id);
+    if (!row) return null;
+    const logs = stepLogs.filter((l) => l.enrollmentId === row.id).slice(-1).map((l) => ({ status: l.status, error: (l.error as string | undefined) ?? null }));
+    return {
+      id: row.id,
+      sequenceId: row.sequenceId ?? "seq-1",
+      leadId: row.leadId,
+      sequence: { name: row.sequence.name },
+      status: row.status,
+      currentStepIdx: row.currentStepIdx,
+      nextSendAt: row.nextSendAt,
+      stepLogs: logs,
+    };
+  });
+  enr.findMany = vi.fn(
+    async ({ where, take }: { where: { status: string; sequenceId?: string; leadId?: { in: string[] }; nextSendAt?: { lte: Date }; sequence?: { isActive?: boolean }; id?: { in: string[] } }; take?: number }) => {
+      // enrollLeads' own "who is already ACTIVE in this sequence" lookups (no nextSendAt in the filter)
+      if (!where.nextSendAt) {
+        return enrollments.filter((r) => r.status === where.status && r.sequenceId === where.sequenceId && (where.leadId?.in ?? []).includes(r.leadId)).map((r) => ({ leadId: r.leadId }));
+      }
+      const lte = where.nextSendAt.lte.getTime();
+      return enrollments
+        .filter((r) => r.status === where.status && r.nextSendAt != null && r.nextSendAt.getTime() <= lte)
+        .filter((r) => where.sequence?.isActive === undefined || (r.sequence.isActive ?? true) === where.sequence.isActive)
+        .filter((r) => !where.id || where.id.in.includes(r.id))
+        .slice(0, take ?? Infinity)
+        .map((r) => ({ ...r }));
+    }
+  );
+}
+
+describe("startSequenceForLead - approve once, step 1 goes out, nothing else to click", () => {
+  beforeEach(() => {
+    useFullEnrollmentFakes();
+    seedEnrollContext(["lead-1"]);
+    steps.set("step-1", { id: "step-1", sequenceId: "seq-1", subject: "Hello there", body: "Hi", delayMinutes: 0, order: 0 });
+    steps.set("step-2", { id: "step-2", sequenceId: "seq-1", subject: "Follow up", body: "Again", delayMinutes: 2880, order: 1 });
+  });
+
+  it("an immediate first step is sent during the approval itself (no 'process due' step), and the next step is scheduled from its own delay", async () => {
+    const { startSequenceForLead } = await import("../sequences");
+    const before = Date.now();
+    const r = await startSequenceForLead("seq-1", "lead-1");
+    expect(r).toMatchObject({ ok: true, firstStep: "sent", sequenceName: "Welcome Series" });
+    expect(sendEmailCalls).toHaveLength(1);
+    expect(sendEmailCalls[0].to).toBe("lead-1@example.com");
+    expect(sendEmailCalls[0].subject).toBe("Hello there");
+    expect(stepLogs.map((l) => l.status)).toEqual(["SENT"]);
+    const e = enrollments[0];
+    expect(e.status).toBe("ACTIVE");
+    expect(e.currentStepIdx).toBe(1);
+    expect(e.nextSendAt!.getTime()).toBeGreaterThanOrEqual(before + 2880 * 60_000); // step 2's own 2-day delay, counted from the send
+  });
+
+  it("a first step WITH a delay is not sent now: it is reported as scheduled for the right time, and the scheduler will send it", async () => {
+    steps.set("step-1", { id: "step-1", sequenceId: "seq-1", subject: "Hi", body: "Hi", delayMinutes: 90, order: 0 });
+    const { startSequenceForLead } = await import("../sequences");
+    const before = Date.now();
+    const r = await startSequenceForLead("seq-1", "lead-1");
+    expect(r).toMatchObject({ ok: true, firstStep: "scheduled" });
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(new Date((r as { nextSendAt: string }).nextSendAt).getTime()).toBeGreaterThanOrEqual(before + 90 * 60_000);
+    // ...and when the scheduler runs after the delay, it goes out without anyone opening a page
+    enrollments[0].nextSendAt = new Date(Date.now() - 1000);
+    const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
+    expect((await drainDueSequenceSteps()).sent).toBe(1);
+    expect(sendEmailCalls).toHaveLength(1);
+  });
+
+  it("approving twice (double click, or a retry after a dropped connection) enrolls once and sends step 1 once", async () => {
+    const { startSequenceForLead } = await import("../sequences");
+    expect((await startSequenceForLead("seq-1", "lead-1")).ok).toBe(true);
+    const second = await startSequenceForLead("seq-1", "lead-1");
+    expect(second).toMatchObject({ ok: false, code: "ALREADY_ENROLLED" });
+    expect(enrollments).toHaveLength(1);
+    expect(sendEmailCalls).toHaveLength(1);
+    expect(stepLogs.filter((l) => l.status === "SENT")).toHaveLength(1);
+  });
+
+  it("a PERMANENT first-send failure (Gmail not connected) is reported as a failure, the enrollment is FAILED and visible, and nothing is scheduled", async () => {
+    const { sendEmail } = await import("@/server/email/service");
+    (sendEmail as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, code: "NOT_CONNECTED", error: "Gmail is not connected for this agent" });
+    const { startSequenceForLead } = await import("../sequences");
+    const r = await startSequenceForLead("seq-1", "lead-1");
+    expect(r).toMatchObject({ ok: false, code: "SEND_FAILED" });
+    expect((r as { error: string }).error).toMatch(/not started.*Gmail is not connected/i);
+    expect(enrollments[0].status).toBe("FAILED");
+    expect(enrollments[0].nextSendAt).toBeNull();
+    expect(enrollments[0].currentStepIdx).toBe(0);
+  });
+
+  it("a TEMPORARY first-send failure leaves the enrollment active with a retry already scheduled, and says so instead of claiming success", async () => {
+    const { sendEmail } = await import("@/server/email/service");
+    (sendEmail as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ ok: false, code: "SEND_FAILED", error: "rate limited" });
+    const { startSequenceForLead } = await import("../sequences");
+    const before = Date.now();
+    const r = await startSequenceForLead("seq-1", "lead-1");
+    expect(r).toMatchObject({ ok: true, firstStep: "retrying", note: "rate limited" });
+    expect(enrollments[0].status).toBe("ACTIVE");
+    expect(enrollments[0].currentStepIdx).toBe(0); // step 1 did NOT advance
+    expect(enrollments[0].nextSendAt!.getTime()).toBeGreaterThanOrEqual(before + 10 * 60_000); // first backoff
+    // the scheduler's retry then succeeds and moves on
+    enrollments[0].nextSendAt = new Date(Date.now() - 1000);
+    const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
+    await drainDueSequenceSteps();
+    expect(enrollments[0].currentStepIdx).toBe(1);
+    expect(stepLogs.map((l) => l.status)).toEqual(["FAILED", "SENT"]);
+  });
+
+  it("an inactive sequence is not silently started: it is refused with the reason, and nothing is enrolled or sent", async () => {
+    sequences.get("seq-1")!.isActive = false;
+    const { startSequenceForLead } = await import("../sequences");
+    const r = await startSequenceForLead("seq-1", "lead-1");
+    expect(r).toMatchObject({ ok: false, code: "SEQUENCE_INACTIVE" });
+    expect((r as { error: string }).error).toMatch(/inactive/i);
+    expect(enrollments).toHaveLength(0);
+    expect(sendEmailCalls).toHaveLength(0);
+  });
+
+  it("a lead with no email, or no assigned agent, is refused with a specific message and nothing is sent", async () => {
+    leads.set("lead-1", { contactEmail: null });
+    const { startSequenceForLead } = await import("../sequences");
+    expect(await startSequenceForLead("seq-1", "lead-1")).toMatchObject({ ok: false, code: "NOT_ELIGIBLE", error: expect.stringMatching(/no email address/i) });
+    leads.set("lead-1", { contactEmail: "lead-1@example.com", noAgent: true });
+    expect(await startSequenceForLead("seq-1", "lead-1")).toMatchObject({ ok: false, code: "NOT_ELIGIBLE", error: expect.stringMatching(/no assigned agent/i) });
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(enrollments).toHaveLength(0);
+  });
+
+  it("a lead the user cannot see is refused as 'not available' (company/visibility rules are unchanged)", async () => {
+    const { startSequenceForLead } = await import("../sequences");
+    expect(await startSequenceForLead("seq-1", "lead-not-visible")).toMatchObject({ ok: false, code: "NOT_ELIGIBLE", error: expect.stringMatching(/not available/i) });
+    expect(sendEmailCalls).toHaveLength(0);
+  });
+
+  it("a one-step sequence completes after its single email, and an unenroll afterwards has nothing left to stop", async () => {
+    steps.delete("step-2");
+    const { startSequenceForLead, unenrollLead } = await import("../sequences");
+    expect(await startSequenceForLead("seq-1", "lead-1")).toMatchObject({ ok: true, firstStep: "sent" });
+    expect(enrollments[0].status).toBe("COMPLETED");
+    enrollments[0].leadId = "lead-1";
+    await expect(unenrollLead(enrollments[0].id, "lead-1")).resolves.toMatchObject({ ok: false });
+  });
+
+  it("malformed input is rejected without touching anything", async () => {
+    const { startSequenceForLead } = await import("../sequences");
+    expect(await startSequenceForLead("", "lead-1")).toMatchObject({ ok: false, code: "ERROR" });
+    expect(await startSequenceForLead("seq-1", undefined as never)).toMatchObject({ ok: false, code: "ERROR" });
+    expect(enrollments).toHaveLength(0);
+  });
+});
+
+describe("a worker can never send a step after the enrollment was unenrolled", () => {
+  it("unenroll committed while the email was being prepared: the dispatch-time re-check finds the enrollment no longer ACTIVE and nothing is sent", async () => {
+    useFullEnrollmentFakes();
+    const e = seedDueEnrollment();
+    // The worker has read and claimed the row; the user unenrolls before the send-time check. The fake's updateMany re-check sees status UNSUBSCRIBED.
+    const original = fakePrismaClient.sequenceEnrollment.updateMany as unknown as (a: { where: { id: string; status?: string; nextSendAt?: Date | null }; data: Record<string, unknown> }) => Promise<{ count: number }>;
+    let calls = 0;
+    fakePrismaClient.sequenceEnrollment.updateMany = vi.fn(async (args: { where: { id: string; status?: string; nextSendAt?: Date | null }; data: Record<string, unknown> }) => {
+      calls++;
+      if (calls === 2) e.status = "UNSUBSCRIBED"; // between the claim (call 1) and the send-time re-check (call 2)
+      return original(args);
+    });
+    const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
+    expect((await drainDueSequenceSteps()).sent).toBe(0);
+    expect(sendEmailCalls).toHaveLength(0);
+    expect(stepLogs).toHaveLength(0);
+    expect(e.status).toBe("UNSUBSCRIBED");
+  });
+
+  it("drain works through a backlog larger than one batch within one call, and never sends the same enrollment twice", async () => {
+    for (let i = 0; i < 120; i++) seedDueEnrollment({ leadId: `lead-${i}` });
+    useFullEnrollmentFakes(); // after seeding: seedDueEnrollment installs its own simpler findMany, which ignores "take"
+    const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
+    const r = await drainDueSequenceSteps();
+    expect(r.sent).toBe(120);
+    expect(r.batches).toBe(3);
+    expect(sendEmailCalls).toHaveLength(120);
+    expect(new Set(enrollments.map((x) => x.id)).size).toBe(120);
+    expect(enrollments.every((x) => x.status === "COMPLETED")).toBe(true);
+    expect((await drainDueSequenceSteps()).sent).toBe(0); // nothing is due any more
+  });
+});

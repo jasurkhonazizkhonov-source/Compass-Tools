@@ -10,7 +10,7 @@ const runSequences = vi.fn(async () => ({ sent: 3, failed: 0 }));
 let account: { id: string; role: string } | null = null;
 
 vi.mock("@/server/due-task-notifications", () => ({ runDueTaskNotifications: () => runTasks() }));
-vi.mock("@/server/due-sequence-steps", () => ({ runDueSequenceSteps: () => runSequences() }));
+vi.mock("@/server/due-sequence-steps", () => ({ runDueSequenceSteps: () => runSequences(), drainDueSequenceSteps: () => runSequences() }));
 vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => account) }));
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
@@ -92,9 +92,11 @@ describe("the sweeps are no longer public Server Actions", () => {
     const read = (rel: string) => fs.readFileSync(path.join(process.cwd(), rel), "utf8");
     expect(read("src/app/api/cron/tasks/route.ts")).toMatch(/runDueTaskNotifications/);
     expect(read("src/app/api/cron/tasks/route.ts")).not.toMatch(/actions\/tasks/);
-    expect(read("src/app/api/cron/sequences/route.ts")).toMatch(/runDueSequenceSteps/);
+    expect(read("src/app/api/cron/sequences/route.ts")).toMatch(/drainDueSequenceSteps/); // the drain wrapper around runDueSequenceSteps
     expect(read("src/app/api/cron/sequences/route.ts")).not.toMatch(/actions\/sequences/);
     expect(read("src/instrumentation.ts")).toMatch(/runDueTaskNotifications/);
+    expect(read("src/instrumentation.ts")).toMatch(/drainDueSequenceSteps/); // the poller sends due sequence steps too
+    expect(read("src/instrumentation.ts")).not.toMatch(/processDueSequenceSteps/);
     expect(read("src/instrumentation.ts")).not.toMatch(/import\(\s*["']@\/server\/actions\/tasks["']\s*\)/); // comments may mention the action by name
   });
 });

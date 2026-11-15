@@ -74,6 +74,8 @@ function buildVariableContext(
 // the row becomes "due" again for a later run — self-healing, no stuck
 // enrollment, no manual intervention needed.
 const CLAIM_LEASE_MS = 2 * 60_000;
+/** How many due enrollments one sweep reads and works through. drainDueSequenceSteps keeps sweeping while a sweep comes back full. */
+export const DUE_BATCH_SIZE = 50;
 /** A transient send failure (rate limit, network) is retried on the SAME step at most this many times in total, never skipping the step. */
 const MAX_SEND_ATTEMPTS = 3;
 /** Wait before attempt 2 and attempt 3 of a step. */
@@ -86,12 +88,19 @@ const RETRY_BACKOFF_MS = [10 * 60_000, 60 * 60_000];
  * environment, so the Sequences UI also exposes a manual "Process Due Steps"
  * action for testing.
  */
-export async function runDueSequenceSteps() {
+export async function runDueSequenceSteps(options: { enrollmentIds?: string[] } = {}) {
   const due = await prisma.sequenceEnrollment.findMany({
     // An enrollment whose sequence has been switched to Inactive is left exactly as it is (still ACTIVE, same step, same nextSendAt): nothing is sent
     // while the sequence is off, and the enrollment is picked up again as soon as it is switched back on. Before this filter the Active/Inactive switch only
     // hid the sequence from the "enroll" pickers and did not stop sends that were already scheduled.
-    where: { status: "ACTIVE", nextSendAt: { lte: new Date() }, sequence: { isActive: true } },
+    where: {
+      status: "ACTIVE",
+      nextSendAt: { lte: new Date() },
+      sequence: { isActive: true },
+      // The approved-enrollment flow sends the FIRST step of just the enrollment(s) it created, right away, instead of waiting for the next scheduler tick.
+      // Every other rule (claim lease, dispatch-time re-check, retry limits) is identical to a scheduled run.
+      ...(options.enrollmentIds ? { id: { in: options.enrollmentIds } } : {}),
+    },
     include: {
       sequence: { include: { steps: { orderBy: { order: "asc" } } } },
       lead: {
@@ -103,7 +112,7 @@ export async function runDueSequenceSteps() {
         },
       },
     },
-    take: 50,
+    take: DUE_BATCH_SIZE,
   });
 
   let sent = 0;
@@ -282,6 +291,29 @@ export async function runDueSequenceSteps() {
     }
   }
 
-  revalidatePath("/sequences");
+  try {
+    revalidatePath("/sequences");
+  } catch {
+    // Called from the in-process poller there is no request to revalidate against; the sequence pages are dynamic, so nothing is lost.
+  }
   return { processed: due.length, sent, failed };
+}
+
+/**
+ * Runs the sweep repeatedly until a sweep comes back with fewer than a full batch (or maxBatches is reached), so a backlog - a restart after downtime, a
+ * large bulk enrollment - is worked off within one scheduler tick instead of 50 enrollments per minute. Rows a sweep claims have their nextSendAt pushed
+ * into the future, so the next batch never re-reads them; and because every row is claimed atomically, two instances draining at once split the work
+ * rather than sending anything twice.
+ */
+export async function drainDueSequenceSteps(maxBatches = 10) {
+  const total = { processed: 0, sent: 0, failed: 0, batches: 0 };
+  for (let i = 0; i < maxBatches; i++) {
+    const r = await runDueSequenceSteps();
+    total.batches++;
+    total.processed += r.processed;
+    total.sent += r.sent;
+    total.failed += r.failed;
+    if (r.processed < DUE_BATCH_SIZE) break;
+  }
+  return total;
 }

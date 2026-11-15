@@ -43,6 +43,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
   const [mode, setMode] = useState<Mode>("pick");
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [pickStatuses, setPickStatuses] = useState<Set<string>>(new Set());
   const [statuses, setStatuses] = useState<Set<string>>(new Set());
   const [previewState, setPreviewState] = useState<{ key: string; data: EnrollByStatusPreview } | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -50,9 +51,13 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
 
+  // The list narrows by text AND, when any status is ticked, by "the lead's current status is ONE OF the ticked ones" (never "has all of them").
   const filtered = leads.filter(
-    (l) => l.name.toLowerCase().includes(query.toLowerCase()) || l.route.toLowerCase().includes(query.toLowerCase())
+    (l) =>
+      (l.name.toLowerCase().includes(query.toLowerCase()) || l.route.toLowerCase().includes(query.toLowerCase())) &&
+      (pickStatuses.size === 0 || pickStatuses.has(l.status))
   );
+  const allShownSelected = filtered.length > 0 && filtered.every((l) => selected.has(l.id));
 
   // The server counts the leads that currently match the chosen statuses (inside the caller's own visibility) with the same rules the enrollment
   // uses. The result is stored with the selection it was computed for, so a stale answer is never shown for a newer selection.
@@ -80,6 +85,23 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
       return next;
     });
   }
+  function togglePickStatus(s: string) {
+    setPickStatuses((prev) => {
+      const next = new Set(prev);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+  }
+  /** Ticks (or unticks) exactly the leads currently shown, never leads hidden by the filter. */
+  function toggleAllShown() {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (filtered.every((l) => next.has(l.id))) for (const l of filtered) next.delete(l.id);
+      else for (const l of filtered) next.add(l.id);
+      return next;
+    });
+  }
   function toggleStatus(s: string) {
     setConfirming(false);
     setStatuses((prev) => {
@@ -91,6 +113,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
   }
   function reset() {
     setSelected(new Set());
+    setPickStatuses(new Set());
     setStatuses(new Set());
     setPreviewState(null);
     setConfirming(false);
@@ -161,6 +184,32 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
         {mode === "pick" && !outcome && (
           <>
             <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search leads..." aria-label="Search leads" />
+            <fieldset className="space-y-1.5">
+              <legend className="text-xs font-medium text-muted-foreground">Show only leads with status (any of)</legend>
+              <div className="flex flex-wrap gap-1.5">
+                {LEAD_STATUS_ORDER.map((s) => (
+                  <Button
+                    key={s}
+                    type="button"
+                    size="sm"
+                    variant={pickStatuses.has(s) ? "secondary" : "outline"}
+                    aria-pressed={pickStatuses.has(s)}
+                    className="h-7 px-2 text-xs"
+                    onClick={() => togglePickStatus(s)}
+                  >
+                    {LEAD_STATUS_META[s].label}
+                  </Button>
+                ))}
+              </div>
+            </fieldset>
+            <div className="flex items-center justify-between text-xs text-muted-foreground" aria-live="polite">
+              <span>
+                {filtered.length.toLocaleString("en-US")} shown · {selected.size.toLocaleString("en-US")} selected
+              </span>
+              <Button type="button" variant="link" size="sm" className="h-auto p-0" onClick={toggleAllShown} disabled={filtered.length === 0}>
+                {allShownSelected ? "Deselect all shown" : "Select all shown"}
+              </Button>
+            </div>
             <ScrollArea className="h-72 rounded-md border">
               <div className="p-2 space-y-1">
                 {filtered.length === 0 && <p className="text-sm text-muted-foreground p-4 text-center">No leads found</p>}

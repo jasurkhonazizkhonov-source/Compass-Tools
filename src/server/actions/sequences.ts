@@ -243,6 +243,91 @@ export async function enrollLeads(sequenceId: string, leadIds: string[], recipie
   return result;
 }
 
+export type StartSequenceResult =
+  | {
+      ok: true;
+      sequenceName: string;
+      /** sent: step 1 went out now. scheduled: step 1 is configured with a delay and will go out automatically at nextSendAt. retrying: step 1 could not be sent
+       * just now (a temporary provider problem) and will be retried automatically at nextSendAt. */
+      firstStep: "sent" | "scheduled" | "retrying";
+      nextSendAt: string | null;
+      /** Plain-language reason for "retrying"; never a token, key or raw provider payload. */
+      note?: string;
+    }
+  | { ok: false; error: string; code: "ALREADY_ENROLLED" | "NOT_ELIGIBLE" | "SEQUENCE_INACTIVE" | "SEND_FAILED" | "ERROR" };
+
+const FIRST_SEND_FAILURE_FALLBACK = "the email could not be sent";
+function shortReason(error: string | null | undefined): string {
+  const text = (error ?? "").replace(/\s+/g, " ").trim();
+  return text ? text.slice(0, 160) : FIRST_SEND_FAILURE_FALLBACK;
+}
+
+/**
+ * The one-step "Approve and start" action behind the lead's Apply Sequence confirmation. It enrolls the lead (every enrollLeads rule applies unchanged:
+ * authorization, company scoping, active sequence, Gmail pre-check, valid recipient, one ACTIVE enrollment per lead and sequence) and, when the first step is
+ * due now, sends it IMMEDIATELY through the same claim-and-send path the scheduler uses - the user never has to find a "Process due" button. A step with a
+ * delay is left to the scheduler, which sends it at the right time without anyone opening a page.
+ *
+ * Honest results, never a success that did not happen:
+ *   - a permanent first-send failure (Gmail not connected / authorization expired, no recipient or agent at send time) leaves the enrollment FAILED and visible
+ *     in the lead's history, and is returned as a failure;
+ *   - a temporary failure leaves the enrollment ACTIVE with a retry already scheduled and is returned as "retrying" with the time;
+ *   - a repeated click or a retry after a network drop cannot send step 1 twice: enrollLeads refuses a second ACTIVE enrollment (it answers ALREADY_ENROLLED)
+ *     and the send itself is claimed atomically, exactly like a scheduled run.
+ */
+export async function startSequenceForLead(sequenceId: string, leadId: string, recipientEmail?: string): Promise<StartSequenceResult> {
+  if (typeof sequenceId !== "string" || !sequenceId || typeof leadId !== "string" || !leadId) return { ok: false, code: "ERROR", error: "The sequence could not be applied to this lead." };
+
+  const r = await enrollLeads(sequenceId, [leadId], recipientEmail);
+  if (r.error) {
+    return { ok: false, code: /inactive/i.test(r.error) ? "SEQUENCE_INACTIVE" : r.gmailUnavailable > 0 ? "NOT_ELIGIBLE" : "ERROR", error: r.error };
+  }
+  if (r.enrolled === 0) {
+    if (r.alreadyActive > 0) return { ok: false, code: "ALREADY_ENROLLED", error: "This lead is already actively enrolled in that sequence." };
+    const error =
+      r.missingEmail > 0
+        ? "This lead has no email address, so a sequence cannot be applied. Add one to the contact first."
+        : r.noAssignedAgent > 0
+          ? "This lead has no assigned agent to send the emails from. Assign an agent first."
+          : r.inaccessible > 0
+            ? "That lead is not available."
+            : "The sequence could not be applied to this lead.";
+    return { ok: false, code: "NOT_ELIGIBLE", error };
+  }
+
+  const created = await prisma.sequenceEnrollment.findFirst({
+    where: { sequenceId, leadId, status: "ACTIVE" },
+    orderBy: { enrolledAt: "desc" },
+    select: { id: true, nextSendAt: true, sequence: { select: { name: true } } },
+  });
+  if (!created) return { ok: false, code: "ERROR", error: "The sequence could not be applied to this lead." };
+  const sequenceName = created.sequence.name;
+
+  // Step 1 is due now (no delay): send it right away. Otherwise the scheduler sends it at nextSendAt.
+  if (created.nextSendAt && created.nextSendAt.getTime() <= Date.now()) {
+    await runDueSequenceSteps({ enrollmentIds: [created.id] });
+  }
+
+  const after = await prisma.sequenceEnrollment.findUnique({
+    where: { id: created.id },
+    select: { status: true, currentStepIdx: true, nextSendAt: true, stepLogs: { orderBy: { createdAt: "desc" }, take: 1, select: { status: true, error: true } } },
+  });
+  revalidatePath(`/leads/${leadId}`);
+  if (!after) return { ok: false, code: "ERROR", error: "The sequence could not be applied to this lead." };
+
+  const lastLog = after.stepLogs[0];
+  if (after.status === "FAILED") {
+    return { ok: false, code: "SEND_FAILED", error: `The sequence was not started: ${shortReason(lastLog?.error)}.` };
+  }
+  if (after.status === "COMPLETED" || after.currentStepIdx > 0) {
+    return { ok: true, sequenceName, firstStep: "sent", nextSendAt: after.nextSendAt ? after.nextSendAt.toISOString() : null };
+  }
+  if (lastLog?.status === "FAILED") {
+    return { ok: true, sequenceName, firstStep: "retrying", nextSendAt: after.nextSendAt ? after.nextSendAt.toISOString() : null, note: shortReason(lastLog.error) };
+  }
+  return { ok: true, sequenceName, firstStep: "scheduled", nextSendAt: after.nextSendAt ? after.nextSendAt.toISOString() : null };
+}
+
 /**
  * Stops an ACTIVE enrollment: it becomes UNSUBSCRIBED and nextSendAt is cleared, so the sequence worker no longer sees it as due; the
  * worker also re-confirms ACTIVE atomically right before each send (see processDueSequenceSteps), so a job already in flight cannot

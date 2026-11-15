@@ -1,12 +1,12 @@
 import { rejectUnauthorizedCron } from "@/server/security/cron-auth";
 import { NextRequest, NextResponse } from "next/server";
-import { runDueSequenceSteps } from "@/server/due-sequence-steps";
+import { drainDueSequenceSteps } from "@/server/due-sequence-steps";
+import { markSweepFinished, markSweepStarted } from "@/server/scheduler-status";
 
-// Extension point for a real scheduler (Vercel Cron, GitHub Actions
-// schedule, an external queue worker, etc.) to trigger sequence sends.
-// No such scheduler is deployed in this dev environment — trigger manually
-// with `curl http://localhost:3000/api/cron/sequences`, or use the
-// "Process Due Steps" button in the Sequences UI.
+// The HTTP entry point for an EXTERNAL scheduler (a cron job, Vercel Cron, a GitHub Actions schedule) to trigger sequence sends. The CRM does not need
+// one: its server process already runs the same sweep every minute from src/instrumentation.ts (unless DISABLE_IN_PROCESS_POLLER is set), so this route is
+// a redundant second trigger and the way to run the sweep when the in-process poller is turned off. Overlap between the two is safe - every enrollment is
+// claimed atomically before it is sent, so a step goes out once.
 //
 // If CRON_SECRET is set, requests must carry it as a bearer token —
 // matching /api/cron/tasks's gate. This route actually sends real emails
@@ -16,6 +16,13 @@ import { runDueSequenceSteps } from "@/server/due-sequence-steps";
 export async function GET(request: NextRequest) {
   const denied = rejectUnauthorizedCron(request);
   if (denied) return denied;
-  const result = await runDueSequenceSteps();
-  return NextResponse.json(result);
+  markSweepStarted("sequences");
+  try {
+    const result = await drainDueSequenceSteps();
+    markSweepFinished("sequences", { ok: true, ...result });
+    return NextResponse.json({ processed: result.processed, sent: result.sent, failed: result.failed });
+  } catch (err) {
+    markSweepFinished("sequences", { ok: false });
+    throw err;
+  }
 }

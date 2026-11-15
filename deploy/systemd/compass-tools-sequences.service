@@ -1,0 +1,18 @@
+# OPTIONAL external trigger for automatic sequence sending (see deploy/run-sequence-sweep.sh for when it is and is not needed). NOT enabled by anything in
+# the repository - install it deliberately, as root, after replacing /opt/compass-tools and the User if yours differ:
+#   sudo cp deploy/systemd/compass-tools-sequences.* /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now compass-tools-sequences.timer
+# The user must be allowed to run `docker` (root-equivalent: use a dedicated deploy account, not a shared one).
+[Unit]
+Description=Compass Tools sequence sweep (send due sequence steps)
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+WorkingDirectory=/opt/compass-tools
+ExecStart=/usr/bin/bash /opt/compass-tools/deploy/run-sequence-sweep.sh
+# A failed run shows up in: systemctl status compass-tools-sequences.service  /  journalctl -u compass-tools-sequences.service
+TimeoutStartSec=120
+Nice=10

@@ -139,6 +139,7 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
         websiteApi: "not_configured",
         signerIpCapture: "enabled",
         uploadStorage: expect.stringMatching(/^(ready|low_space|unavailable)$/),
+        sequenceScheduler: expect.stringMatching(/^(running|not_started|stalled|disabled)$/),
         schema: "current",
         pendingMigrations: 0,
       });
@@ -157,6 +158,7 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
         websiteApi: "not_configured",
         signerIpCapture: "disabled",
         uploadStorage: expect.stringMatching(/^(ready|low_space|unavailable)$/),
+        sequenceScheduler: expect.stringMatching(/^(running|not_started|stalled|disabled)$/),
         schema: "current",
         pendingMigrations: 0,
       });

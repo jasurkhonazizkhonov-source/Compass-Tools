@@ -22,7 +22,7 @@ export function LeadSequencesPanel({
 }: {
   leadId: string;
   enrollments: LeadEnrollment[];
-  availableSequences: { id: string; name: string; description: string | null; stepCount: number }[];
+  availableSequences: { id: string; name: string; description: string | null; stepCount: number; firstStepDelayMinutes?: number }[];
   /** Every email on file for this lead's contact, primary first — passed
    * through to ApplySequenceDialog's recipient picker (Part 4). */
   contactEmails?: string[];

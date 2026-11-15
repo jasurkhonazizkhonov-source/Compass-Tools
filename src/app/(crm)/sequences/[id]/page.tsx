@@ -1,23 +1,19 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { formatDistanceToNow } from "date-fns";
 import { ArrowLeft, Users } from "lucide-react";
 import { getSequenceDetail, getSequenceEnrollments } from "@/server/queries/sequences";
 import { listLeadsForEnrollment } from "@/server/queries/leads";
 import { getCurrentAccount } from "@/lib/dev-session";
-import { canViewSequencesPage, canManageAllSequences } from "@/lib/permissions";
+import { canViewSequencesPage, canManageAllSequences, canManageSequences } from "@/lib/permissions";
 import { StepEditor } from "@/components/sequences/step-editor";
 import { EnrollLeadsDialog } from "@/components/sequences/enroll-leads-dialog";
-import { ProcessDueButton } from "@/components/sequences/process-due-button";
+import { SequenceEnrollmentsTable } from "@/components/sequences/sequence-enrollments-table";
 import { SequenceActiveToggle } from "@/components/sequences/sequence-active-toggle";
 import { SequenceDeleteButton } from "@/components/sequences/sequence-row-actions";
 import { EmptyState } from "@/components/crm/empty-state";
-import { StatusBadge } from "@/components/crm/status-badge";
 import { PaginationControls } from "@/components/crm/pagination-controls";
 import { redirectToValidPageIfNeeded } from "@/lib/pagination";
-import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ENROLLMENT_STATUS_META } from "@/lib/status-meta";
 
 export const dynamic = "force-dynamic";
 
@@ -49,6 +45,8 @@ export default async function SequenceDetailPage({ params, searchParams }: { par
   const { enrollments, total: enrollmentTotal, pageCount: enrollmentPageCount, pageSize: enrollmentPageSize } = enrollmentPage;
   redirectToValidPageIfNeeded(sp, `/sequences/${id}`, page, enrollmentPageCount);
   const canDelete = canManageAllSequences(currentAccount?.role) || sequence.createdById === currentAccount?.id;
+  const canUnenroll = canManageSequences(currentAccount?.role);
+  const activeCount = enrollments.filter((e) => e.status === "ACTIVE").length;
 
   return (
     <div className="space-y-5">
@@ -63,57 +61,46 @@ export default async function SequenceDetailPage({ params, searchParams }: { par
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <SequenceActiveToggle sequenceId={sequence.id} isActive={sequence.isActive} />
-            <ProcessDueButton />
             <EnrollLeadsDialog sequenceId={sequence.id} sequenceName={sequence.name} leads={leads} />
             {canDelete && <SequenceDeleteButton sequenceId={sequence.id} name={sequence.name} redirectTo="/sequences" />}
           </div>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-5 lg:grid-cols-[1fr_1fr]">
-        <Card className="shadow-none">
-          <CardHeader><CardTitle className="text-sm font-medium">Steps</CardTitle></CardHeader>
-          <CardContent>
-            <StepEditor sequenceId={sequence.id} steps={sequence.steps} />
-          </CardContent>
-        </Card>
+      <Card className="shadow-none">
+        <CardHeader><CardTitle className="text-sm font-medium">Steps</CardTitle></CardHeader>
+        <CardContent>
+          <StepEditor sequenceId={sequence.id} steps={sequence.steps} />
+        </CardContent>
+      </Card>
 
-        <Card className="shadow-none">
-          <CardHeader><CardTitle className="text-sm font-medium">Enrollments ({enrollmentTotal})</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            {enrollments.length === 0 ? (
-              <EmptyState icon={Users} title="No enrollments yet" description="Enroll leads to start sending this sequence." />
-            ) : (
-              <ul className="space-y-2">
-                {enrollments.map((e) => (
-                  <li key={e.id} className="rounded-md border px-3 py-2">
-                    <div className="flex items-center justify-between">
-                      <Link href={`/leads/${e.leadId}`} className="text-sm font-medium hover:underline">
-                        {e.lead.contact.firstName} {e.lead.contact.lastName}
-                      </Link>
-                      <StatusBadge label={ENROLLMENT_STATUS_META[e.status].label} tone={ENROLLMENT_STATUS_META[e.status].tone} />
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-0.5">
-                      Step {e.currentStepIdx + 1} of {sequence.steps.length} ·{" "}
-                      {e.nextSendAt ? `Next: ${formatDistanceToNow(e.nextSendAt, { addSuffix: true })}` : "No further steps"}
-                    </p>
-                    {e.stepLogs.length > 0 && (
-                      <div className="mt-1.5 flex gap-1 flex-wrap">
-                        {e.stepLogs.slice(0, 3).map((log) => (
-                          <Badge key={log.id} variant={log.status === "SENT" ? "outline" : "destructive"} className="text-[10px]">
-                            {log.status === "SENT" ? "Sent" : "Failed"}
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-            <PaginationControls page={page} pageCount={enrollmentPageCount} total={enrollmentTotal} pageSize={enrollmentPageSize} />
-          </CardContent>
-        </Card>
-      </div>
+      <Card className="shadow-none">
+        <CardHeader>
+          <CardTitle className="text-sm font-medium">
+            Enrolled leads ({enrollmentTotal})
+            {enrollmentTotal > 0 && <span className="ml-2 font-normal text-muted-foreground">{activeCount} active on this page</span>}
+          </CardTitle>
+          {!sequence.isActive && (
+            <p className="text-xs text-muted-foreground" role="status">
+              This sequence is switched off: no emails are being sent, and active enrollments resume if it is switched back on.
+            </p>
+          )}
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {enrollments.length === 0 ? (
+            <EmptyState icon={Users} title="No enrollments yet" description="Enroll leads to start sending this sequence." />
+          ) : (
+            <SequenceEnrollmentsTable
+              enrollments={enrollments}
+              steps={sequence.steps}
+              sequenceName={sequence.name}
+              sequenceActive={sequence.isActive}
+              canUnenroll={canUnenroll}
+            />
+          )}
+          <PaginationControls page={page} pageCount={enrollmentPageCount} total={enrollmentTotal} pageSize={enrollmentPageSize} />
+        </CardContent>
+      </Card>
     </div>
   );
 }

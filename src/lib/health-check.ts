@@ -7,6 +7,8 @@ import { getDatabaseTlsMode } from "@/lib/db-tls";
 import { isWebsiteApiConfigured } from "@/server/security/website-api-auth";
 import { isLeadIngestSecretConfigured } from "@/server/lead-ingest-context";
 import { status as uploadStorageStatus } from "@/server/storage/local";
+import { inProcessPollerDisabled } from "@/lib/poller-config";
+import { sequenceSchedulerState } from "@/server/scheduler-status";
 
 // Database liveness/latency probe behind /api/health. Exposes numbers and a
 // safe error category only — never a hostname, credential, connection
@@ -54,6 +56,12 @@ export type HealthBody = {
      * bind mount is absent). A category only - never a path or a size.
      */
     uploadStorage: "ready" | "low_space" | "unavailable";
+    /**
+     * Whether automatic sequence sending is alive in THIS server process: "running" (the once-a-minute poller, or an external caller of /api/cron/sequences, has
+     * completed a sweep within the last three minutes), "not_started", "stalled" (started but silent or failing), or "disabled" (DISABLE_IN_PROCESS_POLLER is on and
+     * nothing has called the cron route recently - sequence steps are then NOT being sent from here). A category only; see server/scheduler-status.ts.
+     */
+    sequenceScheduler: "running" | "not_started" | "stalled" | "disabled";
     /** "pending" = this build expects a database migration the database has not applied (count only; names are Admin-only). */
     schema: "current" | "pending" | "unknown";
     pendingMigrations: number;
@@ -78,6 +86,7 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
     websiteApi: isWebsiteApiConfigured() ? "configured" : "not_configured",
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     uploadStorage,
+    sequenceScheduler: sequenceSchedulerState(inProcessPollerDisabled()),
     schema: schema?.state ?? "unknown",
     pendingMigrations: schema && schema.state !== "unknown" ? schema.pending.length : 0,
   };
