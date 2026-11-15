@@ -36,7 +36,7 @@ export function ReportRangeControls({
   preserve?: Record<string, string | null | undefined>;
   options?: RangeQuickOption[];
   now?: Date;
-  /** Draw the From / To fields as a calendar popover instead of the browser's native date inputs. Only the Commissions page sets this. */
+  /** Draw the From / To fields as a calendar popover (with the chosen range highlighted) instead of the browser's native date inputs. Commissions and Salesboard set this. */
   modernCalendar?: boolean;
 }) {
   const current = payPeriodContaining(civilDateInZone(now));

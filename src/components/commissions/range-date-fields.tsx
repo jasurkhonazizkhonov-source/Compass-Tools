@@ -9,9 +9,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils";
 
 /**
- * The From / To fields of the Commission section's custom range form, drawn as a modern calendar popover instead of the browser's
- * native date input. Used ONLY by the Commissions page (ReportRangeControls opts in with `modernCalendar`); Salesboard and every
- * other date control keep their own markup.
+ * The From / To fields of the custom range form on the Commissions and Salesboard pages, drawn as a modern calendar popover instead of the
+ * browser's native date input (ReportRangeControls opts in with `modernCalendar`). Both reports therefore share one date-range control. Each popover
+ * highlights the whole chosen range (the first and last day strongly, the days between softly), so the span being reported is visible at a glance.
  *
  * Nothing about the data changes: the form is still a plain GET form, and this component still submits two fields named `from` and
  * `to` holding `yyyy-MM-dd` text, which the server resolves with the same range resolver as before (a reversed or missing range is
@@ -24,10 +24,26 @@ function toDate(value: string): Date | undefined {
   return isValid(d) ? d : undefined;
 }
 
-function DateField({ label, name, value, onChange }: { label: string; name: "from" | "to"; value: string; onChange: (next: string) => void }) {
+function DateField({
+  label,
+  name,
+  value,
+  onChange,
+  rangeFrom,
+  rangeTo,
+}: {
+  label: string;
+  name: "from" | "to";
+  value: string;
+  onChange: (next: string) => void;
+  /** The other bound(s), only to draw the highlighted span in this calendar; they never change what this field submits. */
+  rangeFrom?: Date;
+  rangeTo?: Date;
+}) {
   const [open, setOpen] = useState(false);
   const labelId = useId();
   const selected = toDate(value);
+  const spanOk = !!rangeFrom && !!rangeTo && rangeFrom.getTime() <= rangeTo.getTime();
   return (
     <div className="flex flex-col gap-1">
       <span id={labelId} className="text-xs font-medium text-muted-foreground">
@@ -57,6 +73,8 @@ function DateField({ label, name, value, onChange }: { label: string; name: "fro
               setOpen(false);
             }}
             autoFocus
+            modifiers={spanOk ? { inRange: { from: rangeFrom!, to: rangeTo! } } : undefined}
+            modifiersClassNames={{ inRange: "bg-primary/10 data-[selected=true]:bg-transparent" }}
             buttonVariant="outline"
             className="p-3 [--cell-radius:var(--radius-lg)] [--cell-size:--spacing(9)]"
             classNames={{
@@ -111,6 +129,8 @@ export function CommissionRangeDateFields({ initialFrom, initialTo }: { initialF
         label="From"
         name="from"
         value={from}
+        rangeFrom={toDate(from)}
+        rangeTo={toDate(to)}
         onChange={(v) => {
           setFrom(v);
           setError(null);
@@ -120,6 +140,8 @@ export function CommissionRangeDateFields({ initialFrom, initialTo }: { initialF
         label="To"
         name="to"
         value={to}
+        rangeFrom={toDate(from)}
+        rangeTo={toDate(to)}
         onChange={(v) => {
           setTo(v);
           setError(null);

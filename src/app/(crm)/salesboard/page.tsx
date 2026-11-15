@@ -54,7 +54,7 @@ export default async function SalesboardPage({ searchParams }: { searchParams: S
             <p className="text-sm font-semibold">{heading.dates}</p>
           </div>
         </div>
-        <ReportRangeControls basePath="/salesboard" selected={range} options={SALESBOARD_OPTIONS} />
+        <ReportRangeControls basePath="/salesboard" selected={range} options={SALESBOARD_OPTIONS} modernCalendar />
       </div>
 
       <Card className="shadow-none">

@@ -166,7 +166,7 @@ describe("Commission calendar fields", () => {
   });
 });
 
-describe("the new calendar is scoped to Commissions", () => {
+describe("the calendar is opt-in (Commissions and Salesboard opt in)", () => {
   const range = resolveReportRange({ from: "2026-10-01", to: "2026-10-31" });
   const html = (modern: boolean) => renderToStaticMarkup(<ReportRangeControls basePath="/commissions" selected={range} now={new Date("2026-11-10T20:00:00Z")} modernCalendar={modern} />);
 
@@ -183,10 +183,20 @@ describe("the new calendar is scoped to Commissions", () => {
     expect(h).not.toContain("commission-date-from");
   });
 
-  it("a ReportRangeControls rendered with no calendar option at all (Salesboard) keeps the native inputs - the new calendar is opt-in only", () => {
+  it("a ReportRangeControls rendered with no calendar option keeps the native inputs - the calendar is opt-in only", () => {
     const h = renderToStaticMarkup(<ReportRangeControls basePath="/salesboard" selected={range} now={new Date("2026-11-10T20:00:00Z")} />);
     expect(h).toContain('type="date"');
     expect(h).not.toContain("commission-date-from");
+  });
+
+  it("Salesboard uses the SAME calendar control as Commissions, with the same from / to fields and the same Apply range button", () => {
+    const h = renderToStaticMarkup(<ReportRangeControls basePath="/salesboard" selected={range} now={new Date("2026-11-10T20:00:00Z")} modernCalendar />);
+    expect(h).not.toContain('type="date"');
+    expect(h).toContain('data-testid="commission-date-from"');
+    expect(h).toContain('type="hidden" name="from" value="2026-10-01"');
+    expect(h).toContain('type="hidden" name="to" value="2026-10-31"');
+    expect(h).toContain("Apply range");
+    expect(h).toContain('action="/salesboard"');
   });
 
   it("with the opt-in (Commissions) the calendar triggers replace the native inputs and the same from / to values are submitted", () => {
@@ -205,5 +215,44 @@ describe("the new calendar is scoped to Commissions", () => {
       for (const label of ["Current Pay Period", "Previous Pay Period", "Current Month", "Previous Month", "Pay period", "Show", "Apply range"]) expect(h, `${modern} ${label}`).toContain(label);
       expect(h).toContain('name="payPeriod"');
     }
+  });
+});
+
+describe("the chosen range is highlighted in the calendar", () => {
+  it("the days between From and To are marked as part of the range, and days outside it are not", async () => {
+    const user = userEvent.setup({ advanceTimers: () => undefined });
+    render(<Form from="2026-11-03" to="2026-11-08" />);
+    await user.click(fromBtn());
+    const dialog = await screen.findByRole("dialog");
+    const cell = (re: RegExp) => within(dialog).getByRole("button", { name: re }).closest("td") as HTMLElement;
+    for (const day of [/November 4(th)?, 2026/, /November 5(th)?, 2026/, /November 6(th)?, 2026/, /November 7(th)?, 2026/]) {
+      expect(cell(day).className, String(day)).toMatch(/bg-primary\/10/);
+    }
+    expect(cell(/November 2(nd)?, 2026/).className).not.toMatch(/bg-primary\/10/);
+    expect(cell(/November 12(th)?, 2026/).className).not.toMatch(/bg-primary\/10/);
+    // the two ends are the strongly styled selected day in their own calendar
+    expect(cell(/November 3(rd)?, 2026/)).toHaveAttribute("data-selected", "true");
+  });
+
+  it("the span also shows in the To calendar, so both pickers describe the same range", async () => {
+    const user = userEvent.setup({ advanceTimers: () => undefined });
+    render(<Form from="2026-11-03" to="2026-11-08" />);
+    await user.click(toBtn());
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: /November 5(th)?, 2026/ }).closest("td")!.className).toMatch(/bg-primary\/10/);
+    expect(within(dialog).getByRole("button", { name: /November 8(th)?, 2026/ }).closest("td")).toHaveAttribute("data-selected", "true");
+  });
+
+  it("a reversed or incomplete range highlights nothing (it is not a range yet), and the form still submits what was chosen", async () => {
+    const user = userEvent.setup({ advanceTimers: () => undefined });
+    const { unmount } = render(<Form from="2026-11-08" to="2026-11-03" />);
+    await user.click(fromBtn());
+    let dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: /November 5(th)?, 2026/ }).closest("td")!.className).not.toMatch(/bg-primary\/10/);
+    unmount();
+    render(<Form from="2026-11-03" to="" />);
+    await user.click(fromBtn());
+    dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: /November 5(th)?, 2026/ }).closest("td")!.className).not.toMatch(/bg-primary\/10/);
   });
 });
