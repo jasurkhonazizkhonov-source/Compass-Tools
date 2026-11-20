@@ -62,10 +62,11 @@ export async function getSubscribers(params: { companyId: string; status?: Subsc
 }
 
 export async function getSubscriberCounts(companyId: string) {
-  const [total, subscribed, unsubscribed] = await Promise.all([
+  const [total, subscribed, unsubscribed, suppressed] = await Promise.all([
     prisma.subscriber.count({ where: { companyId } }),
     prisma.subscriber.count({ where: { companyId, status: "SUBSCRIBED" } }),
     prisma.subscriber.count({ where: { companyId, status: "UNSUBSCRIBED" } }),
+    prisma.subscriber.count({ where: { companyId, status: "SUPPRESSED" } }),
   ]);
-  return { total, subscribed, unsubscribed };
+  return { total, subscribed, unsubscribed, suppressed };
 }

@@ -109,6 +109,9 @@ const fakePrisma: Record<string, unknown> = {
   },
   account: {
     findMany: vi.fn(async () => []),
+    // These tests are about recipient ownership and the confirmation email itself, for an actor who may see complete customer addresses (the privacy policy's
+    // "Unlimited Customer Email Access"). How a restricted viewer is treated - masked labels, ids instead of addresses - is covered in customer-email-airline-confirmation.test.ts.
+    findUnique: vi.fn(async () => ({ unlimitedCustomerEmailAccess: true })),
   },
   paymentCharge: {
     findMany: vi.fn(async () => []),

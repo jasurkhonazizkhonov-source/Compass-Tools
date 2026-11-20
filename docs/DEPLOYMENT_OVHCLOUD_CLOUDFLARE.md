@@ -32,6 +32,7 @@ and are ignored by the Docker build).
 16. [Known limitations and security / compliance warnings](#16-known-limitations-and-security--compliance-warnings)
 17. [Moving existing data from the current database](#17-moving-existing-data-from-the-current-database)
 18. [Updating base images, and the dependency audit](#18-updating-base-images-and-the-dependency-audit)
+19. [Release 2026-11-20 - redeployment checklist](#19-release-2026-11-20-failed-sign-ins-customer-email-privacy-subscriptions-and-queued-campaigns---redeployment-checklist)
 
 ---
 
@@ -701,3 +702,55 @@ Many "fixes" npm suggests are nonsensical downgrades (e.g. `prisma@6.19.3`, `esl
 Compatibility testing any upgrade needs: `npx tsc --noEmit`, `npm run lint`, the full suite (`npx vitest run --no-file-parallelism`, with the
 integration database as CI does), `bash deploy/ci-smoke.sh` on a Linux/Docker host (or just open the PR — CI runs it), and a manual pass over
 email sending and the template editor.
+
+## 19. Release 2026-11-20 (failed sign-ins, customer email privacy, subscriptions and queued campaigns) - redeployment checklist
+
+Everything here uses the scripts and sections above; nothing new is invented. **Commands marked LOCAL are safe on a developer machine. Commands marked PRODUCTION change the VPS and must only be run by the owner, at a quiet time, with a backup.** This task did **not** deploy, migrate or restart anything.
+
+### 19.1 What ships, and the order that matters
+
+* Branch `review/crm-verification-2026-11-13` (release commit: see `docs/COMPASS_SEQUENCE_WORKFLOW_RELEASE_READINESS.md`, last section). `deploy.sh` accepts **only commits that are already on `origin/main`** (§4), so the branch must first go through GitHub (pull request -> CI -> merge). The push URL of the working checkout this release was prepared in was configured `DISABLED-NO-PUSH`; the owner pushes from a machine with push rights.
+* **One additive migration**: `20261120000100_security_privacy_marketing_scale` (new tables, new defaulted columns, new enum values, indexes; no column, row or constraint is changed or removed; `Account.unlimitedCustomerEmailAccess` defaults to FALSE so nobody gains access). It was generated offline and has **not been rehearsed on PostgreSQL**: do the rehearsal in 19.2 first. `20261115000100_account_contact_detail_edit_permission` (the contact-edit permission, default TRUE) is also pending if the server is still on an older release.
+* Order: backup -> migration (`--migrate`) -> new app image -> verify. Never start the new application image on the old schema: the new code reads the new tables and columns (the privacy layer fails closed - everything masked - if it cannot read them, but the failed sign-in log, imports and campaigns need the schema).
+* The background jobs (`sequences`, `tasks`, `subscriber-imports`, `campaigns`) run inside the app process (the in-process poller). **Run ONE app instance.** The claims are row-level conditional updates that are designed to be safe across instances, but that has not been demonstrated on PostgreSQL. To stop all background work: set `DISABLE_IN_PROCESS_POLLER=true` and restart (sequence mail then needs `deploy/run-sequence-sweep.sh`; imports and campaigns simply wait).
+
+### 19.2 Before production (LOCAL / disposable database only)
+
+1. `npx tsc --noEmit`, `npm run lint`, `npx vitest run` (expected: only database-gated files skip).
+2. Disposable-PostgreSQL rehearsal - requires an **approved, disposable** database on loopback named exactly `compass_test` (src/test/disposable-database.ts refuses anything else); this is not created by the project and was **not available** when this release was prepared:
+   ```bash
+   # with the approved disposable database running and migrated (prisma migrate deploy against THAT database only):
+   INTEGRATION_DATABASE_URL="postgresql://<user>:<password>@127.0.0.1:<port>/compass_test?sslmode=<mode>" npx vitest run
+   ```
+   The files that matter for this release: `src/server/actions/__integration__/customer-email-privacy.integration.test.ts` (twenty concurrent reveals admit exactly five; same-customer reveals cost one; a refused reveal leaves no record) and the sequence claim tests.
+3. `bash deploy/ci-smoke.sh` on a Linux/Docker host (or open the PR: CI runs it). The Docker image build has not been run for this release.
+
+### 19.3 Production steps (PRODUCTION - owner only)
+
+```bash
+cd /opt/compass-tools
+bash deploy/backup-db.sh                  # explicit backup first (also taken automatically by --migrate when tables exist)
+bash deploy/deploy.sh --migrate           # shows incoming commits and migration files, asks to confirm; backup; migrate; build; start; verify
+bash deploy/verify.sh                     # §9.3
+```
+
+Required environment (unchanged names; `.env` is mode 600; **secrets**: `DATABASE_URL`, `CRON_SECRET`, `GOOGLE_CLIENT_SECRET`, `GMAIL_TOKEN_ENCRYPTION_KEY`, `CARD_ENCRYPTION_KEY`, `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `LEAD_INGEST_SECRET`, `WEBSITE_API_KEY`). Optional new settings, with defaults if unset: `CAMPAIGN_SENDS_PER_MINUTE` (20), `CAMPAIGN_DAILY_LIMIT` (400, per sending Gmail account per rolling 24 hours). Do not raise them without checking the sending account's real Gmail limit. `TRUSTED_PROXY` must be correct for the failed-sign-in log to record the real client address (it records none when no trusted header exists).
+
+### 19.4 Post-deployment smoke tests (after `verify.sh` passes)
+
+1. **Health**: `/api/health` reports `schema=current`. Open **System Health**: "Automatic sequence sending" is Healthy a minute or two after start.
+2. **Background poller**: the log shows no `[sequence-sender]`, `[subscriber-import]` or `[campaign-sender]` failure lines (they carry only an error category). A restart shows "Unknown" for about a minute, then Healthy.
+3. **Failed sign-ins**: as an Administrator the sidebar shows **Failed Sign-ins** between Subscriptions and Users; as a non-administrator the item is absent and `/failed-signins` returns 404.
+4. **Customer email privacy**: as a Travel Agent open a lead - the address is masked, the counter reads "0 / 5 used today", Reveal shows the complete address and the counter goes to 1; reload (still shown, still 1); open the same lead in a second browser (still 1). As an Administrator open the same lead (complete, no counter). On **Users**, "Unlimited Customer Email Access" is OFF for everyone except Administrators ("Always").
+5. **Sequence delivery**: on a test lead with a test recipient, enroll one sequence and confirm one email; the lead and sequence pages show the same state.
+6. **Subscriptions and campaign worker**: import a 3-line list (check list, start import, watch it complete; the error report contains no addresses); build a campaign with the builder, **Send test to me** (arrives at your own address); queue it to a test audience of a few addresses you own; the panel shows Waiting -> Sent at about 20 a minute; Pause stops it between recipients, Resume continues, Cancel is final. **Do not queue a campaign to real subscribers as a test.**
+
+### 19.5 Rollback
+
+* Application: `bash deploy/rollback.sh <version>` (§14). It does not undo migrations; the new schema is additive and the older image runs on it. If a migration is the problem, restore the pre-deploy backup (§12.4).
+* Criteria to roll back: `verify.sh` fails; System Health stays Critical for the scheduler; a restricted user can see a complete customer address without a reveal; a Reveal consumes more than one allowance per customer per day; a campaign sends to an unsubscribed address or sends the same recipient twice.
+* To stop an in-progress campaign without rolling back: **Pause** it from its page (takes effect between recipients), or set `DISABLE_IN_PROCESS_POLLER=true` and restart.
+
+### 19.6 Known limits to read before relying on this release
+
+PostgreSQL behaviour of the new SQL (reveal counter, send claims, import cursor) is **not verified**; real Gmail behaviour (quota, token refresh, ambiguous outcomes) is **not verified**; Gmail cannot send large campaigns (400/day default, a few hundred a day in reality); campaign "sent" means accepted by Gmail (no open/click/bounce tracking); subscriber search by email is not built; staff notification emails (New Flight Request, reassignment, new sale) carry the complete customer address by design (owner decision pending).

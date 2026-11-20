@@ -25,6 +25,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { listContactLeadAttachments } from "@/server/queries/lead-attachments";
 import { ContactDocumentsPanel } from "@/components/contacts/contact-documents-panel";
 import { Card, CardContent } from "@/components/ui/card";
+import { buildContactEmailView } from "@/server/privacy/customer-email";
+import { maskEmailsInText } from "@/lib/customer-email-mask";
 
 export const dynamic = "force-dynamic";
 
@@ -46,6 +48,10 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
   // Documents of this contact's leads — filtered by LEAD visibility, not just contact visibility.
   const documents = await listContactLeadAttachments(contact.id, viewer);
 
+  // Customer-email privacy: everything on this page that carries the customer's address is derived from this one server-side decision.
+  const emailView = await buildContactEmailView(viewer, contact.id, contact.emails, contact.primaryEmail);
+  const activities = emailView.masked ? contact.activities.map((a) => ({ ...a, description: maskEmailsInText(a.description) })) : contact.activities;
+
   return (
     <div className="space-y-5">
       <div>
@@ -64,13 +70,7 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
             <CallButton phone={contact.primaryPhone} size="icon" />
             <EmailComposerButton
               contactId={contact.id}
-              emails={
-                contact.emails.length > 0
-                  ? [...contact.emails].sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0)).map((e) => e.email)
-                  : contact.primaryEmail
-                    ? [contact.primaryEmail]
-                    : []
-              }
+              recipients={emailView.recipients}
               contactName={`${contact.firstName} ${contact.lastName}`}
               size="icon"
             />
@@ -95,7 +95,8 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
                 firstName: contact.firstName,
                 lastName: contact.lastName,
                 primaryPhone: contact.primaryPhone,
-                primaryEmail: contact.primaryEmail,
+                primaryEmail: emailView.primaryDisplay,
+                emailHidden: emailView.masked,
               }}
               currentAccountId={currentAccount?.id}
               canAssignOthers={canReassignLeads(currentAccount?.role)}
@@ -120,7 +121,8 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
           firstName={contact.firstName}
           lastName={contact.lastName}
           phones={contact.phones}
-          emails={contact.emails}
+          emails={emailView.rows}
+          emailPrivacy={emailView.privacy}
           showProfileLink={false}
           canEditContactDetails={canEditContactDetails(currentAccount)}
         />
@@ -226,7 +228,7 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
               </TabsContent>
 
               <TabsContent value="activity" className="pt-4">
-                <ActivityTimeline activities={contact.activities} contactId={contact.id} />
+                <ActivityTimeline activities={activities} contactId={contact.id} />
               </TabsContent>
 
               <TabsContent value="files" className="pt-4">

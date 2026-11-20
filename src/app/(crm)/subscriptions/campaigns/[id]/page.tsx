@@ -7,6 +7,9 @@ import { canViewSubscriptions } from "@/lib/permissions";
 import { getMarketingCampaignDetail } from "@/server/queries/marketing-campaigns";
 import { getSubscriberCounts } from "@/server/queries/subscribers";
 import { CampaignForm } from "@/components/subscriptions/campaign-form";
+import { CampaignDeliveryPanel } from "@/components/subscriptions/campaign-delivery-panel";
+import { getCampaignAnalytics } from "@/server/actions/campaign-delivery";
+import { parseStoredDesign } from "@/lib/campaign-blocks";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CAMPAIGN_STATUS_META, MARKETING_SEND_STATUS_META } from "@/lib/status-meta";
@@ -27,6 +30,10 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
   // needs the same live subscriber counts DRAFT already gets, to compute
   // how many are still left.
   const counts = campaign.status !== "SENT" ? await getSubscriberCounts(current!.companyId) : null;
+  // Background delivery: queued / scheduled / paused / cancelled campaigns (and any being sent by the worker) are controlled and measured from the delivery panel.
+  const analytics = await getCampaignAnalytics(campaign.id);
+  const managedByWorker = !!campaign.queuedAt || ["QUEUED", "SCHEDULED", "PAUSED", "CANCELLED"].includes(campaign.status);
+  const builtWithBuilder = parseStoredDesign(campaign.designJson) !== null;
   const meta = CAMPAIGN_STATUS_META[campaign.status];
   const remaining = campaign.status === "SENDING" ? Math.max(0, (counts?.subscribed ?? 0) - campaign._count.sends) : undefined;
 
@@ -40,6 +47,14 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         <StatusBadge label={meta.label} tone={meta.tone} />
       </div>
 
+      {campaign.status === "DRAFT" && builtWithBuilder && (
+        <Link href={`/subscriptions/campaigns/builder?id=${campaign.id}`} className="inline-flex text-sm text-primary hover:underline">Edit in the builder</Link>
+      )}
+
+      {analytics && (managedByWorker || campaign.status === "SENDING" || campaign.status === "SENT") && (
+        <CampaignDeliveryPanel campaignId={campaign.id} initial={analytics} canQueue={campaign.status === "DRAFT"} />
+      )}
+
       <CampaignForm
         campaignId={campaign.id}
         campaignName={campaign.name}
@@ -50,10 +65,10 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         excludedCount={counts?.unsubscribed ?? 0}
         readOnly={campaign.status !== "DRAFT"}
         canDelete={campaign.status === "DRAFT"}
-        remaining={remaining}
+        remaining={managedByWorker ? undefined : remaining}
       />
 
-      {(campaign.status === "SENT" || campaign.status === "SENDING") && (
+      {(campaign.status === "SENT" || campaign.status === "SENDING" || campaign.status === "PAUSED" || campaign.status === "CANCELLED") && (
         <Card className="shadow-none">
           <CardHeader><CardTitle className="text-sm font-medium">Delivery Status ({campaign.sends.length}{campaign.sends.length >= 200 ? "+" : ""})</CardTitle></CardHeader>
           <CardContent>

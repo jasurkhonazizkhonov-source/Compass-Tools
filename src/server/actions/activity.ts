@@ -3,6 +3,8 @@
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { leadVisibilityWhere, contactVisibilityWhere } from "@/server/visibility";
+import { getEmailViewer, revealedContactIdsToday } from "@/server/privacy/customer-email";
+import { maskEmailsInText } from "@/lib/customer-email-mask";
 
 // Pass 6 (§32.C) — getLeadDetail/getContactDetail's own `activities` include
 // stays bounded at 30 (unchanged, still the fast path every page load takes
@@ -21,9 +23,11 @@ export async function loadMoreActivities(params: { leadId?: string; contactId?: 
   const actor = await getCurrentAccount();
   const viewer = actor ? { id: actor.id, role: actor.role, companyId: actor.companyId } : null;
 
+  let ownerContactId: string | undefined = params.contactId;
   if (params.leadId) {
-    const visible = await prisma.lead.findFirst({ where: { id: params.leadId, ...leadVisibilityWhere(viewer) }, select: { id: true } });
+    const visible = await prisma.lead.findFirst({ where: { id: params.leadId, ...leadVisibilityWhere(viewer) }, select: { id: true, contactId: true } });
     if (!visible) throw new Error("Lead not found");
+    ownerContactId = visible.contactId;
   } else if (params.contactId) {
     const visible = await prisma.contact.findFirst({ where: { id: params.contactId, ...contactVisibilityWhere(viewer) }, select: { id: true } });
     if (!visible) throw new Error("Contact not found");
@@ -40,5 +44,11 @@ export async function loadMoreActivities(params: { leadId?: string; contactId?: 
     include: { actor: { select: ACCOUNT_NAME_SELECT } },
   });
 
-  return { activities, hasMore: activities.length === ACTIVITY_PAGE_SIZE };
+  // Customer-email privacy: an activity description can hold an address ("Primary email updated to ..."). A viewer who may not see complete addresses - and has not
+  // revealed this customer today - gets them masked, the same as the first page of the timeline.
+  const emailViewer = actor ? await getEmailViewer(actor) : null;
+  const full = !!emailViewer && (!emailViewer.restricted || (!!ownerContactId && (await revealedContactIdsToday(emailViewer, [ownerContactId])).has(ownerContactId)));
+  const shown = full ? activities : activities.map((a) => ({ ...a, description: maskEmailsInText(a.description) }));
+
+  return { activities: shown, hasMore: activities.length === ACTIVITY_PAGE_SIZE };
 }

@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { InlineEditField } from "@/components/crm/inline-edit-field";
 import { PhoneValueInput } from "@/components/crm/phone-input";
 import { PhoneManager, EmailManager } from "@/components/contacts/phone-email-manager";
+import { CustomerEmailReveal } from "@/components/crm/customer-email-reveal";
 import { formatPhoneInternational } from "@/lib/phone";
 import { updatePrimaryPhoneNumber, updatePrimaryEmailAddress, updateContactField } from "@/server/actions/contacts";
 
@@ -23,6 +24,7 @@ export function CustomerInfoCard({
   showProfileLink = true,
   leadId,
   canEditContactDetails = true,
+  emailPrivacy,
 }: {
   contactId: string;
   firstName: string;
@@ -39,7 +41,11 @@ export function CustomerInfoCard({
   /** Whether the viewer may change phone numbers and email addresses (an Administrator's per-user switch). When false the values are shown read-only.
    * The server actions enforce the same rule; this only avoids offering controls that would be refused. Names stay editable. */
   canEditContactDetails?: boolean;
+  /** Customer-email privacy. Present only for a viewer who is subject to masking. `emails` then already holds the viewer-visible form (masked until revealed). */
+  emailPrivacy?: { masked: boolean; used: number; limit: number };
 }) {
+  const primaryEmail = emails.find((e) => e.isPrimary)?.email;
+  const emailMasked = emailPrivacy?.masked === true;
   return (
     <Card className="shadow-none">
       <CardHeader className="flex flex-row items-center justify-between">
@@ -81,13 +87,15 @@ export function CustomerInfoCard({
 
         <InlineEditField<string>
           label="Primary Email"
-          currentValue={emails.find((e) => e.isPrimary)?.email ?? ""}
-          displayValue={emails.find((e) => e.isPrimary)?.email ?? "Not set"}
+          // A masked value is never an editing starting point: an edit while masked starts blank and replaces the address.
+          currentValue={emailMasked ? "" : primaryEmail ?? ""}
+          displayValue={primaryEmail ?? "Not set"}
           editor={(value, setValue) => <Input type="email" value={value} onChange={(e) => setValue(e.target.value)} />}
           onSave={(v) => updatePrimaryEmailAddress(contactId, v, leadId)}
           successMessage="Email updated"
           readOnly={!canEditContactDetails}
         />
+        {emailPrivacy && <CustomerEmailReveal contactId={contactId} leadId={leadId} masked={emailPrivacy.masked} used={emailPrivacy.used} limit={emailPrivacy.limit} />}
 
         <Separator />
         <PhoneManager contactId={contactId} phones={phones} leadId={leadId} readOnly={!canEditContactDetails} />

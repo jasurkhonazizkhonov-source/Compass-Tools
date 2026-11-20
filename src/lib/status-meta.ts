@@ -135,6 +135,10 @@ export const CAMPAIGN_STATUS_META: Record<CampaignStatus, { label: string; tone:
   DRAFT: { label: "Draft", tone: "neutral" },
   SENDING: { label: "Sending", tone: "warning" },
   SENT: { label: "Sent", tone: "success" },
+  SCHEDULED: { label: "Scheduled", tone: "info" },
+  QUEUED: { label: "Queued", tone: "info" },
+  PAUSED: { label: "Paused", tone: "warning" },
+  CANCELLED: { label: "Cancelled", tone: "neutral" },
 };
 
 export const MARKETING_SEND_STATUS_META: Record<MarketingSendStatus, { label: string; tone: StatusTone }> = {
@@ -142,6 +146,8 @@ export const MARKETING_SEND_STATUS_META: Record<MarketingSendStatus, { label: st
   SENT: { label: "Sent", tone: "success" },
   FAILED: { label: "Failed", tone: "destructive" },
   SKIPPED_UNSUBSCRIBED: { label: "Skipped (Unsubscribed)", tone: "neutral" },
+  SKIPPED_SUPPRESSED: { label: "Skipped (Suppressed)", tone: "neutral" },
+  UNKNOWN: { label: "Outcome unknown", tone: "warning" },
 };
 
 export const PRIORITY_META: Record<Priority, { label: string; tone: StatusTone }> = {

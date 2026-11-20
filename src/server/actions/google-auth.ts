@@ -5,6 +5,7 @@ import { authorizeGoogleUser } from "@/server/auth/google-authorization";
 import { bootstrapInitialAdminIfEligible } from "@/server/auth/initial-admin-bootstrap";
 import { establishSession } from "@/server/auth/establish-session";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
+import { recordFailedSignIn } from "@/server/auth/failed-sign-in";
 
 // Pass 37 — real bug found and fixed: this action used to call next/
 // navigation's redirect() directly on both the success and denial paths.
@@ -85,6 +86,8 @@ export type GoogleSignInResult =
 export async function signInWithGoogle(idToken: string): Promise<GoogleSignInResult> {
   const verified = await verifyGoogleIdToken(idToken);
   if (!verified) {
+    // Identity could NOT be verified, so no name or email is recorded (nothing is read out of the unverified credential); the trusted IP, time and reason are.
+    await recordFailedSignIn({ method: "GOOGLE_OAUTH", reasonCode: "GOOGLE_VERIFICATION_FAILED", credential: typeof idToken === "string" ? idToken : undefined });
     return { ok: false, reason: "GOOGLE_VERIFICATION_FAILED" };
   }
 
@@ -107,10 +110,12 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
   }
   if (bootstrap.outcome === "not_initialized") {
     console.warn("[google-auth] sign-in attempted before the CRM was initialized (INITIAL_ADMIN_EMAIL is not configured)");
+    await recordFailedSignIn({ method: "GOOGLE_OAUTH", reasonCode: "NOT_INITIALIZED", credential: idToken, verifiedEmail: verified.email, verifiedFullName: verified.name });
     return { ok: false, reason: "NOT_INITIALIZED" };
   }
   if (bootstrap.outcome === "email_mismatch") {
     console.warn("[google-auth] initial-admin bootstrap attempted by a Google account that does not match INITIAL_ADMIN_EMAIL");
+    await recordFailedSignIn({ method: "GOOGLE_OAUTH", reasonCode: "BOOTSTRAP_EMAIL_MISMATCH", credential: idToken, verifiedEmail: verified.email, verifiedFullName: verified.name });
     return { ok: false, reason: "BOOTSTRAP_EMAIL_MISMATCH" };
   }
 
@@ -128,6 +133,13 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
     // disabled account) is never surfaced to the client; ACCESS_DENIED
     // shows the same generic message regardless of which one this was.
     console.warn(`[google-auth] CRM access denied for verified Google email (reason=${authResult.reason})`);
+    await recordFailedSignIn({
+      method: "GOOGLE_OAUTH",
+      reasonCode: authResult.reason === "ACCOUNT_DISABLED" ? "ACCOUNT_DISABLED" : "UNKNOWN_ACCOUNT",
+      credential: idToken,
+      verifiedEmail: verified.email,
+      verifiedFullName: verified.name,
+    });
     return { ok: false, reason: "ACCESS_DENIED" };
   }
 

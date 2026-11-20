@@ -15,6 +15,8 @@ import { applyLeadStatusChange } from "@/server/lead-status-change";
 import { runAfterResponse } from "@/lib/run-after-response";
 import { storageKeysForLeads, purgeStorageObjects } from "@/server/attachments/cleanup";
 import { sendCrmEmail } from "@/server/email/crm-email";
+import { getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 import { normalizePhoneNumberWithRecovery, phoneCountryMismatch, isSupportedCountry, type CountryCode } from "@/lib/phone";
 import { duplicateContactWhere } from "@/lib/contact-matching";
 import { leadSegmentsSchema, mirrorFromSegments } from "@/lib/lead-itinerary";
@@ -39,7 +41,9 @@ const createLeadSchema = z
     phoneCountry: z.string().optional(),
     // Required for a manually-created lead — the customer must be
     // reachable by email as well as phone.
-    email: z.string().trim().min(1, "Email address is required").email(),
+    // Required unless an existing customer was pre-selected: a viewer who may only see that customer's MASKED address cannot retype it, and the customer's
+    // address on file is already there (see the superRefine below).
+    email: z.union([z.literal(""), z.string().trim().email()]),
 
     // From/To/Departure Date are all required; Return Date is required only
     // when tripType is ROUND_TRIP (enforced below via .superRefine, since
@@ -67,6 +71,9 @@ const createLeadSchema = z
     assignedAgentId: z.string().optional(),
   })
   .superRefine((data, ctx) => {
+    if (!data.contactId && !data.email.trim()) {
+      ctx.addIssue({ code: "custom", path: ["email"], message: "Email address is required" });
+    }
     if (data.tripType === "ROUND_TRIP" && !data.returnDate) {
       ctx.addIssue({ code: "custom", path: ["returnDate"], message: "Return date is required for a round trip" });
     }
@@ -126,7 +133,7 @@ export async function findDuplicateContact(phone: string, email: string | undefi
   const actor = await getCurrentAccount();
   if (!actor) return null;
 
-  return prisma.contact.findFirst({
+  const found = await prisma.contact.findFirst({
     where: { companyId: actor.companyId, OR: orConditions },
     include: {
       leads: { include: { departureAirport: true, arrivalAirport: true } },
@@ -138,6 +145,9 @@ export async function findDuplicateContact(phone: string, email: string | undefi
       owner: { select: { id: true, fullName: true } },
     },
   });
+  // The match is shown to the agent only as "this customer already exists"; a restricted viewer never gets the stored address back.
+  if (found && (await getEmailViewer(actor)).restricted) return { ...found, primaryEmail: found.primaryEmail ? maskCustomerEmail(found.primaryEmail) : null };
+  return found;
 }
 
 export async function createLead(input: CreateLeadInput) {
@@ -236,7 +246,8 @@ export async function createLead(input: CreateLeadInput) {
     if (mayAttachDetails && normalizedPhone && !existingPhones.some((p) => p.number === normalizedPhone)) {
       await addContactPhone({ contactId, number: normalizedPhone, type: "MOBILE", isPrimary: false });
     }
-    if (mayAttachDetails && parsed.email) {
+    // An address containing "*" is a masked display value that was echoed back, never a real address to store.
+    if (mayAttachDetails && parsed.email && !parsed.email.includes("*")) {
       const existingEmails = await prisma.contactEmail.findMany({ where: { contactId }, select: { email: true } });
       if (!existingEmails.some((e) => e.email === parsed.email)) {
         await addContactEmail({ contactId, email: parsed.email, type: "PERSONAL", isPrimary: false });
@@ -905,7 +916,10 @@ const leadEmailSchema = z.object({
   to: z
     .string()
     .min(1)
-    .refine((v) => v.split(",").map((a) => a.trim()).every((a) => EMAIL_RE.test(a)), "Invalid email address"),
+    .refine((v) => v.split(",").map((a) => a.trim()).every((a) => EMAIL_RE.test(a)), "Invalid email address")
+    .optional(),
+  // Customer-email privacy: the browser names recipients by opaque id; the server looks the address up (see resolveSendRecipients).
+  recipientIds: z.array(z.string().min(1).max(80)).max(10).optional(),
   subject: z.string().min(1).max(300),
   body: z.string().min(1).max(20000),
 });
@@ -946,9 +960,10 @@ export async function sendLeadEmail(leadId: string, input: z.infer<typeof leadEm
     [lead.contact.primaryEmail, ...lead.contact.emails.map((e) => e.email)].filter((e): e is string => !!e)
   );
 
+  const to = await resolveSendRecipients(await getEmailViewer(actor), lead.contactId, data);
   await sendCrmEmail({
     actor,
-    to: data.to,
+    to,
     subject: data.subject,
     body: data.body,
     allowedRecipients,

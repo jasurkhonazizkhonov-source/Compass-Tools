@@ -11,7 +11,9 @@ import { getAirlineConfirmationRecipients, sendAirlineConfirmationEmail } from "
 import { safeActionMessage } from "@/lib/safe-action-message";
 
 type Loaded = {
-  recipients: Array<{ email: string; sources: Array<"booking-form" | "contact"> }>;
+  /** `email` is what this viewer may see (masked until revealed); `id` is the opaque handle the server resolves at send time. Without an id (older shape) the
+   * address itself is the key. */
+  recipients: Array<{ id?: string; email: string; masked?: boolean; sources: Array<"booking-form" | "contact"> }>;
   defaultSelected: string[];
   sender: { fullName: string; email: string } | null;
 };
@@ -99,7 +101,8 @@ export function AirlineConfirmationDialog({
     setFormError(null);
     startSend(async () => {
       try {
-        const result = await sendAirlineConfirmationEmail(bookingId, { resend: sentBefore, recipients: [...selected] });
+        const byId = loaded.recipients.every((r) => r.id);
+        const result = await sendAirlineConfirmationEmail(bookingId, byId ? { resend: sentBefore, recipientIds: [...selected] } : { resend: sentBefore, recipients: [...selected] });
         if (!result.ok) {
           setFormError(result.error);
           toast.error(result.error);
@@ -158,7 +161,7 @@ export function AirlineConfirmationDialog({
             <div className="flex items-center justify-between">
               <Label className="text-xs font-medium text-muted-foreground">Send to</Label>
               <div className="flex items-center gap-3 text-xs">
-                <button type="button" className="text-primary hover:underline disabled:opacity-50" disabled={allSelected || sending} onClick={() => setSelected(new Set(loaded.recipients.map((r) => r.email)))}>
+                <button type="button" className="text-primary hover:underline disabled:opacity-50" disabled={allSelected || sending} onClick={() => setSelected(new Set(loaded.recipients.map((r) => r.id ?? r.email)))}>
                   Select all
                 </button>
                 <button type="button" className="text-primary hover:underline disabled:opacity-50" disabled={selected.size === 0 || sending} onClick={() => setSelected(new Set())}>
@@ -168,8 +171,8 @@ export function AirlineConfirmationDialog({
             </div>
             <div className="space-y-1 rounded-md border p-2">
               {loaded.recipients.map((r) => (
-                <label key={r.email} className="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1.5 text-sm hover:bg-muted/50">
-                  <Checkbox className="mt-0.5" checked={selected.has(r.email)} onCheckedChange={() => toggle(r.email)} disabled={sending} aria-label={r.email} />
+                <label key={r.id ?? r.email} className="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1.5 text-sm hover:bg-muted/50">
+                  <Checkbox className="mt-0.5" checked={selected.has(r.id ?? r.email)} onCheckedChange={() => toggle(r.id ?? r.email)} disabled={sending} aria-label={r.email} />
                   <span className="min-w-0">
                     <span className="block break-all">{r.email}</span>
                     <span className="block text-xs text-muted-foreground">

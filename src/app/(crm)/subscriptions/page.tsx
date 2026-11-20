@@ -9,6 +9,8 @@ import { canViewSubscriptions } from "@/lib/permissions";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { SubscriberList } from "@/components/subscriptions/subscriber-list";
+import { SubscriberImportPanel } from "@/components/subscriptions/subscriber-import-panel";
+import { listSubscriberImportJobs } from "@/server/actions/subscriber-imports";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { PaginationControls } from "@/components/crm/pagination-controls";
@@ -42,7 +44,7 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
   const campaignsPageSize = typeof sp.campaignsPageSize === "string" ? Number(sp.campaignsPageSize) : undefined;
   const subscribersPageSize = typeof sp.subscribersPageSize === "string" ? Number(sp.subscribersPageSize) : undefined;
   const statusParam = typeof sp.status === "string" ? sp.status : "all";
-  const status: SubscriberStatus | undefined = statusParam === "active" ? "SUBSCRIBED" : statusParam === "unsubscribed" ? "UNSUBSCRIBED" : undefined;
+  const status: SubscriberStatus | undefined = statusParam === "active" ? "SUBSCRIBED" : statusParam === "unsubscribed" ? "UNSUBSCRIBED" : statusParam === "suppressed" ? "SUPPRESSED" : undefined;
 
   const current = await getCurrentAccount();
   if (!canViewSubscriptions(current?.role)) notFound();
@@ -56,6 +58,7 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
     getSubscriberCounts(current!.companyId),
     getMarketingCampaigns({ companyId: current!.companyId, page: campaignsPage, pageSize: campaignsPageSize }),
   ]);
+  const importJobs = await listSubscriberImportJobs(10);
   redirectToValidPageIfNeeded(sp, "/subscriptions", campaignsPage, campaignPageCount, "campaignsPage");
   redirectToValidPageIfNeeded(sp, "/subscriptions", subscribersPage, subscriberPageCount, "subscribersPage");
 
@@ -64,16 +67,21 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
       <div>
         <h1 className="text-2xl font-semibold tracking-tight">Subscriptions</h1>
         <p className="text-sm text-muted-foreground">
-          {counts.total} subscriber{counts.total === 1 ? "" : "s"} · {counts.subscribed} subscribed · {counts.unsubscribed} unsubscribed
+          {counts.total} subscriber{counts.total === 1 ? "" : "s"} · {counts.subscribed} subscribed · {counts.unsubscribed} unsubscribed · {counts.suppressed} suppressed
         </p>
       </div>
 
       <div className="space-y-3">
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-base font-semibold flex items-center gap-2"><Send className="h-4 w-4" /> Marketing Campaigns</h2>
-          <Button asChild size="sm">
-            <Link href="/subscriptions/campaigns/new">New Campaign</Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button asChild size="sm" variant="outline">
+              <Link href="/subscriptions/campaigns/builder">New Campaign (builder)</Link>
+            </Button>
+            <Button asChild size="sm">
+              <Link href="/subscriptions/campaigns/new">New Campaign</Link>
+            </Button>
+          </div>
         </div>
         {campaigns.length === 0 ? (
           <EmptyState icon={Send} title="No campaigns yet" description="Create a marketing email campaign to reach your subscribers." />
@@ -118,6 +126,7 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
 
       <div className="space-y-3">
         <h2 className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Subscribers</h2>
+        <SubscriberImportPanel initialJobs={importJobs} />
         <SubscriberList subscribers={subscribers} counts={counts} statusParam={statusParam} status={status} filteredTotal={subscriberTotal} />
         <PaginationControls page={subscribersPage} pageCount={subscriberPageCount} total={subscriberTotal} pageSize={subscriberPageSize} pageParam="subscribersPage" pageSizeParam="subscribersPageSize" label="subscribers" />
       </div>

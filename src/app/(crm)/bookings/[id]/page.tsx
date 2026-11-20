@@ -23,6 +23,8 @@ import { getBookingType, BOOKING_TYPE_LABELS } from "@/lib/booking-type";
 import { Badge } from "@/components/ui/badge";
 import { resolveAirlineConfirmations } from "@/lib/airline-confirmations";
 import { resolveAirlineCodes } from "@/server/queries/reference-data";
+import { getEmailViewer, revealedContactIdsToday } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 
 export const dynamic = "force-dynamic";
 
@@ -36,6 +38,12 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
     if (await bookingRecordExists(id)) return <AccessRestricted />;
     notFound();
   }
+
+  // Customer-email privacy: the address typed on the signed Booking Form is a customer email like any other.
+  const emailViewer = currentAccount ? await getEmailViewer(currentAccount) : null;
+  const emailFull = !!emailViewer && (!emailViewer.restricted || (await revealedContactIdsToday(emailViewer, [booking.contactId])).has(booking.contactId));
+  const emailIsMasked = !emailFull;
+  const shownContactEmail = booking.contactEmail ? (emailFull ? booking.contactEmail : maskCustomerEmail(booking.contactEmail)) : "";
 
   // Admin-only retained security code: existence/expiry only (never the value); null for every other viewer.
   const cvvStates = await getBookingCvvStates(currentAccount, booking.id);
@@ -174,7 +182,8 @@ export default async function BookingDetailPage({ params }: { params: Promise<{ 
             <CardHeader><CardTitle className="text-sm font-medium">Contact Information</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-2 gap-3">
               <Field label="Phone" value={booking.contactPhone || "—"} />
-              <Field label="Email" value={booking.contactEmail || "—"} />
+              <Field label="Email" value={shownContactEmail || "—"} />
+              {emailIsMasked && booking.contactEmail && <p className="col-span-2 text-xs text-muted-foreground">Hidden for privacy. Use Reveal on this customer&apos;s contact or lead page to see the full address.</p>}
             </CardContent>
           </Card>
 

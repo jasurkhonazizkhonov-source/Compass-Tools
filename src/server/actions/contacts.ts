@@ -11,6 +11,7 @@ import { touchContactLeads } from "@/server/record-touch";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { performContactReassignment, recheckContactOwnershipMatch } from "@/server/contact-reassignment";
 import { sendCrmEmail } from "@/server/email/crm-email";
+import { getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
 import type { AccountRole } from "@/generated/prisma/client";
 import { storageKeysForLeads, purgeStorageObjects } from "@/server/attachments/cleanup";
 
@@ -443,7 +444,10 @@ const contactEmailSchema = z.object({
   to: z
     .string()
     .min(1)
-    .refine((v) => v.split(",").map((a) => a.trim()).every((a) => CONTACT_EMAIL_RE.test(a)), "Invalid email address"),
+    .refine((v) => v.split(",").map((a) => a.trim()).every((a) => CONTACT_EMAIL_RE.test(a)), "Invalid email address")
+    .optional(),
+  // Customer-email privacy: recipients are named by opaque id and resolved on the server (see resolveSendRecipients).
+  recipientIds: z.array(z.string().min(1).max(80)).max(10).optional(),
   subject: z.string().min(1).max(300),
   body: z.string().min(1).max(20000),
 });
@@ -465,9 +469,10 @@ export async function sendContactEmail(contactId: string, input: z.infer<typeof 
     [contact.primaryEmail, ...contact.emails.map((e) => e.email)].filter((e): e is string => !!e)
   );
 
+  const to = await resolveSendRecipients(await getEmailViewer(actor), contactId, data);
   await sendCrmEmail({
     actor,
-    to: data.to,
+    to,
     subject: data.subject,
     body: data.body,
     allowedRecipients,

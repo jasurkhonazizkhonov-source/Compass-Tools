@@ -7,8 +7,9 @@ import { renderSequenceTemplate, type SequenceVariableContext } from "@/lib/sequ
 import { getCompanyForAccountId } from "@/server/queries/company";
 import { resolveBaseUrl } from "@/lib/company-config";
 import { safeErrorTag } from "@/lib/safe-error-log";
-import type { Prisma } from "@/generated/prisma/client";
 import { IN_FLIGHT_PREFIX, UNCERTAIN_PREFIX, failureAttempts, openDelivery } from "@/lib/sequence-delivery";
+import { assertTransition } from "@/lib/sequence-delivery-state";
+import { pollerStopRequested } from "@/server/background-poller";
 
 // The sequence-step sweep, kept OUT of the "use server" module src/server/actions/sequences.ts on purpose: everything exported from a "use server" file
 // is a public Server Action with no check of its own. The sweep's legitimate callers are the cron route /api/cron/sequences (behind CRON_SECRET) and
@@ -91,8 +92,8 @@ const RETRY_BACKOFF_MS = [10 * 60_000, 60 * 60_000];
  * environment, so the Sequences UI also exposes a manual "Process Due Steps"
  * action for testing.
  */
-export async function runDueSequenceSteps(options: { enrollmentIds?: string[] } = {}) {
-  const due = await prisma.sequenceEnrollment.findMany({
+function findDueEnrollments(enrollmentIds?: string[]) {
+  return prisma.sequenceEnrollment.findMany({
     // An enrollment whose sequence has been switched to Inactive is left exactly as it is (still ACTIVE, same step, same nextSendAt): nothing is sent
     // while the sequence is off, and the enrollment is picked up again as soon as it is switched back on. An enrollment waiting for a person to resolve an
     // unconfirmed delivery has nextSendAt = null, so it is never selected here.
@@ -102,7 +103,7 @@ export async function runDueSequenceSteps(options: { enrollmentIds?: string[] } 
       sequence: { isActive: true },
       // The approved-enrollment flow sends the FIRST step of just the enrollment(s) it created, right away, instead of waiting for the next scheduler tick.
       // Every other rule (claim lease, delivery marker, dispatch-time re-check, retry limits) is identical to a scheduled run.
-      ...(options.enrollmentIds ? { id: { in: options.enrollmentIds } } : {}),
+      ...(enrollmentIds ? { id: { in: enrollmentIds } } : {}),
     },
     include: {
       sequence: { include: { steps: { orderBy: { order: "asc" } } } },
@@ -117,11 +118,17 @@ export async function runDueSequenceSteps(options: { enrollmentIds?: string[] } 
     },
     take: DUE_BATCH_SIZE,
   });
+}
+
+export async function runDueSequenceSteps(options: { enrollmentIds?: string[] } = {}) {
+  const due = await findDueEnrollments(options.enrollmentIds);
 
   let sent = 0;
   let failed = 0;
 
   for (const enrollment of due) {
+    // Shutdown requested: take on no further enrollment (the unclaimed ones stay due and are picked up by the next process).
+    if (pollerStopRequested()) break;
     // One enrollment failing for an unexpected reason (a database hiccup in the middle) must never stop the others. If it happened after a send was
     // started, the in-flight marker is still there, so the next pickup treats the outcome as unknown instead of sending again.
     try {
@@ -142,9 +149,8 @@ export async function runDueSequenceSteps(options: { enrollmentIds?: string[] } 
   return { processed: due.length, sent, failed };
 }
 
-type DueEnrollment = Prisma.SequenceEnrollmentGetPayload<{
-  include: { sequence: { include: { steps: true } }; lead: { include: { contact: true; departureAirport: true; arrivalAirport: true; assignedAgent: true } } };
-}>;
+// The shape of one row exactly as the query in runDueSequenceSteps returns it (derived from the real client, which applies the global omit rules).
+type DueEnrollment = Awaited<ReturnType<typeof findDueEnrollments>>[number];
 
 async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "failed" | "skipped"> {
   // Atomic claim — see CLAIM_LEASE_MS's own comment above for the full reasoning. Must happen before ANY side effect for this enrollment, including the
@@ -199,12 +205,13 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
     // An earlier attempt at this very step never reported its outcome (the process died, or the call never came back). It may have been delivered, so it is
     // NOT sent again automatically: the enrollment waits (nextSendAt = null, so no sweep selects it) until a person confirms what happened.
     if (open.kind === "IN_FLIGHT" && open.log.id) {
+      assertTransition("SENDING", "UNKNOWN"); // an abandoned in-flight attempt becomes an unknown outcome
       await prisma.sequenceStepLog.update({
         where: { id: open.log.id },
         data: { error: `${UNCERTAIN_PREFIX} a send was started but its result was never recorded` },
       });
     }
-    const held = await prisma.sequenceEnrollment.updateMany({ where: { id: enrollment.id, status: "ACTIVE" }, data: { nextSendAt: null } });
+    const held = await prisma.sequenceEnrollment.updateMany({ where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx }, data: { nextSendAt: null } });
     if (held.count > 0) {
       await logActivity({
         leadId: enrollment.leadId,
@@ -230,9 +237,12 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
   // Last line of defence, atomic with respect to unenrollLead: the claim above was taken a few statements ago and rendering took time, so confirm RIGHT NOW
   // that the enrollment is still ACTIVE. This conditional update touches nothing but the lease it already holds; if an unenroll (or anything else that
   // ended the enrollment) committed first, no row matches and nothing is sent.
+  // The check also proves the lease is STILL OURS: nextSendAt must equal the value this worker wrote when it claimed. If this worker stalled for longer than
+  // the lease (a slow database, a long pause) another worker may have legitimately claimed the same row in the meantime - its claim changed nextSendAt, so
+  // this update matches nothing and this worker stops instead of also sending. On success the lease is renewed for the duration of the send.
   const stillEligible = await prisma.sequenceEnrollment.updateMany({
-    where: { id: enrollment.id, status: "ACTIVE" },
-    data: { nextSendAt: leaseUntil },
+    where: { id: enrollment.id, status: "ACTIVE", nextSendAt: leaseUntil },
+    data: { nextSendAt: new Date(Date.now() + CLAIM_LEASE_MS) },
   });
   if (stillEligible.count === 0) return "skipped";
 
@@ -255,6 +265,7 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
   if (result.ok) {
     // The send is only RECORDED as sent now, after Gmail accepted it. Until this update commits the row still says in-flight, so a crash right here is
     // caught as an unknown outcome on the next pickup rather than resent.
+    assertTransition("SENDING", "SENT");
     await prisma.sequenceStepLog.update({ where: { id: marker.id }, data: { status: "SENT", sentAt: new Date(), error: null } });
     await prisma.emailLog.create({
       data: {
@@ -270,10 +281,10 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
     });
     const nextIdx = enrollment.currentStepIdx + 1;
     const nextStep = enrollment.sequence.steps[nextIdx];
-    // Conditional on ACTIVE: if the enrollment was unenrolled while this email was in flight, the email that already went out stays in the history but the
+    // Conditional on ACTIVE AND on the step this worker read (a stale worker - one that outlived its lease - can never overwrite what a newer worker, a person's restart or a resolve already wrote): if the enrollment was unenrolled while this email was in flight, the email that already went out stays in the history but the
     // enrollment is not resurrected or overwritten.
     await prisma.sequenceEnrollment.updateMany({
-      where: { id: enrollment.id, status: "ACTIVE" },
+      where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx },
       data: nextStep
         ? { currentStepIdx: nextIdx, nextSendAt: new Date(Date.now() + nextStep.delayMinutes * 60_000) }
         : { status: "COMPLETED", completedAt: new Date(), nextSendAt: null, currentStepIdx: nextIdx },
@@ -284,8 +295,9 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
   // The request may have reached Gmail and been accepted even though no confirmation came back (timeout, dropped connection, 5xx). Do NOT retry and do NOT
   // call it failed: mark it unconfirmed and hold the enrollment for a person. (No EmailLog row: it would have to claim either "sent" or "failed".)
   if (result.ambiguous) {
+    assertTransition("SENDING", "UNKNOWN");
     await prisma.sequenceStepLog.update({ where: { id: marker.id }, data: { error: `${UNCERTAIN_PREFIX} ${result.error}` } });
-    const held = await prisma.sequenceEnrollment.updateMany({ where: { id: enrollment.id, status: "ACTIVE" }, data: { nextSendAt: null } });
+    const held = await prisma.sequenceEnrollment.updateMany({ where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx }, data: { nextSendAt: null } });
     if (held.count > 0) {
       await logActivity({
         leadId: enrollment.leadId,
@@ -297,6 +309,7 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
   }
 
   // A DEFINITE failure: Gmail refused, or was never asked. The marker becomes an ordinary failed attempt.
+  assertTransition("SENDING", "FAILED");
   await prisma.sequenceStepLog.update({ where: { id: marker.id }, data: { error: result.error } });
   await prisma.emailLog.create({
     data: {
@@ -320,7 +333,7 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
   const attempts = permanent ? MAX_SEND_ATTEMPTS : failureAttempts([...history, { status: "FAILED", error: result.error, createdAt: new Date() }]);
   if (permanent || attempts >= MAX_SEND_ATTEMPTS) {
     const ended = await prisma.sequenceEnrollment.updateMany({
-      where: { id: enrollment.id, status: "ACTIVE" },
+      where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx },
       data: { status: "FAILED", nextSendAt: null },
     });
     if (ended.count > 0) {
@@ -332,7 +345,7 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
     }
   } else {
     await prisma.sequenceEnrollment.updateMany({
-      where: { id: enrollment.id, status: "ACTIVE" },
+      where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx },
       data: { nextSendAt: new Date(Date.now() + (RETRY_BACKOFF_MS[attempts - 1] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1])) },
     });
   }
@@ -348,6 +361,7 @@ async function processEnrollment(enrollment: DueEnrollment): Promise<"sent" | "f
 export async function drainDueSequenceSteps(maxBatches = 10) {
   const total = { processed: 0, sent: 0, failed: 0, batches: 0 };
   for (let i = 0; i < maxBatches; i++) {
+    if (pollerStopRequested()) break;
     const r = await runDueSequenceSteps();
     total.batches++;
     total.processed += r.processed;

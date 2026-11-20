@@ -86,7 +86,8 @@ describe("in-process poller (register)", () => {
     runDueTaskNotifications.mockRejectedValueOnce(new Error("db down")).mockResolvedValue({});
     await boot();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("[task-notifier]"), expect.any(Error));
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^\[task-notifier\] failed \(.+\)$/)); // the category only: no error object, no message text
+    expect(JSON.stringify(log.mock.calls)).not.toContain("db down");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(runDueTaskNotifications).toHaveBeenCalledTimes(2);
     log.mockRestore();
@@ -97,7 +98,8 @@ describe("in-process poller (register)", () => {
     drainDueSequenceSteps.mockRejectedValueOnce(new Error("provider down")).mockResolvedValue({ processed: 2, sent: 2, failed: 0, batches: 1 });
     await boot();
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(log).toHaveBeenCalledWith(expect.stringContaining("[sequence-sender]"), expect.any(Error));
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^\[sequence-sender\] failed \(.+\)$/));
+    expect(JSON.stringify(log.mock.calls)).not.toContain("provider down");
     expect(runDueTaskNotifications).toHaveBeenCalledTimes(1);
     expect(getSchedulerStatus().jobs.sequences.lastOk).toBe(false);
     expect(sequenceSchedulerState(false)).toBe("stalled");

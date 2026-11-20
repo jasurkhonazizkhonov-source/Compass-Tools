@@ -19,6 +19,7 @@ import {
 import { sendLeadEmail } from "@/server/actions/leads";
 import { sendContactEmail } from "@/server/actions/contacts";
 import { respondToUnsubscribedSubscriber } from "@/server/actions/subscribers";
+import type { RecipientOption } from "@/lib/customer-email-mask";
 
 /**
  * Part 2's original Leads-page Email button, generalized (Pass 6) so the
@@ -43,6 +44,7 @@ export function EmailComposerButton({
   triggerLabel,
   context,
   emails,
+  recipients,
   contactName,
   size = "icon-sm",
 }: {
@@ -66,22 +68,27 @@ export function EmailComposerButton({
    * re-verified server-side against the real Contact record before
    * sending — this list existing client-side is a UI convenience only,
    * never itself trusted as authorization. */
-  emails: string[];
+  emails?: string[];
+  /** Customer-email privacy: the recipients of a lead's/contact's own customer, as opaque ids + the label the viewer may see. When given, the browser never needs
+   * (and a restricted viewer never receives) the address - the server looks it up from the id at send time. `emails` is the plain-address form, kept for the
+   * subscriber reply path. */
+  recipients?: RecipientOption[];
   contactName: string;
   size?: "icon-sm" | "icon";
 }) {
+  const options: RecipientOption[] = recipients ?? (emails ?? []).map((a) => ({ id: a, display: a, address: a }));
   const [open, setOpen] = useState(false);
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState("");
-  const [selected, setSelected] = useState<Set<string>>(new Set(emails[0] ? [emails[0]] : []));
+  const [selected, setSelected] = useState<Set<string>>(new Set(options[0] ? [options[0].id] : []));
   const [isPending, startTransition] = useTransition();
 
-  if (emails.length === 0) return null;
+  if (options.length === 0) return null;
 
   function reset() {
     setSubject(defaultSubject);
     setBody("");
-    setSelected(new Set(emails[0] ? [emails[0]] : []));
+    setSelected(new Set(options[0] ? [options[0].id] : []));
   }
 
   function toggleRecipient(addr: string) {
@@ -104,7 +111,9 @@ export function EmailComposerButton({
     }
     startTransition(async () => {
       try {
-        const payload = { to: [...selected].join(", "), subject: subject.trim(), body: body.trim() };
+        const common = { subject: subject.trim(), body: body.trim() };
+        // Lead/contact sends name the recipients by id (the server resolves the addresses); the subscriber reply never carries a recipient at all.
+        const payload = recipients ? { ...common, recipientIds: [...selected] } : { ...common, to: [...selected].join(", ") };
         if (leadId) {
           await sendLeadEmail(leadId, payload);
         } else if (contactId) {
@@ -153,17 +162,17 @@ export function EmailComposerButton({
             {context}
             <div className="space-y-1.5">
               <Label>To</Label>
-              {emails.length > 1 ? (
+              {options.length > 1 ? (
                 <div className="space-y-1 rounded-md border p-2">
-                  {emails.map((addr) => (
-                    <label key={addr} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50 cursor-pointer">
-                      <Checkbox checked={selected.has(addr)} onCheckedChange={() => toggleRecipient(addr)} />
-                      <span className="truncate">{addr}</span>
+                  {options.map((o) => (
+                    <label key={o.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50 cursor-pointer">
+                      <Checkbox checked={selected.has(o.id)} onCheckedChange={() => toggleRecipient(o.id)} />
+                      <span className="truncate">{o.display}</span>
                     </label>
                   ))}
                 </div>
               ) : (
-                <Input value={emails[0]} disabled />
+                <Input value={options[0].display} disabled />
               )}
             </div>
             <div className="space-y-1.5">

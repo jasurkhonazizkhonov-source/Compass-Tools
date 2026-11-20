@@ -15,9 +15,9 @@ import {
   updateMarketingCampaign,
   deleteMarketingCampaign,
   sendMarketingCampaign,
-  sendTestMarketingCampaign,
   previewCampaignHtml,
 } from "@/server/actions/marketing-campaigns";
+import { queueCampaign, sendCampaignTest } from "@/server/actions/campaign-delivery";
 
 // What the preview iframe itself may load: its own inline styles and images only. No scripts, frames, forms or connections.
 const PREVIEW_CSP = "default-src 'none'; img-src https: http: data:; style-src 'unsafe-inline'; font-src https: data:";
@@ -132,7 +132,11 @@ export function CampaignForm({
     }
     startTransition(async () => {
       try {
-        await sendTestMarketingCampaign(campaignId);
+        const result = await sendCampaignTest(campaignId);
+        if (!result.ok) {
+          toast.error(result.error);
+          return;
+        }
         toast.success("Test email sent to your own address");
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to send test");
@@ -147,6 +151,26 @@ export function CampaignForm({
       toast.error(`Complete the [[${unfilled}]] placeholder before sending.`);
       return;
     }
+    // Nothing is sent by this click: the campaign is handed to background delivery, which sends in small, rate-limited batches, re-checks every
+    // subscriber's status at send time, and can be paused or cancelled from the campaign page.
+    startTransition(async () => {
+      try {
+        const result = await queueCampaign(campaignId);
+        if (!result.ok) {
+          toast.error(result.error);
+          return;
+        }
+        toast.success(`Queued for delivery to up to ${result.audience.toLocaleString("en-US")} subscriber${result.audience === 1 ? "" : "s"}. Sending continues in the background.`);
+        router.refresh();
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Failed to queue campaign");
+      }
+    });
+  }
+
+  // Only for a campaign that was started by the older manual batches (never queued): the next batch of that same send.
+  function continueLegacy() {
+    if (!campaignId) return;
     startTransition(async () => {
       try {
         const result = await sendMarketingCampaign(campaignId);
@@ -272,7 +296,7 @@ export function CampaignForm({
                     <Send className="h-3.5 w-3.5" /> Send Test
                   </Button>
                   <Button type="button" size="sm" className="gap-1.5" onClick={() => setSendConfirmOpen(true)} disabled={isPending || recipientCount === 0}>
-                    <Send className="h-3.5 w-3.5" /> Send to {recipientCount} Subscriber{recipientCount === 1 ? "" : "s"}
+                    <Send className="h-3.5 w-3.5" /> Queue for {recipientCount} Subscriber{recipientCount === 1 ? "" : "s"}
                   </Button>
                 </>
               )}
@@ -287,7 +311,7 @@ export function CampaignForm({
               campaign). No confirmation dialog — continuing a send you
               already confirmed once needs no second confirmation. */}
           {readOnly && campaignId && typeof remaining === "number" && remaining > 0 && (
-            <Button type="button" size="sm" className="gap-1.5" onClick={send} disabled={isPending}>
+            <Button type="button" size="sm" className="gap-1.5" onClick={continueLegacy} disabled={isPending}>
               {isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
               Continue Sending ({remaining} remaining)
             </Button>
@@ -298,9 +322,9 @@ export function CampaignForm({
       <ConfirmDialog
         open={sendConfirmOpen}
         onOpenChange={setSendConfirmOpen}
-        title="Send this campaign?"
-        description={`Campaign: ${name || "Untitled"}. Recipients: ${recipientCount} active subscriber${recipientCount === 1 ? "" : "s"}.${excludedCount > 0 ? ` Excluded: ${excludedCount} unsubscribed subscriber${excludedCount === 1 ? "" : "s"} (never sent to).` : ""} This can't be undone.`}
-        confirmLabel={`Send to ${recipientCount} Subscriber${recipientCount === 1 ? "" : "s"}`}
+        title="Queue this campaign for delivery?"
+        description={`Campaign: ${name || "Untitled"}. Audience: ${recipientCount} active subscriber${recipientCount === 1 ? "" : "s"}.${excludedCount > 0 ? ` Excluded: ${excludedCount} unsubscribed subscriber${excludedCount === 1 ? "" : "s"} (never sent to).` : ""} Emails go out in the background in small batches from your connected Gmail (a few hundred a day at most - Gmail's own limit), so a large list takes days. Anyone who unsubscribes before their turn is skipped. You can pause or cancel at any time.`}
+        confirmLabel="Queue for delivery"
         onConfirm={send}
       />
 

@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { leadVisibilityWhere, sequenceVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
+import { withEmailPrivacy } from "@/server/privacy/customer-email";
+import { maskEmailsInText } from "@/lib/customer-email-mask";
 
 // Pass 7 §17/§18 — the top-level Sequence list itself, database-paginated
 // at 25/page like every other CRM list. Deliberately separate from (and
@@ -147,6 +149,13 @@ export async function getSequenceEnrollments(params: { sequenceId: string; viewe
     : [];
   const visible = new Set(visibleLeads.map((l) => l.id));
   const withVisibility = enrollments.map((e) => ({ ...e, leadVisible: visible.has(e.leadId) }));
+  // Customer-email privacy: a viewer who may not see complete addresses gets the masked primary email and a masked per-enrollment recipient.
+  const masked = await withEmailPrivacy(
+    params.viewer,
+    withVisibility,
+    (e) => e.lead?.contact,
+    (e, email) => ({ ...e, lead: { ...e.lead, contact: { ...e.lead.contact, primaryEmail: email } }, recipientEmail: e.recipientEmail ? maskEmailsInText(e.recipientEmail) : e.recipientEmail })
+  );
 
-  return { enrollments: withVisibility, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
+  return { enrollments: masked, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }

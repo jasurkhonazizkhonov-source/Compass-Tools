@@ -40,6 +40,10 @@ const NO_STORE_SOURCES = [
   "/contacts/:path*",
   "/users/:path*",
   "/system-health/:path*",
+  "/failed-signins/:path*",
+  "/leads/:path*",
+  "/quotes/:path*",
+  "/subscriptions/:path*",
   "/api/:path*",
 ];
 const NO_STORE = [{ key: "Cache-Control", value: "private, no-cache, no-store, max-age=0, must-revalidate" }];

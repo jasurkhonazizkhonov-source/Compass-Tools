@@ -13,6 +13,7 @@ import {
   UserCog,
   ListChecks,
   ShieldCheck,
+  ShieldAlert,
   Building2,
   Inbox,
   Send,
@@ -38,6 +39,7 @@ import {
   canViewSequencesPage,
   canViewGetInTouch,
   canViewSystemHealth,
+  canViewFailedSignIns,
   canViewSubscriptions,
   canViewCommissions,
   canViewSalesboard,
@@ -82,6 +84,8 @@ const NAV_ITEMS: Array<{
   { href: "/get-in-touch", label: INQUIRY_SOURCE_META.BUSINESS_FLIGHTS_WEBSITE.label, icon: Inbox, visible: canViewGetInTouch },
   { href: "/crm-inquiries", label: INQUIRY_SOURCE_META.CRM_WEBSITE.label, icon: MessagesSquare, visible: canViewGetInTouch },
   { href: "/subscriptions", label: "Subscriptions", icon: Send, visible: canViewSubscriptions },
+  // Admin-only security log of failed sign-in attempts - same triple-layer enforcement (proxy.ts + the page + every action).
+  { href: "/failed-signins", label: "Failed Sign-ins", icon: ShieldAlert, visible: canViewFailedSignIns },
   // Admin-only user management — distinct from the general Accounts
   // directory above. Hiding this nav item is a UX nicety only; the actual
   // enforcement is server-side in proxy.ts (route-level) and the /users

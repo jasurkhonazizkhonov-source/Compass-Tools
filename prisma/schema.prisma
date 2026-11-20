@@ -122,6 +122,11 @@ model Account {
   // controls. Defaults to true so that adding the column changes nobody's current ability; an Administrator is never restricted by it.
   canEditContactDetails Boolean @default(true)
 
+  // Customer-email privacy: when true, this (non-admin) user sees complete customer email addresses without using the daily reveal allowance. Default FALSE (masked,
+  // five reveals a day). Switched only by an Administrator (actions/accounts.ts) and checked on the server every time (server/privacy/customer-email.ts). Administrators
+  // always see full addresses whatever this says.
+  unlimitedCustomerEmailAccess Boolean @default(false)
+
   // Presence: heartbeat-based "online" approximation. Updated by a client
   // heartbeat while a dev-user is active. Real presence requires authenticated
   // sessions/websockets later — this is architected to slot in behind the
@@ -2108,6 +2113,7 @@ model InquiryNote {
 enum SubscriberStatus {
   SUBSCRIBED
   UNSUBSCRIBED
+  SUPPRESSED
 }
 
 model Subscriber {
@@ -2117,6 +2123,12 @@ model Subscriber {
 
   email           String
   status          SubscriberStatus @default(SUBSCRIBED)
+  firstName       String?
+  lastName        String?
+  // Why an address is suppressed (BOUNCE / COMPLAINT / INVALID / MANUAL); a suppressed address is never sent to and can never be re-activated by an import.
+  suppressionReason String?
+  suppressedAt      DateTime?
+  lastCampaignSentAt DateTime?
   source          String?
   subscribedAt    DateTime         @default(now())
   unsubscribedAt  DateTime?
@@ -2141,6 +2153,7 @@ model Subscriber {
 
   @@unique([companyId, email])
   @@index([companyId])
+  @@index([companyId, status])
   @@index([status])
 }
 
@@ -2148,6 +2161,10 @@ enum CampaignStatus {
   DRAFT
   SENDING
   SENT
+  SCHEDULED
+  QUEUED
+  PAUSED
+  CANCELLED
 }
 
 model MarketingCampaign {
@@ -2159,6 +2176,24 @@ model MarketingCampaign {
   subject     String
   htmlContent String  @db.Text
   status      CampaignStatus @default(DRAFT)
+
+  // Visual-editor design (the block list the HTML was generated from); null for campaigns written as raw HTML. htmlContent stays the single thing that is sent.
+  designJson   Json?
+  previewText  String?
+  senderName   String?
+  replyTo      String?
+  category     String?
+  description  String?
+  // Durable background delivery (server/marketing/campaign-worker.ts)
+  scheduledAt  DateTime?
+  queuedAt     DateTime?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  pausedAt     DateTime?
+  cancelledAt  DateTime?
+  /** How far the audience snapshot has been taken (keyset cursor over Subscriber.id); null = not started. */
+  audienceCursor    String?
+  audienceComplete  Boolean @default(false)
 
   createdById String?
   createdBy   Account? @relation("MarketingCampaignCreatedBy", fields: [createdById], references: [id])
@@ -2179,6 +2214,8 @@ enum MarketingSendStatus {
   SENT
   FAILED
   SKIPPED_UNSUBSCRIBED
+  SKIPPED_SUPPRESSED
+  UNKNOWN
 }
 
 model MarketingCampaignSend {
@@ -2191,6 +2228,10 @@ model MarketingCampaignSend {
   status       MarketingSendStatus @default(PENDING)
   sentAt       DateTime?
   errorMessage String?
+  attempts          Int       @default(0)
+  nextAttemptAt     DateTime?
+  lastAttemptAt     DateTime?
+  providerMessageId String?
 
   createdAt DateTime @default(now())
 
@@ -2213,6 +2254,7 @@ model MarketingCampaignSend {
   // safety on its own.
   @@unique([campaignId, subscriberId])
   @@index([campaignId])
+  @@index([campaignId, status])
   @@index([subscriberId])
 }
 
@@ -2312,4 +2354,126 @@ model PaymentMethodCvv {
   createdAt       DateTime      @default(now())
 
   @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Failed sign-in security log (Administrator-only)
+// ─────────────────────────────────────────────────────────────────────────
+// One row per actual failed authentication attempt. Names/emails come only from the authentication provider's VERIFIED answer (verifiedEmail / verifiedFullName);
+// attemptedEmail is reserved for an identifier typed by someone whose identity could not be verified and is never presented as a verified one. No password,
+// token, cookie or credential is ever stored. The IP is the trusted-path address (lib/request-ip.ts), complete and canonical; location is approximate.
+model FailedSignInEvent {
+  id         String   @id @default(cuid())
+  occurredAt DateTime @default(now())
+  companyId  String?
+  method     String
+  reasonCode String
+  attemptedEmail   String? @db.VarChar(254)
+  verifiedEmail    String? @db.VarChar(254)
+  verifiedFullName String? @db.VarChar(200)
+  ipAddress  String?  @db.VarChar(45)
+  ipVersion  String?  @db.VarChar(2)
+  city        String? @db.VarChar(120)
+  region      String? @db.VarChar(120)
+  country     String? @db.VarChar(120)
+  countryCode String? @db.VarChar(2)
+  geoSource   String? @db.VarChar(120)
+  /** Prefix of a hash of the credential presented: lets a duplicate callback of the SAME attempt be recognised for a minute; never reversible to the credential. */
+  attemptKey  String? @db.VarChar(32)
+  /** 1 for an ordinary attempt; N for the single roll-up row that stands for N attempts from one address that exceeded the recording limit (EVENTS_SUPPRESSED). */
+  repeatCount Int     @default(1)
+
+  @@index([occurredAt])
+  @@index([ipAddress, occurredAt])
+  @@index([verifiedEmail, occurredAt])
+  @@index([attemptedEmail, occurredAt])
+  @@index([reasonCode, occurredAt])
+  @@index([attemptKey])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Customer email privacy: reveal audit + atomic daily allowance
+// ─────────────────────────────────────────────────────────────────────────
+// One row per customer whose full email a user revealed on a given business day. The unique key is what makes a repeat reveal of the SAME customer the same day free
+// and race-proof. The revealed address itself is never stored here.
+model CustomerEmailRevealEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  companyId String
+  contactId String
+  leadId    String?
+  /** DAILY_ALLOWANCE | UNLIMITED_PERMISSION | ADMIN */
+  method    String
+  /** The business-timezone calendar day (yyyy-MM-dd) the reveal counted against. */
+  dayKey    String   @db.VarChar(10)
+  correlationId String? @db.VarChar(64)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, contactId, dayKey])
+  @@index([userId, dayKey])
+  @@index([contactId])
+  @@index([createdAt])
+}
+
+// The per-user daily counter, advanced with a single atomic INSERT .. ON CONFLICT DO UPDATE .. WHERE count < limit statement (see server/privacy/customer-email.ts).
+model CustomerEmailRevealUsage {
+  userId String
+  dayKey String @db.VarChar(10)
+  count  Int    @default(0)
+
+  @@id([userId, dayKey])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Subscriber import jobs (background, resumable, idempotent)
+// ─────────────────────────────────────────────────────────────────────────
+enum SubscriberImportStatus {
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model SubscriberImportJob {
+  id          String @id @default(cuid())
+  companyId   String
+  createdById String?
+  status      SubscriberImportStatus @default(QUEUED)
+  source      String @default("PASTE")
+  /** The uploaded rows, kept until the job finishes (then cleared) so the job can resume after a restart. One "email[,first[,last]]" row per line. */
+  payload     String? @db.Text
+  totalRows   Int @default(0)
+  validRows   Int @default(0)
+  invalidRows Int @default(0)
+  duplicateInFile Int @default(0)
+  existingRows    Int @default(0)
+  importedRows    Int @default(0)
+  skippedUnsubscribedOrSuppressed Int @default(0)
+  /** Next row (0-based) to process: a restart continues here, and re-processing a row is harmless (idempotent upsert-if-absent). */
+  nextRow     Int @default(0)
+  /** CSV of "row,reason" (no addresses) for the downloadable error report. */
+  errorReport String? @db.Text
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  @@index([companyId, createdAt])
+  @@index([status])
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Reusable campaign designs
+// ─────────────────────────────────────────────────────────────────────────
+model CampaignTemplate {
+  id          String @id @default(cuid())
+  companyId   String
+  name        String @db.VarChar(200)
+  category    String? @db.VarChar(80)
+  designJson  Json
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([companyId, category])
 }

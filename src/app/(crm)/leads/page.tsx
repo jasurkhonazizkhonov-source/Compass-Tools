@@ -155,6 +155,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                           customerName={customerName}
                           phone={lead.contact.primaryPhone}
                           email={lead.contact.primaryEmail}
+                          emailRecipientId={`primary:${lead.contact.id}`}
                           assignedAgentId={lead.assignedAgentId}
                           assignedAgentName={lead.assignedAgent?.fullName ?? null}
                           agents={agents}
@@ -222,6 +223,7 @@ export default async function LeadsPage({ searchParams }: { searchParams: Search
                       customerName={customerName}
                       phone={lead.contact.primaryPhone}
                       email={lead.contact.primaryEmail}
+                          emailRecipientId={`primary:${lead.contact.id}`}
                       assignedAgentId={lead.assignedAgentId}
                       assignedAgentName={lead.assignedAgent?.fullName ?? null}
                       agents={agents}

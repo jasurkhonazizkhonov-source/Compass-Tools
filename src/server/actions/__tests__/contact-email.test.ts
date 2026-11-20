@@ -50,6 +50,9 @@ function canViewAllRecords(role: string) {
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    // These tests are about recipient OWNERSHIP, for an actor who may see complete customer addresses (the privacy policy's "Unlimited Customer Email Access").
+    // The restricted-viewer behaviour (recipients by id, no raw address) is covered in customer-email-exposure.test.ts.
+    account: { findUnique: vi.fn(async () => ({ unlimitedCustomerEmailAccess: true })) },
     contact: {
       findFirst: vi.fn(async ({ where }: { where: { id: string } }) => {
         const contact = contacts.get(where.id);

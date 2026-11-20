@@ -43,6 +43,8 @@ type PresetContact = {
   lastName: string;
   primaryPhone: string | null;
   primaryEmail: string | null;
+  /** The viewer may not see this customer's address (customer-email privacy): the field starts empty, is optional, and the address on file is kept as it is. */
+  emailHidden?: boolean;
 };
 
 const TRIP_TYPES = [
@@ -115,7 +117,7 @@ export function NewLeadDialog({
   const presetPhone = presetContact?.primaryPhone ? parsePhoneNumberFromString(presetContact.primaryPhone) : undefined;
   const [phoneCountry, setPhoneCountry] = useState<CountryCode>((presetPhone?.country as CountryCode) ?? DEFAULT_PHONE_COUNTRY);
   const [phoneNational, setPhoneNational] = useState(presetPhone ? presetPhone.formatNational() : presetContact?.primaryPhone ?? "");
-  const [email, setEmail] = useState(presetContact?.primaryEmail ?? "");
+  const [email, setEmail] = useState(presetContact?.emailHidden ? "" : presetContact?.primaryEmail ?? "");
   const [duplicateInfo, setDuplicateInfo] = useState<{ name: string; ownerId: string | null; ownerName: string | null } | null>(null);
   const [checkingDup, setCheckingDup] = useState(false);
 
@@ -168,7 +170,7 @@ export function NewLeadDialog({
     setLastName(presetContact?.lastName ?? "");
     setPhoneCountry((presetPhone?.country as CountryCode) ?? DEFAULT_PHONE_COUNTRY);
     setPhoneNational(presetPhone ? presetPhone.formatNational() : presetContact?.primaryPhone ?? "");
-    setEmail(presetContact?.primaryEmail ?? "");
+    setEmail(presetContact?.emailHidden ? "" : presetContact?.primaryEmail ?? "");
     setDuplicateInfo(null);
     setFrom(null);
     setTo(null);
@@ -223,7 +225,7 @@ export function NewLeadDialog({
       toast.error("Please enter a valid phone number for the selected country.");
       return;
     }
-    if (!email.trim()) {
+    if (!email.trim() && !presetContact?.emailHidden) {
       toast.error("Email address is required.");
       return;
     }
@@ -334,13 +336,13 @@ export function NewLeadDialog({
                 />
               </div>
               <div className="space-y-1.5">
-                <Label>Email *{presetContact && <span className="font-normal text-muted-foreground"> — editing adds a new address, on file alongside the existing one</span>}</Label>
+                <Label>Email {presetContact?.emailHidden ? "" : "*"}{presetContact && <span className="font-normal text-muted-foreground"> — {presetContact.emailHidden ? "the address on file is hidden and stays as it is; enter one only to add another" : "editing adds a new address, on file alongside the existing one"}</span>}</Label>
                 <Input
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   onBlur={() => checkDuplicate(normalizePhoneNumber(phoneNational, phoneCountry) ?? "", email)}
-                  required
+                  required={!presetContact?.emailHidden}
                 />
               </div>
             </div>

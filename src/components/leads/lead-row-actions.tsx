@@ -36,6 +36,7 @@ export function LeadRowActions({
   customerName,
   phone,
   email,
+  emailRecipientId,
   assignedAgentId,
   assignedAgentName,
   agents,
@@ -45,7 +46,10 @@ export function LeadRowActions({
   leadId: string;
   customerName: string;
   phone: string | null;
+  /** The address the viewer may see for this customer: complete, or the masked form (customer-email privacy). */
   email: string | null;
+  /** When given, the composer addresses the customer by this opaque id (resolved on the server) instead of by the address itself. */
+  emailRecipientId?: string;
   assignedAgentId: string | null;
   assignedAgentName: string | null;
   agents: Agent[];
@@ -68,7 +72,12 @@ export function LeadRowActions({
       )}
       {email && (
         <div className={labeled ? slot : undefined}>
-          <EmailComposerButton leadId={leadId} emails={[email]} contactName={customerName} size={labeled ? "icon" : "icon-sm"} />
+          <EmailComposerButton
+            leadId={leadId}
+            {...(emailRecipientId ? { recipients: [{ id: emailRecipientId, display: email, address: null }] } : { emails: [email] })}
+            contactName={customerName}
+            size={labeled ? "icon" : "icon-sm"}
+          />
           {caption("Email")}
         </div>
       )}

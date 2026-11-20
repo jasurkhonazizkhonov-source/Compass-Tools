@@ -26,6 +26,8 @@ import { CancellationApprovalActions } from "@/components/quotes/cancellation-ap
 import { resolveAirlineConfirmations } from "@/lib/airline-confirmations";
 import { resolveAirlineCodes } from "@/server/queries/reference-data";
 import { isExchangeProposalRevisable } from "@/lib/exchange-proposal";
+import { buildContactEmailView } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +40,9 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
     if (await quoteRecordExists(id)) return <AccessRestricted />;
     notFound();
   }
+
+  // Customer-email privacy: the recipient picker is built server-side - masked labels + opaque ids for a viewer who may not see the address yet.
+  const emailView = await buildContactEmailView(viewer, quote.contact.id, quote.contact.emails, quote.contact.primaryEmail);
 
   const meta = QUOTE_STATUS_META[quote.status];
   const baseUrl = resolveBaseUrl();
@@ -124,7 +129,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             <QuoteActions
               quoteId={quote.id}
               status={quote.status}
-              emails={quote.contact.emails.length > 0 ? quote.contact.emails.map((e) => e.email) : quote.contact.primaryEmail ? [quote.contact.primaryEmail] : []}
+              recipients={emailView.recipients}
               viewDealUrl={viewDealUrl}
             />
             {/* Exchange/Cancellation — charged quotes only, server-side
@@ -318,7 +323,7 @@ export default async function QuoteDetailPage({ params }: { params: Promise<{ id
             </CardContent>
           </Card>
 
-          {quote.booking && <SignedBookingDetailsCard booking={quote.booking} currency={currency} />}
+          {quote.booking && <SignedBookingDetailsCard booking={{ ...quote.booking, contactEmail: emailView.masked && quote.booking.contactEmail ? maskCustomerEmail(quote.booking.contactEmail) : quote.booking.contactEmail }} currency={currency} />}
 
           {quote.booking && (
             <BookingInformationCard

@@ -75,6 +75,7 @@
     "20261016000100_lead_ingest_fingerprint",
     "20261108000100_sign_in_location_provenance",
     "20261113000100_inquiry_submission_info",
-    "20261115000100_account_contact_detail_edit_permission"
+    "20261115000100_account_contact_detail_edit_permission",
+    "20261120000100_security_privacy_marketing_scale"
   ]
 }

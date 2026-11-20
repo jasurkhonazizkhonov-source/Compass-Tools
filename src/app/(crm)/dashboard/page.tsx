@@ -28,6 +28,8 @@ import { LeadAcceptanceCard } from "@/components/layout/lead-acceptance-card";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewDashboard } from "@/lib/permissions";
 import { getMyQueueStatus } from "@/server/queries/lead-queue";
+import { isEmailRestricted } from "@/server/privacy/customer-email";
+import { maskEmailsInText } from "@/lib/customer-email-mask";
 
 export const dynamic = "force-dynamic";
 
@@ -151,6 +153,8 @@ export default async function DashboardPage() {
   const [data, currentAccount] = await Promise.all([getDashboardData(), getCurrentAccount()]);
   if (!canViewDashboard(currentAccount?.role)) notFound();
   const queueStatus = await getMyQueueStatus(currentAccount?.id, currentAccount?.companyId);
+  // Customer-email privacy: the company-wide activity feed can quote an address ("Primary email updated to ..."); a viewer who may not see complete addresses sees it masked.
+  const maskEmails = await isEmailRestricted(currentAccount);
 
   return (
     <div className="space-y-6">
@@ -196,7 +200,7 @@ export default async function DashboardPage() {
                     <div className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
                     <div className="min-w-0">
                       <p className="leading-snug">
-                        {a.description}
+                        {maskEmails ? maskEmailsInText(a.description) : a.description}
                         {(a.lead?.contact || a.contact) && (
                           <Link
                             href={a.lead ? `/leads/${a.lead.id}` : `/contacts/${a.contact?.id}`}

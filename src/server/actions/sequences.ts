@@ -7,10 +7,12 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { classifyLeadsForEnrollment, describeGmailProblem, gmailProblemNeedsReconnect, type GmailProblemCode } from "@/server/sequence-enrollment-eligibility";
 import { checkGmailSendReadiness } from "@/server/email/gmail-send";
 import { RESOLVED_PREFIX, RETRY_EPOCH_PREFIX, isRecentInFlight, markerReason, openDelivery } from "@/lib/sequence-delivery";
+import { assertTransition } from "@/lib/sequence-delivery-state";
 import { logActivity } from "@/server/activity-log";
 import { canManageSequences, canManageAllSequences } from "@/lib/permissions";
 import { runDueSequenceSteps } from "@/server/due-sequence-steps";
-import { sequenceVisibilityWhere } from "@/server/visibility";
+import { leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
+import { getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
 
 const SEQUENCE_NOT_FOUND = "Sequence not found";
 
@@ -24,6 +26,17 @@ async function assertSequenceAccess(actor: Awaited<ReturnType<typeof getCurrentA
   const sequence = await prisma.sequence.findFirst({ where: { id: sequenceId, ...sequenceVisibilityWhere(actor) } });
   if (!sequence) throw new Error(SEQUENCE_NOT_FOUND);
   return sequence;
+}
+
+/**
+ * Access to the LEAD an enrollment belongs to, in addition to access to its sequence. A sequence a person may use does not make every lead in it theirs: a lead
+ * can be reassigned, or belong to someone else's team, after it was enrolled. Recovery and unenroll actions send mail from, or stop mail for, that lead, so the
+ * caller must be able to see the lead under the ordinary row-level rule (company, assigned agent, manager team). The answer is the same generic "not found"
+ * as a missing enrollment, so nothing is revealed about leads the caller may not see.
+ */
+async function assertLeadAccess(actor: NonNullable<Awaited<ReturnType<typeof getCurrentAccount>>>, leadId: string) {
+  const visible = await prisma.lead.findFirst({ where: { id: leadId, ...leadVisibilityWhere(actor) }, select: { id: true } });
+  if (!visible) throw new Error(SEQUENCE_NOT_FOUND);
 }
 
 export async function createSequence(input: { name: string; description?: string }) {
@@ -146,6 +159,18 @@ export type EnrollLeadsResult = {
  * lead's own Contact emails regardless of caller - never trust a client-supplied address blindly.
  */
 export async function enrollLeads(sequenceId: string, leadIds: string[], recipientEmail?: string): Promise<EnrollLeadsResult> {
+  // Customer-email privacy: a raw recipient address from the browser is accepted only from a viewer who may see complete addresses. A restricted viewer's picker
+  // (startSequenceForLead) sends opaque ids that the server resolves; accepting their raw address here would let the "is it on file?" check be used to probe.
+  if (recipientEmail) {
+    const actor = await getCurrentAccount();
+    if (!actor || (await getEmailViewer(actor)).restricted) {
+      return { enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {}, error: "Choose the recipients from the list." };
+    }
+  }
+  return enrollLeadsCore(sequenceId, leadIds, recipientEmail);
+}
+
+async function enrollLeadsCore(sequenceId: string, leadIds: string[], recipientEmail?: string): Promise<EnrollLeadsResult> {
   const actor = await getCurrentAccount();
   await assertSequenceAccess(actor, sequenceId);
 
@@ -376,10 +401,24 @@ async function gmailBlockFor(agent: { id: string; fullName: string }, code: Gmai
  *   - a repeated click or a retry after a network drop cannot send step 1 twice: enrollLeads refuses a second ACTIVE enrollment (ALREADY_ENROLLED), the send
  *     is claimed atomically, and a send that already started is recorded before the request leaves (lib/sequence-delivery.ts).
  */
-export async function startSequenceForLead(sequenceId: string, leadId: string, recipientEmail?: string): Promise<StartSequenceResult> {
+export async function startSequenceForLead(sequenceId: string, leadId: string, recipientEmail?: string, recipientIds?: string[]): Promise<StartSequenceResult> {
   if (typeof sequenceId !== "string" || !sequenceId || typeof leadId !== "string" || !leadId) return { ok: false, code: "ERROR", error: "The sequence could not be applied to this lead." };
 
-  const r = await enrollLeads(sequenceId, [leadId], recipientEmail);
+  // Customer-email privacy: a viewer who may only see masked addresses names the recipients by opaque id; the server resolves them (and a restricted viewer may not
+  // supply a raw address at all - that would be a way to probe which addresses are on file).
+  if (recipientIds || recipientEmail) {
+    const actor = await getCurrentAccount();
+    if (!actor) return { ok: false, code: "ERROR", error: "The sequence could not be applied to this lead." };
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, ...leadVisibilityWhere(actor) }, select: { contactId: true } });
+    if (!lead) return { ok: false, code: "ERROR", error: "The sequence could not be applied to this lead." };
+    try {
+      recipientEmail = await resolveSendRecipients(await getEmailViewer(actor), lead.contactId, { to: recipientEmail, recipientIds });
+    } catch {
+      return { ok: false, code: "ERROR", error: "Choose the recipients from the list." };
+    }
+  }
+
+  const r = await enrollLeadsCore(sequenceId, [leadId], recipientEmail);
   if (r.error) {
     if (r.gmailProblem && r.gmailSender) {
       const actor = await getCurrentAccount();
@@ -454,6 +493,7 @@ async function loadForRecovery(enrollmentId: string, leadId: string | undefined)
   if (!existing) throw new Error(SEQUENCE_NOT_FOUND);
   await assertSequenceAccess(actor, existing.sequenceId);
   if (leadId !== undefined && existing.leadId !== leadId) throw new Error(SEQUENCE_NOT_FOUND);
+  await assertLeadAccess(actor!, existing.leadId);
   const step = existing.sequence.steps[existing.currentStepIdx];
   const logs = step ? await prisma.sequenceStepLog.findMany({ where: { enrollmentId, stepId: step.id }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, error: true, createdAt: true } }) : [];
   return { actor, existing, step, logs };
@@ -525,6 +565,8 @@ export async function resolveUncertainDelivery(enrollmentId: string, decision: "
   if (!open.log.id) return { ok: false, error: "There is no unconfirmed delivery to resolve for this enrollment." };
   const who = actor?.fullName ?? "a user";
 
+  // Only a person can resolve, and only an UNKNOWN attempt (a stale in-flight one counts as unknown): UNKNOWN -> SENT or UNKNOWN -> SUPERSEDED.
+  assertTransition("UNKNOWN", decision === "sent" ? "SENT" : "SUPERSEDED");
   if (decision === "sent") {
     const nextIdx = existing.currentStepIdx + 1;
     const nextStep = existing.sequence.steps[nextIdx];
@@ -566,6 +608,7 @@ export async function unenrollLead(enrollmentId: string, leadId?: string): Promi
   const sequence = await assertSequenceAccess(actor, existing.sequenceId);
   // Same generic answer as a missing enrollment: a caller learns nothing about enrollments that are not theirs to touch.
   if (leadId !== undefined && existing.leadId !== leadId) throw new Error(SEQUENCE_NOT_FOUND);
+  await assertLeadAccess(actor!, existing.leadId);
 
   const stopped = await prisma.sequenceEnrollment.updateMany({
     where: { id: enrollmentId, status: "ACTIVE" },

@@ -31,7 +31,7 @@ import {
   isBookingPermission,
   type BookingPermission,
 } from "@/lib/permissions";
-import { updateAccount, setAccountStatus, setAccountsVisibility, updatePaymentPermissions, updateBookingPermissions, updateContactDetailEditPermission } from "@/server/actions/accounts";
+import { updateAccount, setAccountStatus, setAccountsVisibility, updatePaymentPermissions, updateBookingPermissions, updateContactDetailEditPermission, updateUnlimitedCustomerEmailAccess } from "@/server/actions/accounts";
 import { safeActionMessage } from "@/lib/safe-action-message";
 import type { AccountRole, AccountStatus } from "@/generated/prisma/client";
 
@@ -1024,6 +1024,46 @@ export function AccountContactDetailEditToggle({ accountId, role, canEdit }: { a
     <div className="flex items-center gap-2">
       <Switch checked={value} disabled={isPending} aria-label="Can edit Lead/Contact phone numbers and email addresses" onCheckedChange={toggle} />
       <span className="text-xs text-muted-foreground">{value ? "Allowed" : "Not allowed"}</span>
+    </div>
+  );
+}
+
+/**
+ * Per-user switch: "Unlimited Customer Email Access". OFF (the default) = the user sees customer emails masked and may reveal five customers per business day; ON =
+ * complete addresses with no allowance. Administrators always have full access (fixed "Always" label). The server action is the authority; turning it ON can be
+ * refused with a returned message (recent-sign-in step-up).
+ */
+export function AccountCustomerEmailAccessToggle({ accountId, role, unlimited }: { accountId: string; role: string; unlimited: boolean }) {
+  const [isPending, startTransition] = useTransition();
+  const [value, setValue] = useState(unlimited);
+
+  if (role === "ADMIN") {
+    return <span className="text-xs text-muted-foreground" title="Administrators always see complete customer email addresses.">Always</span>;
+  }
+
+  function toggle(checked: boolean) {
+    const previous = value;
+    setValue(checked);
+    startTransition(async () => {
+      try {
+        const result = await updateUnlimitedCustomerEmailAccess(accountId, checked);
+        if (result && "error" in result) {
+          setValue(previous);
+          toast.error(result.error);
+          return;
+        }
+        toast.success(checked ? "This user now sees complete customer emails" : "This user now sees masked customer emails (5 reveals per day)");
+      } catch (err) {
+        setValue(previous);
+        toast.error(err instanceof Error ? err.message : "Failed to update this permission");
+      }
+    });
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <Switch checked={value} disabled={isPending} aria-label="Unlimited Customer Email Access" onCheckedChange={toggle} />
+      <span className="text-xs text-muted-foreground">{value ? "Unlimited" : "Masked (5/day)"}</span>
     </div>
   );
 }

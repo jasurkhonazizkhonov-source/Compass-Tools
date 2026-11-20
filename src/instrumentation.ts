@@ -19,10 +19,6 @@ declare global {
   var __taskNotifierStarted: boolean | undefined;
 }
 
-const POLL_INTERVAL_MS = 60_000;
-/** A background run older than this is considered stuck and no longer blocks the next tick. */
-const STUCK_RUN_MS = 10 * 60_000;
-
 export async function register() {
   if (process.env.NEXT_RUNTIME === "edge") return;
   const { inProcessPollerDisabled } = await import("@/lib/poller-config");
@@ -32,50 +28,20 @@ export async function register() {
 
   const { runDueTaskNotifications } = await import("@/server/due-task-notifications");
   const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
-  const { markPollerStarted, markSweepStarted, markSweepFinished } = await import("@/server/scheduler-status");
-  markPollerStarted();
+  const { startBackgroundPoller } = await import("@/server/background-poller");
+  const { processSubscriberImportJobs } = await import("@/server/marketing/subscriber-import-worker");
+  const { drainMarketingCampaigns } = await import("@/server/marketing/campaign-worker");
 
-  // The same once-a-minute tick drives BOTH background jobs: task-due notifications and the automatic sending of sequence steps. A job whose previous run
-  // is still going is skipped (never two overlapping runs of one job in this process), and one job failing never stops the other or the interval. Across
-  // processes (a second instance, an external caller of /api/cron/sequences) overlap is safe because every enrollment is claimed atomically before sending.
-  // A run that never settles (a provider call that hangs) must not stop its job forever: after STUCK_RUN_MS a new run may start, and the atomic claim keeps that
-  // safe. Each run is a token, so a stuck run that finally settles cannot clear the flag of the run that replaced it.
-  let tasksRun: object | null = null;
-  let tasksRunStartedAt = 0;
-  let sequencesRun: object | null = null;
-  let sequencesRunStartedAt = 0;
-  setInterval(() => {
-    if (!tasksRun || Date.now() - tasksRunStartedAt > STUCK_RUN_MS) {
-      const mine = {};
-      tasksRun = mine;
-      tasksRunStartedAt = Date.now();
-      markSweepStarted("tasks");
-      runDueTaskNotifications()
-        .then(() => markSweepFinished("tasks", { ok: true }))
-        .catch((err) => {
-          markSweepFinished("tasks", { ok: false });
-          console.error("[task-notifier] runDueTaskNotifications failed:", err);
-        })
-        .finally(() => {
-          if (tasksRun === mine) tasksRun = null;
-        });
-    }
-    if (!sequencesRun || Date.now() - sequencesRunStartedAt > STUCK_RUN_MS) {
-      const mine = {};
-      sequencesRun = mine;
-      sequencesRunStartedAt = Date.now();
-      markSweepStarted("sequences");
-      drainDueSequenceSteps()
-        .then((r) => markSweepFinished("sequences", { ok: true, ...r }))
-        .catch((err) => {
-          markSweepFinished("sequences", { ok: false });
-          console.error("[sequence-sender] drainDueSequenceSteps failed:", err);
-        })
-        .finally(() => {
-          if (sequencesRun === mine) sequencesRun = null;
-        });
-    }
-  }, POLL_INTERVAL_MS);
+  // One once-a-minute tick drives BOTH background jobs: task-due notifications and the automatic sending of sequence steps. The overlap, stuck-run, error
+  // isolation and shutdown rules (and what they do and do not guarantee across several app instances) are documented in src/server/background-poller.ts.
+  startBackgroundPoller([
+    { name: "tasks", logTag: "task-notifier", run: () => runDueTaskNotifications() },
+    { name: "sequences", logTag: "sequence-sender", run: () => drainDueSequenceSteps() },
+    // Background subscriber imports (chunked, resumable) and durable marketing-campaign delivery (rate-limited batches). Both claim their work in the database, so an
+    // overlapping second instance cannot double-process a chunk or double-send a recipient; see server/marketing/*.
+    { name: "subscriber-imports", logTag: "subscriber-import", run: async () => ({ processed: (await processSubscriberImportJobs()).processedRows }) },
+    { name: "campaigns", logTag: "campaign-sender", run: async () => { const t = await drainMarketingCampaigns(); return { processed: t.sent + t.failed + t.unknown + t.skipped, sent: t.sent, failed: t.failed }; } },
+  ]);
 }
 
 // Unhandled server errors (500s) become de-duplicated System Health incidents

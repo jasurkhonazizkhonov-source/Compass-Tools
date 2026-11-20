@@ -9,6 +9,8 @@ import { getQueuePosition } from "@/server/queries/lead-queue";
 import { runAfterResponse } from "@/lib/run-after-response";
 import { shouldRunPendingPickup } from "@/server/lead-pickup-throttle";
 import { sendNewFlightRequestEmail } from "@/server/lead-assignment-email";
+import { getEmailViewer } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 
 /** Worker opts into the lead-distribution queue. Idempotent — a worker can
  * only ever have one queue row (accountId is unique), reused across
@@ -489,7 +491,8 @@ export async function getMyLeadOffer() {
   return {
     leadId: lead.id,
     contactName: lead.contact ? `${lead.contact.firstName} ${lead.contact.lastName}` : "Unknown contact",
-    email: lead.contact?.primaryEmail ?? null,
+    // Customer-email privacy: an offer is shown before the lead is accepted, so a viewer who may not see complete addresses gets the masked form.
+    email: lead.contact?.primaryEmail ? ((await getEmailViewer(account)).restricted ? maskCustomerEmail(lead.contact.primaryEmail) : lead.contact.primaryEmail) : null,
     phone: lead.contact?.primaryPhone ?? null,
     source: lead.source,
     route: lead.departureAirport && lead.arrivalAirport ? `${lead.departureAirport.iata} → ${lead.arrivalAirport.iata}` : null,

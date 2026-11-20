@@ -22,6 +22,7 @@ export const PRIVATE_DISALLOW = [
   "/get-in-touch",
   "/crm-inquiries",
   "/system-health",
+  "/failed-signins",
   // Customer-facing but token-gated (a unique, unguessable link per quote/booking) — never something a crawler should index either.
   "/quote/",
 ];

@@ -19,19 +19,26 @@ import { safeActionMessage } from "@/lib/safe-action-message";
 import { sendQuote, cancelQuote } from "@/server/actions/quotes";
 import { NON_CANCELABLE_QUOTE_STATUSES } from "@/lib/quote-cancelability";
 import type { QuoteStatus } from "@/generated/prisma/client";
+import type { RecipientOption } from "@/lib/customer-email-mask";
 
 export function QuoteActions({
   quoteId,
   status,
-  emails,
+  emails: plainEmails = [],
+  recipients: recipientOptions,
   viewDealUrl,
 }: {
   quoteId: string;
   status: QuoteStatus;
   /** Every email address on file for this quote's customer — Part 17-19. */
-  emails: string[];
+  emails?: string[];
+  /** Customer-email privacy: the same list as opaque ids + the label the viewer may see (masked until revealed). Preferred over `emails`; the server resolves the ids. */
+  recipients?: RecipientOption[];
   viewDealUrl: string;
 }) {
+  const options: RecipientOption[] = recipientOptions ?? plainEmails.map((a) => ({ id: a, display: a, address: a }));
+  const emails = options.map((o) => o.id);
+  const labelOf = (id: string) => options.find((o) => o.id === id)?.display ?? "recipient";
   const [isPending, startTransition] = useTransition();
   const [copied, setCopied] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -53,10 +60,10 @@ export function QuoteActions({
   // server. Each call still validates its one address against the
   // contact's known emails server-side (never trusts the client).
   async function doSend(recipients: string[]) {
-    const results = await Promise.all(recipients.map((r) => sendQuote(quoteId, r)));
+    const results = await Promise.all(recipients.map((r) => (recipientOptions ? sendQuote(quoteId, undefined, r) : sendQuote(quoteId, r))));
     const failed = results.filter((r) => !r.ok);
     if (failed.length === 0) {
-      toast.success(recipients.length > 1 ? `Quote sent to both addresses` : `Quote sent to ${recipients[0]}`);
+      toast.success(recipients.length > 1 ? `Quote sent to both addresses` : `Quote sent to ${labelOf(recipients[0])}`);
       setPickerOpen(false);
       router.refresh();
     } else {
@@ -137,10 +144,10 @@ export function QuoteActions({
           <div className="space-y-1.5">
             <label className="text-xs font-medium text-muted-foreground">Send quote to</label>
             <div className="space-y-1 rounded-md border p-2">
-              {emails.map((e) => (
-                <label key={e} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50 cursor-pointer">
-                  <Checkbox checked={selectedEmails.has(e)} onCheckedChange={() => toggleRecipient(e)} />
-                  <span className="truncate">{e}</span>
+              {options.map((o) => (
+                <label key={o.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50 cursor-pointer">
+                  <Checkbox checked={selectedEmails.has(o.id)} onCheckedChange={() => toggleRecipient(o.id)} />
+                  <span className="truncate">{o.display}</span>
                 </label>
               ))}
             </div>
@@ -162,7 +169,7 @@ export function QuoteActions({
               className="gap-1.5"
             >
               {isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              {selectedEmails.size > 1 ? "Send to both" : `Send to ${[...selectedEmails][0] ?? "recipient"}`}
+              {selectedEmails.size > 1 ? "Send to both" : `Send to ${labelOf([...selectedEmails][0])}`}
             </Button>
           </DialogFooter>
         </DialogContent>

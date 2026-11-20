@@ -148,6 +148,11 @@ export async function sendMarketingCampaign(campaignId: string) {
   if (campaign.status === "SENT") {
     throw new Error("This campaign has already been sent.");
   }
+  // A campaign handed to the background delivery worker (queued, scheduled, paused, cancelled or being sent by it) is controlled only from the delivery controls;
+  // this older manual batch path must never run beside it.
+  if (campaign.queuedAt || campaign.status === "QUEUED" || campaign.status === "SCHEDULED" || campaign.status === "PAUSED" || campaign.status === "CANCELLED") {
+    throw new Error("This campaign is managed by background delivery. Use Pause, Resume or Cancel on the campaign page.");
+  }
 
   if (campaign.status === "DRAFT") {
     // A starter's [[placeholder]] left in the subject or body must never reach

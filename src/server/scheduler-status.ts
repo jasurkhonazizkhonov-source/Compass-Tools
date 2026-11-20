@@ -3,17 +3,29 @@
 // persisted: a restart starts again from "not started" until the poller's first tick, and a second app instance has its own record. It never holds a
 // recipient, a subject or an error message - only counts, times and a pass/fail flag.
 
-export type SweepJob = "sequences" | "tasks";
-type JobRecord = { lastStartedAt: number | null; lastFinishedAt: number | null; lastOk: boolean | null; lastProcessed: number; lastSent: number; lastFailed: number; consecutiveFailures: number };
+export type SweepJob = "sequences" | "tasks" | "subscriber-imports" | "campaigns";
+type JobRecord = {
+  lastStartedAt: number | null;
+  lastFinishedAt: number | null;
+  /** Time of the last sweep that finished WITHOUT an error (null until one has). */
+  lastSuccessAt: number | null;
+  lastOk: boolean | null;
+  /** Short category of the last failure (safeErrorTag): never a message, recipient, URL or stack. */
+  lastErrorTag: string | null;
+  lastProcessed: number;
+  lastSent: number;
+  lastFailed: number;
+  consecutiveFailures: number;
+};
 type State = { pollerStartedAt: number | null; jobs: Record<SweepJob, JobRecord> };
 
 declare global {
   var __schedulerStatus: State | undefined;
 }
 
-const emptyJob = (): JobRecord => ({ lastStartedAt: null, lastFinishedAt: null, lastOk: null, lastProcessed: 0, lastSent: 0, lastFailed: 0, consecutiveFailures: 0 });
+const emptyJob = (): JobRecord => ({ lastStartedAt: null, lastFinishedAt: null, lastSuccessAt: null, lastOk: null, lastErrorTag: null, lastProcessed: 0, lastSent: 0, lastFailed: 0, consecutiveFailures: 0 });
 function state(): State {
-  return (globalThis.__schedulerStatus ??= { pollerStartedAt: null, jobs: { sequences: emptyJob(), tasks: emptyJob() } });
+  return (globalThis.__schedulerStatus ??= { pollerStartedAt: null, jobs: { sequences: emptyJob(), tasks: emptyJob(), "subscriber-imports": emptyJob(), campaigns: emptyJob() } });
 }
 
 export function markPollerStarted(now = Date.now()) {
@@ -22,10 +34,19 @@ export function markPollerStarted(now = Date.now()) {
 export function markSweepStarted(job: SweepJob, now = Date.now()) {
   state().jobs[job].lastStartedAt = now;
 }
-export function markSweepFinished(job: SweepJob, outcome: { ok: boolean; processed?: number; sent?: number; failed?: number }, now = Date.now()) {
+export function markPollerStopped() {
+  state().pollerStartedAt = null;
+}
+export function markSweepFinished(job: SweepJob, outcome: { ok: boolean; processed?: number; sent?: number; failed?: number; errorTag?: string }, now = Date.now()) {
   const j = state().jobs[job];
   j.lastFinishedAt = now;
   j.lastOk = outcome.ok;
+  if (outcome.ok) {
+    j.lastSuccessAt = now;
+    j.lastErrorTag = null;
+  } else {
+    j.lastErrorTag = (outcome.errorTag ?? "unknown").slice(0, 60);
+  }
   j.lastProcessed = outcome.processed ?? 0;
   j.lastSent = outcome.sent ?? 0;
   j.lastFailed = outcome.failed ?? 0;
@@ -60,4 +81,35 @@ export function sequenceSchedulerState(pollerDisabled: boolean, now = Date.now()
   if (job.lastOk === false) return "stalled";
   const reference = job.lastFinishedAt ?? s.pollerStartedAt;
   return now - reference > SCHEDULER_STALL_AFTER_MS ? "stalled" : "running";
+}
+
+export type SequenceSchedulerReport = {
+  state: SequenceSchedulerState;
+  /** DISABLE_IN_PROCESS_POLLER is not set: this server process is meant to send sequence steps itself. */
+  enabled: boolean;
+  lastSuccessAt: Date | null;
+  lastErrorTag: string | null;
+  consecutiveFailures: number;
+  /** Counts of the last sweep (what it looked at / sent / failed). */
+  lastSweep: { processed: number; sent: number; failed: number } | null;
+  /** Whether automatic sequence sending is, as far as this process can establish, operating right now. */
+  operational: boolean;
+};
+
+/**
+ * Everything the System Health page shows about automatic sequence sending, read from the SAME state the detailed /api/health uses (never a second guess).
+ * It describes THIS server process; "operational" is true only for state "running" - an alive process alone never counts.
+ */
+export function sequenceSchedulerReport(pollerDisabled: boolean, now = Date.now()): SequenceSchedulerReport {
+  const job = state().jobs.sequences;
+  const s = sequenceSchedulerState(pollerDisabled, now);
+  return {
+    state: s,
+    enabled: !pollerDisabled,
+    lastSuccessAt: job.lastSuccessAt === null ? null : new Date(job.lastSuccessAt),
+    lastErrorTag: job.lastOk === false ? job.lastErrorTag : null,
+    consecutiveFailures: job.consecutiveFailures,
+    lastSweep: job.lastFinishedAt === null ? null : { processed: job.lastProcessed, sent: job.lastSent, failed: job.lastFailed },
+    operational: s === "running",
+  };
 }

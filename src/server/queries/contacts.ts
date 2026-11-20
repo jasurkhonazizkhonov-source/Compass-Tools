@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@/generated/prisma/client";
 import { contactVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
+import { isEmailRestricted, withEmailPrivacy } from "@/server/privacy/customer-email";
 
 export async function getContacts(params: {
   q?: string;
@@ -18,6 +19,8 @@ export async function getContacts(params: {
   // passes — this is the actual enforcement point, not a UI convention.
   const pageSize = resolvePageSize(params.pageSize);
 
+  // Customer-email privacy: a restricted viewer's search never matches on the hidden address (see queries/global-search.ts).
+  const emailRestricted = await isEmailRestricted(params.viewer);
   const where: Prisma.ContactWhereInput = {
     ...contactVisibilityWhere(params.viewer),
     AND: [
@@ -26,7 +29,7 @@ export async function getContacts(params: {
             OR: [
               { firstName: { contains: params.q, mode: "insensitive" } },
               { lastName: { contains: params.q, mode: "insensitive" } },
-              { primaryEmail: { contains: params.q, mode: "insensitive" } },
+              ...(emailRestricted ? [] : [{ primaryEmail: { contains: params.q, mode: "insensitive" as const } }]),
               { primaryPhone: { contains: params.q, mode: "insensitive" } },
             ],
           }
@@ -43,7 +46,7 @@ export async function getContacts(params: {
     ],
   };
 
-  const [contacts, total] = await Promise.all([
+  const [rawContacts, total] = await Promise.all([
     prisma.contact.findMany({
       where,
       include: {
@@ -75,6 +78,7 @@ export async function getContacts(params: {
     }),
     prisma.contact.count({ where }),
   ]);
+  const contacts = await withEmailPrivacy(params.viewer, rawContacts, (c) => c, (c, email) => ({ ...c, primaryEmail: email }));
 
   return { contacts, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }
@@ -86,6 +90,7 @@ export async function getContacts(params: {
 // contactVisibilityWhere so a restricted-role agent can only tag a referrer
 // from contacts they can already see.
 export async function searchContacts(query: string, viewer: Viewer, excludeContactId?: string) {
+  const emailRestricted = await isEmailRestricted(viewer);
   const where: Prisma.ContactWhereInput = {
     ...contactVisibilityWhere(viewer),
     ...(excludeContactId ? { id: { not: excludeContactId } } : {}),
@@ -94,19 +99,20 @@ export async function searchContacts(query: string, viewer: Viewer, excludeConta
           OR: [
             { firstName: { contains: query, mode: "insensitive" } },
             { lastName: { contains: query, mode: "insensitive" } },
-            { primaryEmail: { contains: query, mode: "insensitive" } },
+            ...(emailRestricted ? [] : [{ primaryEmail: { contains: query, mode: "insensitive" as const } }]),
             { primaryPhone: { contains: query, mode: "insensitive" } },
           ],
         }
       : {}),
   };
 
-  return prisma.contact.findMany({
+  const rows = await prisma.contact.findMany({
     where,
     orderBy: { updatedAt: "desc" },
     take: 8,
     select: { id: true, firstName: true, lastName: true, primaryPhone: true, primaryEmail: true },
   });
+  return withEmailPrivacy(viewer, rows, (c) => c, (c, email) => ({ ...c, primaryEmail: email }));
 }
 
 // Unscoped (no visibility filter) existence check — used only on the

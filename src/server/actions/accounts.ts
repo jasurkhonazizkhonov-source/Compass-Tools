@@ -593,3 +593,35 @@ export async function updateContactDetailEditPermission(accountId: string, enabl
   revalidatePath("/users");
   return undefined;
 }
+
+/**
+ * Admin-only switch for "Unlimited Customer Email Access" (Account.unlimitedCustomerEmailAccess), default OFF for everyone.
+ *   - ON: the user sees complete customer email addresses with no daily reveal allowance. OFF: masked addresses and the 5-per-business-day reveal allowance.
+ *   - Enforced on the server on every request (server/privacy/customer-email.ts reads the flag fresh), so turning it OFF takes effect on the user's next request.
+ *   - Same company only; Administrators always have full access, so the switch is refused for an Administrator target.
+ *   - Turning it ON widens access to customer data, so it needs the recent-sign-in step-up like the other grants; turning it OFF never does.
+ *   - Audited (who, which account, from/to) with no customer data.
+ */
+export async function updateUnlimitedCustomerEmailAccess(accountId: string, enabled: boolean) {
+  const current = await assertAdmin();
+  if (typeof enabled !== "boolean" || typeof accountId !== "string" || !accountId) throw new Error("Invalid request");
+
+  const target = await prisma.account.findUnique({ where: { id: accountId }, select: { role: true, companyId: true, unlimitedCustomerEmailAccess: true } });
+  if (!target || target.companyId !== current!.companyId) throw new Error("Account not found");
+  if (target.role === "ADMIN") return { error: "Administrators always see complete customer email addresses." };
+  if (target.unlimitedCustomerEmailAccess === enabled) return undefined;
+
+  if (enabled) {
+    const refused = await stepUpOrRefuse(current!, accountId, "grant-unlimited-customer-email-access");
+    if (refused) return refused;
+  }
+  await prisma.account.update({ where: { id: accountId }, data: { unlimitedCustomerEmailAccess: enabled } });
+  await auditAccountEvent(prisma, {
+    actorId: current!.id,
+    action: "UNLIMITED_CUSTOMER_EMAIL_ACCESS_CHANGED",
+    accountId,
+    metadata: { targetRole: target.role, from: target.unlimitedCustomerEmailAccess, to: enabled },
+  });
+  revalidatePath("/users");
+  return undefined;
+}

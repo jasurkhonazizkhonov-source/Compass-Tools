@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { CabinClass, LeadSource, LeadStatus, Prisma, TripType } from "@/generated/prisma/client";
 import { leadVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
+import { isEmailRestricted, withEmailPrivacy } from "@/server/privacy/customer-email";
 
 export type LeadFilters = {
   q?: string;
@@ -22,6 +23,8 @@ export async function getLeads(filters: LeadFilters) {
   // server-side against a strict allow-list.
   const pageSize = resolvePageSize(filters.pageSize);
 
+  // Customer-email privacy: a restricted viewer's free-text search never matches on the (hidden) address, so it cannot be reconstructed from search results.
+  const emailRestricted = await isEmailRestricted(filters.viewer);
   const where: Prisma.LeadWhereInput = {
     ...leadVisibilityWhere(filters.viewer),
     AND: [
@@ -46,7 +49,7 @@ export async function getLeads(filters: LeadFilters) {
             OR: [
               { contact: { firstName: { contains: filters.q, mode: "insensitive" } } },
               { contact: { lastName: { contains: filters.q, mode: "insensitive" } } },
-              { contact: { primaryEmail: { contains: filters.q, mode: "insensitive" } } },
+              ...(emailRestricted ? [] : [{ contact: { primaryEmail: { contains: filters.q, mode: "insensitive" as const } } }]),
               { contact: { primaryPhone: { contains: filters.q, mode: "insensitive" } } },
               { departureAirport: { iata: { contains: filters.q, mode: "insensitive" } } },
               { departureAirport: { city: { contains: filters.q, mode: "insensitive" } } },
@@ -58,7 +61,7 @@ export async function getLeads(filters: LeadFilters) {
     ],
   };
 
-  const [leads, total] = await Promise.all([
+  const [rawLeads, total] = await Promise.all([
     prisma.lead.findMany({
       where,
       include: {
@@ -93,6 +96,7 @@ export async function getLeads(filters: LeadFilters) {
     }),
     prisma.lead.count({ where }),
   ]);
+  const leads = await withEmailPrivacy(filters.viewer, rawLeads, (l) => l.contact, (l, email) => ({ ...l, contact: { ...l.contact, primaryEmail: email } }));
 
   return { leads, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }

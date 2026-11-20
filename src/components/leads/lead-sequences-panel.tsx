@@ -7,6 +7,7 @@ import { ApplySequenceDialog } from "@/components/sequences/apply-sequence-dialo
 import { ActiveSequenceCard, enrollmentStateOf, splitEnrollments, stepLabel, type LeadEnrollment } from "@/components/leads/active-sequences";
 import { EnrollmentRecoveryActions } from "@/components/sequences/enrollment-recovery-actions";
 import { isRealFailure } from "@/lib/sequence-delivery";
+import type { RecipientOption } from "@/lib/customer-email-mask";
 
 /** What a non-active enrollment looks like in the history list: never a "next email", always where it stopped. */
 function historyDetail(e: LeadEnrollment): string {
@@ -23,6 +24,7 @@ export function LeadSequencesPanel({
   enrollments,
   availableSequences,
   contactEmails = [],
+  contactRecipients,
 }: {
   leadId: string;
   enrollments: LeadEnrollment[];
@@ -30,6 +32,8 @@ export function LeadSequencesPanel({
   /** Every email on file for this lead's contact, primary first — passed
    * through to ApplySequenceDialog's recipient picker (Part 4). */
   contactEmails?: string[];
+  /** Customer-email privacy: the same list as opaque ids + viewer-visible labels. Preferred over `contactEmails`. */
+  contactRecipients?: RecipientOption[];
 }) {
   // Only a genuinely ACTIVE enrollment blocks (and is offered as "active"); FAILED / UNSUBSCRIBED / COMPLETED are history and never hide a sequence from the picker.
   const { active, history } = splitEnrollments(enrollments);
@@ -39,7 +43,7 @@ export function LeadSequencesPanel({
   return (
     <div className="space-y-3">
       <div className="flex justify-end">
-        <ApplySequenceDialog leadId={leadId} sequences={applicable} contactEmails={contactEmails} />
+        <ApplySequenceDialog leadId={leadId} sequences={applicable} contactEmails={contactEmails} contactRecipients={contactRecipients} />
       </div>
 
       {enrollments.length === 0 ? (

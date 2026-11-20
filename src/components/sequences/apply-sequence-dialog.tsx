@@ -19,6 +19,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { GmailProblemNotice } from "@/components/sequences/gmail-problem-notice";
 import { getSequenceStartReadiness, startSequenceForLead, type GmailBlock } from "@/server/actions/sequences";
+import type { RecipientOption } from "@/lib/customer-email-mask";
 
 type SequenceOption = { id: string; name: string; description: string | null; stepCount: number; firstStepDelayMinutes?: number };
 type Blocked = { error: string; gmail?: GmailBlock };
@@ -46,7 +47,8 @@ function describeDelay(minutes: number): string {
 export function ApplySequenceDialog({
   leadId,
   sequences,
-  contactEmails = [],
+  contactEmails: plainEmails = [],
+  contactRecipients,
 }: {
   leadId: string;
   sequences: SequenceOption[];
@@ -54,11 +56,15 @@ export function ApplySequenceDialog({
    * there's more than one, the agent picks which address (or both) this
    * sequence's automated sends go to (Part 4). */
   contactEmails?: string[];
+  /** Customer-email privacy: the same list as opaque ids + the label the viewer may see (masked until revealed). When given, the server resolves the chosen ids to
+   * addresses, so a restricted viewer's browser never holds them. */
+  contactRecipients?: RecipientOption[];
 }) {
+  const options: RecipientOption[] = contactRecipients ?? plainEmails.map((a) => ({ id: a, display: a, address: a }));
   const [open, setOpen] = useState(false);
   const [stage, setStage] = useState<"choose" | "confirm">("choose");
   const [selected, setSelected] = useState<string | undefined>(sequences[0]?.id);
-  const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set(contactEmails[0] ? [contactEmails[0]] : []));
+  const [selectedEmails, setSelectedEmails] = useState<Set<string>>(new Set(options[0] ? [options[0].id] : []));
   const [blocked, setBlocked] = useState<Blocked | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [sender, setSender] = useState<{ name: string; isViewer: boolean } | null>(null);
@@ -67,7 +73,7 @@ export function ApplySequenceDialog({
   const router = useRouter();
 
   const chosen = sequences.find((s) => s.id === selected);
-  const recipients = contactEmails.length > 1 ? [...selectedEmails] : contactEmails.slice(0, 1);
+  const recipients = options.length > 1 ? options.filter((o) => selectedEmails.has(o.id)).map((o) => o.display) : options.slice(0, 1).map((o) => o.display);
 
   function toggleRecipient(addr: string) {
     setSelectedEmails((prev) => {
@@ -91,7 +97,7 @@ export function ApplySequenceDialog({
       toast.error("Select a sequence");
       return;
     }
-    if (contactEmails.length > 1 && selectedEmails.size === 0) {
+    if (options.length > 1 && selectedEmails.size === 0) {
       toast.error("Select at least one recipient email");
       return;
     }
@@ -114,11 +120,14 @@ export function ApplySequenceDialog({
 
   function approve() {
     if (!selected || isPending) return;
-    const recipientEmail = contactEmails.length > 1 ? [...selectedEmails].join(", ") : undefined;
+    const chosenIds = options.length > 1 ? [...selectedEmails] : [];
+    // Opaque ids when the server supplied them (the server resolves the addresses); plain addresses only for callers that were given plain addresses.
+    const recipientEmail = !contactRecipients && chosenIds.length > 0 ? chosenIds.join(", ") : undefined;
+    const recipientIds = contactRecipients && chosenIds.length > 0 ? chosenIds : undefined;
     setProblem(null);
     startTransition(async () => {
       try {
-        const result = await startSequenceForLead(selected, leadId, recipientEmail);
+        const result = recipientIds ? await startSequenceForLead(selected, leadId, undefined, recipientIds) : await startSequenceForLead(selected, leadId, recipientEmail);
         if (!result.ok) {
           // Gmail stopped working between the check and the approval: back to the chooser with the same notification. Nothing was enrolled.
           if (result.gmail) {
@@ -188,14 +197,14 @@ export function ApplySequenceDialog({
                 ))}
               </RadioGroup>
             )}
-            {contactEmails.length > 1 && (
+            {options.length > 1 && (
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">Send automated emails to</label>
                 <div className="space-y-1 rounded-md border p-2">
-                  {contactEmails.map((addr) => (
-                    <label key={addr} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50 cursor-pointer">
-                      <Checkbox checked={selectedEmails.has(addr)} onCheckedChange={() => toggleRecipient(addr)} />
-                      <span className="truncate">{addr}</span>
+                  {options.map((o) => (
+                    <label key={o.id} className="flex items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50 cursor-pointer">
+                      <Checkbox checked={selectedEmails.has(o.id)} onCheckedChange={() => toggleRecipient(o.id)} />
+                      <span className="truncate">{o.display}</span>
                     </label>
                   ))}
                 </div>

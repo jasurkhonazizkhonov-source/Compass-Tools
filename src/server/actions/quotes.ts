@@ -6,6 +6,7 @@ import { nanoid, customAlphabet } from "nanoid";
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
+import { getEmailViewer } from "@/server/privacy/customer-email";
 import { logActivity } from "@/server/activity-log";
 import { calculatePricing } from "@/lib/pricing";
 import { sendEmail } from "@/server/email/service";
@@ -247,7 +248,7 @@ export async function updateQuoteInternalNotes(quoteId: string, patch: { interna
  * arbitrary address. Omitted (or left undefined) when the contact has
  * exactly one email, which is used automatically.
  */
-export async function sendQuote(quoteId: string, recipientEmail?: string) {
+export async function sendQuote(quoteId: string, recipientEmail?: string, recipientId?: string) {
   const actor = await getCurrentAccount();
   const quote = await prisma.quote.findFirst({
     where: { id: quoteId, ...quoteVisibilityWhere(actor) },
@@ -294,7 +295,18 @@ export async function sendQuote(quoteId: string, recipientEmail?: string) {
   }
 
   let toEmail: string;
-  if (recipientEmail) {
+  if (recipientId) {
+    // Customer-email privacy: the browser named the recipient by opaque id; the address is looked up here and never leaves the server.
+    const known = quote.contact.emails.length > 0
+      ? quote.contact.emails.find((e) => e.id === recipientId)?.email
+      : recipientId === `primary:${quote.contact.id}` ? quote.contact.primaryEmail ?? undefined : undefined;
+    if (!known) return { ok: false as const, error: "The selected email address is not on file for this customer." };
+    toEmail = known;
+  } else if (recipientEmail) {
+    // A viewer who may only see masked addresses never supplies a raw address (it would be a probe for "is this address on file?").
+    if (!actor || (await getEmailViewer(actor)).restricted) {
+      return { ok: false as const, error: "Choose the recipient from the list." };
+    }
     // Server-side re-validation — the requested address must actually
     // belong to this contact, regardless of what the client claims.
     const match = knownEmails.find((e) => e.toLowerCase() === recipientEmail.trim().toLowerCase());

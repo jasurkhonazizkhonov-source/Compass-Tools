@@ -273,6 +273,11 @@ export function canViewGetInTouch(role: AccountRole | undefined) {
   return role === "ADMIN";
 }
 
+// Admin-only security log of failed sign-in attempts (names, emails, IPs, locations): enforced at the sidebar, proxy.ts, the page and every action.
+export function canViewFailedSignIns(role: AccountRole | undefined) {
+  return role === "ADMIN";
+}
+
 // Admin-only System Health center (checks, incidents, readiness). Enforced at
 // the sidebar, proxy.ts, the page and any action — never by hiding a link alone.
 export function canViewSystemHealth(role: AccountRole | undefined) {

@@ -217,6 +217,52 @@ async function checkGmail(): Promise<HealthCheckResult> {
   });
 }
 
+/**
+ * Automatic sequence sending: is the background sender on THIS server process actually operating? Read from the same state the detailed /api/health reports
+ * (server/scheduler-status.ts) - never guessed by the browser. "Running" is reported only when a sweep has really finished recently; a live process alone
+ * is not evidence. It describes the instance that serves this page.
+ */
+export async function checkSequenceScheduler(now = Date.now()): Promise<HealthCheckResult> {
+  return guarded("sequences.scheduler", "email", "Automatic sequence sending", async () => {
+    const { inProcessPollerDisabled } = await import("@/lib/poller-config");
+    const { sequenceSchedulerReport } = await import("@/server/scheduler-status");
+    const r = sequenceSchedulerReport(inProcessPollerDisabled(), now);
+    const facts = [
+      { label: "Background sender enabled", value: r.enabled ? "Yes" : "No (DISABLE_IN_PROCESS_POLLER)" },
+      { label: "Automatic sending operational", value: r.operational ? "Yes" : "No" },
+      { label: "Last successful run", value: r.lastSuccessAt ? r.lastSuccessAt.toISOString().replace("T", " ").slice(0, 19) + " UTC" : "None yet in this process" },
+      ...(r.lastSweep ? [{ label: "Last run (looked at / sent / failed)", value: `${r.lastSweep.processed} / ${r.lastSweep.sent} / ${r.lastSweep.failed}` }] : []),
+      ...(r.lastErrorTag ? [{ label: "Last error (category)", value: r.lastErrorTag }, { label: "Consecutive failed runs", value: String(r.consecutiveFailures) }] : []),
+    ];
+    switch (r.state) {
+      case "running":
+        return { state: "HEALTHY", summary: "Automatic sequence sending is running: the background sender has completed a run recently.", facts };
+      case "disabled":
+        return {
+          state: "WARNING",
+          classification: "manual_action",
+          summary: "Automatic sequence sending is switched off on this server (DISABLE_IN_PROCESS_POLLER). Sequence emails go out only if something else calls the sweep.",
+          facts,
+          action: "Make sure a scheduler calls /api/cron/sequences about once a minute (deploy/run-sequence-sweep.sh), or remove the setting to let the server send by itself.",
+        };
+      case "stalled":
+        return {
+          state: "CRITICAL",
+          summary: r.lastErrorTag ? "Automatic sequence sending is stalled: the last run failed." : "Automatic sequence sending is stalled: no run has finished for several minutes.",
+          facts,
+          action: "Check that the database is reachable and read the server log for [sequence-sender]. It recovers by itself on the next successful run; due emails are not lost.",
+        };
+      default:
+        return {
+          state: "UNKNOWN",
+          summary: "The background sender has not started in this server process (yet), so its state cannot be established.",
+          facts,
+          action: "Wait about a minute after a restart. If this stays, check the server log: the sender starts with the server unless it runs on a runtime that cannot host it.",
+        };
+    }
+  });
+}
+
 async function checkCardVault(): Promise<HealthCheckResult> {
   return guarded("payment.vault", "payment", "Card vault & booking readiness", async () => {
     const vault = getCardVaultStatus();
@@ -409,6 +455,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkConnectionPressure(),
     checkAuthConfig(),
     checkGmail(),
+    checkSequenceScheduler(),
     checkCardVault(),
     checkSignerIp(),
     checkEncryptionKeys(),

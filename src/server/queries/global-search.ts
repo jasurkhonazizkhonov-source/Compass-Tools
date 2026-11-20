@@ -4,6 +4,8 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewBookings, canViewContacts, canViewLeads, canViewQuotesPage } from "@/lib/permissions";
 import { contactVisibilityWhere, leadVisibilityWhere, quoteVisibilityWhere, bookingVisibilityWhere } from "@/server/visibility";
+import { getEmailViewer, revealedContactIdsToday } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 
 export type GlobalSearchResult = {
   contacts: Array<{ id: string; label: string; sublabel: string }>;
@@ -39,6 +41,12 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
   // have the Bookings area (Admin, Manager, Ticketing Agent, Flight Expert), never for the others.
   const none = Promise.resolve([] as never[]);
 
+  // Customer-email privacy: a restricted viewer cannot search BY email text (matching on a partial address is an oracle that reconstructs the hidden address one
+  // fragment at a time) and sees only the masked form in the result line unless they already revealed that customer today.
+  const viewer = await getEmailViewer(actor);
+  const emailTerm = (relation: "contact" | "self") =>
+    viewer.restricted ? [] : [relation === "self" ? { primaryEmail: { contains: query, mode: "insensitive" as const } } : { contact: { primaryEmail: { contains: query, mode: "insensitive" as const } } }];
+
   const [contacts, leads, quotes, bookings] = await Promise.all([
     !canViewContacts(actor.role) ? none : prisma.contact.findMany({
       where: {
@@ -48,7 +56,7 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
             OR: [
               { firstName: { contains: query, mode: "insensitive" } },
               { lastName: { contains: query, mode: "insensitive" } },
-              { primaryEmail: { contains: query, mode: "insensitive" } },
+              ...emailTerm("self"),
               { primaryPhone: { contains: query, mode: "insensitive" } },
             ],
           },
@@ -64,7 +72,7 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
             OR: [
               { contact: { firstName: { contains: query, mode: "insensitive" } } },
               { contact: { lastName: { contains: query, mode: "insensitive" } } },
-              { contact: { primaryEmail: { contains: query, mode: "insensitive" } } },
+              ...emailTerm("contact"),
               { contact: { primaryPhone: { contains: query, mode: "insensitive" } } },
               { departureAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
               { arrivalAirport: { OR: [{ iata: { contains: query, mode: "insensitive" } }, { city: { contains: query, mode: "insensitive" } }] } },
@@ -84,7 +92,7 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
               { quoteNumber: { contains: query, mode: "insensitive" } },
               { contact: { firstName: { contains: query, mode: "insensitive" } } },
               { contact: { lastName: { contains: query, mode: "insensitive" } } },
-              { contact: { primaryEmail: { contains: query, mode: "insensitive" } } },
+              ...emailTerm("contact"),
               { contact: { primaryPhone: { contains: query, mode: "insensitive" } } },
             ],
           },
@@ -112,11 +120,12 @@ export async function globalSearch(rawQuery: string): Promise<GlobalSearchResult
     }),
   ]);
 
+  const revealed = await revealedContactIdsToday(viewer, contacts.map((c) => c.id));
   return {
     contacts: contacts.map((c) => ({
       id: c.id,
       label: `${c.firstName} ${c.lastName}`,
-      sublabel: c.primaryEmail || c.primaryPhone || "",
+      sublabel: c.primaryEmail ? (revealed.has(c.id) ? c.primaryEmail : maskCustomerEmail(c.primaryEmail)) : c.primaryPhone || "",
     })),
     leads: leads.map((l) => ({
       id: l.id,

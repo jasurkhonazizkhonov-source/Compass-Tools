@@ -15,6 +15,8 @@ import { canDeleteBooking, canEnterTicketingInfo, canSendAirlineConfirmation } f
 import { buildRecipientOptions, resolveSelectedRecipients } from "@/server/airline-confirmation-recipients";
 import { deriveNotificationDestination } from "@/server/booking-destination";
 import { bookingVisibilityWhere } from "@/server/visibility";
+import { getEmailViewer, revealedContactIdsToday } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 import { SUPPORTED_CURRENCIES, buildPricingSnapshot, computeTotalSellingPriceUsd, computeBookingProfitUsd } from "@/lib/currency";
 import { sendBookingProfitNotification } from "@/server/booking-notification";
 import { airlineConfirmationEntrySchema, resolveAirlineConfirmations, toLegacyBookingFields } from "@/lib/airline-confirmations";
@@ -419,6 +421,7 @@ export async function getAirlineConfirmationRecipients(bookingId: string) {
   const booking = await prisma.booking.findUniqueOrThrow({
     where: { id: bookingId },
     select: {
+      contactId: true,
       contactEmail: true,
       airlineConfirmationFirstSentAt: true,
       contact: { select: { primaryEmail: true, emails: { select: { email: true, isPrimary: true } } } },
@@ -430,10 +433,20 @@ export async function getAirlineConfirmationRecipients(bookingId: string) {
     contactPrimaryEmail: booking.contact.primaryEmail,
     contactEmails: booking.contact.emails,
   });
+  // Customer-email privacy: a viewer who may not see complete addresses gets masked labels plus opaque ids (the position in this list); the send resolves the ids
+  // on the server. `defaultSelected` is translated to the same ids.
+  const actor = await getCurrentAccount();
+  const viewer = actor ? await getEmailViewer(actor) : null;
+  const full = !!viewer && (!viewer.restricted || (await revealedContactIdsToday(viewer, [booking.contactId])).has(booking.contactId));
+  // A viewer who may see complete addresses always (an Administrator, or Unlimited access) keeps the established shape (the address is the key); anyone subject to
+  // masking - even after revealing a customer - names recipients by id, because a restricted viewer may never send a raw address.
+  const byId = !viewer || viewer.restricted;
+  const shaped = byId ? options.map((o, i) => ({ id: `r${i}`, email: full ? o.email : maskCustomerEmail(o.email), masked: !full, sources: o.sources })) : options;
+  const defaultIds = byId ? defaultSelected.map((d) => `r${options.findIndex((o) => o.email === d)}`).filter((id) => id !== "r-1") : defaultSelected;
   return {
     ok: true as const,
-    recipients: options,
-    defaultSelected,
+    recipients: shaped,
+    defaultSelected: defaultIds,
     hasSentBefore: booking.airlineConfirmationFirstSentAt != null,
     // The mailbox the email will come FROM — the quote's creator, never the person clicking.
     sender: booking.quote.sentByAgent ? { fullName: booking.quote.sentByAgent.fullName, email: booking.quote.sentByAgent.email } : null,
@@ -461,7 +474,7 @@ export type SendAirlineConfirmationResult = { ok: true; sentTo: string[] } | { o
  */
 export async function sendAirlineConfirmationEmail(
   bookingId: string,
-  options?: { resend?: boolean; recipients?: string[] }
+  options?: { resend?: boolean; recipients?: string[]; recipientIds?: string[] }
 ): Promise<SendAirlineConfirmationResult> {
   const actor = await authorizeAirlineConfirmation(bookingId);
 
@@ -506,7 +519,18 @@ export async function sendAirlineConfirmationEmail(
   if (recipientOptions.length === 0) {
     return { ok: false, error: "This booking has no customer email on file" };
   }
-  const selection = resolveSelectedRecipients(options?.recipients ?? defaultSelected, recipientOptions);
+  let requested: unknown = options?.recipients ?? defaultSelected;
+  if (options?.recipientIds) {
+    // Opaque ids from the (possibly masked) dialog -> addresses, resolved here against the same server-built list.
+    const ids = options.recipientIds;
+    const picked = Array.isArray(ids) ? ids.map((id) => (typeof id === "string" && /^r\d{1,3}$/.test(id) ? recipientOptions[Number(id.slice(1))]?.email : undefined)) : [];
+    if (picked.length === 0 || picked.some((p) => !p)) return { ok: false, error: "One of the selected email addresses is not on file for this booking. Reopen this dialog and choose from the list." };
+    requested = picked;
+  } else if (options?.recipients && (await getEmailViewer(actor)).restricted) {
+    // A viewer who may only see masked addresses never supplies a raw one (it would be a probe for "is this address on file?").
+    return { ok: false, error: "Choose the recipients from the list." };
+  }
+  const selection = resolveSelectedRecipients(requested, recipientOptions);
   if (!selection.ok) {
     return { ok: false, error: selection.error };
   }
@@ -724,7 +748,8 @@ export async function sendAirlineConfirmationEmail(
   if (!result.ok) {
     return { ok: false, error: result.error };
   }
-  return { ok: true, sentTo: recipients };
+  // The confirmation a restricted viewer gets back names the recipients in masked form only.
+  return { ok: true, sentTo: (await getEmailViewer(actor)).restricted ? recipients.map(maskCustomerEmail) : recipients };
 }
 
 const SEND_CANCELLATION_CONFIRMATION_DENIAL = "You are not authorized to send this confirmation";

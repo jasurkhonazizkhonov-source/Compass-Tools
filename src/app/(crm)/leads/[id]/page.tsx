@@ -36,6 +36,8 @@ import { QUOTE_STATUS_META } from "@/lib/status-meta";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { buildContactEmailView } from "@/server/privacy/customer-email";
+import { maskEmailsInText } from "@/lib/customer-email-mask";
 
 export const dynamic = "force-dynamic";
 
@@ -60,6 +62,11 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
   // Metadata only (never file bytes or object keys); authorised by the same lead-visibility rule as this page.
   const attachments = await listLeadAttachments(lead.id, viewer);
+
+  // Customer-email privacy: every address on this page (info card, composer, sequence recipients, timeline text, sequence table) derives from this one server-side decision.
+  const emailView = await buildContactEmailView(viewer, lead.contact.id, lead.contact.emails, lead.contact.primaryEmail);
+  const activities = emailView.masked ? lead.activities.map((a) => ({ ...a, description: maskEmailsInText(a.description) })) : lead.activities;
+  const enrollments = emailView.masked ? lead.enrollments.map((e) => ({ ...e, recipientEmail: e.recipientEmail ? maskEmailsInText(e.recipientEmail) : e.recipientEmail })) : lead.enrollments;
 
   // The legs the Travel Request editor starts from. A multi-city lead with saved
   // segments shows exactly those, in order. One that has none yet (switched to
@@ -96,13 +103,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             <CallButton phone={lead.contact.primaryPhone} size="icon" />
             <EmailComposerButton
               leadId={lead.id}
-              emails={
-                lead.contact.emails.length > 0
-                  ? [...lead.contact.emails].sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0)).map((e) => e.email)
-                  : lead.contact.primaryEmail
-                    ? [lead.contact.primaryEmail]
-                    : []
-              }
+              recipients={emailView.recipients}
               contactName={`${lead.contact.firstName} ${lead.contact.lastName}`}
               size="icon"
             />
@@ -158,7 +159,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             firstName={lead.contact.firstName}
             lastName={lead.contact.lastName}
             phones={lead.contact.phones}
-            emails={lead.contact.emails}
+            emails={emailView.rows}
+            emailPrivacy={emailView.privacy}
             leadId={lead.id}
             canEditContactDetails={canEditContactDetails(currentAccount)}
           />
@@ -274,22 +276,16 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
               <TabsContent value="sequences" className="pt-4">
                 <LeadSequencesPanel
                   leadId={lead.id}
-                  enrollments={lead.enrollments}
+                  enrollments={enrollments}
                   availableSequences={applicableSequences}
-                  contactEmails={
-                    lead.contact.emails.length > 0
-                      ? [...lead.contact.emails].sort((a, b) => (b.isPrimary ? 1 : 0) - (a.isPrimary ? 1 : 0)).map((e) => e.email)
-                      : lead.contact.primaryEmail
-                        ? [lead.contact.primaryEmail]
-                        : []
-                  }
+                  contactRecipients={emailView.recipients}
                 />
               </TabsContent>
 
               <TabsContent value="activity" className="pt-4">
                 <LeadCapturedEvent createdAt={lead.createdAt} source={lead.source} />
                 <LeadSubmissionInformation leadId={lead.id} createdAt={lead.createdAt} info={submissionInfo} fromWebsite={lead.source === "WEBSITE"} canRevealIp={canRevealLeadSubmissionIp(currentAccount)} />
-                <ActivityTimeline activities={lead.activities} leadId={lead.id} />
+                <ActivityTimeline activities={activities} leadId={lead.id} />
               </TabsContent>
 
               <TabsContent value="attachments" className="pt-4">

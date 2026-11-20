@@ -136,6 +136,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
                           contactName={contactName}
                           phone={c.primaryPhone}
                           email={c.primaryEmail}
+                          emailRecipientId={`primary:${c.id}`}
                           ownerId={c.owner?.id ?? null}
                           ownerName={c.owner?.fullName ?? null}
                           leads={c.leads.map((l) => ({ id: l.id, route: `${l.departureAirport?.iata ?? "?"} → ${l.arrivalAirport?.iata ?? "?"}`, ownerName: l.assignedAgent?.fullName ?? null }))}
@@ -195,6 +196,7 @@ export default async function ContactsPage({ searchParams }: { searchParams: Sea
                       contactName={contactName}
                       phone={c.primaryPhone}
                       email={c.primaryEmail}
+                          emailRecipientId={`primary:${c.id}`}
                       ownerId={c.owner?.id ?? null}
                       ownerName={c.owner?.fullName ?? null}
                       leads={c.leads.map((l) => ({ id: l.id, route: `${l.departureAirport?.iata ?? "?"} → ${l.arrivalAirport?.iata ?? "?"}`, ownerName: l.assignedAgent?.fullName ?? null }))}

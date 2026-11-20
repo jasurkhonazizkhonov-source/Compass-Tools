@@ -110,14 +110,18 @@ describe("Scenario B - Gmail connected, choose the same sequence again", () => {
   it("'Check again' re-checks Gmail for real, and when it is ready the confirmation appears; Approve and Start then starts the sequence", async () => {
     readiness.mockResolvedValueOnce(blocked("TEMPORARILY_UNAVAILABLE", {}, "Gmail could not be checked right now."));
     const { user, dialog } = await openAndContinue();
-    await user.click(await within(dialog).findByRole("button", { name: "Check again" }));
-    await waitFor(() => expect(readiness).toHaveBeenCalledTimes(2));
+    // The button is disabled while the first check's transition is still settling; under a heavily loaded full run the click used to land on the disabled button and be
+    // ignored (the cause of the intermittent failure - not the timeout). Wait until it is enabled, then click.
+    const checkAgain = await within(dialog).findByRole("button", { name: "Check again" });
+    await waitFor(() => expect(checkAgain).toBeEnabled(), { timeout: 15000 });
+    await user.click(checkAgain);
+    await waitFor(() => expect(readiness).toHaveBeenCalledTimes(2), { timeout: 15000 }); // generous: a 12-minute full run on a shared 8 GB machine starves jsdom tests (passes 3/3 alone; failed once at 5 s)
     const box = await within(dialog).findByTestId("sequence-approval");
     expect(box).toHaveTextContent("Welcome Series");
     expect(within(dialog).queryByTestId("gmail-problem")).toBeNull();
     expect(start).not.toHaveBeenCalled(); // approval is still the user's decision
     await user.click(within(dialog).getByRole("button", { name: "Approve and Start" }));
-    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1), { timeout: 5000 });
     expect(start).toHaveBeenCalledWith("seq-1", "lead-1", undefined);
   });
 

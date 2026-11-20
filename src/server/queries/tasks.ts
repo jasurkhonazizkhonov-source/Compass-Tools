@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma, TaskStatus, Priority } from "@/generated/prisma/client";
 import { taskVisibilityWhere, leadVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
+import { isEmailRestricted, withEmailPrivacy } from "@/server/privacy/customer-email";
 
 export type TaskFilters = {
   q?: string;
@@ -29,6 +30,13 @@ function dueRangeFilter(due: TaskFilters["due"]): Prisma.TaskWhereInput {
   if (due === "today") return { dueAt: { gte: startOfToday, lt: endOfToday } };
   if (due === "week") return { dueAt: { gte: startOfToday, lt: endOfWeek } };
   return { dueAt: null };
+}
+
+type TaskContact = { id: string; primaryEmail: string | null };
+// A task carries its customer twice (task.contact and task.lead.contact); both are masked for a viewer who may not see the address.
+async function maskTaskContacts<T extends { contact: TaskContact | null; lead: { contact: TaskContact } | null }>(viewer: Viewer, tasks: T[]): Promise<T[]> {
+  const first = await withEmailPrivacy(viewer, tasks, (t) => t.contact, (t, email) => ({ ...t, contact: t.contact ? { ...t.contact, primaryEmail: email } : t.contact }));
+  return withEmailPrivacy(viewer, first, (t) => t.lead?.contact, (t, email) => ({ ...t, lead: t.lead ? { ...t.lead, contact: { ...t.lead.contact, primaryEmail: email } } : t.lead }));
 }
 
 export async function getTasks(filters: TaskFilters, viewer: Viewer) {
@@ -69,7 +77,7 @@ export async function getTasks(filters: TaskFilters, viewer: Viewer) {
   // tasks can easily share a dueAt/createdAt (e.g. auto-created follow-ups).
   const orderBy: Prisma.TaskOrderByWithRelationInput[] = [primarySort, { id: "desc" }];
 
-  const [tasks, total] = await Promise.all([
+  const [rawTasks, total] = await Promise.all([
     prisma.task.findMany({
       where,
       include: {
@@ -83,6 +91,7 @@ export async function getTasks(filters: TaskFilters, viewer: Viewer) {
     }),
     prisma.task.count({ where }),
   ]);
+  const tasks = await maskTaskContacts(viewer, rawTasks);
 
   return { tasks, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
 }
@@ -108,7 +117,7 @@ export async function getTaskCounts(viewer: Viewer, scopeUserId?: string) {
 }
 
 export async function getTaskDetail(taskId: string, viewer: Viewer) {
-  return prisma.task.findFirst({
+  const task = await prisma.task.findFirst({
     where: { id: taskId, ...taskVisibilityWhere(viewer) },
     include: {
       contact: true,
@@ -117,9 +126,13 @@ export async function getTaskDetail(taskId: string, viewer: Viewer) {
       completedBy: true,
     },
   });
+  if (!task) return task;
+  return (await maskTaskContacts(viewer, [task]))[0];
 }
 
 export async function searchLeadsForTaskLink(query: string, viewer: Viewer) {
+  const maskLeads = <L extends { contact: { id: string; primaryEmail: string | null } }>(rows: L[]) =>
+    withEmailPrivacy(viewer, rows, (l) => l.contact, (l, email) => ({ ...l, contact: { ...l.contact, primaryEmail: email } }));
   if (!query.trim()) {
     const leads = await prisma.lead.findMany({
       where: leadVisibilityWhere(viewer),
@@ -127,8 +140,9 @@ export async function searchLeadsForTaskLink(query: string, viewer: Viewer) {
       take: 8,
       include: { contact: true, departureAirport: true, arrivalAirport: true },
     });
-    return leads;
+    return maskLeads(leads);
   }
+  const emailRestricted = await isEmailRestricted(viewer);
   const leads = await prisma.lead.findMany({
     where: {
       AND: [
@@ -137,7 +151,7 @@ export async function searchLeadsForTaskLink(query: string, viewer: Viewer) {
           OR: [
             { contact: { firstName: { contains: query, mode: "insensitive" } } },
             { contact: { lastName: { contains: query, mode: "insensitive" } } },
-            { contact: { primaryEmail: { contains: query, mode: "insensitive" } } },
+            ...(emailRestricted ? [] : [{ contact: { primaryEmail: { contains: query, mode: "insensitive" as const } } }]),
           ],
         },
       ],
@@ -146,5 +160,5 @@ export async function searchLeadsForTaskLink(query: string, viewer: Viewer) {
     take: 8,
     include: { contact: true, departureAirport: true, arrivalAirport: true },
   });
-  return leads;
+  return maskLeads(leads);
 }

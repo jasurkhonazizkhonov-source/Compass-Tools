@@ -12,10 +12,15 @@ vi.mock("@/server/actions/marketing-campaigns", () => ({
   createMarketingCampaign: vi.fn(),
   updateMarketingCampaign: vi.fn(),
   deleteMarketingCampaign: vi.fn(),
-  sendMarketingCampaign: (...a: unknown[]) => sendMock(...a),
+  sendMarketingCampaign: vi.fn(), // only the older manual-batch continuation still uses it
   sendTestMarketingCampaign: vi.fn(),
   // The server-side preview sanitiser (src/server/email/sanitize-campaign-html.ts is tested on its own); here it just echoes.
   previewCampaignHtml: vi.fn(async (html: string) => ({ html })),
+}));
+// Sending is now "queue for background delivery" (queueCampaign), which is what the guard below must keep from being called.
+vi.mock("@/server/actions/campaign-delivery", () => ({
+  queueCampaign: (...a: unknown[]) => sendMock(...a),
+  sendCampaignTest: vi.fn(async () => ({ ok: true })),
 }));
 // TipTap needs a real layout engine; the form only needs to hand it content and read changes back.
 vi.mock("@/components/subscriptions/rich-text-editor", () => ({
@@ -89,9 +94,9 @@ describe("CampaignForm — starters", () => {
 
   it("sending is refused client-side while a [[placeholder]] remains — the server action is never called", async () => {
     render(<CampaignForm campaignId="c1" initialSubject="Fares to [[Destination]]" initialHtml="<p>Hello</p>" recipientCount={3} />);
-    fireEvent.click(screen.getByRole("button", { name: /^Send to 3 Subscribers$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Queue for 3 Subscribers$/ }));
     // confirm dialog
-    const confirm = await screen.findAllByRole("button", { name: /Send to 3 Subscribers/ });
+    const confirm = await screen.findAllByRole("button", { name: /Queue for delivery/ });
     fireEvent.click(confirm[confirm.length - 1]);
     await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringContaining("[[Destination]]")));
     expect(sendMock).not.toHaveBeenCalled();

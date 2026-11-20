@@ -19,7 +19,7 @@ import type { SubscriberStatus } from "@/generated/prisma/client";
 type Subscriber = {
   id: string;
   email: string;
-  status: "SUBSCRIBED" | "UNSUBSCRIBED";
+  status: "SUBSCRIBED" | "UNSUBSCRIBED" | "SUPPRESSED";
   source: string | null;
   subscribedAt: Date;
   unsubscribedAt?: Date | null;
@@ -28,6 +28,7 @@ type Subscriber = {
   unsubscribeSource?: string | null;
   unsubscribeRespondedAt?: Date | null;
   lastCampaignName?: string | null;
+  suppressionReason?: string | null;
 };
 
 /**
@@ -74,7 +75,7 @@ export function SubscriberList({
   filteredTotal,
 }: {
   subscribers: Subscriber[];
-  counts: { total: number; subscribed: number; unsubscribed: number };
+  counts: { total: number; subscribed: number; unsubscribed: number; suppressed?: number };
   /** The resolved `?status=` value from the URL ("all" | "active" |
    * "unsubscribed") — read server-side and passed down so this component
    * never has to re-derive it from useSearchParams itself. */
@@ -148,7 +149,7 @@ export function SubscriberList({
     }
   }
 
-  function setStatusFilter(next: "all" | "active" | "unsubscribed") {
+  function setStatusFilter(next: "all" | "active" | "unsubscribed" | "suppressed") {
     const params = new URLSearchParams(searchParams.toString());
     if (next === "all") params.delete("status");
     else params.set("status", next);
@@ -261,20 +262,20 @@ export function SubscriberList({
   }
 
   const removeOneEmail = subscribers.find((s) => s.id === removeOneId)?.email;
-  const filterLabel = statusParam === "active" ? "active" : statusParam === "unsubscribed" ? "unsubscribed" : "";
+  const filterLabel = statusParam === "active" ? "active" : statusParam === "unsubscribed" ? "unsubscribed" : statusParam === "suppressed" ? "suppressed" : "";
 
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-1 rounded-md border p-0.5">
-          {(["all", "active", "unsubscribed"] as const).map((key) => (
+          {(["all", "active", "unsubscribed", "suppressed"] as const).map((key) => (
             <button
               key={key}
               type="button"
               onClick={() => setStatusFilter(key)}
               className={`px-2.5 py-1 text-xs font-medium rounded transition-colors ${statusParam === key ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:text-foreground"}`}
             >
-              {key === "all" ? `All (${counts.total})` : key === "active" ? `Active (${counts.subscribed})` : `Unsubscribed (${counts.unsubscribed})`}
+              {key === "all" ? `All (${counts.total})` : key === "active" ? `Active (${counts.subscribed})` : key === "unsubscribed" ? `Unsubscribed (${counts.unsubscribed})` : `Suppressed (${counts.suppressed ?? 0})`}
             </button>
           ))}
         </div>
@@ -361,6 +362,10 @@ export function SubscriberList({
                     {s.status === "SUBSCRIBED" ? (
                       <span className="inline-flex items-center gap-1 rounded-full border border-success/30 bg-success/15 px-2 py-0.5 text-xs font-medium text-[color-mix(in_oklab,var(--success),black_25%)] dark:text-success">
                         Active
+                      </span>
+                    ) : s.status === "SUPPRESSED" ? (
+                      <span className="inline-flex items-center gap-1 rounded-full border border-warning/40 bg-warning/10 px-2 py-0.5 text-xs font-medium" title={s.suppressionReason ?? "Suppressed"}>
+                        <XCircle className="h-3 w-3" /> Suppressed
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-xs font-medium text-[color-mix(in_oklab,var(--destructive),black_20%)] dark:text-destructive">
