@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // own-Gmail sender and every decision in the module run for real.
 
 type Role = "ADMIN" | "MANAGER" | "TRAVEL_AGENT" | "TICKETING_AGENT" | "FLIGHT_EXPERT" | "MARKETING_AGENT";
-type FakeAccount = { id: string; email: string; fullName: string; role: Role; companyId: string; status: string };
+type FakeAccount = { id: string; email: string; fullName: string; role: Role; companyId: string; status: string; unlimitedCustomerEmailAccess?: boolean };
 
 let accounts: Map<string, FakeAccount>;
 let gmailConnected: Set<string>;
@@ -50,7 +50,7 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-const acct = (id: string, name: string, role: Role, over: Partial<FakeAccount> = {}): FakeAccount => ({ id, email: `${id}@example.com`, fullName: name, role, companyId: "company-1", status: "ACTIVE", ...over });
+const acct = (id: string, name: string, role: Role, over: Partial<FakeAccount> = {}): FakeAccount => ({ id, email: `${id}@example.com`, fullName: name, role, companyId: "company-1", status: "ACTIVE", unlimitedCustomerEmailAccess: true, ...over }); // default: may see complete addresses (the restricted case is in customer-email-in-notifications.test.ts)
 
 function baseLead(over: Record<string, unknown> = {}) {
   return {
@@ -327,5 +327,25 @@ describe("sendContactReassignmentEmails", () => {
     expect(await sendContactReassignmentEmails({ ...CONTACT_PARAMS, newOwnerId: "nigora" })).toEqual({ previousOwner: "SKIPPED", newOwner: "SKIPPED" });
     expect(await sendContactReassignmentEmails({ ...CONTACT_PARAMS, previousOwnerId: null })).toEqual({ previousOwner: "SKIPPED", newOwner: "SKIPPED" });
     expect(await sentCalls()).toHaveLength(0);
+  });
+});
+
+describe("customer-email privacy in the reassignment notifications", () => {
+  it("lead reassignment: a restricted new owner gets no address / mailto / Reply, an unrestricted one does - the rest of the email is unchanged", async () => {
+    const { sendLeadReassignmentEmails } = await import("../reassignment-email");
+    accounts.set("andrew", { ...accounts.get("andrew")!, unlimitedCustomerEmailAccess: false });
+    await sendLeadReassignmentEmails({ ...LEAD_PARAMS, actorId: "admin" });
+    const restricted = (await sentCalls()).find((c) => c.accountId === "andrew")!.html;
+    expect(restricted).not.toContain("dark@client.example");
+    expect(restricted).not.toMatch(/mailto:/i);
+    expect(restricted).toContain("Hidden for privacy");
+    expect(restricted).toContain("Dark Master");
+    expect(restricted).toContain("tel:");
+    expect(JSON.stringify(emailLogs)).not.toContain("dark@client.example");
+  });
+  it("an unrestricted new owner still gets the address (the existing behaviour)", async () => {
+    const { sendLeadReassignmentEmails } = await import("../reassignment-email");
+    await sendLeadReassignmentEmails({ ...LEAD_PARAMS, actorId: "admin" });
+    expect((await sentCalls()).find((c) => c.accountId === "andrew")!.html).toContain("dark@client.example");
   });
 });

@@ -27,6 +27,7 @@ import { prisma } from "@/lib/prisma";
 import { buildContactReassignmentEmail, buildLeadReassignmentEmail } from "@/server/email/templates";
 import { sendFromOwnGmail, type OwnGmailRecipient } from "@/server/email/own-gmail-send";
 import { getCompanyById } from "@/server/queries/company";
+import { recipientsMaySeeCustomerEmail } from "@/server/privacy/customer-email";
 import { formatPhoneInternational, phoneCountryName } from "@/lib/phone";
 import { resolveBaseUrl } from "@/lib/company-config";
 import { canViewAllRecords, canViewContacts, canViewLeads } from "@/lib/permissions";
@@ -131,8 +132,12 @@ export async function sendLeadReassignmentEmails(params: {
       // A deactivated user (the usual reason a lead is being moved off them)
       // has no working mailbox access and should not be emailed.
       if (!recipient || recipient.status !== "ACTIVE") return "SKIPPED";
+      // Customer-email privacy: a recipient who may not see complete addresses gets a note instead of the address.
+      const showEmail = await recipientsMaySeeCustomerEmail([recipient.id]);
       const { subject, html } = buildLeadReassignmentEmail({
         ...shared,
+        customerEmail: showEmail ? shared.customerEmail : null,
+        customerEmailHidden: !showEmail && !!shared.customerEmail,
         direction,
         recipientFullName: recipient.fullName,
         leadUrl: canOpen("lead", recipient, direction === "TO_YOU") ? leadUrl : null,
@@ -220,8 +225,11 @@ export async function sendContactReassignmentEmails(params: {
 
     const deliver = async (recipient: RecipientAccount | undefined, direction: "AWAY" | "TO_YOU"): Promise<"SENT" | "FAILED" | "SKIPPED"> => {
       if (!recipient || recipient.status !== "ACTIVE") return "SKIPPED";
+      const showEmail = await recipientsMaySeeCustomerEmail([recipient.id]);
       const { subject, html } = buildContactReassignmentEmail({
         ...shared,
+        contactEmail: showEmail ? shared.contactEmail : null,
+        contactEmailHidden: !showEmail && !!shared.contactEmail,
         direction,
         recipientFullName: recipient.fullName,
         contactUrl: canOpen("contact", recipient, direction === "TO_YOU") ? contactUrl : null,

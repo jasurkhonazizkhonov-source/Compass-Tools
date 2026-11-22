@@ -8,7 +8,7 @@ import type { BookingNotificationParams } from "../booking-notification";
 // properties (never throws, never double-sends) are testable without
 // simulating the entire card-validation/pricing pipeline.
 
-type FakeAccount = { id: string; email: string; fullName: string; role: string; status: string; companyId: string };
+type FakeAccount = { id: string; email: string; fullName: string; role: string; status: string; companyId: string; unlimitedCustomerEmailAccess?: boolean };
 type FakeEmailLog = { id: string; bookingId: string; type: string; status: string; toEmail?: string };
 
 let accounts: Map<string, FakeAccount>;
@@ -80,10 +80,12 @@ vi.mock("@/lib/prisma", () => ({
       // Shared by sendBookingSignedNotification (queries admins/managers via
       // role.in) and sendBookingProfitNotification (queries every ACTIVE
       // account company-wide, no role filter at all) — handle both shapes.
-      findMany: vi.fn(async ({ where }: { where: { companyId: string; status: string; role?: { in: string[] } } }) =>
-        [...accounts.values()].filter(
-          (a) => a.companyId === where.companyId && a.status === where.status && (!where.role || where.role.in.includes(a.role))
-        )
+      findMany: vi.fn(async ({ where }: { where: { companyId?: string; status?: string; role?: { in: string[] }; id?: { in: string[] } } }) =>
+        where.id
+          ? [...accounts.values()].filter((a) => where.id!.in.includes(a.id)) // the privacy lookup: who may see complete customer addresses
+          : [...accounts.values()].filter(
+              (a) => a.companyId === where.companyId && a.status === where.status && (!where.role || where.role.in.includes(a.role))
+            )
       ),
     },
   },
@@ -504,5 +506,35 @@ describe("sendBookingProfitNotification — Pass 23 atomic claim", () => {
     expect(first).toEqual({ ok: true });
     expect(second).toEqual({ ok: true });
     expect(emailLogs).toHaveLength(2);
+  });
+});
+
+describe("sendBookingSignedNotification - customer-email privacy", () => {
+  const hiddenFlag = async (params: BookingNotificationParams) => {
+    const { sendBookingSignedNotification } = await import("../booking-notification");
+    const templates = await import("@/server/email/templates");
+    vi.mocked(templates.buildBookingSignedNotificationEmail).mockClear();
+    await sendBookingSignedNotification(params);
+    return vi.mocked(templates.buildBookingSignedNotificationEmail).mock.calls[0][0] as { contactEmail: string; contactEmailHidden?: boolean };
+  };
+
+  it("an Administrator-only audience (no sending agent recorded) gets the address", async () => {
+    const call = await hiddenFlag(BASE_PARAMS);
+    expect(call.contactEmailHidden).toBe(false);
+    expect(call.contactEmail).toBe("jane@example.com");
+  });
+
+  it("a restricted sending agent gets NO address (empty string + the hidden flag)", async () => {
+    accounts.set("agent-1", { id: "agent-1", email: "agent@example.com", fullName: "Agent One", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1", unlimitedCustomerEmailAccess: false });
+    gmailConnected.add("agent-1");
+    const call = await hiddenFlag({ ...BASE_PARAMS, agent: { id: "agent-1", email: "agent@example.com", fullName: "Agent One" } });
+    expect(call.contactEmailHidden).toBe(true);
+    expect(call.contactEmail).toBe("");
+  });
+
+  it("an agent with Unlimited access gets it (an unreadable permission hides it: tested on the helper and in the New Flight Request sender)", async () => {
+    accounts.set("agent-2", { id: "agent-2", email: "agent2@example.com", fullName: "Agent Two", role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "company-1", unlimitedCustomerEmailAccess: true });
+    gmailConnected.add("agent-2");
+    expect((await hiddenFlag({ ...BASE_PARAMS, agent: { id: "agent-2", email: "agent2@example.com", fullName: "Agent Two" } })).contactEmailHidden).toBe(false);
   });
 });

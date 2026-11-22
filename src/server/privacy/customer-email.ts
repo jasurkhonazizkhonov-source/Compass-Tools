@@ -41,7 +41,24 @@ export async function getEmailViewer(actor: EmailViewerActor): Promise<EmailView
   return { id: actor.id, companyId: actor.companyId, restricted: !flag, unlimited: flag, isAdmin: false };
 }
 
-type MaybeViewer = { id: string; role: string; companyId: string } | null | undefined;
+/**
+ * For an INTERNAL notification email: true only when EVERY named recipient is allowed to see complete customer addresses (an Administrator, or a user with Unlimited Customer
+ * Email Access). Read fresh from the database; an unknown account, a missing id or an unreadable answer is "no" (fail closed). A notification that goes to several people
+ * as one message therefore shows the address only if all of them may see it.
+ */
+export async function recipientsMaySeeCustomerEmail(accountIds: Array<string | null | undefined>): Promise<boolean> {
+  const ids = [...new Set(accountIds)];
+  if (ids.length === 0 || ids.some((i) => !i)) return false;
+  try {
+    const rows = await prisma.account.findMany({ where: { id: { in: ids as string[] } }, select: { id: true, role: true, unlimitedCustomerEmailAccess: true } });
+    if (rows.length !== ids.length) return false;
+    return rows.every((r) => r.role === "ADMIN" || r.unlimitedCustomerEmailAccess === true);
+  } catch {
+    return false;
+  }
+}
+
+type MaybeViewer ={ id: string; role: string; companyId: string } | null | undefined;
 
 /** Whether this (possibly missing) viewer must not search by / see full customer emails. A missing viewer is treated as restricted - fail closed. */
 export async function isEmailRestricted(actor: MaybeViewer): Promise<boolean> {

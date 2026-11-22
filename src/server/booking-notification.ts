@@ -18,6 +18,7 @@ import { buildBookingSignedNotificationEmail, buildBookingProfitNotificationEmai
 import { toEmailSegments } from "@/server/email/segment-mapper";
 import { getCompanyForAccountId, getCompanyForContactId } from "@/server/queries/company";
 import { getGmailConnectionState } from "@/server/queries/gmail-connection";
+import { recipientsMaySeeCustomerEmail } from "@/server/privacy/customer-email";
 import { SEGMENT_SELECT } from "@/server/queries/segment-select";
 import { isSupportedCurrency, type SupportedCurrency } from "@/lib/currency";
 import { formatHireAgeCompact } from "@/lib/account-format";
@@ -136,10 +137,13 @@ export async function sendBookingSignedNotification(params: BookingNotificationP
       ? `${params.customerFirstName} ${params.customerMiddleName} ${params.customerLastName}`
       : `${params.customerFirstName} ${params.customerLastName}`;
 
+    const showContactEmail = await recipientsMaySeeCustomerEmail(recipients.map((r) => r.id));
     const { subject, html } = buildBookingSignedNotificationEmail({
       bookingReference: params.bookingReference,
       customerFullName,
-      contactEmail: params.contactEmail,
+      // Customer-email privacy: one message goes to every recipient, so the address is shown only if ALL of them may see complete addresses.
+      contactEmail: showContactEmail ? params.contactEmail : "",
+      contactEmailHidden: !showContactEmail,
       contactPhone: params.contactPhone,
       signedName: params.signedName,
       signedAt: params.bookingCreatedAt,

@@ -349,3 +349,27 @@ describe("recipients by id", () => {
     expect(buildRecipientOptions("c0", [], "only@example.com", false)).toEqual([{ id: "primary:c0", display: "o**y@example.com", address: null }]);
   });
 });
+
+describe("recipientsMaySeeCustomerEmail - who may be shown an address inside an internal notification", () => {
+  it("true only when EVERY recipient is an Administrator or has Unlimited access; false for any restricted, unknown, missing or unreadable recipient", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    const rows = [
+      { id: "admin", role: "ADMIN", unlimitedCustomerEmailAccess: false },
+      { id: "trusted", role: "TRAVEL_AGENT", unlimitedCustomerEmailAccess: true },
+      { id: "plain", role: "MANAGER", unlimitedCustomerEmailAccess: false },
+    ];
+    (prisma as unknown as { account: Record<string, unknown> }).account.findMany = vi.fn(async ({ where }: { where: { id: { in: string[] } } }) => rows.filter((r) => where.id.in.includes(r.id)));
+    const { recipientsMaySeeCustomerEmail } = await import("../customer-email");
+    expect(await recipientsMaySeeCustomerEmail(["admin"])).toBe(true);
+    expect(await recipientsMaySeeCustomerEmail(["admin", "trusted", "admin"])).toBe(true);
+    expect(await recipientsMaySeeCustomerEmail(["admin", "plain"])).toBe(false); // one restricted recipient hides it from the one shared message
+    expect(await recipientsMaySeeCustomerEmail(["ghost"])).toBe(false);
+    expect(await recipientsMaySeeCustomerEmail(["admin", "ghost"])).toBe(false);
+    expect(await recipientsMaySeeCustomerEmail([])).toBe(false);
+    expect(await recipientsMaySeeCustomerEmail([undefined])).toBe(false);
+    (prisma as unknown as { account: Record<string, unknown> }).account.findMany = vi.fn(async () => {
+      throw new Error("db down");
+    });
+    expect(await recipientsMaySeeCustomerEmail(["admin"])).toBe(false); // unreadable -> fail closed
+  });
+});

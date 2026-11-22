@@ -1073,6 +1073,9 @@ export function buildTaskReminderEmail(params: {
   return { subject, html };
 }
 
+/** What an INTERNAL notification shows instead of the customer's address when its recipient may not see it (the same rule as the CRM screens: masked until revealed). */
+export const HIDDEN_CUSTOMER_EMAIL_NOTE = "Hidden for privacy - open the record in the CRM and use Reveal";
+
 function renderContactCard(name: string, email: string, phone: string): string {
   return `
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb; border-radius:10px;">
@@ -1410,6 +1413,8 @@ export function buildBookingSignedNotificationEmail(params: {
   bookingReference: string;
   customerFullName: string;
   contactEmail: string;
+  /** At least one recipient may not see the customer's address: it is replaced by a one-line note. */
+  contactEmailHidden?: boolean;
   contactPhone: string;
   signedName: string;
   signedAt: Date;
@@ -1440,7 +1445,7 @@ export function buildBookingSignedNotificationEmail(params: {
     </p>
 
     <p style="margin:0 0 6px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Customer</p>
-    ${renderContactCard(escapeHtml(params.customerFullName), escapeHtml(params.contactEmail), escapeHtml(params.contactPhone))}
+    ${renderContactCard(escapeHtml(params.customerFullName), escapeHtml(params.contactEmailHidden ? HIDDEN_CUSTOMER_EMAIL_NOTE : params.contactEmail), escapeHtml(params.contactPhone))}
 
     <p style="margin:18px 0 10px; font-size:11px; font-weight:700; letter-spacing:0.04em; color:#6b7280; text-transform:uppercase;">Flight Itinerary</p>
     ${renderItineraryHtml(params.segments, undefined, undefined, params.company.brandColor)}
@@ -1483,6 +1488,8 @@ export type NewFlightRequestEmailParams = {
   company: ResolvedCompanyBranding;
   customerFullName: string;
   customerEmail: string | null;
+  /** The recipient may not see the customer's address (customer-email privacy): no address, no mailto link, no "Reply" button - a one-line note instead. */
+  customerEmailHidden?: boolean;
   customerPhone: string | null;
   /** International display form of customerPhone (e.g. "+1 415 555 1234"). */
   customerPhoneDisplay: string | null;
@@ -1581,6 +1588,7 @@ type LeadDetailInput = Pick<
   | "company"
   | "customerFullName"
   | "customerEmail"
+  | "customerEmailHidden"
   | "customerPhone"
   | "customerPhoneDisplay"
   | "customerCountry"
@@ -1627,7 +1635,9 @@ function leadDetailBlocks(d: LeadDetailInput) {
   if (d.budget != null) tripRows.push(["Approximate budget", `$${d.budget.toLocaleString("en-US")}`]);
 
   const clientRows: Array<[string, string]> = [["Full name", escapeHtml(d.customerFullName)]];
-  if (d.customerEmail) {
+  if (d.customerEmailHidden) {
+    clientRows.push(["Email", escapeHtml(HIDDEN_CUSTOMER_EMAIL_NOTE)]);
+  } else if (d.customerEmail) {
     clientRows.push(["Email", `<a href="mailto:${encodeURI(d.customerEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(d.customerEmail)}</a>`]);
   }
   if (d.customerPhone) {
@@ -1669,7 +1679,7 @@ function leadDetailBlocks(d: LeadDetailInput) {
       <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${EMAIL_TOKENS.mutedBackground}; border:1px solid ${EMAIL_TOKENS.border}; border-radius:10px; margin-bottom:22px;"><tr><td style="padding:14px 18px; font-size:14px; color:#374151; line-height:1.7; word-break:break-word; overflow-wrap:anywhere;">${escapeHtml(d.notes).replace(/\r?\n/g, "<br/>")}</td></tr></table>`
     : "";
 
-  const replyHref = d.customerEmail
+  const replyHref = d.customerEmail && !d.customerEmailHidden
     ? `mailto:${encodeURI(d.customerEmail)}?subject=${encodeURIComponent(`Your flight request${routeSummary ? ` — ${routeSummary}` : ""}`)}`
     : null;
   const callHref = d.customerPhone ? `tel:${d.customerPhone.replace(/[^+\d]/g, "")}` : null;
@@ -1905,6 +1915,8 @@ export type ContactReassignmentEmailParams = {
   recipientFullName: string;
   contactFullName: string;
   contactEmail: string | null;
+  /** The recipient may not see the customer's address: no address and no mailto link, a one-line note instead. */
+  contactEmailHidden?: boolean;
   contactPhone: string | null;
   contactPhoneDisplay: string | null;
   contactCountry: string | null;
@@ -1930,7 +1942,8 @@ export function buildContactReassignmentEmail(params: ContactReassignmentEmailPa
   if (!away) {
     // Contact details go to the NEW owner only; the previous owner already
     // knows this customer and does not need their details re-sent.
-    if (params.contactEmail) infoRows.push(["Email", `<a href="mailto:${encodeURI(params.contactEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.contactEmail)}</a>`]);
+    if (params.contactEmailHidden) infoRows.push(["Email", escapeHtml(HIDDEN_CUSTOMER_EMAIL_NOTE)]);
+    else if (params.contactEmail) infoRows.push(["Email", `<a href="mailto:${encodeURI(params.contactEmail)}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.contactEmail)}</a>`]);
     if (params.contactPhone) {
       infoRows.push(["Phone", `<a href="tel:${params.contactPhone.replace(/[^+\d]/g, "")}" style="color:${company.brandColor}; text-decoration:none;">${escapeHtml(params.contactPhoneDisplay ?? params.contactPhone)}</a>`]);
     }

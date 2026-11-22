@@ -50,9 +50,11 @@ vi.mock("@/lib/prisma", () => ({
         const a = accounts.get(where.id);
         return a && a.status === where.status ? a : null;
       }),
-      findMany: vi.fn(async ({ where }: { where: { companyId: string; status: string; role: { in: string[] }; id: { not: string } } }) =>
-        [...accounts.values()]
-          .filter((a) => a.companyId === where.companyId && a.status === where.status && where.role.in.includes(a.role) && a.id !== where.id.not)
+      findMany: vi.fn(async ({ where }: { where: { companyId: string; status: string; role: { in: string[] }; id: { not: string } | { in: string[] } } }) =>
+        "in" in where.id
+          ? [...accounts.values()].filter((a) => (where.id as { in: string[] }).in.includes(a.id)) // the privacy lookup: who may see complete customer addresses
+          : [...accounts.values()]
+          .filter((a) => a.companyId === where.companyId && a.status === where.status && where.role.in.includes(a.role) && a.id !== (where.id as { not: string }).not)
           .sort((x, y) => x.fullName.localeCompare(y.fullName))
       ),
     },
@@ -87,7 +89,7 @@ const params = { leadId: "lead-1", recipientId: "agent-a", acceptedAt: new Date(
 
 beforeEach(() => {
   accounts = new Map([
-    ["agent-a", { id: "agent-a", email: "a@example.com", fullName: "Agent A", companyId: "company-1", status: "ACTIVE", role: "TRAVEL_AGENT" }],
+    ["agent-a", { id: "agent-a", email: "a@example.com", fullName: "Agent A", companyId: "company-1", status: "ACTIVE", role: "TRAVEL_AGENT", unlimitedCustomerEmailAccess: true }], // may see complete addresses: these tests are about the email's content; the restricted case is in customer-email-in-notifications.test.ts
     ["admin-1", { id: "admin-1", email: "admin@example.com", fullName: "Admin One", companyId: "company-1", status: "ACTIVE", role: "ADMIN" }],
     ["other-co-admin", { id: "other-co-admin", email: "x@other.com", fullName: "Other Co", companyId: "company-2", status: "ACTIVE", role: "ADMIN" }],
   ]);
@@ -192,5 +194,57 @@ describe("sendNewFlightRequestEmail", () => {
     const { sendEmail } = await import("@/server/email/service");
     expect((await sendNewFlightRequestEmail(params)).ok).toBe(false);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("customer-email privacy in the New Flight Request notification", () => {
+  const restrict = (over: Record<string, unknown> = {}) => accounts.set("agent-a", { ...accounts.get("agent-a")!, unlimitedCustomerEmailAccess: false, ...over } as never);
+
+  it("a restricted agent gets the request WITHOUT the customer's address: no address, no mailto link, no Reply button, a note instead - and everything else stays useful", async () => {
+    restrict();
+    const { sendNewFlightRequestEmail } = await import("../lead-assignment-email");
+    const { sendEmail } = await import("@/server/email/service");
+    expect(await sendNewFlightRequestEmail(params)).toEqual({ ok: true });
+    const call = vi.mocked(sendEmail).mock.calls[0][0];
+    expect(call.html).not.toContain("jordan@example.com");
+    expect(call.html).not.toMatch(/mailto:/i);
+    expect(call.html).not.toContain("Reply to Client");
+    expect(call.html).toContain("Hidden for privacy");
+    // still useful: who, where, when, how to call
+    expect(call.html).toContain("Jordan Rivera");
+    expect(call.html).toContain("Charles de Gaulle");
+    expect(call.html).toContain("tel:+14155550123");
+    expect(call.html).toContain("Call Client");
+    expect(call.subject).not.toContain("jordan@example.com");
+    // no plain-text alternative is built for this email, so there is no second body that could carry the address
+    expect(call.text).toBeUndefined();
+    expect(JSON.stringify(emailLogs)).not.toContain("jordan@example.com");
+  });
+
+  it("an Administrator, and an agent with Unlimited Customer Email Access, still get the address and the Reply button", async () => {
+    const { sendNewFlightRequestEmail } = await import("../lead-assignment-email");
+    const { sendEmail } = await import("@/server/email/service");
+    await sendNewFlightRequestEmail(params); // agent-a is unlimited in the default seed
+    expect(vi.mocked(sendEmail).mock.calls[0][0].html).toContain("mailto:jordan@example.com");
+    expect(vi.mocked(sendEmail).mock.calls[0][0].html).toContain("Reply to Client");
+    emailLogs = [];
+    vi.mocked(sendEmail).mockClear();
+    accounts.set("agent-a", { ...accounts.get("agent-a")!, role: "ADMIN", unlimitedCustomerEmailAccess: false } as never);
+    await sendNewFlightRequestEmail(params);
+    expect(vi.mocked(sendEmail).mock.calls[0][0].html).toContain("mailto:jordan@example.com");
+  });
+
+  it("fails closed: if the permission cannot be read the address is hidden, and a send failure's log carries no address", async () => {
+    restrict();
+    const { prisma } = await import("@/lib/prisma");
+    (prisma.account.findMany as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("db down jordan@example.com"));
+    sendResults = [{ ok: false, error: "Gmail refused" }];
+    const { sendNewFlightRequestEmail } = await import("../lead-assignment-email");
+    const { sendEmail } = await import("@/server/email/service");
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await sendNewFlightRequestEmail(params);
+    expect(vi.mocked(sendEmail).mock.calls[0][0].html).not.toContain("jordan@example.com");
+    expect(JSON.stringify([emailLogs, err.mock.calls])).not.toContain("jordan@example.com");
+    err.mockRestore();
   });
 });

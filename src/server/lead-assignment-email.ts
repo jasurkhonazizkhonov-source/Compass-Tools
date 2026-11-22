@@ -28,6 +28,7 @@
 // sendBookingSignedNotification uses. The `to:` is always the accepting agent.
 import { prisma } from "@/lib/prisma";
 import { sendEmail } from "@/server/email/service";
+import { recipientsMaySeeCustomerEmail } from "@/server/privacy/customer-email";
 import { buildNewFlightRequestEmail } from "@/server/email/templates";
 import { getCompanyById } from "@/server/queries/company";
 import { getGmailConnectionState } from "@/server/queries/gmail-connection";
@@ -79,12 +80,15 @@ export async function sendNewFlightRequestEmail(params: { leadId: string; recipi
     if (lead.assignedAgentId !== recipient.id) return { ok: false, error: "This lead is not assigned to that agent." };
     if (lead.source !== "WEBSITE") return { ok: false, error: "Only website-captured leads send a New Flight Request email." };
 
+    const showEmail = await recipientsMaySeeCustomerEmail([recipient.id]);
     const company = await getCompanyById(recipient.companyId);
     const customerFullName = [lead.contact.firstName, lead.contact.middleName, lead.contact.lastName].filter(Boolean).join(" ");
     const { subject, html } = buildNewFlightRequestEmail({
       company,
       customerFullName,
-      customerEmail: lead.contact.primaryEmail,
+      // Customer-email privacy: an agent who may not see complete addresses gets a note instead of the address (and no mailto / Reply link); they use Reveal in the CRM.
+      customerEmail: showEmail ? lead.contact.primaryEmail : null,
+      customerEmailHidden: !showEmail && !!lead.contact.primaryEmail,
       customerPhone: lead.contact.primaryPhone,
       customerPhoneDisplay: lead.contact.primaryPhone ? formatPhoneInternational(lead.contact.primaryPhone) : null,
       customerCountry: lead.contact.primaryPhone ? phoneCountryName(lead.contact.primaryPhone) : null,
