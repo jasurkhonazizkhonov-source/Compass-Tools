@@ -78,7 +78,8 @@ jobs:
       INTEGRATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/compass_test?sslmode=require
       INTEGRATION_ADMIN_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres?sslmode=require
       INTEGRATION_SSL: "1"
-      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      # NODE_TLS_REJECT_UNAUTHORIZED is deliberately NOT set (it used to be, for the whole job, which also switched off certificate checks for `npm ci`). The test
+      # database's own certificate is trusted for the one step that needs it instead (NODE_EXTRA_CA_CERTS on the test step below).
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -91,19 +92,37 @@ jobs:
         run: |
           set -euo pipefail
           certs="$RUNNER_TEMP/pgtls"; mkdir -p "$certs"
-          openssl req -new -x509 -days 2 -nodes -subj "/CN=localhost" -keyout "$certs/server.key" -out "$certs/server.crt"
+          # A throw-away self-signed certificate that names the address the tests connect to (127.0.0.1), so a client can VERIFY it by trusting this one file.
+          openssl req -new -x509 -days 2 -nodes -subj "/CN=localhost" -addext "subjectAltName=IP:127.0.0.1,DNS:localhost" \
+            -keyout "$certs/server.key" -out "$certs/server.crt"
           sudo chown 999:999 "$certs/server.key" "$certs/server.crt"; sudo chmod 600 "$certs/server.key"
-          docker run -d --name ci-pg -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD=postgres -v "$certs:/certs:ro" \
+          # The database runs in the runner's OWN network namespace (--network host) and listens on 127.0.0.1 only. A published port (-p) would make the server see
+          # a container-network address instead of loopback, and src/test/integration-database-guard.ts - which asks the server which address it answered from -
+          # correctly refuses that, because a forwarded port looks exactly like a tunnel to somebody else's database. This runner is single-use and holds no other
+          # database; the next step proves that nothing but loopback listens on the port.
+          docker run -d --name ci-pg --network host -e POSTGRES_PASSWORD=postgres -v "$certs:/certs:ro" \
             postgres:17.11-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826 \
+            -c listen_addresses=127.0.0.1 -c port=5432 \
             -c ssl=on -c ssl_cert_file=/certs/server.crt -c ssl_key_file=/certs/server.key -c max_connections=100
           for i in $(seq 1 30); do docker exec ci-pg pg_isready -U postgres >/dev/null 2>&1 && break; sleep 2; done
           docker exec ci-pg psql -U postgres -c 'CREATE DATABASE compass_test'
+      - name: The test database listens on loopback only
+        run: |
+          set -euo pipefail
+          listeners="$(ss -H -ltn 'sport = :5432' | awk '{print $4}')"
+          echo "listening on port 5432: ${listeners:-nothing}"
+          [ -n "$listeners" ] || { echo "nothing is listening on 5432"; exit 1; }
+          # every listener must be exactly 127.0.0.1:5432 or [::1]:5432 - a wildcard (0.0.0.0, [::], *) or any other address fails the job
+          if echo "$listeners" | grep -qvE '^(127\.0\.0\.1|\[::1\]):5432$'; then echo "the test database must not listen on anything but loopback"; exit 1; fi
       - run: npm ci
       - name: Apply the migrations to the empty test database
         run: npx prisma migrate deploy
       - name: Prisma migrations match schema.prisma (no schema change without a migration)
         run: bash deploy/check-migration-drift.sh
       - name: Tests (serial, like the reference run)
+        env:
+          # Trust ONLY the throw-away certificate of the test database (in addition to the normal roots); verification stays ON for every other TLS connection.
+          NODE_EXTRA_CA_CERTS: ${{ runner.temp }}/pgtls/server.crt
         run: npx vitest run --no-file-parallelism
 
   docker:

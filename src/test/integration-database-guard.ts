@@ -8,6 +8,13 @@
 //   2. LIVE: it then connects (one short-lived connection) and asks the server which database and address it really reached; the answer must be
 //      `compass_test` on a loopback address (or a local socket). If the server cannot be reached or answers anything else the run is aborted -
 //      "could not verify" is never treated as "safe".
+//
+// Why a PostgreSQL in a Docker container that is reached through a published port (-p 127.0.0.1:5432:5432) is REFUSED: the client connects to
+// loopback, but Docker forwards the connection into the container, where the server's own address is on the container network (for example
+// 172.17.0.2), so inet_server_addr() is not loopback. That is exactly what an SSH tunnel to a real remote database looks like too, and the guard
+// must refuse that, so it does not try to tell the two apart or to learn Docker's address ranges. The disposable database has to be reachable on
+// loopback itself: CI starts it with --network host and listen_addresses=127.0.0.1 and asserts that nothing else listens on its port
+// (.github/workflows/ci.yml); a developer machine uses a PostgreSQL that listens on loopback.
 // With neither variable set nothing happens (the database-backed files skip themselves, exactly as before). DATABASE_URL, .env files and every PG*
 // variable are never read here.
 import pg from "pg";
@@ -21,6 +28,30 @@ const LOOPBACK_ANSWERS = new Set(["127.0.0.1", "::1"]);
 const refuse = (why: string): never => {
   throw new Error(`Database tests refused: ${why}. Nothing was run.`);
 };
+
+/**
+ * What KIND of address the server answered from, never the address itself: a refusal is printed in logs (CI logs of a public repository included), and the
+ * address of a database somebody pointed the tests at by mistake must not end up there. The kind is enough to diagnose a container or VPC network.
+ */
+export function describeNonLoopbackAddress(addr: string): string {
+  const a = addr.replace(/\/\d+$/, "").toLowerCase();
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(a);
+  if (v4) {
+    const [o1, o2] = [Number(v4[1]), Number(v4[2])];
+    if (o1 === 10 || (o1 === 172 && o2 >= 16 && o2 <= 31) || (o1 === 192 && o2 === 168)) return "a private IPv4 network (RFC 1918), typically a container, VPC or LAN";
+    if (o1 === 127) return "a loopback-range address other than 127.0.0.1";
+    if (o1 === 169 && o2 === 254) return "a link-local IPv4 address";
+    if (o1 === 100 && o2 >= 64 && o2 <= 127) return "a shared (CGNAT) IPv4 address";
+    return "a public IPv4 address";
+  }
+  if (a.includes(":")) {
+    if (a.startsWith("fc") || a.startsWith("fd")) return "an IPv6 unique-local address";
+    if (a.startsWith("fe8") || a.startsWith("fe9") || a.startsWith("fea") || a.startsWith("feb")) return "an IPv6 link-local address";
+    if (a.startsWith("::ffff:")) return "an IPv4-mapped IPv6 address (not accepted: only 127.0.0.1 and ::1 are)";
+    return "an IPv6 address other than ::1";
+  }
+  return "an address that is not a recognisable IP address";
+}
 
 /** Connection string without the sslmode parameter (the pg driver would otherwise apply its own certificate policy); TLS is requested explicitly. */
 function splitSslMode(url: string): { connectionString: string; ssl: false | { rejectUnauthorized: false } } {
@@ -40,7 +71,9 @@ export async function verifyConnectedTarget(url: string, expectedDatabase: strin
     const row = rows[0];
     if (!row || row.db !== expectedDatabase) return refuse(`the connected database is not ${expectedDatabase}`);
     // A local Unix-socket connection reports no address; a TCP connection must report a loopback one.
-    if (row.addr !== null && !LOOPBACK_ANSWERS.has(row.addr.replace(/\/\d+$/, ""))) return refuse("the server answered from a non-loopback address");
+    if (row.addr !== null && !LOOPBACK_ANSWERS.has(row.addr.replace(/\/\d+$/, ""))) {
+      return refuse(`the server answered from a non-loopback address (${describeNonLoopbackAddress(row.addr)}); the disposable database must be reachable on loopback itself, not through a forwarded or container address`);
+    }
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("Database tests refused")) throw error;
     // The message of a connection error can contain the host or user name; it is deliberately not repeated.
@@ -50,9 +83,14 @@ export async function verifyConnectedTarget(url: string, expectedDatabase: strin
   }
 }
 
+/** The whole decision for one environment, with the environment and the connection factory injectable so every outcome can be tested without a database. */
+export async function verifyConfiguredTargets(env: Record<string, string | undefined> = process.env, makeClient?: VerifyClientFactory): Promise<void> {
+  const target = resolveDisposableDatabase(env); // throws when configured but unsafe
+  const admin = resolveDisposableAdminDatabase(env); // throws when configured but unsafe / without the main URL
+  if (target) await verifyConnectedTarget(target.url, target.database, makeClient);
+  if (admin) await verifyConnectedTarget(admin.url, admin.database, makeClient);
+}
+
 export default async function setup(): Promise<void> {
-  const target = resolveDisposableDatabase(); // throws when configured but unsafe
-  const admin = resolveDisposableAdminDatabase(); // throws when configured but unsafe / without the main URL
-  if (target) await verifyConnectedTarget(target.url, target.database);
-  if (admin) await verifyConnectedTarget(admin.url, admin.database);
+  await verifyConfiguredTargets();
 }
