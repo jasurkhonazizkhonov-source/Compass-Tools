@@ -6,7 +6,7 @@ Date: 2026-11-20. Scope: `compass-tools-updated`. No deployment, no database, no
 
 | Item | Result |
 | --- | --- |
-| Branch / HEAD | `review/crm-verification-2026-11-13` at `364079044f246dbaa62f0f8f84ba1bb478a5ad6e` |
+| Branch / HEAD | `review/crm-verification-2026-11-13` at `364079044f246dbaa62f0f8f84ba1bb478a5ad6e` when this document was first written (that is also where GitHub's copy of the branch still is); later commits sit on the same branch and on `release/compass-tools-2026-11-22` - see `COMPASS_SEQUENCE_WORKFLOW_RELEASE_READINESS.md` section 7, which also classifies every remaining limitation |
 | Reported commit present? | Yes - local HEAD equals it. |
 | Remote | `https://github.com/jasurkhonazizkhonov-source/Compass-Tools` branch tip = the same commit (via `git ls-remote`); `main` = `5a77976`, untouched. The remote did not differ. |
 | Merge / rebase / cherry-pick | none in progress; `stash@{0}` untouched |

@@ -1,6 +1,6 @@
 # Failed Sign-ins, Customer Email Privacy, Subscriptions and Queued Campaign Delivery - Implementation and Audit Report
 
-Date: 2026-11-20. Project: `compass-tools-updated`, branch `review/crm-verification-2026-11-13`. Status words: **VERIFIED** (by a test that was run and passed), **NOT VERIFIED** (written, not exercised against the real thing), **BLOCKED** (needs infrastructure that does not exist here), **DECISION** (needs the owner). The CRM is **not declared production-ready** by this document; section 10 lists what stands between this code and a controlled redeployment.
+Date: 2026-11-20 (release-branch note 2026-11-22). Project: `compass-tools-updated`, branch `review/crm-verification-2026-11-13`; the same history is carried by the release branch `release/compass-tools-2026-11-22`, which is not merged into `main` and not yet published (see `COMPASS_SEQUENCE_WORKFLOW_RELEASE_READINESS.md` section 7 for ancestry, publication, CI and limitation status). Status words: **VERIFIED** (by a test that was run and passed), **NOT VERIFIED** (written, not exercised against the real thing), **BLOCKED** (needs infrastructure that does not exist here), **DECISION** (needs the owner). The CRM is **not declared production-ready** by this document; section 10 lists what stands between this code and a controlled redeployment.
 
 ## 1. What was audited
 
