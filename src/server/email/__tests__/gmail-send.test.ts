@@ -262,3 +262,34 @@ describe("sendViaGmail — Bcc recipients reach the raw message", () => {
     expect(raw).not.toMatch(/^Bcc:/im);
   });
 });
+
+describe("sendViaGmail — RFC 8058 one-click unsubscribe headers (marketing mail)", () => {
+  async function rawOf(input: Parameters<typeof import("../gmail-send").sendViaGmail>[0]) {
+    seedConnection();
+    getAccessToken.mockResolvedValue({ token: "t" });
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: "m" }) });
+    const { sendViaGmail } = await import("../gmail-send");
+    await sendViaGmail(input);
+    const body = JSON.parse(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][1].body);
+    return Buffer.from(body.raw, "base64url").toString("utf8");
+  }
+
+  it("a marketing message carries List-Unsubscribe (the recipient's own https URL) and List-Unsubscribe-Post: List-Unsubscribe=One-Click", async () => {
+    const raw = await rawOf({ ...BASE_INPUT, listUnsubscribeUrl: "https://crm.example.test/api/public/unsubscribe?token=abc123" });
+    expect(raw).toMatch(/^List-Unsubscribe:\s*<https:\/\/crm\.example\.test\/api\/public\/unsubscribe\?token=abc123>\s*$/im); // the header may be folded onto the next line
+    expect(raw).toMatch(/^List-Unsubscribe-Post:\s*List-Unsubscribe=One-Click\s*$/im);
+  });
+
+  it("an ordinary (non-marketing) message has neither header", async () => {
+    const raw = await rawOf(BASE_INPUT);
+    expect(raw).not.toMatch(/^List-Unsubscribe/im);
+  });
+
+  it("a URL that is not plain https, or that could break out of the header, is never put in a header (the message goes without the pair)", async () => {
+    for (const bad of ["http://crm.example.test/u?token=a", "javascript:alert(1)", "https://x.test/u>\r\nBcc: attacker@example.test", "https://x.test/u with space", "https://x.test/u<script>"]) {
+      const raw = await rawOf({ ...BASE_INPUT, listUnsubscribeUrl: bad });
+      expect(raw, bad).not.toMatch(/^List-Unsubscribe/im);
+      expect(raw, bad).not.toMatch(/^Bcc:\s*attacker/im);
+    }
+  });
+});

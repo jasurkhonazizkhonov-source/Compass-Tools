@@ -13,6 +13,9 @@ let sends: Send[];
 let outbox: Array<{ to: string; subject: string; html: string }>;
 let providerBehaviour: (to: string) => Record<string, unknown>;
 let sendSeq = 0;
+// Emulates the per-sender PostgreSQL advisory lock of claimWithinQuota: claim transactions run one at a time, in arrival order (the real lock does the same per
+// sender; one global queue is the stricter, simpler stand-in). The interleaving of everything else is left to the event loop, so the races are real.
+let claimLock: Promise<void> = Promise.resolve();
 
 const matches = (row: Record<string, unknown>, where: Record<string, unknown> | undefined): boolean => {
   if (!where) return true;
@@ -38,8 +41,14 @@ const apply = (row: Record<string, unknown>, data: Record<string, unknown>) => {
   }
 };
 
-vi.mock("@/lib/prisma", () => ({
-  prisma: {
+vi.mock("@/lib/prisma", () => {
+  const prismaFake: Record<string, unknown> = {
+    $queryRaw: vi.fn(async () => []),
+    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
+      const run = claimLock.then(() => fn(prismaFake));
+      claimLock = run.then(() => undefined, () => undefined);
+      return run;
+    }),
     marketingCampaign: {
       updateMany: vi.fn(async ({ where, data }: { where: Record<string, unknown>; data: Record<string, unknown> }) => {
         const hit = campaigns.filter((c) => matches(c, where));
@@ -94,8 +103,9 @@ vi.mock("@/lib/prisma", () => ({
     },
     account: { findUnique: vi.fn(async () => ({ id: "sender-1", fullName: "Sender", email: "sender@crm.test" })) },
     emailLog: { create: vi.fn(async () => ({})) },
-  },
-}));
+  };
+  return { prisma: prismaFake };
+});
 vi.mock("@/server/queries/company", () => ({ getCompanyForAccountId: vi.fn(async () => ({ name: "Co" })) }));
 vi.mock("@/lib/company-config", () => ({ resolveBaseUrl: () => "https://crm.example.test" }));
 vi.mock("@/server/email/templates", () => ({
@@ -130,7 +140,15 @@ function addCampaign(over: Partial<Campaign> = {}): Campaign {
 }
 const counts = () => sends.reduce<Record<string, number>>((m, s) => ((m[s.status] = (m[s.status] ?? 0) + 1), m), {});
 
-beforeEach(() => {
+beforeEach(async () => {
+  // A test may install its own provider behaviour (for example one that unsubscribes somebody during a send); it must never leak into the next test.
+  const svc = await import("@/server/email/service");
+  (svc.sendEmail as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (m: { to: string; subject: string; html: string }) => {
+    const r = providerBehaviour(m.to);
+    if (r.throw) throw new Error("socket hang up");
+    if (r.ok !== false) outbox.push({ to: m.to, subject: m.subject, html: m.html });
+    return r.ok === false ? r : { ok: true, messageId: `m-${outbox.length}` };
+  });
   campaigns = [];
   subscribers = [];
   sends = [];
@@ -469,5 +487,105 @@ describe("pause, cancel and unsubscribe take effect between recipients inside a 
     await drainMarketingCampaigns(NOW);
     expect(outbox.some((o) => o.to === subscribers[3].email)).toBe(false);
     expect(sends.find((s) => s.subscriberId === subscribers[3].id)!.status).toBe("SKIPPED_UNSUBSCRIBED");
+  });
+});
+
+describe("the quota is claimed atomically: concurrent workers can never overshoot a limit", () => {
+  it("ten workers ticking at the same instant claim at most the per-minute budget in total (the previous design could overshoot by a whole batch)", async () => {
+    addSubscribers(300);
+    addCampaign();
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await Promise.all(Array.from({ length: 10 }, () => drainMarketingCampaigns(NOW)));
+    expect(sends.filter((s) => s.lastAttemptAt !== null)).toHaveLength(20);
+    expect(outbox).toHaveLength(20);
+  });
+
+  it("many campaigns of ONE sender share one budget; another sender's campaigns have their own", async () => {
+    addSubscribers(100);
+    addCampaign({ id: "a1", createdById: "sender-1" });
+    addCampaign({ id: "a2", createdById: "sender-1" });
+    addCampaign({ id: "b1", createdById: "sender-2" });
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await Promise.all([drainMarketingCampaigns(NOW), drainMarketingCampaigns(NOW), drainMarketingCampaigns(NOW)]);
+    const byCampaign = (ids: string[]) => sends.filter((s) => ids.includes(s.campaignId) && s.lastAttemptAt !== null).length;
+    expect(byCampaign(["a1", "a2"])).toBe(20); // sender-1: one shared minute budget across both campaigns
+    expect(byCampaign(["b1"])).toBe(20); // sender-2: its own budget
+  });
+
+  it("the rolling daily cap holds under concurrency too, and uncertain (UNKNOWN) messages count against it because they may have been delivered", async () => {
+    vi.stubEnv("CAMPAIGN_DAILY_LIMIT", "25");
+    addSubscribers(100);
+    const c = addCampaign();
+    // five messages whose outcome is unknown, claimed in the last day: they are part of the day's usage
+    for (let i = 0; i < 5; i++) sends.push({ id: `old${i}`, campaignId: c.id, subscriberId: `ghost${i}`, status: "UNKNOWN", attempts: 1, nextAttemptAt: null, lastAttemptAt: minutes(-600), sentAt: null, errorMessage: null, providerMessageId: null });
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    for (let minute = 0; minute < 5; minute++) await Promise.all(Array.from({ length: 4 }, () => drainMarketingCampaigns(minutes(minute))));
+    expect(outbox).toHaveLength(20); // 25 - 5 uncertain
+    expect(c.status).toBe("SENDING"); // waiting for the window, not failed
+  });
+
+  it("a crashed worker that had claimed some recipients does not let the others exceed the budget (their claims still count)", async () => {
+    addSubscribers(100);
+    const c = addCampaign();
+    for (let i = 0; i < 12; i++) sends.push({ id: `dead${i}`, campaignId: c.id, subscriberId: `ghost${i}`, status: "UNKNOWN", attempts: 1, nextAttemptAt: null, lastAttemptAt: NOW, sentAt: null, errorMessage: null, providerMessageId: null });
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await Promise.all([drainMarketingCampaigns(NOW), drainMarketingCampaigns(NOW)]);
+    expect(outbox).toHaveLength(8); // 20 per minute - 12 already claimed this minute
+  });
+
+  it("the claim is a compare-and-swap: two workers racing for the SAME row produce one claim, never two sends", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { snapshotAudienceChunk, claimWithinQuota } = await import("../campaign-worker");
+    await snapshotAudienceChunk(c.id, c.companyId, null);
+    const row = { id: sends[0].id, attempts: 0 };
+    const results = await Promise.all([claimWithinQuota("sender-1", row, NOW), claimWithinQuota("sender-1", row, NOW), claimWithinQuota("sender-1", row, NOW)]);
+    expect(results.filter((r) => r === "claimed")).toHaveLength(1);
+    expect(results.filter((r) => r === "lost")).toHaveLength(2);
+    expect(sends[0].attempts).toBe(1);
+  });
+
+  it("a spent quota is reported as 'quota' and leaves the row untouched and pending", async () => {
+    vi.stubEnv("CAMPAIGN_SENDS_PER_MINUTE", "1");
+    addSubscribers(3);
+    const c = addCampaign();
+    const { snapshotAudienceChunk, claimWithinQuota } = await import("../campaign-worker");
+    await snapshotAudienceChunk(c.id, c.companyId, null);
+    expect(await claimWithinQuota("sender-1", { id: sends[0].id, attempts: 0 }, NOW)).toBe("claimed");
+    expect(await claimWithinQuota("sender-1", { id: sends[1].id, attempts: 0 }, NOW)).toBe("quota");
+    expect(sends[1]).toMatchObject({ status: "PENDING", attempts: 0, lastAttemptAt: null });
+    expect(await claimWithinQuota("sender-1", { id: sends[1].id, attempts: 0 }, minutes(2))).toBe("claimed"); // the next minute
+  });
+
+  it("the claim runs under the per-sender advisory lock inside one transaction (the lock is what makes the check and the claim inseparable)", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { prisma } = await import("@/lib/prisma");
+    const { snapshotAudienceChunk, claimWithinQuota } = await import("../campaign-worker");
+    await snapshotAudienceChunk(c.id, c.companyId, null);
+    await claimWithinQuota("sender-1", { id: sends[0].id, attempts: 0 }, NOW);
+    expect(prisma.$transaction).toHaveBeenCalled();
+    const lockCall = (prisma.$queryRaw as unknown as { mock: { calls: unknown[][] } }).mock.calls.at(-1)!;
+    expect((lockCall[0] as string[]).join("?")).toContain("pg_advisory_xact_lock");
+    expect(lockCall[1]).toBe("campaign-send-quota:sender-1");
+  });
+});
+
+describe("one-click unsubscribe header (RFC 8058)", () => {
+  it("every campaign message is handed to the mail provider with THAT recipient's own unsubscribe URL for the List-Unsubscribe pair", async () => {
+    addSubscribers(3);
+    addCampaign();
+    const svc = await import("@/server/email/service");
+    const spy = svc.sendEmail as unknown as ReturnType<typeof vi.fn>;
+    spy.mockClear();
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    const calls = spy.mock.calls.map((c) => c[0] as { to: string; listUnsubscribeUrl?: string });
+    expect(calls).toHaveLength(3);
+    for (const c of calls) {
+      const sub = subscribers.find((s) => s.email === c.to)!;
+      expect(c.listUnsubscribeUrl).toBe(`https://crm.example.test/api/public/unsubscribe?token=${sub.unsubscribeToken}`);
+    }
+    expect(new Set(calls.map((c) => c.listUnsubscribeUrl)).size).toBe(3); // never one shared link
   });
 });

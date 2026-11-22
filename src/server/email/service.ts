@@ -26,6 +26,8 @@ export type SendEmailInput = {
    * omitted. */
   senderName?: string;
   replyTo?: string;
+  /** Marketing mail only: this recipient's unsubscribe URL, sent as the RFC 8058 one-click header pair (see gmail-send.ts). */
+  listUnsubscribeUrl?: string;
 };
 
 export type SendEmailResult =

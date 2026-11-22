@@ -16,7 +16,7 @@ export type UnsubscribedSubscriber = {
   lastCampaignName: string | null;
 };
 
-const SOURCE_LABEL: Record<string, string> = { EMAIL_LINK: "Unsubscribe link in an email" };
+const SOURCE_LABEL: Record<string, string> = { EMAIL_LINK: "Unsubscribe link in an email", EMAIL_ONE_CLICK: "One-click unsubscribe in the mail app" };
 
 /** What the customer told us — shown as plain text (React escapes it), never as HTML. */
 function ReasonBlock({ category, text }: { category: string | null; text: string | null }) {

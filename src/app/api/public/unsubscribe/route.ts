@@ -79,16 +79,43 @@ export async function GET(req: Request) {
   }
 }
 
+/**
+ * RFC 8058 one-click unsubscribe. Gmail and other mailbox providers POST `List-Unsubscribe=One-Click` to the URL of the List-Unsubscribe header (our link, with the
+ * token in the query string) when the person presses their own "Unsubscribe" button; there is no page, no cookie and no Origin. The token is the capability, exactly as
+ * for the link in the message. It is idempotent: an already-unsubscribed person is answered 200 as well. The reason stays empty (the person was never asked), and the
+ * source is recorded as EMAIL_ONE_CLICK so the CRM can tell it from the confirmation page.
+ */
+async function oneClickUnsubscribe(token: string): Promise<Response> {
+  const headers = { "Cache-Control": "no-store", "Content-Type": "text/plain; charset=utf-8" };
+  try {
+    const subscriber = await prisma.subscriber.findUnique({ where: { unsubscribeToken: token }, select: { id: true, status: true } });
+    if (!subscriber) return new Response("Unknown unsubscribe link", { status: 404, headers });
+    if (subscriber.status === "SUBSCRIBED") {
+      await prisma.subscriber.updateMany({
+        where: { id: subscriber.id, status: "SUBSCRIBED" },
+        data: { status: "UNSUBSCRIBED", unsubscribedAt: new Date(), unsubscribeSource: "EMAIL_ONE_CLICK" },
+      });
+    }
+    return new Response("You have been unsubscribed", { status: 200, headers });
+  } catch {
+    return new Response("Temporarily unavailable", { status: 503, headers });
+  }
+}
+
 export async function POST(req: Request) {
   const limited = await rateLimited(req, "UNSUBSCRIBE");
   if (limited) return limited;
+
+  // Bounded read first: an unauthenticated caller cannot make the server buffer an arbitrarily large body (see read-limited-form.ts).
+  const limitedForm = await readLimitedForm(req);
+  // A mailbox provider's one-click request: the marker in the body AND the token in the URL (nothing else qualifies, so a form post is never mistaken for it).
+  const queryToken = new URL(req.url).searchParams.get("token");
+  if (limitedForm.ok && queryToken && limitedForm.form.get("List-Unsubscribe") === "One-Click") return oneClickUnsubscribe(queryToken);
 
   // The form is only ever posted from this page. Refuse a request that did not come from it
   // (the token is a capability, this is defence in depth).
   if (!isSameOriginPost(req)) return unsubscribeResponse({ kind: "error" });
 
-  // Bounded read: an unauthenticated caller cannot make the server buffer an arbitrarily large body (see read-limited-form.ts).
-  const limitedForm = await readLimitedForm(req);
   // A refused or unreadable body is the sender's problem (HTTP 400, "the link is incomplete"), not a server fault.
   if (!limitedForm.ok) return unsubscribeResponse({ kind: "missing" });
   const form = limitedForm.form;

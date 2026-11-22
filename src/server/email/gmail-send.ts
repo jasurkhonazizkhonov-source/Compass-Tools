@@ -27,6 +27,9 @@ export type GmailSendInput = {
    * Gmail account, never overridable. */
   senderName?: string;
   replyTo?: string;
+  /** Marketing mail only: the absolute https URL of this recipient's unsubscribe endpoint. It becomes the RFC 8058 one-click pair
+   * (List-Unsubscribe + List-Unsubscribe-Post) that Gmail and other mailbox providers require from bulk marketing senders. */
+  listUnsubscribeUrl?: string;
 };
 
 export type GmailSendResult =
@@ -61,6 +64,7 @@ async function buildRawMessage(input: {
   html: string;
   text?: string;
   replyTo?: string;
+  listUnsubscribeUrl?: string;
 }): Promise<string> {
   const composer = new MailComposer({
     from: input.from,
@@ -70,6 +74,11 @@ async function buildRawMessage(input: {
     html: input.html,
     text: input.text,
     replyTo: input.replyTo,
+    // RFC 8058 one-click unsubscribe. Only an https URL is ever put in a header (a value with angle brackets, spaces or line breaks is refused, so a header can
+    // never be injected); anything else sends the message without the pair rather than with a malformed one.
+    ...(input.listUnsubscribeUrl && /^https:\/\/[^\s<>"]+$/.test(input.listUnsubscribeUrl)
+      ? { headers: { "List-Unsubscribe": `<${input.listUnsubscribeUrl}>`, "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } }
+      : {}),
   });
   const message = composer.compile();
   // Real defect fixed here: nodemailer's MimeNode DROPS the Bcc header from the
@@ -238,6 +247,7 @@ export async function sendViaGmail(input: GmailSendInput): Promise<GmailSendResu
     html: input.html,
     text: input.text,
     replyTo: input.replyTo,
+    listUnsubscribeUrl: input.listUnsubscribeUrl,
   });
 
   try {

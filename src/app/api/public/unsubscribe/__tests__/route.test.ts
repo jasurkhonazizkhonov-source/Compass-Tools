@@ -236,7 +236,9 @@ describe("POST — unsubscribe, with an optional reason", () => {
     const { readFileSync } = await import("node:fs");
     const { join } = await import("node:path");
     const src = readFileSync(join(process.cwd(), "src", "app", "api", "public", "unsubscribe", "route.ts"), "utf-8");
-    expect(src.match(/data:\s*\{/g)).toHaveLength(1); // the only write is the unsubscribe itself
+    const writes = src.match(/data:\s*\{[^}]*\}/g) ?? [];
+    expect(writes).toHaveLength(2); // the only writes are the unsubscribes themselves: the confirmed form post and the RFC 8058 one-click
+    for (const w of writes) expect(w).toContain('status: "UNSUBSCRIBED"');
     expect(src).toContain('status: "UNSUBSCRIBED"');
     expect(src).not.toMatch(/data:\s*\{[^}]*"SUBSCRIBED"/);
   });

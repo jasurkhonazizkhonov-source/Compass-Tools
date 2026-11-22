@@ -11,6 +11,9 @@
 //   * A definite failure is retried with exponential backoff up to MAX_ATTEMPTS, then FAILED. A "no answer" (timeout / 5xx - the provider may have sent it) becomes UNKNOWN.
 //   * Suppression is checked at SEND time against the subscriber's current status, so someone who unsubscribed after the audience was fixed is skipped.
 //   * Provider limits are respected, not hidden: a per-minute budget and a rolling-24h cap per sending account (CAMPAIGN_SENDS_PER_MINUTE, CAMPAIGN_DAILY_LIMIT).
+//     The quota check and the claim of each recipient happen in ONE short transaction under a per-sender PostgreSQL advisory lock (claimWithinQuota), so no number
+//     of concurrent workers, ticks or app instances can overshoot a limit: whoever holds the lock sees every earlier claim. The minute count includes messages
+//     still in flight (stamped at the claim); the daily count includes SENT rows and uncertain (UNKNOWN) ones, because an uncertain message may well have gone out.
 //     Hitting a provider limit backs the row off and stops the batch; it is never counted as a failure.
 //   * A sender whose Gmail is disconnected pauses the campaign (nothing is lost, nothing is marked failed); fixing the connection and resuming continues it.
 import { prisma } from "@/lib/prisma";
@@ -83,21 +86,13 @@ async function processCampaign(campaignId: string, now: Date, tick: WorkerTick):
     return;
   }
 
-  const sentLast24h = await prisma.marketingCampaignSend.count({
-    where: { status: "SENT", sentAt: { gte: new Date(now.getTime() - 24 * 60 * 60 * 1000) }, campaign: { createdById: senderId } },
-  });
-  // The per-minute limit is GLOBAL, not per process: it counts what this sender's campaigns attempted in the last ~minute in the DATABASE (rows are stamped at the
-  // write-ahead claim, so a message still in flight counts), so two app instances sharing one database share one budget. The count and the claims are separate
-  // statements, so two instances ticking at the very same instant can overshoot by at most one batch - a bounded, documented softness, not a per-process multiple.
-  const attemptedLastMinute = await prisma.marketingCampaignSend.count({
-    where: { lastAttemptAt: { gte: new Date(now.getTime() - 55_000) }, campaign: { createdById: senderId } },
-  });
-  let budget = Math.min(sendsPerMinute() - attemptedLastMinute, dailyLimit() - sentLast24h);
-  if (budget > 0) {
+  // The limits are GLOBAL, not per process: they are counted in the DATABASE inside claimWithinQuota, which is the only authority. This batch size is just an upper
+  // bound on the rows looked at; the quota decides how many of them may actually be claimed (usually none once the minute's budget is used).
+  {
     const batch = await prisma.marketingCampaignSend.findMany({
       where: { campaignId, status: "PENDING", OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }] },
       orderBy: { id: "asc" },
-      take: budget,
+      take: sendsPerMinute(),
       include: { subscriber: { select: { id: true, email: true, firstName: true, lastName: true, status: true, unsubscribeToken: true } } },
     });
     if (batch.length > 0) {
@@ -109,16 +104,13 @@ async function processCampaign(campaignId: string, now: Date, tick: WorkerTick):
       }
       const baseUrl = resolveBaseUrl();
       for (const row of batch) {
-        if (budget <= 0) break;
         // Pause / cancel take effect between recipients, not only between passes: re-read the campaign before every claim.
         const live = await prisma.marketingCampaign.findUnique({ where: { id: campaign.id }, select: { status: true } });
         if (live?.status !== "SENDING") break;
-        // Write-ahead claim: PENDING -> UNKNOWN. Only one worker can win this; the loser skips the row.
-        const claimed = await prisma.marketingCampaignSend.updateMany({
-          where: { id: row.id, status: "PENDING", attempts: row.attempts },
-          data: { status: "UNKNOWN", attempts: row.attempts + 1, lastAttemptAt: now, nextAttemptAt: null },
-        });
-        if (claimed.count !== 1) continue;
+        // Quota check + write-ahead claim (PENDING -> UNKNOWN) as one atomic step. Only one worker can win a row; the loser skips it; a spent quota ends the batch.
+        const claim = await claimWithinQuota(senderId, row, now);
+        if (claim === "quota") break;
+        if (claim === "lost") continue;
 
         // Suppression is judged now, at send time, from the subscriber's CURRENT status (re-read after the claim, not the copy read when the batch was selected).
         const current = (await prisma.subscriber.findUnique({ where: { id: row.subscriber.id }, select: { status: true } }))?.status ?? "UNSUBSCRIBED";
@@ -129,22 +121,22 @@ async function processCampaign(campaignId: string, now: Date, tick: WorkerTick):
         }
 
         const vars = { firstName: row.subscriber.firstName, lastName: row.subscriber.lastName, email: row.subscriber.email };
+        const unsubscribeUrl = `${baseUrl}/api/public/unsubscribe?token=${row.subscriber.unsubscribeToken}`;
         const { subject, html } = buildMarketingCampaignEmail({
           subject: personalizeText(campaign.subject, vars),
           htmlContent: personalizeHtml(campaign.htmlContent, vars),
-          unsubscribeUrl: `${baseUrl}/api/public/unsubscribe?token=${row.subscriber.unsubscribeToken}`,
+          unsubscribeUrl,
           company,
           preheader: campaign.previewText ? personalizeText(campaign.previewText, vars) : undefined,
         });
         let result;
         try {
-          result = await sendEmail({ accountId: senderId, to: row.subscriber.email, subject, html, senderName: campaign.senderName || sender.fullName, replyTo: campaign.replyTo || undefined });
+          result = await sendEmail({ accountId: senderId, to: row.subscriber.email, subject, html, senderName: campaign.senderName || sender.fullName, replyTo: campaign.replyTo || undefined, listUnsubscribeUrl: unsubscribeUrl });
         } catch {
           // The call itself blew up: whether the provider received it is unknown. Never re-sent.
           tick.unknown++;
           continue; // the row stays UNKNOWN
         }
-        budget--;
 
         if (result.ok) {
           await prisma.marketingCampaignSend.update({ where: { id: row.id }, data: { status: "SENT", sentAt: new Date(), providerMessageId: result.messageId, errorMessage: null } });
@@ -184,6 +176,38 @@ async function processCampaign(campaignId: string, now: Date, tick: WorkerTick):
   }
 
   await completeIfDone(campaign.id, now, tick);
+}
+
+export type QuotaClaim = "claimed" | "quota" | "lost";
+
+/**
+ * The only place a recipient is claimed. Inside one transaction, serialised per sending account by a PostgreSQL advisory lock (released at commit/rollback, shared by
+ * every app instance on the database): (1) count what this sender's campaigns attempted in the last ~minute (rows are stamped at the claim, so in-flight messages count)
+ * and in the last 24 h (SENT plus uncertain UNKNOWN rows); (2) refuse when either limit is reached; (3) otherwise claim the row (compare-and-swap PENDING -> UNKNOWN).
+ * Because every claim goes through this lock, N concurrent workers can never claim more than the limit allows - the check and the claim cannot be separated.
+ * The lock is held only for these few statements, never while a message is being sent.
+ */
+export async function claimWithinQuota(senderId: string, row: { id: string; attempts: number }, now: Date): Promise<QuotaClaim> {
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`campaign-send-quota:${senderId}`}))`;
+      const usedLastMinute = await tx.marketingCampaignSend.count({
+        where: { lastAttemptAt: { gte: new Date(now.getTime() - 55_000) }, campaign: { createdById: senderId } },
+      });
+      if (usedLastMinute >= sendsPerMinute()) return "quota";
+      const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+      const usedLast24h = await tx.marketingCampaignSend.count({
+        where: { OR: [{ status: "SENT", sentAt: { gte: dayAgo } }, { status: "UNKNOWN", lastAttemptAt: { gte: dayAgo } }], campaign: { createdById: senderId } },
+      });
+      if (usedLast24h >= dailyLimit()) return "quota";
+      const claimed = await tx.marketingCampaignSend.updateMany({
+        where: { id: row.id, status: "PENDING", attempts: row.attempts },
+        data: { status: "UNKNOWN", attempts: row.attempts + 1, lastAttemptAt: now, nextAttemptAt: null },
+      });
+      return claimed.count === 1 ? "claimed" : "lost";
+    },
+    { maxWait: 10_000, timeout: 20_000 }
+  );
 }
 
 /** Takes one keyset chunk of the CURRENT subscribers and creates their (idempotent) send rows. Returns the number of rows created. */

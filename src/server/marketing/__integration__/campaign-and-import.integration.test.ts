@@ -92,10 +92,36 @@ describe.skipIf(!enabled)("campaign worker and import worker - real PostgreSQL",
     const now = new Date();
     await Promise.all([drain(now), drain(now), drain(now)]);
     expect(new Set(outbox).size).toBe(outbox.length); // no duplicate email
-    expect(outbox.length).toBeLessThanOrEqual(60); // documented bound: at most one batch per simultaneously ticking worker
+    expect(outbox.length).toBeLessThanOrEqual(20); // the quota is claimed atomically under a per-sender advisory lock: never more than the minute's budget, whatever the worker count
     const rows = await prisma.marketingCampaignSend.findMany({ where: { campaignId: { in: campaignIds } } });
     expect(new Set(rows.map((r) => r.subscriberId)).size).toBe(rows.length); // unique (campaign, subscriber)
     expect(rows.filter((r) => r.status === "SENT")).toHaveLength(outbox.length);
+  });
+
+  it("fifty concurrent claims against a budget of 20 claim exactly 20 (advisory lock: the quota check and the claim cannot be separated), across senders independently", async () => {
+    const { claimWithinQuota } = await import("../campaign-worker");
+    await subscribers(50, "q");
+    const c = await newCampaign("quota");
+    const { snapshotAudienceChunk } = await import("../campaign-worker");
+    await snapshotAudienceChunk(c.id, COMPANY, null);
+    const rows = await prisma.marketingCampaignSend.findMany({ where: { campaignId: c.id }, select: { id: true, attempts: true } });
+    const now = new Date();
+    const results = await Promise.all(rows.map((r) => claimWithinQuota(senderId, r, now)));
+    expect(results.filter((r) => r === "claimed")).toHaveLength(20);
+    expect(results.filter((r) => r === "quota")).toHaveLength(30);
+    expect(await prisma.marketingCampaignSend.count({ where: { campaignId: c.id, status: "UNKNOWN" } })).toBe(20);
+    // the same row raced by many workers is claimed once
+    const rest = rows.find((_, i) => results[i] === "quota")!;
+    const again = await Promise.all(Array.from({ length: 8 }, () => claimWithinQuota(senderId, rest, new Date(now.getTime() + 61_000))));
+    expect(again.filter((r) => r === "claimed")).toHaveLength(1);
+  });
+
+  it("ten workers ticking at the same instant on a large audience never exceed the minute budget", async () => {
+    await subscribers(120, "t");
+    await newCampaign("ten-workers");
+    const now = new Date();
+    await Promise.all(Array.from({ length: 10 }, () => drain(now)));
+    expect(outbox).toHaveLength(20);
   });
 
   it("workers that run one after another share the per-minute budget through the database: 20 in the minute, never 40", async () => {
