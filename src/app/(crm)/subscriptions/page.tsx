@@ -10,8 +10,6 @@ import { getEmailViewer } from "@/server/privacy/customer-email";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { SubscriberList } from "@/components/subscriptions/subscriber-list";
-import { SubscriberImportPanel } from "@/components/subscriptions/subscriber-import-panel";
-import { listSubscriberImportJobs } from "@/server/actions/subscriber-imports";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { PaginationControls } from "@/components/crm/pagination-controls";
@@ -62,7 +60,6 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
     getSubscriberCounts(current!.companyId),
     getMarketingCampaigns({ companyId: current!.companyId, page: campaignsPage, pageSize: campaignsPageSize }),
   ]);
-  const importJobs = await listSubscriberImportJobs(10);
   redirectToValidPageIfNeeded(sp, "/subscriptions", campaignsPage, campaignPageCount, "campaignsPage");
   redirectToValidPageIfNeeded(sp, "/subscriptions", subscribersPage, subscriberPageCount, "subscribersPage");
 
@@ -79,11 +76,8 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <h2 className="text-base font-semibold flex items-center gap-2"><Send className="h-4 w-4" /> Marketing Campaigns</h2>
           <div className="flex items-center gap-2">
-            <Button asChild size="sm" variant="outline">
-              <Link href="/subscriptions/campaigns/builder">New Campaign (builder)</Link>
-            </Button>
             <Button asChild size="sm">
-              <Link href="/subscriptions/campaigns/new">New Campaign</Link>
+              <Link href="/subscriptions/campaigns/builder">New Campaign</Link>
             </Button>
           </div>
         </div>
@@ -130,7 +124,6 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
 
       <div className="space-y-3">
         <h2 className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Subscribers</h2>
-        <SubscriberImportPanel initialJobs={importJobs} />
         <SubscriberList subscribers={subscribers} counts={counts} statusParam={statusParam} status={status} filteredTotal={subscriberTotal} q={searchText} emailMasked={emailViewer.restricted} />
         <PaginationControls page={subscribersPage} pageCount={subscriberPageCount} total={subscriberTotal} pageSize={subscriberPageSize} pageParam="subscribersPage" pageSizeParam="subscribersPageSize" label="subscribers" />
       </div>

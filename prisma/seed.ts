@@ -63,7 +63,7 @@ async function seedAccounts() {
     await prisma.account.upsert({
       where: { email: a.email },
       update: {},
-      create: { ...a, companyId: "default-company" },
+      create: { ...a, canEditContactDetails: a.role === "ADMIN", companyId: "default-company" }, // dev data: ordinary users start without the permission, the admin with it
     });
   }
   console.log(`Seeded ${accounts.length} accounts`);

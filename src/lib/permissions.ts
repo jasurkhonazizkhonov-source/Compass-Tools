@@ -230,8 +230,9 @@ export function canUploadLeadAttachments(role: AccountRole | undefined) {
 
 /**
  * May this account change a Lead's / Contact's phone numbers and email addresses? Administrators always may; everyone else only when an Administrator has
- * left the per-user switch on (Account.canEditContactDetails, default true so existing users keep today's ability). An account object that does not
- * carry the flag at all is refused - the check fails closed rather than assuming the default.
+ * switched the per-user permission on (Account.canEditContactDetails: OFF by default for newly created ordinary users, ON for newly created administrators;
+ * accounts that existed before that default changed keep the value they already had). An account object that does not carry the flag at all is refused - the
+ * check fails closed rather than assuming a default.
  */
 export function canEditContactDetails(account: { role: AccountRole; canEditContactDetails?: boolean } | null | undefined): boolean {
   if (!account) return false;

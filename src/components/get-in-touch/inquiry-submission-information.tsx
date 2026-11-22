@@ -16,6 +16,8 @@ export type InquirySubmissionDetails = {
   country: string | null;
   countryCode: string | null;
   timeZone: string | null;
+  /** Where the location came from (e.g. "DBIP-City-Lite (2026-11-01)"); shown only next to a location. */
+  geoSource?: string | null;
 };
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -62,6 +64,7 @@ export function InquirySubmissionInformation({ inquiryId, source, createdAt, inf
         {info.country && <Field label="Approximate Country">{info.country}</Field>}
         {info.countryCode && <Field label="Country Code">{info.countryCode}</Field>}
         {info.timeZone && <Field label="Time Zone">{info.timeZone}</Field>}
+        {located && info.geoSource && <Field label="Location source">{info.geoSource}</Field>}
       </dl>
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
         {located ? "Location is approximate and derived from the submitting IP address." : "No location could be determined for this IP address."}

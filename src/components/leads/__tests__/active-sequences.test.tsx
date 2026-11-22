@@ -4,7 +4,7 @@ import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@/test/rtl-setup";
 
-// The lead-profile sequence notice, the Sequences tab and the Unenroll button. Server actions are mocked; the real rules (only an ACTIVE enrollment
+// The lead Sequences tab (the one place a lead's sequence status lives) and the Unenroll button. The former "Active sequence" block above the tabs was removed. Server actions are mocked; the real rules (only an ACTIVE enrollment
 // can be unenrolled, ownership, authorization, no send after unenroll) are proven in server/actions/__tests__/sequences.test.ts.
 
 const refresh = vi.fn();
@@ -14,10 +14,9 @@ vi.mock("sonner", () => ({ toast: { success: (...a: unknown[]) => toastSuccess(.
 const unenroll = vi.fn();
 vi.mock("@/server/actions/sequences", () => ({ unenrollLead: (...a: unknown[]) => unenroll(...a), enrollLeads: vi.fn() }));
 
-const { LeadActiveSequencesNotice } = await import("../active-sequences");
 const { LeadSequencesPanel } = await import("../lead-sequences-panel");
 
-type E = Parameters<typeof LeadActiveSequencesNotice>[0]["enrollments"][number];
+type E = Parameters<typeof LeadSequencesPanel>[0]["enrollments"][number];
 const steps = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `s${i}` }));
 const enr = (o: Partial<E> & { id: string }): E => ({
   status: "ACTIVE",
@@ -35,54 +34,58 @@ beforeEach(() => {
   unenroll.mockResolvedValue({ ok: true });
 });
 
-describe("LeadActiveSequencesNotice (shown when the lead profile opens)", () => {
-  it("renders nothing when there is no genuinely active enrollment — failed, unsubscribed and completed ones do not count", () => {
-    const { container } = render(
-      <LeadActiveSequencesNotice leadId="lead-1" enrollments={[enr({ id: "a", status: "FAILED" }), enr({ id: "b", status: "UNSUBSCRIBED" }), enr({ id: "c", status: "COMPLETED", completedAt: new Date() })]} />
-    );
-    expect(container).toBeEmptyDOMElement();
-    expect(screen.queryByTestId("active-sequences-notice")).toBeNull();
-  });
+const renderPanel = (enrollments: E[], available: { id: string; name: string; description: string | null; stepCount: number }[] = []) =>
+  render(<LeadSequencesPanel leadId="lead-1" availableSequences={available} enrollments={enrollments} />);
 
+describe("the main lead details no longer carry a separate Active sequence block", () => {
+  it("neither the lead page nor the shared component file mentions the removed notice, and the page still renders the Sequences tab", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const page = fs.readFileSync(path.join(process.cwd(), "src", "app", "(crm)", "leads", "[id]", "page.tsx"), "utf8");
+    const shared = fs.readFileSync(path.join(process.cwd(), "src", "components", "leads", "active-sequences.tsx"), "utf8");
+    expect(page).not.toMatch(/LeadActiveSequencesNotice|active-sequences-notice/);
+    expect(shared).not.toMatch(/LeadActiveSequencesNotice|active-sequences-notice/);
+    expect(page).toMatch(/LeadSequencesPanel/);
+  });
+});
+
+describe("Sequences tab: active enrollment", () => {
   it("shows the real data of an active enrollment: name, status, who applied it, step X of Y, next email, and an Unenroll action", () => {
-    render(<LeadActiveSequencesNotice leadId="lead-1" enrollments={[enr({ id: "a", sequence: { id: "s-1", name: "5-Step Automated Email Sequence for New Leads", steps: steps(5) } })]} />);
-    const notice = screen.getByTestId("active-sequences-notice");
-    expect(within(notice).getByRole("heading", { name: "Active sequence" })).toBeInTheDocument();
-    expect(within(notice).getByRole("link", { name: "5-Step Automated Email Sequence for New Leads" })).toHaveAttribute("href", "/sequences/s-1");
-    expect(notice.textContent).toMatch(/Active/);
-    expect(notice.textContent).toMatch(/by Tom Anderson/);
-    expect(notice.textContent).toMatch(/Step 2 of 5/);
-    expect(notice.textContent).toMatch(/Next email: Nov 14, 2026 at 4:55 PM/);
-    expect(within(notice).getByRole("button", { name: "Unenroll from 5-Step Automated Email Sequence for New Leads" })).toBeInTheDocument();
+    renderPanel([enr({ id: "a", sequence: { id: "s-1", name: "5-Step Automated Email Sequence for New Leads", steps: steps(5) } })]);
+    const card = screen.getByTestId("active-sequence");
+    expect(within(card).getByRole("link", { name: "5-Step Automated Email Sequence for New Leads" })).toHaveAttribute("href", "/sequences/s-1");
+    expect(card.textContent).toMatch(/Active/);
+    expect(card.textContent).toMatch(/by Tom Anderson/);
+    expect(card.textContent).toMatch(/Step 2 of 5/);
+    expect(card.textContent).toMatch(/Next email: Nov 14, 2026 at 4:55 PM/);
+    expect(within(card).getByRole("button", { name: "Unenroll from 5-Step Automated Email Sequence for New Leads" })).toBeInTheDocument();
   });
 
-  it("several active sequences are listed separately, each with its own Unenroll; only the active ones among a mixed list", () => {
-    render(
-      <LeadActiveSequencesNotice
-        leadId="lead-1"
-        enrollments={[enr({ id: "a" }), enr({ id: "b", currentStepIdx: 0 }), enr({ id: "c", status: "FAILED" }), enr({ id: "d", status: "UNSUBSCRIBED" })]}
-      />
-    );
-    const items = screen.getAllByTestId("active-sequence");
-    expect(items).toHaveLength(2);
-    expect(screen.getByRole("heading", { name: "Active sequences (2)" })).toBeInTheDocument();
+  it("several active sequences are listed separately, each with its own Unenroll; failed and unsubscribed ones are history, not active", () => {
+    renderPanel([enr({ id: "a" }), enr({ id: "b", currentStepIdx: 0 }), enr({ id: "c", status: "FAILED" }), enr({ id: "d", status: "UNSUBSCRIBED" })]);
+    expect(screen.getAllByTestId("active-sequence")).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: /^Unenroll from/ })).toHaveLength(2);
-    expect(screen.queryByText("Sequence c")).toBeNull();
-    expect(screen.queryByText("Sequence d")).toBeNull();
+    expect(within(screen.getByRole("region", { name: "Sequence history" })).getAllByTestId("sequence-history-item")).toHaveLength(2);
   });
 
   it("the step never runs past the last step, and a missing next send is simply not shown", () => {
-    render(<LeadActiveSequencesNotice leadId="lead-1" enrollments={[enr({ id: "a", currentStepIdx: 9, nextSendAt: null })]} />);
+    renderPanel([enr({ id: "a", currentStepIdx: 9, nextSendAt: null })]);
     const item = screen.getByTestId("active-sequence");
     expect(item.textContent).toMatch(/Step 5 of 5/);
     expect(item.textContent).not.toMatch(/Next email/);
+  });
+
+  it("a lead with no active enrollment (failed, unsubscribed, completed only) has no Active region at all", () => {
+    renderPanel([enr({ id: "a", status: "FAILED" }), enr({ id: "b", status: "UNSUBSCRIBED" }), enr({ id: "c", status: "COMPLETED", completedAt: new Date() })]);
+    expect(screen.queryByRole("region", { name: "Active sequences" })).toBeNull();
+    expect(screen.queryByTestId("active-sequence")).toBeNull();
   });
 });
 
 describe("Unenroll", () => {
   it("asks for confirmation first, and only then calls the server action with the enrollment AND the lead being viewed", async () => {
     const user = userEvent.setup();
-    render(<LeadActiveSequencesNotice leadId="lead-1" enrollments={[enr({ id: "a" })]} />);
+    renderPanel([enr({ id: "a" })]);
     await user.click(screen.getByRole("button", { name: /^Unenroll from/ }));
     const dialog = await screen.findByRole("alertdialog");
     expect(within(dialog).getByText(/already sent stay in the history/)).toBeInTheDocument();
@@ -95,7 +98,7 @@ describe("Unenroll", () => {
 
   it("Cancel does nothing", async () => {
     const user = userEvent.setup();
-    render(<LeadActiveSequencesNotice leadId="lead-1" enrollments={[enr({ id: "a" })]} />);
+    renderPanel([enr({ id: "a" })]);
     await user.click(screen.getByRole("button", { name: /^Unenroll from/ }));
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "Cancel" }));
     expect(unenroll).not.toHaveBeenCalled();
@@ -104,7 +107,7 @@ describe("Unenroll", () => {
   it("a refusal (e.g. already stopped) keeps the dialog open and shows the reason — it never looks like it worked", async () => {
     unenroll.mockResolvedValue({ ok: false, error: "This enrollment is no longer active." });
     const user = userEvent.setup();
-    render(<LeadActiveSequencesNotice leadId="lead-1" enrollments={[enr({ id: "a" })]} />);
+    renderPanel([enr({ id: "a" })]);
     await user.click(screen.getByRole("button", { name: /^Unenroll from/ }));
     const dialog = await screen.findByRole("alertdialog");
     await user.click(within(dialog).getByRole("button", { name: "Unenroll" }));

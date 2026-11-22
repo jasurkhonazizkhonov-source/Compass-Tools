@@ -2,6 +2,8 @@
 
 Date: 2026-11-16. Scope: `compass-tools-updated`. jsdom/React Testing Library with mocked server actions and fake data; no browser, no database. Test status words: PASSED / FAILED / SKIPPED / BLOCKED / NOT RUN.
 
+> **Update 2026-11-22 - the separate "Active sequence" block was removed from the main lead details** (`LeadActiveSequencesNotice` in `src/components/leads/active-sequences.tsx` and its one use in `src/app/(crm)/leads/[id]/page.tsx`). A lead's sequence status now lives only in the **Sequences tab** (`LeadSequencesPanel`), which already showed everything the block did - sequence name, status, who applied it, "Step X of Y", last sent, next email, the retry / paused notes, the Unenroll button and the history - so nothing was lost and no other layout was touched. `ActiveSequenceCard`, `splitEnrollments` and the unenroll flow are shared with that tab and unchanged. Where this document below says the notice shows or hides an enrollment, read it as the Active region of the Sequences tab; the state rules (only ACTIVE is active; FAILED / UNSUBSCRIBED / COMPLETED are history) are unchanged and still tested.
+
 ## 1. Source of truth
 
 **Stored facts** (existing model, no schema change): `SequenceEnrollment.status` (`ACTIVE | COMPLETED | UNSUBSCRIBED | FAILED`), `currentStepIdx`, `nextSendAt`, and the per-step `SequenceStepLog` rows (SENT / FAILED, plus the delivery markers described in the retry audit). **One function turns them into the displayed state**: `deriveEnrollmentState` in `src/lib/sequence-progress.ts`, used by the lead page (`active-sequences.tsx`, `lead-sequences-panel.tsx`) and the sequence page (`sequence-enrollments-table.tsx`). Step chips use `computeStepProgress` from the same file.

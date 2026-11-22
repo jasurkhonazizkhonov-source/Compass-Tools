@@ -76,6 +76,8 @@
     "20261108000100_sign_in_location_provenance",
     "20261113000100_inquiry_submission_info",
     "20261115000100_account_contact_detail_edit_permission",
-    "20261120000100_security_privacy_marketing_scale"
+    "20261120000100_security_privacy_marketing_scale",
+    "20261122000100_account_contact_detail_edit_default_off",
+    "20261122000200_marketing_send_cancelled_status"
   ]
 }

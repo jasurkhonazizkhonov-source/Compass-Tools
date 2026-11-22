@@ -98,6 +98,7 @@ async function main() {
       email: adminEmail,
       role: "ADMIN",
       status: "ACTIVE",
+      canEditContactDetails: true, // the column default is false for ordinary users; an Administrator is stored as allowed
       companyId: company.id,
     },
   });

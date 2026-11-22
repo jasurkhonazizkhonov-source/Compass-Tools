@@ -69,6 +69,22 @@ export async function drainMarketingCampaigns(now = new Date()): Promise<WorkerT
   return tick;
 }
 
+/**
+ * One pass for ONE campaign, right now, instead of waiting for the next once-a-minute tick. It is the very same `processCampaign` the poller runs - same write-ahead claim,
+ * same per-sender quota under the advisory lock, same send-time suppression check, same retry / ambiguous-outcome (UNKNOWN, never re-sent) handling - so it cannot send anyone
+ * twice or exceed a limit even when the poller picks the same campaign at the same moment (whoever claims a recipient row first wins; the other skips it).
+ * Used for a campaign whose whole audience is a single subscriber, where "queue and wait up to a minute" gives nothing. Never throws.
+ */
+export async function processCampaignNow(campaignId: string, now = new Date()): Promise<WorkerTick> {
+  const tick = emptyTick();
+  try {
+    await processCampaign(campaignId, now, tick);
+  } catch (err) {
+    console.error(`[campaign-worker] immediate pass failed (${safeErrorTag(err)})`);
+  }
+  return tick;
+}
+
 async function processCampaign(campaignId: string, now: Date, tick: WorkerTick): Promise<void> {
   // QUEUED -> SENDING exactly once (compare-and-swap).
   await prisma.marketingCampaign.updateMany({ where: { id: campaignId, status: "QUEUED" }, data: { status: "SENDING", startedAt: now } });
@@ -261,6 +277,8 @@ export type CampaignStats = {
   unknown: number;
   skippedUnsubscribed: number;
   skippedSuppressed: number;
+  /** Cancelled one by one before they were sent. Counts as handled (they will never be sent), not as waiting. */
+  cancelled: number;
   completedFraction: number;
 };
 
@@ -271,8 +289,9 @@ export function summarizeSendCounts(counts: Partial<Record<string, number>>): Ca
   const unknown = counts.UNKNOWN ?? 0;
   const su = counts.SKIPPED_UNSUBSCRIBED ?? 0;
   const ss = counts.SKIPPED_SUPPRESSED ?? 0;
-  const audience = queued + sent + failed + unknown + su + ss;
-  return { audience, queued, sent, failed, unknown, skippedUnsubscribed: su, skippedSuppressed: ss, completedFraction: audience === 0 ? 0 : (audience - queued) / audience };
+  const cancelled = counts.CANCELLED ?? 0;
+  const audience = queued + sent + failed + unknown + su + ss + cancelled;
+  return { audience, queued, sent, failed, unknown, skippedUnsubscribed: su, skippedSuppressed: ss, cancelled, completedFraction: audience === 0 ? 0 : (audience - queued) / audience };
 }
 
 export async function getCampaignStats(campaignId: string): Promise<CampaignStats> {

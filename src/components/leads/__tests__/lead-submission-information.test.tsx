@@ -79,9 +79,24 @@ describe("LeadSubmissionInformation", () => {
     for (const label of ["Approximate City", "Approximate Region", "Time Zone", "Budget currency"]) expect(screen.queryByText(label)).not.toBeInTheDocument();
   });
 
+  it("shows where the location came from, next to the location - and never a source without a location", () => {
+    view({ hasIp: true, ipVersion: "v4", ipMasked: "198.x.x.x", city: "Frankfurt am Main", region: "Hesse", country: "Germany", countryCode: "DE", timeZone: "Europe/Berlin", geoSource: "Cloudflare edge country (CF-IPCountry) + DBIP-City-Lite (2026-11-01)" });
+    expect(screen.getByText("Location source")).toBeInTheDocument();
+    expect(screen.getByText("Cloudflare edge country (CF-IPCountry) + DBIP-City-Lite (2026-11-01)")).toBeInTheDocument();
+    expect(screen.getByText("Frankfurt am Main")).toBeInTheDocument();
+  });
+
+  it("a country-only location is shown as country-only (no invented city), with its source", () => {
+    view({ hasIp: true, ipVersion: "v4", ipMasked: "198.x.x.x", city: null, region: null, country: "Germany", countryCode: "DE", timeZone: null, geoSource: "Cloudflare edge country (CF-IPCountry)" });
+    expect(screen.getByText("Germany")).toBeInTheDocument();
+    expect(screen.queryByText("Approximate City")).not.toBeInTheDocument();
+    expect(screen.getByText("Cloudflare edge country (CF-IPCountry)")).toBeInTheDocument();
+  });
+
   it("IP known but no location: the note says no location could be determined", () => {
     view({ hasIp: true, ipVersion: "v4", ipMasked: "198.x.x.x", city: null, region: null, country: null, countryCode: null, timeZone: null });
     expect(screen.queryByText("Approximate City")).not.toBeInTheDocument();
+    expect(screen.queryByText("Location source")).not.toBeInTheDocument();
     expect(screen.getByText(/No location could be determined/)).toBeInTheDocument();
   });
 

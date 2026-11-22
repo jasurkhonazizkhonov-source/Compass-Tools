@@ -13,6 +13,7 @@ type FakeAccount = {
   role: string;
   status: string;
   hiredAt: Date | null;
+  canEditContactDetails?: boolean;
 };
 
 let accounts: Map<string, FakeAccount>;
@@ -38,6 +39,7 @@ vi.mock("@/lib/prisma", () => {
         role: data.role!,
         status: data.status ?? "ACTIVE",
         hiredAt: null,
+        canEditContactDetails: data.canEditContactDetails,
       };
       accounts.set(account.id, account);
       return account;
@@ -129,6 +131,28 @@ describe("createAccount — permission + validation", () => {
     const account = [...accounts.values()].find((a) => a.email === "new@x.com")!;
     expect(account.role).toBe("TRAVEL_AGENT");
     expect(account.status).toBe("ACTIVE");
+  });
+
+  it("PERMISSION DEFAULT: an ordinary new user is created with 'Can Edit Lead/Contact Phone & Email' OFF, whatever the non-admin role", async () => {
+    const { createAccount } = await import("../actions/accounts");
+    for (const role of ["MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] as const) {
+      await createAccount({ fullName: "Ordinary " + role, email: role.toLowerCase() + "@x.com", role });
+      const account = [...accounts.values()].find((a) => a.email === role.toLowerCase() + "@x.com")!;
+      expect(account.canEditContactDetails, role).toBe(false);
+    }
+  });
+
+  it("PERMISSION DEFAULT: an administrator created through the existing workflow is created with it ON", async () => {
+    const { createAccount } = await import("../actions/accounts");
+    await createAccount({ fullName: "Second Admin", email: "admin2@x.com", role: "ADMIN" });
+    const account = [...accounts.values()].find((a) => a.email === "admin2@x.com")!;
+    expect(account.canEditContactDetails).toBe(true);
+  });
+
+  it("PERMISSION DEFAULT: the creation request cannot choose the value - an input carrying the flag is rejected or ignored, never stored", async () => {
+    const { createAccount } = await import("../actions/accounts");
+    await createAccount({ fullName: "Sneaky", email: "sneaky@x.com", role: "TRAVEL_AGENT", canEditContactDetails: true } as never);
+    expect([...accounts.values()].find((a) => a.email === "sneaky@x.com")!.canEditContactDetails).toBe(false);
   });
 
   it("respects an explicit disabled initial status", async () => {

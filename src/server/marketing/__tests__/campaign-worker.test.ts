@@ -419,12 +419,104 @@ describe("lifecycle: schedule, pause, cancel, concurrency", () => {
   });
 });
 
+describe("a single-subscriber campaign is sent right away (processCampaignNow) with every safeguard of the normal pass", () => {
+  it("one subscriber: one pass sends the one message and the campaign is SENT - no waiting for a tick", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { processCampaignNow } = await import("../campaign-worker");
+    const t = await processCampaignNow(c.id, NOW);
+    expect(t).toMatchObject({ sent: 1, completed: 1 });
+    expect(outbox).toHaveLength(1);
+    expect(c.status).toBe("SENT");
+    expect(counts()).toEqual({ SENT: 1 });
+  });
+
+  it("running it again (double click, or the poller arriving at the same moment) can never send the same recipient twice", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { processCampaignNow, drainMarketingCampaigns } = await import("../campaign-worker");
+    await Promise.all([processCampaignNow(c.id, NOW), processCampaignNow(c.id, NOW), drainMarketingCampaigns(NOW)]);
+    await processCampaignNow(c.id, minutes(1));
+    expect(outbox).toHaveLength(1);
+    expect(counts()).toEqual({ SENT: 1 });
+  });
+
+  it("an unsubscribed or suppressed subscriber is skipped at send time, not emailed", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { snapshotAudienceChunk, processCampaignNow } = await import("../campaign-worker");
+    c.status = "SENDING";
+    await snapshotAudienceChunk(c.id, "co-1", null, 1_000);
+    subscribers[0].status = "UNSUBSCRIBED";
+    const t = await processCampaignNow(c.id, NOW);
+    expect(t.skipped).toBe(1);
+    expect(outbox).toHaveLength(0);
+    expect(counts()).toEqual({ SKIPPED_UNSUBSCRIBED: 1 });
+  });
+
+  it("an uncertain provider outcome is held as UNKNOWN and is never sent again, not by a second direct run and not by the poller", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    providerBehaviour = () => ({ ok: false, error: "timeout", code: "SEND_FAILED", ambiguous: true });
+    const { processCampaignNow, drainMarketingCampaigns } = await import("../campaign-worker");
+    expect((await processCampaignNow(c.id, NOW)).unknown).toBe(1);
+    providerBehaviour = () => ({ ok: true });
+    await processCampaignNow(c.id, minutes(5));
+    await drainMarketingCampaigns(minutes(60));
+    expect(outbox).toHaveLength(0);
+    expect(sends[0]).toMatchObject({ status: "UNKNOWN", attempts: 1 });
+  });
+
+  it("a definite failure keeps its retry schedule (the next attempt is NOT immediate), and a disconnected Gmail pauses instead of failing", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    providerBehaviour = () => ({ ok: false, error: "boom", code: "SEND_FAILED" });
+    const { processCampaignNow } = await import("../campaign-worker");
+    await processCampaignNow(c.id, NOW);
+    expect(sends[0]).toMatchObject({ status: "PENDING", attempts: 1 });
+    expect(sends[0].nextAttemptAt!.getTime()).toBeGreaterThan(NOW.getTime());
+    await processCampaignNow(c.id, new Date(NOW.getTime() + 1_000)); // too early: the backoff holds
+    expect(sends[0].attempts).toBe(1);
+
+    const d = addCampaign({ id: "camp-disc" });
+    sends.length = 0;
+    providerBehaviour = () => ({ ok: false, error: "Connect Gmail", code: "NOT_CONNECTED" });
+    const t = await processCampaignNow(d.id, NOW);
+    expect(t.paused).toBe(1);
+    expect(d.status).toBe("PAUSED");
+  });
+
+  it("the per-minute quota still applies to a direct run: with the budget already spent nothing is sent and the row stays pending for the poller", async () => {
+    vi.stubEnv("CAMPAIGN_SENDS_PER_MINUTE", "1");
+    addSubscribers(2); // two eligible people, one message of budget per minute for this sender
+    const first = addCampaign({ id: "camp-first" });
+    const second = addCampaign({ id: "camp-second" }); // same sending account
+    const { processCampaignNow } = await import("../campaign-worker");
+    expect((await processCampaignNow(first.id, NOW)).sent).toBe(1); // spends the sender's one message for the minute
+    const t = await processCampaignNow(second.id, NOW);
+    expect(t.sent).toBe(0);
+    expect(outbox).toHaveLength(1);
+    expect(sends.filter((s) => s.campaignId === second.id).every((s) => s.status === "PENDING" && s.attempts === 0)).toBe(true); // untouched, left for the poller
+    expect((await processCampaignNow(second.id, minutes(2))).sent).toBe(1); // a minute later the budget is back
+  });
+
+  it("it never throws, even when the database call underneath fails", async () => {
+    const { prisma } = await import("@/lib/prisma");
+    const spy = vi.spyOn(prisma.marketingCampaign, "updateMany").mockRejectedValueOnce(new Error("db down"));
+    const { processCampaignNow } = await import("../campaign-worker");
+    await expect(processCampaignNow("whatever", NOW)).resolves.toMatchObject({ sent: 0 });
+    spy.mockRestore();
+  });
+});
+
 describe("statistics", () => {
   it("states the honest counts and fractions", async () => {
     const { summarizeSendCounts } = await import("../campaign-worker");
     expect(summarizeSendCounts({ PENDING: 10, SENT: 70, FAILED: 5, UNKNOWN: 3, SKIPPED_UNSUBSCRIBED: 8, SKIPPED_SUPPRESSED: 4 })).toEqual({
-      audience: 100, queued: 10, sent: 70, failed: 5, unknown: 3, skippedUnsubscribed: 8, skippedSuppressed: 4, completedFraction: 0.9,
+      audience: 100, queued: 10, sent: 70, failed: 5, unknown: 3, skippedUnsubscribed: 8, skippedSuppressed: 4, cancelled: 0, completedFraction: 0.9,
     });
+    // recipients cancelled one by one are handled (they will never be sent): they are part of the audience and not waiting
+    expect(summarizeSendCounts({ PENDING: 5, SENT: 90, CANCELLED: 5 })).toMatchObject({ audience: 100, queued: 5, sent: 90, cancelled: 5, completedFraction: 0.95 });
     expect(summarizeSendCounts({})).toMatchObject({ audience: 0, completedFraction: 0 });
   });
 
@@ -622,5 +714,167 @@ describe("one-click unsubscribe header (RFC 8058)", () => {
       expect(c.listUnsubscribeUrl).toBe(`https://crm.example.test/api/public/unsubscribe?token=${sub.unsubscribeToken}`);
     }
     expect(new Set(calls.map((c) => c.listUnsubscribeUrl)).size).toBe(3); // never one shared link
+  });
+});
+
+// ─────────────── recipients cancelled one by one (the "Cancel" next to a recipient in the Delivery Status list) ───────────────
+// The cancel action is one atomic PENDING -> CANCELLED update; the worker only ever claims PENDING rows, with its own compare-and-swap on the same column. These tests drive the REAL
+// worker against the fake database and apply the action's exact conditional update (same `where` shape) at the interesting moments.
+
+describe("a recipient cancelled on its own is never sent, whatever the worker does next", () => {
+  // exactly what cancelCampaignRecipient writes, with exactly its condition
+  const cancelRow = async (campaignId: string, sendId: string) => {
+    const { prisma } = await import("@/lib/prisma");
+    const r = await (prisma.marketingCampaignSend as unknown as { updateMany: (a: unknown) => Promise<{ count: number }> }).updateMany({
+      where: { id: sendId, campaignId, status: "PENDING", campaign: { companyId: "co-1", status: { in: ["QUEUED", "SENDING", "PAUSED"] } } },
+      data: { status: "CANCELLED", nextAttemptAt: null, errorMessage: "Cancelled before it was sent" },
+    });
+    return r.count === 1;
+  };
+  const snapshot = async (c: Campaign) => {
+    const { snapshotAudienceChunk } = await import("../campaign-worker");
+    c.status = "SENDING";
+    await snapshotAudienceChunk(c.id, "co-1", null, 1_000);
+  };
+  const emailOf = (s: Send) => subscribers.find((x) => x.id === s.subscriberId)!.email;
+
+  it("cancelled before the worker reaches it: never emailed, never attempted, and the campaign still completes for everyone else", async () => {
+    addSubscribers(10);
+    const c = addCampaign();
+    await snapshot(c);
+    const doomed = [sends[2], sends[5], sends[9]];
+    for (const s of doomed) expect(await cancelRow(c.id, s.id)).toBe(true);
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    await drainMarketingCampaigns(minutes(5));
+    expect(outbox).toHaveLength(7);
+    for (const s of doomed) {
+      expect(outbox.some((o) => o.to === emailOf(s))).toBe(false);
+      expect(s).toMatchObject({ status: "CANCELLED", attempts: 0, lastAttemptAt: null, sentAt: null });
+    }
+    expect(counts()).toEqual({ SENT: 7, CANCELLED: 3 });
+    expect(c.status).toBe("SENT"); // a cancelled recipient does not hold the campaign open
+  });
+
+  it("a cancellation that lands in the MIDDLE of a running batch (after the recipient was already selected, before it is claimed) is honoured: not sent, not 'unknown'", async () => {
+    addSubscribers(6);
+    const c = addCampaign();
+    await snapshot(c);
+    const victim = sends[4];
+    let cancelled = false;
+    providerBehaviour = () => {
+      // while the very first message is being sent, the user cancels the fifth recipient
+      if (!cancelled) {
+        cancelled = true;
+        victim.status = "CANCELLED"; // what the database does when the action's conditional update wins
+      }
+      return { ok: true };
+    };
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    expect(outbox.some((o) => o.to === emailOf(victim))).toBe(false);
+    expect(victim).toMatchObject({ status: "CANCELLED", attempts: 0 });
+    expect(counts()).toEqual({ SENT: 5, CANCELLED: 1 });
+  });
+
+  it("if the worker claimed the row first, the cancellation changes NOTHING and says so (it is never reported as cancelled): the message goes out exactly once", async () => {
+    addSubscribers(3);
+    const c = addCampaign();
+    await snapshot(c);
+    const target = sends[0];
+    let attempt: boolean | null = null;
+    providerBehaviour = (to) => {
+      if (to === emailOf(target)) {
+        // the send is in flight: the row was claimed (PENDING -> UNKNOWN) before the provider was called
+        expect(target.status).toBe("UNKNOWN");
+        void cancelRow(c.id, target.id).then((ok) => (attempt = ok));
+      }
+      return { ok: true };
+    };
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(attempt).toBe(false); // the conditional update found no PENDING row
+    expect(target.status).toBe("SENT");
+    expect(outbox.filter((o) => o.to === emailOf(target))).toHaveLength(1);
+  });
+
+  it("cancelled recipients stay cancelled through pause and resume, and through the daily limit: when capacity returns, only the still-eligible recipients are sent", async () => {
+    vi.stubEnv("CAMPAIGN_DAILY_LIMIT", "3");
+    addSubscribers(7);
+    const c = addCampaign();
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW); // 3 go out, the daily limit is reached
+    expect(outbox).toHaveLength(3);
+    const pending = sends.filter((s) => s.status === "PENDING");
+    expect(pending).toHaveLength(4);
+    expect(await cancelRow(c.id, pending[1].id)).toBe(true); // cancelled while it waits for the daily capacity
+    c.status = "PAUSED";
+    await drainMarketingCampaigns(minutes(30)); // paused: nothing moves
+    expect(outbox).toHaveLength(3);
+    c.status = "QUEUED"; // resumed, still inside the same 24 hours
+    await drainMarketingCampaigns(minutes(60));
+    expect(outbox).toHaveLength(3); // the allowance is used up: they stay waiting
+    expect(sends.filter((s) => s.status === "PENDING")).toHaveLength(3);
+    await drainMarketingCampaigns(new Date(Date.now() + 25 * 3_600_000)); // the next day: capacity is back, automatically (sentAt is stamped with the real clock, so a day later is measured from it)
+    expect(outbox).toHaveLength(6);
+    expect(outbox.some((o) => o.to === emailOf(pending[1]))).toBe(false); // the cancelled one never goes
+    expect(new Set(outbox.map((o) => o.to)).size).toBe(6); // nobody twice
+    expect(pending[1].status).toBe("CANCELLED");
+    expect(c.status).toBe("SENT");
+  });
+
+  it("unsubscribe and suppression are still re-checked at send time for everyone who is NOT cancelled", async () => {
+    addSubscribers(6);
+    const c = addCampaign();
+    await snapshot(c);
+    expect(await cancelRow(c.id, sends[0].id)).toBe(true);
+    subscribers[1].status = "UNSUBSCRIBED";
+    subscribers[2].status = "SUPPRESSED";
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    expect(counts()).toEqual({ CANCELLED: 1, SKIPPED_UNSUBSCRIBED: 1, SKIPPED_SUPPRESSED: 1, SENT: 3 });
+    expect(outbox).toHaveLength(3);
+  });
+
+  it("an uncertain outcome stays uncertain next to cancellations: Outcome unknown is never re-sent and never turned into Sent or Cancelled", async () => {
+    addSubscribers(4);
+    const c = addCampaign();
+    await snapshot(c);
+    providerBehaviour = (to) => (to === emailOf(sends[1]) ? { ok: false, error: "timeout", code: "SEND_FAILED", ambiguous: true } : { ok: true });
+    expect(await cancelRow(c.id, sends[3].id)).toBe(true);
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    providerBehaviour = () => ({ ok: true });
+    await drainMarketingCampaigns(minutes(120));
+    expect(sends[1]).toMatchObject({ status: "UNKNOWN", attempts: 1 });
+    expect(await cancelRow(c.id, sends[1].id)).toBe(false); // the send began: it can no longer be cancelled
+    expect(outbox.filter((o) => o.to === emailOf(sends[1]))).toHaveLength(0);
+    expect(sends[3].status).toBe("CANCELLED");
+  });
+
+  it("several workers running at once with some recipients cancelled: nobody is emailed twice and no cancelled recipient is emailed", async () => {
+    addSubscribers(40);
+    const c = addCampaign();
+    await snapshot(c);
+    const cancelled = sends.filter((_, i) => i % 4 === 0);
+    for (const s of cancelled) expect(await cancelRow(c.id, s.id)).toBe(true);
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await Promise.all([drainMarketingCampaigns(NOW), drainMarketingCampaigns(NOW), drainMarketingCampaigns(NOW)]);
+    await Promise.all([drainMarketingCampaigns(minutes(1)), drainMarketingCampaigns(minutes(1))]);
+    const to = outbox.map((o) => o.to);
+    expect(new Set(to).size).toBe(to.length);
+    for (const s of cancelled) expect(to.includes(emailOf(s))).toBe(false);
+  });
+
+  it("cancelling the whole campaign still leaves recipient rows alone (they are shown as Cancelled by the list) and nothing more is sent", async () => {
+    addSubscribers(5);
+    const c = addCampaign();
+    const { drainMarketingCampaigns } = await import("../campaign-worker");
+    await drainMarketingCampaigns(NOW);
+    c.status = "CANCELLED";
+    const before = outbox.length;
+    await drainMarketingCampaigns(minutes(5));
+    expect(outbox).toHaveLength(before);
   });
 });

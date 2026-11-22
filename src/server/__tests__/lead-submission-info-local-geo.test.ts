@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Prisma } from "@/generated/prisma/client";
 
-// withLocalLocation: the local geolocation database fills in a location ONLY when a trusted IP exists and the platform gave none.
+// withLocalLocation: the local geolocation database fills in a location when a trusted IP exists and the platform gave none - or gave only a country.
 
 const lookup = vi.hoisted(() => vi.fn<(ip: string) => Promise<unknown>>());
 vi.mock("@/server/geo/ip-geolocation", () => ({ lookupIpLocation: (ip: string) => lookup(ip) }));
@@ -33,6 +33,15 @@ describe("withLocalLocation", () => {
     const { withLocalLocation } = await import("../lead-submission-info");
     expect(await withLocalLocation(withGeo)).toBe(withGeo);
     expect(lookup).not.toHaveBeenCalled();
+  });
+
+  it("a platform location that names only the COUNTRY is completed (city, region, time zone), only when the database agrees, and the source names both", async () => {
+    lookup.mockResolvedValue(resolved);
+    const { withLocalLocation } = await import("../lead-submission-info");
+    const countryOnly = { ...ipOnly, country: "Australia", countryCode: "AU", geoSource: "Cloudflare edge country (CF-IPCountry)" };
+    expect(await withLocalLocation(countryOnly)).toMatchObject({ city: "Sydney", region: "New South Wales", country: "Australia", countryCode: "AU", timeZone: "Australia/Sydney", geoSource: "Cloudflare edge country (CF-IPCountry) + DBIP-City-Lite (2026-11-01)" });
+    const conflicting = { ...ipOnly, country: "New Zealand", countryCode: "NZ", geoSource: "Cloudflare edge country (CF-IPCountry)" };
+    expect(await withLocalLocation(conflicting)).toBe(conflicting); // two sources that disagree are not blended
   });
 
   it("does nothing without an IP (a budget-currency-only or missing record) - there is nobody to geolocate", async () => {

@@ -119,8 +119,10 @@ model Account {
 
   // May this user change a Lead's / Contact's phone numbers and email addresses (add, edit, delete, make primary)? Switched per user by an Administrator
   // on the Users page and enforced on the server in every action that writes those fields (src/server/actions/contacts.ts); the UI merely hides the
-  // controls. Defaults to true so that adding the column changes nobody's current ability; an Administrator is never restricted by it.
-  canEditContactDetails Boolean @default(true)
+  // controls. Defaults to FALSE for every newly created account (migration 20261122000100 changed the default; accounts that existed before keep the value they had -
+  // the first version of this column defaulted to true so that adding it changed nobody's ability). An Administrator is never restricted by it, and the CRM's own
+  // administrator-creating paths (createAccount, the first-sign-in bootstrap, prisma/bootstrap-company.ts, the dev seed) store it as true explicitly.
+  canEditContactDetails Boolean @default(false)
 
   // Customer-email privacy: when true, this (non-admin) user sees complete customer email addresses without using the daily reveal allowance. Default FALSE (masked,
   // five reveals a day). Switched only by an Administrator (actions/accounts.ts) and checked on the server every time (server/privacy/customer-email.ts). Administrators
@@ -2216,6 +2218,8 @@ enum MarketingSendStatus {
   SKIPPED_UNSUBSCRIBED
   SKIPPED_SUPPRESSED
   UNKNOWN
+  /// Cancelled on its own, before it was sent (migration 20261122000200). Never claimed or sent by the worker; set only from PENDING.
+  CANCELLED
 }
 
 model MarketingCampaignSend {
@@ -2404,7 +2408,7 @@ model CustomerEmailRevealEvent {
   leadId    String?
   /** DAILY_ALLOWANCE | UNLIMITED_PERMISSION | ADMIN */
   method    String
-  /** The business-timezone calendar day (yyyy-MM-dd) the reveal counted against. */
+  /** The reveal PERIOD the reveal counted against: "p" + yyyyMMdd of the America/Los_Angeles date on which the period started at 13:15 (see src/lib/business-time.ts emailRevealPeriod). Rows written before 2026-11-22 hold a midnight-based yyyy-MM-dd and never match a current period. The column name is historical. */
   dayKey    String   @db.VarChar(10)
   correlationId String? @db.VarChar(64)
   createdAt DateTime @default(now())

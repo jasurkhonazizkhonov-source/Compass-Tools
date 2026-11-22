@@ -94,24 +94,3 @@ export function ActiveSequenceCard({ enrollment: e, leadId }: { enrollment: Lead
 export function splitEnrollments(enrollments: LeadEnrollment[]) {
   return { active: enrollments.filter((e) => e.status === "ACTIVE"), history: enrollments.filter((e) => e.status !== "ACTIVE") };
 }
-
-/**
- * The notice shown when a lead's profile opens: one card per genuinely active enrollment, or nothing at all when there is none. Compact, and
- * deliberately not an alert - it is status, not an emergency.
- */
-export function LeadActiveSequencesNotice({ leadId, enrollments }: { leadId: string; enrollments: LeadEnrollment[] }) {
-  const { active } = splitEnrollments(enrollments);
-  if (active.length === 0) return null;
-  return (
-    <section aria-labelledby="active-sequences-heading" className="rounded-lg border border-info/30 bg-info/5 p-3 space-y-2" data-testid="active-sequences-notice">
-      <h2 id="active-sequences-heading" className="text-sm font-semibold">
-        {active.length === 1 ? "Active sequence" : `Active sequences (${active.length})`}
-      </h2>
-      <ul className="space-y-2">
-        {active.map((e) => (
-          <ActiveSequenceCard key={e.id} enrollment={e} leadId={leadId} />
-        ))}
-      </ul>
-    </section>
-  );
-}

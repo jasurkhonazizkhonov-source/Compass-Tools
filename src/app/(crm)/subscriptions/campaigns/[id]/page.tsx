@@ -1,11 +1,9 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { format } from "date-fns";
 import { ArrowLeft } from "lucide-react";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSubscriptions } from "@/lib/permissions";
 import { getEmailViewer } from "@/server/privacy/customer-email";
-import { maskCustomerEmail } from "@/lib/customer-email-mask";
 import { getMarketingCampaignDetail } from "@/server/queries/marketing-campaigns";
 import { getSubscriberCounts } from "@/server/queries/subscribers";
 import { CampaignForm } from "@/components/subscriptions/campaign-form";
@@ -13,13 +11,19 @@ import { CampaignDeliveryPanel } from "@/components/subscriptions/campaign-deliv
 import { getCampaignAnalytics } from "@/server/actions/campaign-delivery";
 import { parseStoredDesign } from "@/lib/campaign-blocks";
 import { StatusBadge } from "@/components/crm/status-badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { CAMPAIGN_STATUS_META, MARKETING_SEND_STATUS_META } from "@/lib/status-meta";
+import { CAMPAIGN_STATUS_META } from "@/lib/status-meta";
+import { redirectToValidPageIfNeeded } from "@/lib/pagination";
+import { getCampaignRecipientPage } from "@/server/queries/campaign-recipients";
+import { CampaignRecipientList, RECIPIENT_PAGE_PARAM, RECIPIENT_PAGE_SIZE_PARAM } from "@/components/subscriptions/campaign-recipient-list";
 
 export const dynamic = "force-dynamic";
 
-export default async function CampaignDetailPage({ params }: { params: Promise<{ id: string }> }) {
+type SearchParams = Promise<Record<string, string | string[] | undefined>>;
+const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+
+export default async function CampaignDetailPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: SearchParams }) {
   const { id } = await params;
+  const sp = await searchParams;
   const current = await getCurrentAccount();
   if (!canViewSubscriptions(current?.role)) notFound();
   // Recipient addresses follow the customer-email rule: masked unless the viewer is an Administrator or has the unlimited switch.
@@ -39,6 +43,10 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
   const managedByWorker = !!campaign.queuedAt || ["QUEUED", "SCHEDULED", "PAUSED", "CANCELLED"].includes(campaign.status);
   const builtWithBuilder = parseStoredDesign(campaign.designJson) !== null;
   const meta = CAMPAIGN_STATUS_META[campaign.status];
+  // The recipient-level Delivery Status: one server-cut page (25 / 50 / 75 / 100) of the campaign's recipients, never the whole list.
+  const recipientPageNumber = Math.trunc(Number(one(sp[RECIPIENT_PAGE_PARAM]) ?? 1)) || 1;
+  const recipients = campaign.status === "DRAFT" ? null : await getCampaignRecipientPage({ campaignId: campaign.id, companyId: current!.companyId, page: recipientPageNumber, pageSize: one(sp[RECIPIENT_PAGE_SIZE_PARAM]) });
+  if (recipients) redirectToValidPageIfNeeded(sp, `/subscriptions/campaigns/${campaign.id}`, recipientPageNumber, recipients.pageCount, RECIPIENT_PAGE_PARAM);
   const remaining = campaign.status === "SENDING" ? Math.max(0, (counts?.subscribed ?? 0) - campaign._count.sends) : undefined;
 
   return (
@@ -72,27 +80,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
         remaining={managedByWorker ? undefined : remaining}
       />
 
-      {(campaign.status === "SENT" || campaign.status === "SENDING" || campaign.status === "PAUSED" || campaign.status === "CANCELLED") && (
-        <Card className="shadow-none">
-          <CardHeader><CardTitle className="text-sm font-medium">Delivery Status ({campaign.sends.length}{campaign.sends.length >= 200 ? "+" : ""})</CardTitle></CardHeader>
-          <CardContent>
-            <ul className="space-y-1.5 max-h-96 overflow-y-auto">
-              {campaign.sends.map((s) => {
-                const sendMeta = MARKETING_SEND_STATUS_META[s.status];
-                return (
-                  <li key={s.id} className="flex items-center justify-between text-sm border-b pb-1.5 last:border-b-0">
-                    <span>{emailRestricted ? maskCustomerEmail(s.subscriber.email) : s.subscriber.email}</span>
-                    <span className="flex items-center gap-2">
-                      <StatusBadge label={sendMeta.label} tone={sendMeta.tone} />
-                      {s.sentAt && <span className="text-xs text-muted-foreground">{format(s.sentAt, "MMM d, h:mm a")}</span>}
-                    </span>
-                  </li>
-                );
-              })}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
+      {recipients && <CampaignRecipientList campaignId={campaign.id} data={recipients} emailRestricted={emailRestricted} />}
     </div>
   );
 }

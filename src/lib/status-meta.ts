@@ -148,6 +148,7 @@ export const MARKETING_SEND_STATUS_META: Record<MarketingSendStatus, { label: st
   SKIPPED_UNSUBSCRIBED: { label: "Skipped (Unsubscribed)", tone: "neutral" },
   SKIPPED_SUPPRESSED: { label: "Skipped (Suppressed)", tone: "neutral" },
   UNKNOWN: { label: "Outcome unknown", tone: "warning" },
+  CANCELLED: { label: "Cancelled", tone: "neutral" },
 };
 
 export const PRIORITY_META: Record<Priority, { label: string; tone: StatusTone }> = {

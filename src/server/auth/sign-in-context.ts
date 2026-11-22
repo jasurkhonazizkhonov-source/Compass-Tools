@@ -4,7 +4,7 @@
 // request body, a form field or JavaScript. Anything that cannot be determined is simply null — nothing is invented.
 import { getClientIp, trustedProxyMode } from "@/lib/request-ip";
 import { getRequestLocation, geoSourceOf } from "@/lib/request-geo";
-import { lookupIpLocation } from "@/server/geo/ip-geolocation";
+import { completeLocationFromDatabase } from "@/server/geo/complete-location";
 
 export type SignInContext = {
   ip: string | null;
@@ -35,36 +35,28 @@ export function captureSignInContext(headerList: Headers): SignInContext {
 }
 
 /**
- * captureSignInContext plus the local geolocation database. Order of preference, each only if the one before found nothing:
- *   1. the platform's own geo headers (Vercel; read only when the trusted-proxy rule says Vercel set them) — unchanged behaviour;
+ * captureSignInContext plus the local geolocation database. Order of preference:
+ *   1. the platform's own geo headers (Vercel / Cloudflare; read only when the trusted-proxy rule says that platform set them) — unchanged behaviour;
  *   2. the LOCAL database, looked up by the trusted-path IP only — so a request with no trustworthy IP is never geolocated, and a
- *      forged forwarded-for header (which getClientIp refuses) can never pick someone else's location;
- *   3. when Cloudflare is the trusted proxy: the country Cloudflare itself attached (CF-IPCountry), country only.
+ *      forged forwarded-for header (which getClientIp refuses) can never pick someone else's location. It also COMPLETES a partial platform
+ *      location (a country with no city) with the fields it knows, when its answer agrees with the platform's;
+ *   3. when Cloudflare is the trusted proxy and nothing above found anything: the country Cloudflare itself attached (CF-IPCountry), country only.
  * Never throws: a failure anywhere leaves the location fields null (the Users page then says "Location unavailable") and the
  * sign-in itself is unaffected.
  */
 export async function resolveSignInContext(headerList: Headers): Promise<SignInContext> {
   const base = captureSignInContext(headerList);
-  if (base.city || base.region || base.country || base.countryCode) return base;
   if (!base.ip) return base;
+  const hadPlatformLocation = !!(base.city || base.region || base.country || base.countryCode);
   try {
-    const found = await lookupIpLocation(base.ip);
-    if (found.status === "resolved") {
-      const l = found.location;
-      return {
-        ...base,
-        city: l.city,
-        region: l.region ?? l.regionCode,
-        country: l.country,
-        countryCode: l.countryCode,
-        timeZone: l.timeZone,
-        locationSource: found.source,
-        locationResolvedAt: new Date(),
-      };
+    const done = await completeLocationFromDatabase(base.ip, base, base.locationSource);
+    if (done.completedFromDatabase) {
+      return { ...base, city: done.city, region: done.region, country: done.country, countryCode: done.countryCode, timeZone: done.timeZone, locationSource: done.source, locationResolvedAt: new Date() };
     }
   } catch {
     // fall through to the edge-supplied country, if any
   }
+  if (hadPlatformLocation) return base;
   const edgeCountry = cloudflareCountry(headerList);
   return edgeCountry ? { ...base, ...edgeCountry } : base;
 }

@@ -22,6 +22,22 @@ ALTER TABLE "Account" ADD COLUMN "canEditContactDetails" BOOLEAN NOT NULL DEFAUL
 - Existing rows are filled by the same statement; no column, index or row is changed or dropped; it is not applied anywhere by this task (**no migration was run against any database**). `prisma validate` and `prisma generate` pass; the file has no byte-order mark; it is listed in `src/lib/migration-manifest.json` (the schema-status check).
 - Administrators are **never** restricted by the flag (in code: `canEditContactDetails` is true for `ADMIN`).
 
+### Update 2026-11-22 - the default for NEW accounts is now OFF
+
+The first migration above gave every existing row `true` so nobody lost an ability. For accounts created from now on the owner asked for the opposite: **OFF for ordinary users, ON for administrators.**
+
+* **Migration `20261122000100_account_contact_detail_edit_default_off`** - one statement, `ALTER TABLE "Account" ALTER COLUMN "canEditContactDetails" SET DEFAULT false`. `SET DEFAULT` never rewrites existing rows: every account that exists keeps exactly the value it has (on or off), including administrators. No data is read or changed. It is in `src/lib/migration-manifest.json`; **it has not been applied to any database** (it will be applied by the normal `--migrate` deployment step, so the System Health schema check shows one pending migration until then).
+* **Administrators:** every CRM path that creates an Administrator now stores the flag as `true` explicitly - `createAccount` (Users page) when the role is `ADMIN`, the first-sign-in bootstrap (`initial-admin-bootstrap.ts`), `prisma/bootstrap-company.ts` and the dev seed. An Administrator is in any case never restricted by the flag (`canEditContactDetails()` is `true` for `ADMIN`), so this makes the stored value agree with the behaviour.
+* **Ordinary users** (Manager, Travel Agent, Ticketing Agent, Flight Expert, Marketing Agent) are created with it OFF and an Administrator switches it on per user on the Users page (the grant needs the recent-sign-in step-up, as before). The creation request cannot carry the flag, so it cannot be chosen by the caller.
+* **Existing explicit choices are never overwritten**: neither the migration nor any code path touches an existing row's value; the only writer is the Administrator-only `updateContactDetailEditPermission`.
+* **Enforcement is unchanged and server-side**: all 8 phone / email actions in `contacts.ts` call `assertContactDetailEditAccess`; lead creation attaches extra details to an existing contact only when the creator has the permission; `updateContactField` accepts name fields only. Bulk contact import (Admin / Manager) only creates new contacts.
+* **Ambiguity, stated rather than guessed:** "administrators created via the existing admin workflow" is read as accounts *created* with role ADMIN. Promoting an existing user to ADMIN (a role change) or demoting an ADMIN does not change the stored flag: an admin is unrestricted by code regardless, and a demoted administrator keeps the value they were created with (usually ON) until an Administrator switches it off on the Users page. If the owner wants a demotion to reset it to OFF, that is a one-line change but would overwrite a stored value, so it was not done.
+* The Prisma client must be regenerated (`prisma generate`, run by `postinstall` and the build) so that the generated default matches.
+
+### Update 2026-11-22 (second pass) - an existing email address can be edited only while it is revealed
+
+Having the permission is necessary but no longer sufficient for the EMAIL: for a viewer whose customer emails are masked, the pencil (and make-primary / delete) is not offered, and the server actions `updatePrimaryEmailAddress`, `setPrimaryEmail` and `deleteContactEmail` refuse with "Reveal this customer's email address before changing it." unless that customer is revealed to that user in the current reveal period (re-read from the database on every call). Phone editing is unchanged. Adding a new address is unchanged (it does not touch a masked one). Administrators and users with Unlimited Customer Email Access are never masked, so nothing changes for them.
+
 ## 4. Server-side enforcement
 
 `canEditContactDetails(account)` (`src/lib/permissions.ts`): Admin -> true; otherwise only when the account object carries `canEditContactDetails === true` (**fails closed** if the field is missing).

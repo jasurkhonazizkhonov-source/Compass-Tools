@@ -29,17 +29,15 @@ export async function register() {
   const { runDueTaskNotifications } = await import("@/server/due-task-notifications");
   const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
   const { startBackgroundPoller } = await import("@/server/background-poller");
-  const { processSubscriberImportJobs } = await import("@/server/marketing/subscriber-import-worker");
   const { drainMarketingCampaigns } = await import("@/server/marketing/campaign-worker");
 
-  // One once-a-minute tick drives BOTH background jobs: task-due notifications and the automatic sending of sequence steps. The overlap, stuck-run, error
+  // One once-a-minute tick drives the background jobs: task-due notifications, the automatic sending of sequence steps and campaign delivery. The overlap, stuck-run, error
   // isolation and shutdown rules (and what they do and do not guarantee across several app instances) are documented in src/server/background-poller.ts.
   startBackgroundPoller([
     { name: "tasks", logTag: "task-notifier", run: () => runDueTaskNotifications() },
     { name: "sequences", logTag: "sequence-sender", run: () => drainDueSequenceSteps() },
-    // Background subscriber imports (chunked, resumable) and durable marketing-campaign delivery (rate-limited batches). Both claim their work in the database, so an
-    // overlapping second instance cannot double-process a chunk or double-send a recipient; see server/marketing/*.
-    { name: "subscriber-imports", logTag: "subscriber-import", run: async () => ({ processed: (await processSubscriberImportJobs()).processedRows }) },
+    // Durable marketing-campaign delivery (rate-limited batches). It claims its work in the database, so an overlapping second instance cannot double-send a
+    // recipient; see server/marketing/campaign-worker.ts.
     { name: "campaigns", logTag: "campaign-sender", run: async () => { const t = await drainMarketingCampaigns(); return { processed: t.sent + t.failed + t.unknown + t.skipped, sent: t.sent, failed: t.failed }; } },
   ]);
 }

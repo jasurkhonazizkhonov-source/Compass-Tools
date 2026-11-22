@@ -149,7 +149,9 @@ export async function createAccount(input: z.infer<typeof createAccountSchema>) 
   // Decimal fields (commissionPercent/tipPercent) that cannot cross the
   // Server Action -> Client Component boundary. No caller today reads this
   // return value; narrow it explicitly if one ever needs to.
-  const created = await prisma.account.create({ data: { ...data, companyId: current!.companyId }, select: { id: true } });
+  // Permission default: an ordinary new user may NOT edit Lead/Contact phone numbers and email addresses until an Administrator switches it on (the column default is
+   // false); an Administrator is created with it ON. An Administrator is never restricted by the flag anyway - this only makes the stored value say so.
+  const created = await prisma.account.create({ data: { ...data, canEditContactDetails: data.role === "ADMIN", companyId: current!.companyId }, select: { id: true } });
   await auditAccountEvent(prisma, { actorId: current!.id, action: "ACCOUNT_CREATED", accountId: created.id, metadata: { role: data.role, status: data.status ?? "ACTIVE" } });
   revalidatePath("/accounts");
   revalidatePath("/users");

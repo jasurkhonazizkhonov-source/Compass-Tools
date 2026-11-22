@@ -22,7 +22,8 @@ at run time; the lookup simply did not exist outside Vercel.
 browser → [Cloudflare / reverse proxy] → CRM → sign-in
         → getClientIp()  (trusted-proxy rules; IPv4/IPv6 validated; IPv4-mapped IPv6 → IPv4; private/internal addresses refused)
         → location:  1. platform geo headers (Vercel), if present                      (unchanged behaviour)
-                     2. LOCAL database lookup by that trusted IP                        (new)
+                     2. LOCAL database lookup by that trusted IP                        (new; since 2026-11-22 it also
+                        COMPLETES a platform location that names only a country - section 2a)
                      3. Cloudflare's CF-IPCountry — country only — when Cloudflare is the trusted proxy   (new, fallback)
         → stored on the Account row with its source and time → shown to Administrators on /users
 ```
@@ -36,6 +37,60 @@ browser → [Cloudflare / reverse proxy] → CRM → sign-in
   reads as an address and the data cannot support that precision.
 * **No lookup without a trustworthy IP.** The lookup is keyed only by the address the trusted-proxy rules accepted. A request on an
   untrusted path (no `TRUSTED_PROXY`) gets no IP and therefore no location, whatever headers it carries.
+
+### 2a. Why results were often "country only", and what changed (2026-11-22)
+
+Two causes were found by reading the code and the deployment files (nothing was run against production):
+
+1. **Operational - the database is not provisioned by the VPS deployment.** `Dockerfile`, `compose.yaml` and the `deploy/` scripts do not mention GeoIP at all; the file is installed only by an operator (`npm run geoip:download -- --accept-cc-by-4.0` or `geoip:install -- <file>`, `GEOIP_DB_PATH`, a persistent volume - see `.env.example`). On a server where that was never done, every lookup answers `database-missing` and the only location left is Cloudflare's country. **This is the most likely reason for country-only results in production, and it is not fixable in code.** It needs the owner's approval to download or install the DB-IP file (CC BY 4.0, attribution required), to mount it on a persistent volume and to set `GEOIP_DB_PATH`. `npm run geoip:verify` then states whether the file is usable. Until then country-only is the honest result.
+2. **Code - a partial location blocked the lookup.** Four places asked the local database only when NOTHING was known (`withLocalLocation`, the verified-visitor branch of `inquiry-submission-info.ts`, `resolveSignInContext`, `geoColumnsFor` in `ip-capture.ts`). A signed website context or an edge header that carried just a country therefore kept the record country-only although the same database knows the city and region.
+
+**Correction.** One helper, `completeLocationFromDatabase` (`src/server/geo/complete-location.ts`), is now used at all four places. When the platform/website location has **no city**, it asks the local database about the already-trusted IP and fills **only the missing fields**, and only when the answer **agrees**:
+
+| Situation | Result |
+| --- | --- |
+| nothing known, database has city + country | the whole answer, source = the database (unchanged behaviour) |
+| country only known (e.g. `DE`), database has Frankfurt / Hesse / `DE` | city, region and time zone are added; the source names both origins, e.g. `Cloudflare edge country (CF-IPCountry) + DBIP-City-Lite (2026-11-01)` |
+| known country differs from the database's (`DE` vs `FR`) | **nothing is merged**; the known value stands with its own source |
+| known region differs from the database's region name and code | nothing is merged (no city of another region is attached) |
+| database answer is itself country-only, or has no region | the record stays that coarse; no city or region is invented |
+| a city is already known | the record is left exactly as supplied; the database is not asked |
+| invalid IP, private / loopback / reserved IP, database missing, corrupt, no record, timeout or a malformed answer | the input is returned unchanged; nothing throws; sign-in and form submission are unaffected |
+
+Unchanged on purpose: only an address that passed the trusted-proxy rules is ever looked up (a forged forwarded-for header still gets no location); no coordinates are stored; the address never leaves the server; **no third-party geolocation service is called**; the latest-only retention of the last sign-in IP/location (overwritten at the next sign-in, removed with the account) and the Administrator-only full-IP visibility are not touched. No provider was changed and nothing was signed up for.
+
+**Display.** The lead and CRM-inquiry "Submission & IP Information" panels show City, Region, Country, Country Code and Time Zone **only where they exist**, now with a "Location source" line next to a location. A country-only record is shown as a country (never padded with a city). The text stays "approximate, derived from the IP address": it locates the network, not the person, and VPNs, mobile carriers, corporate gateways and IPv6 make it wrong or coarse.
+
+**Tests (synthetic documentation-range IPs only).** `src/server/geo/__tests__/complete-location.test.ts` (provider answers: city + country, country-only, region missing, invalid IP, private IP, database missing / corrupt, no record, timeout, synchronous failure, malformed answers, country and region conflicts, label length) plus the sign-in, inquiry, lead and display tests listed in the final report. The real mmdb reader is covered by the existing `ip-geolocation.test.ts`.
+
+### 2b. What production needs for city-level results (investigated 2026-11-22; NOTHING was downloaded, installed or changed)
+
+City-level lookup works only when a MaxMind-format City database is readable by the **running app container**. Facts established from the repository:
+
+* The runtime image (`Dockerfile` runner stage) contains only the traced standalone server, `@img` and two scripts; it has **no `tsx` and no `scripts/geoip-database.ts`**, so `npm run geoip:download` cannot be run inside it. The file must be placed from the **host** (a checkout with dependencies, or a manual download).
+* The `app` service in `compose.yaml` mounts only the uploads directory and sets no `GEOIP_DB_PATH`. The default path (`data/geoip/city.mmdb` under `/app`) is inside the image, is never persisted, and is not there.
+* The module re-checks the file's size and modification time at most once a minute and swaps in a replacement **without a restart** (a bad replacement keeps the previous database). A missing file is not an error: lookups answer `database-missing` and only the country (from Cloudflare) remains. **System Health shows nothing about this**, so a missing database is silent apart from the country-only results.
+
+What to do, when you approve it (a deployment change, deliberately not made here):
+
+1. **Source and licence.** DB-IP "IP to City Lite": free, no account, **CC BY 4.0** - the credit line is already shown on the Users page (`geoip-attribution.ts`) - published monthly (about 121 MB). Alternatives: MaxMind GeoLite2 City (free account and licence key, CC BY-SA 4.0 plus the GeoLite EULA: no redistribution, delete old versions promptly) or a paid GeoIP2 / DB-IP file. Read the vendor's current terms before use.
+2. **Get the file onto the VPS host** (outside the container), for example `/srv/compass-tools/geoip/city.mmdb`, owned by uid/gid 1000 and readable; verify it with `npm run geoip:verify` from a checkout.
+3. **Mount the DIRECTORY read-only into the `app` service and point the variable at it** - a directory, not the single file, so the monthly atomic rename is visible inside the container:
+   ```yaml
+   # compose.yaml, service app (example - not applied)
+   volumes:
+     - type: bind
+       source: ${GEOIP_HOST_DIR:-/srv/compass-tools/geoip}
+       target: /var/lib/compass-tools/geoip
+       read_only: true
+       bind: { create_host_path: false }
+   environment:
+     GEOIP_DB_PATH: /var/lib/compass-tools/geoip/city.mmdb
+   ```
+   This needs one `docker compose up -d app` (a restart of the app container) the first time only.
+4. **Updates:** each month place the new file next to the old one and rename it over `city.mmdb` (the install script does exactly that and keeps `city.mmdb.previous`). No restart. A file older than 90 days is still used but logged as stale.
+5. **Memory and cost:** about 125 MB of RAM for the loaded file (the `app` limit is 1,536 MB); no per-lookup cost and no third-party request.
+6. **Expectation:** country is almost always right; city and region are right much of the time for fixed-line networks and wrong for mobile carriers, VPNs and cloud / anycast addresses. A city is never shown when the database does not return one.
 
 ## 3. Choosing and installing the database
 

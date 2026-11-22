@@ -25,7 +25,6 @@ const connect = vi.fn();
 vi.mock("@/server/actions/gmail-connect", () => ({ startGmailConnect: (...a: unknown[]) => connect(...a) }));
 
 const { LeadSequencesPanel } = await import("@/components/leads/lead-sequences-panel");
-const { LeadActiveSequencesNotice } = await import("@/components/leads/active-sequences");
 const { SequenceEnrollmentsTable } = await import("../sequence-enrollments-table");
 
 const STEPS = [{ id: "s1" }, { id: "s2" }, { id: "s3" }];
@@ -86,11 +85,8 @@ describe("Lead page and Sequence page show the same status", () => {
 });
 
 describe("a failed attempt never looks like a successful active enrollment", () => {
-  it("a FAILED enrollment is not in the 'Active sequence' notice at all; it is in the history, labelled Failed, with the real reason", () => {
+  it("a FAILED enrollment is not in the Active region at all; it is in the history, labelled Failed, with the real reason", () => {
     const failed = CASES.find((c) => c.label === "Failed")!;
-    const notice = render(<LeadActiveSequencesNotice leadId="lead-1" enrollments={[leadEnrollment(failed)] as never} />);
-    expect(notice.container).toBeEmptyDOMElement();
-    notice.unmount();
     renderLead(failed);
     expect(screen.queryByTestId("active-sequence")).toBeNull();
     const item = screen.getByTestId("sequence-history-item");

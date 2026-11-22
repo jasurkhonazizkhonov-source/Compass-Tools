@@ -14,6 +14,8 @@ export type LeadSubmissionDetails = {
   country: string | null;
   countryCode: string | null;
   timeZone: string | null;
+  /** Where the location came from (e.g. "DBIP-City-Lite (2026-11-01)"); shown only next to a location. */
+  geoSource?: string | null;
   /** ISO 4217 code the customer chose for their budget — only set when they entered one. */
   budgetCurrency?: string | null;
 };
@@ -92,6 +94,7 @@ export function LeadSubmissionInformation({ leadId, createdAt, info, fromWebsite
         {info.country && <Field label="Approximate Country">{info.country}</Field>}
         {info.countryCode && <Field label="Country Code">{info.countryCode}</Field>}
         {info.timeZone && <Field label="Time Zone">{info.timeZone}</Field>}
+        {located && info.geoSource && <Field label="Location source">{info.geoSource}</Field>}
         {info.budgetCurrency && <Field label="Budget currency">{info.budgetCurrency}</Field>}
       </dl>
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">

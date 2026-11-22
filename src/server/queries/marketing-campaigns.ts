@@ -31,11 +31,6 @@ export async function getMarketingCampaignDetail(campaignId: string, companyId: 
     where: { id: campaignId, companyId },
     include: {
       createdBy: { select: { fullName: true } },
-      sends: {
-        include: { subscriber: { select: { email: true } } },
-        orderBy: { createdAt: "desc" },
-        take: 200,
-      },
       // Pass 16 §7 — an accurate SENT count, independent of the `sends`
       // list's own take:200 cap above (a campaign with more than 200 send
       // records would otherwise undercount how many have actually gone

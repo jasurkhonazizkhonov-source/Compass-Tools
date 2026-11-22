@@ -3,7 +3,7 @@
 // persisted: a restart starts again from "not started" until the poller's first tick, and a second app instance has its own record. It never holds a
 // recipient, a subject or an error message - only counts, times and a pass/fail flag.
 
-export type SweepJob = "sequences" | "tasks" | "subscriber-imports" | "campaigns";
+export type SweepJob = "sequences" | "tasks" | "campaigns";
 type JobRecord = {
   lastStartedAt: number | null;
   lastFinishedAt: number | null;
@@ -25,7 +25,7 @@ declare global {
 
 const emptyJob = (): JobRecord => ({ lastStartedAt: null, lastFinishedAt: null, lastSuccessAt: null, lastOk: null, lastErrorTag: null, lastProcessed: 0, lastSent: 0, lastFailed: 0, consecutiveFailures: 0 });
 function state(): State {
-  return (globalThis.__schedulerStatus ??= { pollerStartedAt: null, jobs: { sequences: emptyJob(), tasks: emptyJob(), "subscriber-imports": emptyJob(), campaigns: emptyJob() } });
+  return (globalThis.__schedulerStatus ??= { pollerStartedAt: null, jobs: { sequences: emptyJob(), tasks: emptyJob(), campaigns: emptyJob() } });
 }
 
 export function markPollerStarted(now = Date.now()) {
@@ -115,8 +115,8 @@ export function sequenceSchedulerReport(pollerDisabled: boolean, now = Date.now(
 }
 
 /**
- * The same four states for one of the OTHER background jobs ("subscriber-imports", "campaigns"). Unlike the sequence sweep these have no external-scheduler route, so with the
- * in-process poller disabled they simply wait ("disabled"); otherwise: not started -> "not_started"; last run failed -> "stalled"; silent for more than three minutes -> "stalled".
+ * The same four states for the OTHER background job ("campaigns"). Unlike the sequence sweep it has no external-scheduler route, so with the
+ * in-process poller disabled it simply waits ("disabled"); otherwise: not started -> "not_started"; last run failed -> "stalled"; silent for more than three minutes -> "stalled".
  */
 export function backgroundJobState(job: SweepJob, pollerDisabled: boolean, now = Date.now()): SequenceSchedulerState {
   const s = state();

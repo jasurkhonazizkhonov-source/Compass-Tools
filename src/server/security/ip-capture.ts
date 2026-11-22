@@ -13,7 +13,7 @@ import { safeErrorTag } from "@/lib/safe-error-log";
 import { recordHealthEvent } from "@/server/system/health-events";
 import { isValidIpAddress, normalizeIp } from "@/lib/request-ip";
 import { locationToIpCaptureColumns, type ApproximateLocation } from "@/lib/request-geo";
-import { lookupIpLocation } from "@/server/geo/ip-geolocation";
+import { completeLocationFromDatabase } from "@/server/geo/complete-location";
 import { encryptIp, hashIpForSearch, hashSubnetForSearch } from "./ip-encryption";
 import { assessRisk, HIGH_RISK_THRESHOLD, VELOCITY_WINDOW_MS } from "./ip-risk";
 import type { IpCaptureFormType } from "@/generated/prisma/client";
@@ -21,27 +21,24 @@ import type { IpCaptureFormType } from "@/generated/prisma/client";
 /**
  * The geo columns stored with a signing event. The platform's own location (read only behind the trusted proxy) wins; when it supplied none, the
  * LOCAL geolocation database is asked about the already-validated, trusted-path IP - so a booking signed from behind a non-Vercel proxy still gets an
- * approximate location, with its source recorded. A lookup failure leaves the columns null (never an error, never a guess); no coordinates are kept.
+ * approximate location, with its source recorded. When the platform supplied only PART of a location (a country with no city) the database fills what is missing,
+ * if it agrees. A lookup failure leaves the columns as they were (never an error, never a guess); no coordinates are kept.
  */
 async function geoColumnsFor(ip: string, location: ApproximateLocation | undefined) {
-  if (location) return locationToIpCaptureColumns(location);
+  const supplied = locationToIpCaptureColumns(location);
   try {
-    const found = await lookupIpLocation(ip);
-    if (found.status === "resolved") {
-      const l = found.location;
-      return {
-        geoCity: l.city,
-        geoRegion: l.region ?? l.regionCode,
-        geoCountry: l.country,
-        geoCountryCode: l.countryCode,
-        geoTimeZone: l.timeZone,
-        geoSource: found.source,
-      };
+    const done = await completeLocationFromDatabase(
+      ip,
+      { city: supplied.geoCity, region: supplied.geoRegion, country: supplied.geoCountry, countryCode: supplied.geoCountryCode, timeZone: supplied.geoTimeZone },
+      supplied.geoSource
+    );
+    if (done.completedFromDatabase) {
+      return { geoCity: done.city, geoRegion: done.region, geoCountry: done.country, geoCountryCode: done.countryCode, geoTimeZone: done.timeZone, geoSource: done.source };
     }
   } catch {
     // best-effort: the capture itself must never fail over its location
   }
-  return locationToIpCaptureColumns(undefined);
+  return supplied;
 }
 
 export async function recordIpCapture(params: {

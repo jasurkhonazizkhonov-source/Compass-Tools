@@ -85,6 +85,31 @@ describe("resolveSignInContext behind Cloudflare", () => {
     expect(seen).toEqual(["2001:db8:85a3::8a2e:370:7334"]);
   });
 
+  it("a platform location that names only the country is COMPLETED from the local database (city, region, time zone), and the source names both origins", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    lookup = async () => LOCAL_DB;
+    const ctx = await ctxFor({ "x-vercel-forwarded-for": "203.0.113.42", "x-vercel-ip-country": "DE" });
+    expect(ctx).toMatchObject({ ip: "203.0.113.42", city: "Frankfurt am Main", region: "Hesse", country: "Germany", countryCode: "DE", timeZone: "Europe/Berlin" });
+    expect(ctx.locationSource).toBe("Vercel edge geolocation (approximate) + DBIP-City-Lite (2026-11-01)");
+    expect(ctx.locationResolvedAt).toBeInstanceOf(Date);
+  });
+
+  it("...but a database answer for ANOTHER country is ignored: the platform's country stands alone and nothing is blended", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    lookup = async () => ({ ...LOCAL_DB, location: { ...LOCAL_DB.location, city: "Paris", region: "Ile-de-France", regionCode: "IDF", country: "France", countryCode: "FR" } });
+    const ctx = await ctxFor({ "x-vercel-forwarded-for": "203.0.113.42", "x-vercel-ip-country": "DE" });
+    expect(ctx).toMatchObject({ city: null, region: null, country: "Germany", countryCode: "DE", locationSource: "Vercel edge geolocation (approximate)" });
+  });
+
+  it("a platform location that already names a city is kept exactly as supplied and the database is not asked", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "vercel");
+    const asked = vi.fn(async () => LOCAL_DB);
+    lookup = asked;
+    const ctx = await ctxFor({ "x-vercel-forwarded-for": "203.0.113.42", "x-vercel-ip-country": "US", "x-vercel-ip-city": "Los%20Angeles" });
+    expect(ctx).toMatchObject({ city: "Los Angeles", countryCode: "US", locationSource: "Vercel edge geolocation (approximate)" });
+    expect(asked).not.toHaveBeenCalled();
+  });
+
   it("coordinates are never part of what is returned or stored", async () => {
     lookup = async () => LOCAL_DB; // the database knows latitude/longitude
     const ctx = await ctxFor({ ...IP, "cf-iplatitude": "-33.9", "cf-iplongitude": "151.2" });

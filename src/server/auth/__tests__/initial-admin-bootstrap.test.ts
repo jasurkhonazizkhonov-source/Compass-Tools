@@ -92,6 +92,8 @@ describe("bootstrapInitialAdminIfEligible", () => {
     }
     expect(companies).toHaveLength(1); // reused, not a second row created
     expect(accounts).toHaveLength(1);
+    // PERMISSION DEFAULT: the first administrator is stored with 'Can Edit Lead/Contact Phone & Email' ON (the column default for ordinary users is OFF).
+    expect((accounts[0] as unknown as { canEditContactDetails?: boolean }).canEditContactDetails).toBe(true);
   });
 
   it("no accounts + no pre-existing Company row either → creates a fresh placeholder company AND the ADMIN account", async () => {

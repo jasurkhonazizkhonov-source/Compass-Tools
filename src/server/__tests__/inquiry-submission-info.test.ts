@@ -101,6 +101,20 @@ describe("buildInquirySubmissionInfo - the website's SERVER posting for the visi
     expect(await build({ ...signed({ ip: "203.0.113.42" }) }, true)).toMatchObject({ ipAddress: "203.0.113.42", city: "Sydney", countryCode: "AU", geoSource: "DBIP-City-Lite (2026-11-01)" });
   });
 
+  it("a verified context that names ONLY the country (what the website's Cloudflare edge usually sends) is completed with the city and region the local database knows, and the label names both origins", async () => {
+    lookup = async () => resolved();
+    const info = await build({ ...signed({ ip: "203.0.113.42", country: "AU" }) }, true);
+    expect(info).toMatchObject({ ipAddress: "203.0.113.42", city: "Sydney", region: "New South Wales", countryCode: "AU", timeZone: "Australia/Sydney" });
+    expect(info!.geoSource).toBe("Vercel edge geolocation (approximate) + DBIP-City-Lite (2026-11-01)");
+  });
+
+  it("a country-only context whose country the database contradicts is NOT blended: it stays country-only, with the website's own label", async () => {
+    lookup = async () => resolved({ country: "France", countryCode: "FR", city: "Paris", region: "Ile-de-France", regionCode: "IDF", timeZone: "Europe/Paris" });
+    const info = await build({ ...signed({ ip: "203.0.113.42", country: "AU" }) }, true);
+    expect(info).toMatchObject({ city: null, countryCode: "AU" });
+    expect(info!.geoSource ?? "").not.toMatch(/DBIP/);
+  });
+
   it("a forged context (wrong secret, tampered body, stale timestamp, missing signature) records nothing and cannot be used to plant an IP", async () => {
     expect(await build({ ...signed({ ip: "6.6.6.6" }, "a-completely-different-secret-value-xx") }, true)).toBeUndefined();
     const good = signed({ ip: "203.0.113.42" });

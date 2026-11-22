@@ -14,7 +14,6 @@ import { maxFileSizeBytes } from "@/lib/attachments/policy";
 import { DeleteButton } from "@/components/crm/delete-button";
 import { deleteLead } from "@/server/actions/leads";
 import { LeadSequencesPanel } from "@/components/leads/lead-sequences-panel";
-import { LeadActiveSequencesNotice } from "@/components/leads/active-sequences";
 import { CustomerInfoCard } from "@/components/leads/customer-info-card";
 import { TravelRequestCard } from "@/components/leads/travel-request-card";
 import { CrmMetaCard } from "@/components/leads/crm-meta-card";
@@ -193,8 +192,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             referredByContact={lead.referredByContact}
           />
         </div>
-
-        <LeadActiveSequencesNotice leadId={lead.id} enrollments={lead.enrollments} />
 
         <Card className="shadow-none">
           <CardContent className="pt-2">

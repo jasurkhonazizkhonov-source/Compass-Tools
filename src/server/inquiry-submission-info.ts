@@ -15,7 +15,7 @@
 import { resolveSignInContext } from "@/server/auth/sign-in-context";
 import { resolveVisitorContext } from "@/server/lead-ingest-context";
 import type { VerifiedVisitor } from "@/server/website-request-signature";
-import { lookupIpLocation } from "@/server/geo/ip-geolocation";
+import { completeLocationFromDatabase } from "@/server/geo/complete-location";
 import { GEO_SOURCE } from "@/lib/request-geo";
 import type { Prisma } from "@/generated/prisma/client";
 
@@ -39,14 +39,11 @@ export async function buildInquirySubmissionInfo(
       let timeZone = visitor.location?.timeZone ?? null;
       // The label the website named in its signed context ("Cloudflare edge geolocation (approximate)" for the VPS), never an assumption of our own platform.
       let geoSource: string | null = visitor.location ? (visitor.locationSource ?? GEO_SOURCE) : null;
-      if (ip && !(city || region || country || countryCode)) {
-        // The website supplied the IP but no usable location: resolve it locally (the address never leaves this server).
-        const found = await lookupIpLocation(ip);
-        if (found.status === "resolved") {
-          ({ city, country, countryCode, timeZone } = found.location);
-          region = found.location.region ?? found.location.regionCode;
-          geoSource = found.source;
-        }
+      if (ip) {
+        // The website supplied the IP but no location, or only a partial one (often just Cloudflare's country): fill what is MISSING from the local database (the
+        // address never leaves this server), only when it agrees with what the website sent. The label then names both origins.
+        const done = await completeLocationFromDatabase(ip, { city, region, country, countryCode, timeZone }, geoSource);
+        if (done.completedFromDatabase) ({ city, region, country, countryCode, timeZone, source: geoSource } = done);
       }
       return finish({ ip, city, region, country, countryCode, timeZone, geoSource }, now);
     }

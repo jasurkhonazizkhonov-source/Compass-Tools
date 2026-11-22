@@ -88,25 +88,23 @@ describe("System Health - Automatic sequence sending", () => {
 import { checkMarketingWorkers } from "../health-checks";
 import { markSweepStarted } from "@/server/scheduler-status";
 
-describe("System Health - Subscriber imports and campaign delivery", () => {
-  const ok = (job: "subscriber-imports" | "campaigns", at: number) => {
+describe("System Health - Campaign delivery", () => {
+  const ok = (job: "campaigns", at: number) => {
     markSweepStarted(job, at - 1000);
     markSweepFinished(job, { ok: true, processed: 3, sent: 2, failed: 0 }, at);
   };
 
-  it("HEALTHY only when BOTH jobs completed a run recently", async () => {
+  it("HEALTHY only when the campaign job completed a run recently, and no Imports row exists any more", async () => {
     markPollerStarted(NOW - 5 * 60_000);
-    ok("subscriber-imports", NOW - 20_000);
     ok("campaigns", NOW - 30_000);
     const r = await checkMarketingWorkers(NOW);
     expect(r.state).toBe("HEALTHY");
-    expect(fact(r as never, "Imports: last successful run")).toBe("2026-11-20 11:59:40 UTC");
+    expect(JSON.stringify(r)).not.toMatch(/Imports|subscriber-import/i);
     expect(fact(r as never, "Campaign delivery: last successful run")).toBe("2026-11-20 11:59:30 UTC");
   });
 
-  it("CRITICAL when either job failed on its last run - error CATEGORY only, with the consecutive count", async () => {
+  it("CRITICAL when the job failed on its last run - error CATEGORY only, with the consecutive count", async () => {
     markPollerStarted(NOW - 5 * 60_000);
-    ok("subscriber-imports", NOW - 20_000);
     markSweepFinished("campaigns", { ok: false, errorTag: "PrismaClientKnownRequestError" }, NOW - 10_000);
     const r = await checkMarketingWorkers(NOW);
     expect(r.state).toBe("CRITICAL");
@@ -114,12 +112,11 @@ describe("System Health - Subscriber imports and campaign delivery", () => {
     expect(JSON.stringify(r)).not.toMatch(/@|postgres:|password/i);
   });
 
-  it("CRITICAL when a job has been silent longer than the stall window; it recovers on the next successful run", async () => {
+  it("CRITICAL when the job has been silent longer than the stall window; it recovers on the next successful run", async () => {
     markPollerStarted(NOW - 30 * 60_000);
-    ok("subscriber-imports", NOW - SCHEDULER_STALL_AFTER_MS - 60_000);
-    ok("campaigns", NOW - 10_000);
+    ok("campaigns", NOW - SCHEDULER_STALL_AFTER_MS - 60_000);
     expect((await checkMarketingWorkers(NOW)).state).toBe("CRITICAL");
-    ok("subscriber-imports", NOW - 5_000);
+    ok("campaigns", NOW - 5_000);
     expect((await checkMarketingWorkers(NOW)).state).toBe("HEALTHY");
   });
 

@@ -4,9 +4,10 @@ import { render, screen, waitFor, within, fireEvent } from "@testing-library/rea
 import userEvent from "@testing-library/user-event";
 import "@/test/rtl-setup";
 import type { CampaignAnalytics } from "@/server/actions/campaign-delivery";
-import type { ImportJobRow } from "@/server/actions/subscriber-imports";
+import fs from "node:fs";
+import path from "node:path";
 
-// The browser side of the campaign builder, the delivery panel (analytics + controls) and the background-import panel.
+// The browser side of the campaign builder, the delivery panel (analytics + controls) and the entry points on the Subscriptions page.
 
 const refresh = vi.fn();
 const replace = vi.fn();
@@ -33,21 +34,9 @@ vi.mock("@/server/actions/campaign-delivery", () => ({
   cancelCampaignDelivery: (...a: unknown[]) => (cancelCampaignDelivery as unknown as (...x: unknown[]) => unknown)(...a),
   getCampaignAnalytics: (...a: unknown[]) => getCampaignAnalytics(...a),
 }));
-const previewSubscriberImport = vi.fn();
-const createSubscriberImportJob = vi.fn();
-const listSubscriberImportJobs = vi.fn(async () => [] as ImportJobRow[]);
-vi.mock("@/server/actions/subscriber-imports", () => ({
-  previewSubscriberImport: (...a: unknown[]) => previewSubscriberImport(...a),
-  createSubscriberImportJob: (...a: unknown[]) => createSubscriberImportJob(...a),
-  listSubscriberImportJobs: (...a: unknown[]) => (listSubscriberImportJobs as unknown as (...x: unknown[]) => unknown)(...a),
-  getSubscriberImportErrorReport: vi.fn(async () => "row,reason\n2,INVALID_EMAIL"),
-  cancelSubscriberImport: vi.fn(async () => ({ ok: true })),
-  resumeSubscriberImport: vi.fn(async () => ({ ok: true })),
-}));
 
 const { CampaignBuilder } = await import("../campaign-builder");
 const { CampaignDeliveryPanel } = await import("../campaign-delivery-panel");
-const { SubscriberImportPanel } = await import("../subscriber-import-panel");
 const { emptyDesign } = await import("@/lib/campaign-blocks");
 
 beforeEach(() => vi.clearAllMocks());
@@ -139,20 +128,26 @@ describe("CampaignBuilder", () => {
 });
 
 const analytics = (over: Partial<CampaignAnalytics> = {}): CampaignAnalytics => ({
-  audience: 1000, queued: 600, sent: 380, failed: 5, unknown: 3, skippedUnsubscribed: 8, skippedSuppressed: 4, completedFraction: 0.4, status: "SENDING", sentLastHour: 20,
+  audience: 1000, queued: 600, sent: 380, failed: 5, unknown: 3, skippedUnsubscribed: 8, skippedSuppressed: 4, cancelled: 0, completedFraction: 0.4, status: "SENDING", sentLastHour: 20,
   perMinuteBudget: 20, dailyLimit: 400, sentLast24h: 120, estimatedHoursRemaining: 36, scheduledAt: null, startedAt: null, completedAt: null, ...over,
 });
 
 describe("CampaignDeliveryPanel", () => {
-  it("shows honest counts and definitions, progress, and the provider limit in plain words", () => {
-    render(<CampaignDeliveryPanel campaignId="c1" initial={analytics()} canQueue={false} />);
-    expect(screen.getByTestId("stat-sent")).toHaveTextContent("380");
-    expect(screen.getByTestId("stat-queued")).toHaveTextContent("600");
-    expect(screen.getByTestId("stat-unknown")).toHaveTextContent("3");
-    expect(screen.getByRole("progressbar", { name: "Delivery progress" })).toHaveAttribute("aria-valuenow", "40");
-    expect(screen.getByText(/accepted by Gmail\. Delivered, opened and clicked are not tracked/)).toBeInTheDocument();
-    expect(screen.getByTestId("provider-limits")).toHaveTextContent(/at most 400 in any 24 hours/);
-    expect(screen.getByTestId("provider-limits")).toHaveTextContent(/takes days/);
+  it("no longer shows the large Delivery information section: no heading, progress bar, count tiles, Gmail explanations or sending-limit text - only the controls", () => {
+    const { container } = render(<CampaignDeliveryPanel campaignId="c1" initial={analytics()} canQueue={false} />);
+    expect(screen.getByTestId("campaign-delivery-controls")).toBeInTheDocument();
+    expect(screen.queryByText("Delivery")).toBeNull();
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    for (const id of ["stat-sent", "stat-queued", "stat-failed", "stat-unknown", "stat-unsub", "stat-suppressed", "provider-limits"]) expect(screen.queryByTestId(id)).toBeNull();
+    expect(container.textContent).not.toMatch(/Waiting|Outcome unknown|Skipped|accepted by Gmail|in any 24 hours|takes days|of the audience has been handled/);
+  });
+
+  it("a finished campaign has no controls, so the component renders nothing at all", () => {
+    for (const status of ["SENT", "CANCELLED", "FAILED"] as const) {
+      const { container, unmount } = render(<CampaignDeliveryPanel campaignId="c1" initial={analytics({ status })} canQueue={false} />);
+      expect(container).toBeEmptyDOMElement();
+      unmount();
+    }
   });
 
   it("while sending: Pause and Cancel are offered; Resume and Schedule are not", () => {
@@ -163,14 +158,13 @@ describe("CampaignDeliveryPanel", () => {
     expect(screen.queryByRole("button", { name: /Schedule/ })).toBeNull();
   });
 
-  it("Pause asks the server and refreshes the numbers", async () => {
+  it("Pause asks the server and the controls follow the new status (Resume appears)", async () => {
     getCampaignAnalytics.mockResolvedValue(analytics({ status: "PAUSED" }));
     const user = userEvent.setup();
     render(<CampaignDeliveryPanel campaignId="c1" initial={analytics()} canQueue={false} />);
     await user.click(screen.getByRole("button", { name: /Pause/ }));
     await waitFor(() => expect(pauseCampaignDelivery).toHaveBeenCalledWith("c1"));
     expect(await screen.findByRole("button", { name: /Resume/ })).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(/paused/i);
   });
 
   it("Cancel is confirmed first and only then sent to the server", async () => {
@@ -206,64 +200,20 @@ describe("CampaignDeliveryPanel", () => {
   });
 });
 
-describe("SubscriberImportPanel", () => {
-  const job = (over: Partial<ImportJobRow> = {}): ImportJobRow => ({
-    id: "j1", status: "PROCESSING", source: "PASTE", totalRows: 100_000, validRows: 98_000, invalidRows: 1_500, duplicateInFile: 500, existingRows: 10_000, importedRows: 40_000,
-    skippedUnsubscribedOrSuppressed: 321, processedRows: 49_000, hasErrorReport: true, createdAt: "2026-11-20T10:00:00.000Z", finishedAt: null, ...over,
+describe("Subscriptions page entry points", () => {
+  const page = () => fs.readFileSync(path.join(process.cwd(), "src", "app", "(crm)", "subscriptions", "page.tsx"), "utf8");
+
+  it("has ONE campaign button, labelled 'New Campaign', and it opens the builder", () => {
+    const src = page();
+    expect(src.match(/New Campaign/g)).toHaveLength(1);
+    expect(src).toContain('href="/subscriptions/campaigns/builder">New Campaign<');
+    expect(src).not.toContain("campaigns/new");
+    expect(src).not.toContain("New Campaign (builder)");
   });
 
-  it("Check list shows counts only (never an address), including who is kept out", async () => {
-    previewSubscriberImport.mockResolvedValue({ ok: true, preview: { totalRows: 10, validRows: 7, invalidRows: 2, duplicateInFile: 1, newSubscribers: 4, alreadySubscribed: 1, previouslyUnsubscribed: 1, suppressed: 1, truncated: false } });
-    const user = userEvent.setup();
-    const { container } = render(<SubscriberImportPanel initialJobs={[]} />);
-    await user.type(screen.getByLabelText("Subscriber list"), "a@example.com");
-    expect(screen.getByRole("button", { name: "Start import" })).toBeDisabled(); // must be checked first
-    await user.click(screen.getByRole("button", { name: /Check list/ }));
-    const preview = await screen.findByTestId("import-preview");
-    expect(preview).toHaveTextContent("Will be added");
-    expect(preview).toHaveTextContent("Unsubscribed (kept out)");
-    expect(preview).toHaveTextContent("Suppressed (kept out)");
-    expect(container.textContent).not.toMatch(/a@example\.com@/); // nothing but the textarea echoes input
-    expect(screen.getByRole("button", { name: "Start import" })).toBeEnabled();
-  });
-
-  it("Start import queues the job in the background and clears the box", async () => {
-    previewSubscriberImport.mockResolvedValue({ ok: true, preview: { totalRows: 1, validRows: 1, invalidRows: 0, duplicateInFile: 0, newSubscribers: 1, alreadySubscribed: 0, previouslyUnsubscribed: 0, suppressed: 0, truncated: false } });
-    createSubscriberImportJob.mockResolvedValue({ ok: true, jobId: "j1", validRows: 1 });
-    listSubscriberImportJobs.mockResolvedValue([job({ status: "QUEUED", processedRows: 0, importedRows: 0 })]);
-    const user = userEvent.setup();
-    render(<SubscriberImportPanel initialJobs={[]} />);
-    await user.type(screen.getByLabelText("Subscriber list"), "a@example.com");
-    await user.click(screen.getByRole("button", { name: /Check list/ }));
-    await user.click(await screen.findByRole("button", { name: "Start import" }));
-    await waitFor(() => expect(createSubscriberImportJob).toHaveBeenCalledWith("a@example.com", "PASTE"));
-    await waitFor(() => expect(screen.getByLabelText("Subscriber list")).toHaveValue(""));
-    expect(toastSuccess).toHaveBeenCalledWith(expect.stringContaining("continues in the background"));
-  });
-
-  it("a server refusal (too many rows) is shown in place", async () => {
-    previewSubscriberImport.mockResolvedValue({ ok: false, error: "Imports are limited to 250,000 rows at a time." });
-    const user = userEvent.setup();
-    render(<SubscriberImportPanel initialJobs={[]} />);
-    await user.type(screen.getByLabelText("Subscriber list"), "x@example.com");
-    await user.click(screen.getByRole("button", { name: /Check list/ }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("250,000");
-  });
-
-  it("history shows live progress and the plain-language outcome, with an error report only when there is one", () => {
-    render(<SubscriberImportPanel initialJobs={[job(), job({ id: "j2", status: "COMPLETED", hasErrorReport: false, processedRows: 98_000, importedRows: 88_000 })]} />);
-    const items = screen.getAllByTestId("import-job");
-    expect(items).toHaveLength(2);
-    expect(within(items[0]).getByRole("progressbar", { name: "Import progress" })).toHaveAttribute("aria-valuenow", "50");
-    expect(items[0]).toHaveTextContent("100,000 rows");
-    expect(items[0]).toHaveTextContent("321 unsubscribed or suppressed, not re-subscribed");
-    expect(within(items[0]).getByRole("button", { name: /Error report/ })).toBeInTheDocument();
-    expect(within(items[1]).queryByRole("button", { name: /Error report/ })).toBeNull();
-    expect(within(items[1]).queryByRole("progressbar")).toBeNull();
-  });
-
-  it("a failed job offers Resume", () => {
-    render(<SubscriberImportPanel initialJobs={[job({ status: "FAILED" })]} />);
-    expect(screen.getByRole("button", { name: /Resume/ })).toBeInTheDocument();
+  it("no longer offers the redundant CSV subscriber import (the Add Bulk Subscribers box is the way in)", () => {
+    expect(page()).not.toMatch(/SubscriberImport|subscriber-import/);
+    expect(fs.existsSync(path.join(process.cwd(), "src", "app", "(crm)", "subscriptions", "campaigns", "new", "page.tsx"))).toBe(false);
+    expect(fs.existsSync(path.join(process.cwd(), "src", "components", "subscriptions", "subscriber-import-panel.tsx"))).toBe(false);
   });
 });

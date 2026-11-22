@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// Server actions behind the campaign builder, queued delivery and background imports: who may use them, what they refuse, and that they only ever queue (never send).
+// Server actions behind the campaign builder and queued delivery: who may use them, what they refuse, and that they only ever queue (never send).
 
 type Actor = { id: string; role: string; companyId: string; email: string; fullName: string };
 let actor: Actor | null;
 let campaigns: Array<Record<string, unknown> & { id: string; companyId: string; status: string }>;
-let importJobs: Array<Record<string, unknown> & { id: string; companyId: string; status: string }>;
 let subscriberCount: number;
+let sendRows: Array<{ id: string; campaignId: string; status: string; nextAttemptAt?: Date | null; errorMessage?: string | null }>;
 let gmail: "CONNECTED" | "NOT_CONNECTED" | "REVOKED";
 const audits: Array<Record<string, unknown>> = [];
 const created: Array<Record<string, unknown>> = [];
@@ -19,7 +19,8 @@ vi.mock("@/lib/company-config", () => ({ resolveBaseUrl: () => "https://crm.exam
 vi.mock("@/server/email/templates", () => ({ buildMarketingCampaignEmail: vi.fn((p: { htmlContent: string }) => ({ subject: "s", html: `<shell>${p.htmlContent}<a>Unsubscribe</a></shell>` })) }));
 const sendEmail = vi.fn(async (args: unknown) => (void args, { ok: true, messageId: "m" }));
 vi.mock("@/server/email/service", () => ({ sendEmail: (...a: unknown[]) => (sendEmail as unknown as (...x: unknown[]) => unknown)(...a) }));
-vi.mock("@/server/marketing/campaign-worker", () => ({ dailyLimit: () => 400, sendsPerMinute: () => 20, getCampaignStats: vi.fn(async () => ({ audience: 0, queued: 0, sent: 0, failed: 0, unknown: 0, skippedUnsubscribed: 0, skippedSuppressed: 0, completedFraction: 0 })) }));
+const processNow = vi.fn(async (id: string) => (void id, { promoted: 0, snapshotted: 1, sent: 1, failed: 0, unknown: 0, skipped: 0, paused: 0, completed: 1 }));
+vi.mock("@/server/marketing/campaign-worker", () => ({ processCampaignNow: (...a: unknown[]) => (processNow as unknown as (...x: unknown[]) => unknown)(...a), dailyLimit: () => 400, sendsPerMinute: () => 20, getCampaignStats: vi.fn(async () => ({ audience: 0, queued: 0, sent: 0, failed: 0, unknown: 0, skippedUnsubscribed: 0, skippedSuppressed: 0, completedFraction: 0 })) }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -39,19 +40,20 @@ vi.mock("@/lib/prisma", () => ({
       }),
     },
     subscriber: { count: vi.fn(async () => subscriberCount), findMany: vi.fn(async () => []) },
-    marketingCampaignSend: { count: vi.fn(async () => 0) },
-    subscriberImportJob: {
-      create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
-        const row = { id: `job-${importJobs.length + 1}`, status: "QUEUED", ...data } as (typeof importJobs)[number];
-        importJobs.push(row);
-        return { id: row.id };
-      }),
-      findMany: vi.fn(async ({ where }: { where: { companyId: string } }) => importJobs.filter((j) => j.companyId === where.companyId).map((j) => ({ nextRow: 0, errorReport: null, createdAt: new Date(), finishedAt: null, source: "PASTE", totalRows: 0, validRows: 0, invalidRows: 0, duplicateInFile: 0, existingRows: 0, importedRows: 0, skippedUnsubscribedOrSuppressed: 0, ...j }))),
-      findFirst: vi.fn(async ({ where }: { where: { id: string; companyId: string } }) => importJobs.find((j) => j.id === where.id && j.companyId === where.companyId) ?? null),
-      updateMany: vi.fn(async ({ where, data }: { where: { id: string; companyId: string; status: { in: string[] } | string }; data: Record<string, unknown> }) => {
-        const hit = importJobs.filter((j) => j.id === where.id && j.companyId === where.companyId && (typeof where.status === "string" ? j.status === where.status : where.status.in.includes(j.status)));
-        hit.forEach((j) => Object.assign(j, data));
+    marketingCampaignSend: {
+      count: vi.fn(async () => 0),
+      // one atomic conditional update, as in the real database: the row changes only if EVERY condition still holds
+      updateMany: vi.fn(async ({ where, data }: { where: { id: string; campaignId: string; status: string; campaign: { companyId: string; status: { in: string[] } } }; data: Record<string, unknown> }) => {
+        const camp = campaigns.find((c) => c.id === where.campaignId);
+        const allowed = !!camp && camp.companyId === where.campaign.companyId && where.campaign.status.in.includes(camp.status);
+        const hit = allowed ? sendRows.filter((r) => r.id === where.id && r.campaignId === where.campaignId && r.status === where.status) : [];
+        hit.forEach((r) => Object.assign(r, data));
         return { count: hit.length };
+      }),
+      findFirst: vi.fn(async ({ where }: { where: { id: string; campaignId: string; campaign: { companyId: string } } }) => {
+        const r = sendRows.find((x) => x.id === where.id && x.campaignId === where.campaignId);
+        const camp = r && campaigns.find((c) => c.id === r.campaignId);
+        return r && camp && camp.companyId === where.campaign.companyId ? { status: r.status, campaign: { status: camp.status } } : null;
       }),
     },
     auditLog: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => void audits.push(data)) },
@@ -70,27 +72,26 @@ const goodDesign = {
 beforeEach(() => {
   actor = as("MARKETING_AGENT");
   campaigns = [{ id: "c1", companyId: "co-1", status: "DRAFT", subject: "Subject", htmlContent: "<p>Hi</p>", createdById: "u1", designJson: null, scheduledAt: null }];
-  importJobs = [];
   subscriberCount = 10;
+  sendRows = [];
   gmail = "CONNECTED";
   audits.length = 0;
   created.length = 0;
   sendEmail.mockClear();
+  processNow.mockClear();
 });
 
 describe("authorization", () => {
-  it.each(["MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT"])("a %s is refused by every campaign-delivery and import action", async (role) => {
+  it.each(["MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT"])("a %s is refused by every campaign-delivery action", async (role) => {
     actor = as(role);
     const d = await import("../campaign-delivery");
-    const i = await import("../subscriber-imports");
     for (const call of [
       () => d.queueCampaign("c1"), () => d.pauseCampaignDelivery("c1"), () => d.resumeCampaignDelivery("c1"), () => d.cancelCampaignDelivery("c1"), () => d.getCampaignAnalytics("c1"),
       () => d.saveCampaignDesign({ name: "n", subject: "s", design: goodDesign }), () => d.previewCampaignDesign(goodDesign, "s"), () => d.sendCampaignTest("c1"),
-      () => i.previewSubscriberImport("a@example.com"), () => i.createSubscriberImportJob("a@example.com"), () => i.listSubscriberImportJobs(), () => i.getSubscriberImportErrorReport("j1"),
-      () => i.cancelSubscriberImport("j1"), () => i.resumeSubscriberImport("j1"),
+      () => d.cancelCampaignRecipient("c1", "r1"),
     ]) await expect(call()).rejects.toThrow(/not authorized/i);
     expect(campaigns[0].status).toBe("DRAFT");
-    expect(importJobs).toHaveLength(0);
+    expect(processNow).not.toHaveBeenCalled();
   });
 
   it("signed-out callers are refused", async () => {
@@ -147,11 +148,194 @@ describe("queueCampaign - hands the campaign to background delivery, sends nothi
     expect(campaigns[0].status).toBe("SENT");
   });
 
+  describe("an audience of exactly one subscriber is sent directly (same worker pass, run once, right now)", () => {
+    const tick = (over: Partial<Record<string, number>> = {}) => ({ promoted: 0, snapshotted: 1, sent: 0, failed: 0, unknown: 0, skipped: 0, paused: 0, completed: 0, ...over });
+
+    it("runs the worker pass for THIS campaign once, and says it was sent; nothing is sent by the action itself (the worker does it)", async () => {
+      subscriberCount = 1;
+      const { queueCampaign } = await import("../campaign-delivery");
+      expect(await queueCampaign("c1")).toEqual({ ok: true, status: "QUEUED", audience: 1, immediate: "sent" });
+      expect(processNow).toHaveBeenCalledTimes(1);
+      expect(processNow).toHaveBeenCalledWith("c1");
+      expect(sendEmail).not.toHaveBeenCalled(); // the real send is inside the worker (claim, quota, suppression check); the action never calls the mail service itself
+      expect(audits[0]).toMatchObject({ action: "CAMPAIGN_QUEUED", entityId: "c1" });
+    });
+
+    it.each([
+      [tick({ sent: 1 }), "sent"],
+      [tick({ unknown: 1 }), "unknown"],
+      [tick({ skipped: 1 }), "skipped"],
+      [tick({ paused: 1 }), "paused"],
+      [tick(), "waiting"],
+    ])("reports the real outcome of the pass honestly (%j -> %s)", async (t, expected) => {
+      subscriberCount = 1;
+      processNow.mockResolvedValueOnce(t as never);
+      const { queueCampaign } = await import("../campaign-delivery");
+      expect(await queueCampaign("c1")).toMatchObject({ ok: true, audience: 1, immediate: expected });
+    });
+
+    it("an unexpected failure of the immediate pass never turns a successful queueing into an error: the campaign stays queued for the poller", async () => {
+      subscriberCount = 1;
+      processNow.mockRejectedValueOnce(new Error("boom"));
+      const { queueCampaign } = await import("../campaign-delivery");
+      expect(await queueCampaign("c1")).toMatchObject({ ok: true, status: "QUEUED", immediate: "waiting" });
+      expect(campaigns[0].status).toBe("QUEUED");
+    });
+
+    it("a larger audience is NEVER sent from the request (queue only), and neither is a scheduled one-subscriber campaign", async () => {
+      const { queueCampaign } = await import("../campaign-delivery");
+      subscriberCount = 2;
+      expect(await queueCampaign("c1")).toEqual({ ok: true, status: "QUEUED", audience: 2 });
+      campaigns[0].status = "DRAFT";
+      subscriberCount = 1;
+      expect(await queueCampaign("c1", new Date(Date.now() + 3_600_000).toISOString())).toEqual({ ok: true, status: "SCHEDULED", audience: 1 });
+      expect(processNow).not.toHaveBeenCalled();
+    });
+
+    it("every existing refusal still applies first: disconnected Gmail, no subscribers, a non-draft and an unfinished placeholder never reach the worker", async () => {
+      const { queueCampaign } = await import("../campaign-delivery");
+      subscriberCount = 1;
+      gmail = "NOT_CONNECTED";
+      expect(await queueCampaign("c1")).toMatchObject({ ok: false });
+      gmail = "CONNECTED";
+      subscriberCount = 0;
+      expect(await queueCampaign("c1")).toMatchObject({ ok: false });
+      subscriberCount = 1;
+      campaigns[0].subject = "Fares to [[Destination]]";
+      expect(await queueCampaign("c1")).toMatchObject({ ok: false });
+      campaigns[0].subject = "Subject";
+      campaigns[0].status = "SENDING";
+      expect(await queueCampaign("c1")).toEqual({ ok: false, error: "Only a draft can be queued." });
+      expect(processNow).not.toHaveBeenCalled();
+    });
+
+    it("double click: only the request that wins the DRAFT -> QUEUED switch runs the pass, so the one subscriber cannot be handled twice from here", async () => {
+      subscriberCount = 1;
+      const { queueCampaign } = await import("../campaign-delivery");
+      const [a, b] = await Promise.all([queueCampaign("c1"), queueCampaign("c1")]);
+      expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+      expect(processNow).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("queueing twice cannot double-queue (the second sees a campaign that is no longer a draft)", async () => {
     const { queueCampaign } = await import("../campaign-delivery");
     const [a, b] = await Promise.all([queueCampaign("c1"), queueCampaign("c1")]);
     expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
     expect(audits.filter((x) => x.action === "CAMPAIGN_QUEUED")).toHaveLength(1);
+  });
+});
+
+describe("cancelCampaignRecipient - one recipient, never the campaign", () => {
+  const rec = (id: string, status: string, over: Record<string, unknown> = {}) => sendRows.push({ id, campaignId: "c1", status, nextAttemptAt: null, errorMessage: null, ...over });
+  const setup = (campaignStatus = "SENDING") => {
+    campaigns[0].status = campaignStatus;
+    rec("r-wait", "PENDING");
+    rec("r-sched", "PENDING", { nextAttemptAt: new Date(Date.now() + 3_600_000), errorMessage: "Provider sending limit reached; will retry later" });
+    rec("r-sent", "SENT");
+    rec("r-unknown", "UNKNOWN");
+    rec("r-failed", "FAILED");
+    rec("r-skip", "SKIPPED_UNSUBSCRIBED");
+  };
+  const status = (id: string) => sendRows.find((r) => r.id === id)!.status;
+
+  it("a Waiting recipient is cancelled: status CANCELLED, no retry time left, an audit entry that names the row but no address - and the CAMPAIGN is untouched", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    expect(await cancelCampaignRecipient("c1", "r-wait")).toEqual({ ok: true });
+    expect(status("r-wait")).toBe("CANCELLED");
+    expect(sendRows.find((r) => r.id === "r-wait")).toMatchObject({ nextAttemptAt: null, errorMessage: "Cancelled before it was sent" });
+    expect(campaigns[0].status).toBe("SENDING"); // not the whole campaign
+    expect(audits.at(-1)).toMatchObject({ action: "CAMPAIGN_RECIPIENT_CANCELLED", entityType: "MarketingCampaignSend", entityId: "r-wait", metadata: { campaignId: "c1" } });
+    expect(JSON.stringify(audits.at(-1))).not.toMatch(/@/);
+    for (const other of ["r-sched", "r-sent", "r-unknown", "r-failed", "r-skip"]) expect(status(other)).toBe({ "r-sched": "PENDING", "r-sent": "SENT", "r-unknown": "UNKNOWN", "r-failed": "FAILED", "r-skip": "SKIPPED_UNSUBSCRIBED" }[other]); // nobody else changed
+  });
+
+  it("a Scheduled recipient (waiting out a retry or the daily limit) can be cancelled too", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    expect(await cancelCampaignRecipient("c1", "r-sched")).toEqual({ ok: true });
+    expect(sendRows.find((r) => r.id === "r-sched")).toMatchObject({ status: "CANCELLED", nextAttemptAt: null });
+  });
+
+  it("works while the campaign is queued, sending or paused", async () => {
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    for (const s of ["QUEUED", "SENDING", "PAUSED"]) {
+      sendRows = [];
+      rec("r1", "PENDING");
+      campaigns[0].status = s;
+      expect(await cancelCampaignRecipient("c1", "r1"), s).toEqual({ ok: true });
+    }
+  });
+
+  it("a SENT message can never be cancelled retroactively, and it is left exactly as it was", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    expect(await cancelCampaignRecipient("c1", "r-sent")).toEqual({ ok: false, error: "This message has already been sent, so it cannot be cancelled." });
+    expect(status("r-sent")).toBe("SENT");
+  });
+
+  it("a recipient the worker has already CLAIMED (UNKNOWN: the send began) is not reported as cancelled", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    const r = await cancelCampaignRecipient("c1", "r-unknown");
+    expect(r).toMatchObject({ ok: false, error: expect.stringMatching(/already started.*outcome is shown as unknown/i) });
+    expect(status("r-unknown")).toBe("UNKNOWN");
+  });
+
+  it("failed, skipped and already-cancelled recipients: refused with the true reason, unchanged", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    expect(await cancelCampaignRecipient("c1", "r-failed")).toMatchObject({ ok: false, error: expect.stringMatching(/nothing to cancel/i) });
+    expect(await cancelCampaignRecipient("c1", "r-skip")).toMatchObject({ ok: false, error: expect.stringMatching(/nothing to cancel/i) });
+    expect(await cancelCampaignRecipient("c1", "r-wait")).toEqual({ ok: true });
+    expect(await cancelCampaignRecipient("c1", "r-wait")).toMatchObject({ ok: false, error: "This recipient was already cancelled." });
+    expect(status("r-failed")).toBe("FAILED");
+    expect(status("r-skip")).toBe("SKIPPED_UNSUBSCRIBED");
+  });
+
+  it("two simultaneous cancellations of the same recipient: exactly one succeeds, one audit entry", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    const before = audits.length;
+    const [a, b] = await Promise.all([cancelCampaignRecipient("c1", "r-wait"), cancelCampaignRecipient("c1", "r-wait")]);
+    expect([a.ok, b.ok].filter(Boolean)).toHaveLength(1);
+    expect(audits.length - before).toBe(1);
+  });
+
+  it("a campaign that can no longer send (cancelled, finished, still a draft) refuses, and changes nothing", async () => {
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    for (const s of ["CANCELLED", "SENT", "DRAFT", "SCHEDULED"]) {
+      sendRows = [];
+      rec("r1", "PENDING");
+      campaigns[0].status = s;
+      expect(await cancelCampaignRecipient("c1", "r1"), s).toMatchObject({ ok: false, error: expect.stringMatching(/no longer sending/i) });
+      expect(status("r1")).toBe("PENDING");
+    }
+  });
+
+  it("another company's recipient, a recipient of another campaign and an unknown id are all 'not found' and untouched", async () => {
+    setup();
+    const { cancelCampaignRecipient } = await import("../campaign-delivery");
+    actor = as("ADMIN", "a1", "co-2");
+    expect(await cancelCampaignRecipient("c1", "r-wait")).toEqual({ ok: false, error: "That recipient could not be found." });
+    expect(status("r-wait")).toBe("PENDING");
+    actor = as("MARKETING_AGENT");
+    expect(await cancelCampaignRecipient("c1", "nope")).toEqual({ ok: false, error: "That recipient could not be found." });
+    expect(await cancelCampaignRecipient("other-campaign", "r-wait")).toEqual({ ok: false, error: "That recipient could not be found." });
+    expect(status("r-wait")).toBe("PENDING");
+    expect(await cancelCampaignRecipient("", "")).toMatchObject({ ok: false });
+    expect(await cancelCampaignRecipient(undefined as never, 5 as never)).toMatchObject({ ok: false });
+  });
+
+  it("cancelling a recipient is not cancelling the campaign: the campaign-wide Cancel is a different action with a different effect", async () => {
+    setup();
+    const { cancelCampaignRecipient, cancelCampaignDelivery } = await import("../campaign-delivery");
+    await cancelCampaignRecipient("c1", "r-wait");
+    expect(campaigns[0].status).toBe("SENDING");
+    expect((await cancelCampaignDelivery("c1")).ok).toBe(true);
+    expect(campaigns[0].status).toBe("CANCELLED");
+    expect(status("r-sched")).toBe("PENDING"); // the campaign-wide cancel does not rewrite recipient rows; the list reads them as Cancelled
   });
 });
 
@@ -230,49 +414,5 @@ describe("sendCampaignTest - independent of the subscriber list", () => {
     const { sendCampaignTest } = await import("../campaign-delivery");
     expect(await sendCampaignTest("c1")).toMatchObject({ ok: false });
     expect(sendEmail).not.toHaveBeenCalled();
-  });
-});
-
-describe("subscriber import actions", () => {
-  it("queues a validated import (nothing is written to the subscriber list by the request), with counts and an error report that holds no address", async () => {
-    const { createSubscriberImportJob } = await import("../subscriber-imports");
-    const r = await createSubscriberImportJob("a@example.com,Ada\nbroken\nA@example.com\nb@example.com");
-    expect(r).toMatchObject({ ok: true, validRows: 2 });
-    expect(importJobs[0]).toMatchObject({ companyId: "co-1", totalRows: 4, validRows: 2, invalidRows: 1, duplicateInFile: 1, status: "QUEUED" });
-    expect(importJobs[0].errorReport).toBe("row,reason\n2,INVALID_EMAIL\n3,DUPLICATE_IN_FILE");
-    expect(audits[0]).toMatchObject({ action: "SUBSCRIBER_IMPORT_QUEUED" });
-    expect(JSON.stringify(audits[0])).not.toMatch(/@example/);
-  });
-
-  it("refuses an empty list, a list with no valid address, an oversized file and a list over the row limit", async () => {
-    const { createSubscriberImportJob } = await import("../subscriber-imports");
-    expect(await createSubscriberImportJob("   ")).toMatchObject({ ok: false });
-    expect(await createSubscriberImportJob("nope\nalso nope")).toMatchObject({ ok: false, error: expect.stringMatching(/No valid email/) });
-    expect(await createSubscriberImportJob("a@example.com\n".repeat(1_000_000))).toMatchObject({ ok: false, error: expect.stringMatching(/larger than 4 MB/) });
-    const many = Array.from({ length: 250_001 }, (_, i) => `u${i}@e.co`).join("\n");
-    expect(await createSubscriberImportJob(many)).toMatchObject({ ok: false, error: expect.stringMatching(/250,000/) });
-    expect(importJobs).toHaveLength(0);
-  });
-
-  it("the supported maximum is the SMALLER of 250,000 rows and 4 MB: exactly 250,000 short rows are accepted, one more row is refused, and a multi-byte file is measured in BYTES", async () => {
-    const { createSubscriberImportJob } = await import("../subscriber-imports");
-    const rows = (n: number) => Array.from({ length: n }, (_, i) => `${i}@e.co`).join("\n");
-    const ok = await createSubscriberImportJob(rows(250_000));
-    expect(ok).toMatchObject({ ok: true, validRows: 250_000 });
-    expect(String(importJobs.at(-1)!.payload).length).toBeLessThan(4 * 1024 * 1024); // the stored payload fits the byte limit too
-    expect(await createSubscriberImportJob(rows(250_001))).toMatchObject({ ok: false, error: expect.stringMatching(/250,000/) });
-    // 1.5 million 3-byte characters: only ~1.5 million UTF-16 units but ~4.5 MB of bytes -> refused on bytes, not on length
-    expect(await createSubscriberImportJob("\u20AC".repeat(1_500_000))).toMatchObject({ ok: false, error: expect.stringMatching(/larger than 4 MB/) });
-  });
-  it("lists only this company's jobs, never exposing the payload, and cancel / resume only act on this company's job in a valid state", async () => {
-    const { listSubscriberImportJobs, cancelSubscriberImport, resumeSubscriberImport } = await import("../subscriber-imports");
-    importJobs.push({ id: "mine", companyId: "co-1", status: "PROCESSING", payload: "secret@example.com,,\n" }, { id: "theirs", companyId: "co-2", status: "PROCESSING", payload: "x@y.co,," });
-    const list = await listSubscriberImportJobs();
-    expect(list.map((j) => j.id)).toEqual(["mine"]);
-    expect(JSON.stringify(list)).not.toMatch(/secret@|payload/);
-    expect(await cancelSubscriberImport("theirs")).toEqual({ ok: false });
-    expect(await cancelSubscriberImport("mine")).toEqual({ ok: true });
-    expect(importJobs.find((j) => j.id === "mine")).toMatchObject({ status: "CANCELLED", payload: null });
-    expect(await resumeSubscriberImport("mine")).toEqual({ ok: false }); // only FAILED jobs resume
   });
 });

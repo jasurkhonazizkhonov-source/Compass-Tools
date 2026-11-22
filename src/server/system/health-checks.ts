@@ -263,32 +263,32 @@ export async function checkSequenceScheduler(now = Date.now()): Promise<HealthCh
   });
 }
 /**
- * Subscriber imports and marketing-campaign delivery run in the same in-process poller as the sequence sweep. One row for both: Healthy only when each has finished a run recently;
- * Critical when either failed on its last run or has been silent; Warning when the poller is switched off (they simply wait: nothing is lost); Unknown right after a restart.
+ * Marketing-campaign delivery runs in the same in-process poller as the sequence sweep. Healthy only when it has finished a run recently; Critical when it failed on its last
+ * run or has been silent; Warning when the poller is switched off (it simply waits: nothing is lost); Unknown right after a restart.
  * Reported per server process, error CATEGORY only. It reads state; it never starts, runs or schedules anything.
  */
 export async function checkMarketingWorkers(now = Date.now()): Promise<HealthCheckResult> {
-  return guarded("marketing.workers", "email", "Subscriber imports and campaign delivery", async () => {
+  return guarded("marketing.workers", "email", "Campaign delivery", async () => {
     const { inProcessPollerDisabled } = await import("@/lib/poller-config");
     const { backgroundJobReport } = await import("@/server/scheduler-status");
     const disabled = inProcessPollerDisabled();
-    const reports = [backgroundJobReport("subscriber-imports", disabled, now), backgroundJobReport("campaigns", disabled, now)];
-    const names: Record<string, string> = { "subscriber-imports": "Imports", campaigns: "Campaign delivery" };
+    const reports = [backgroundJobReport("campaigns", disabled, now)];
+    const names: Record<string, string> = { campaigns: "Campaign delivery" };
     const when = (d: Date | null) => (d ? d.toISOString().replace("T", " ").slice(0, 19) + " UTC" : "None yet in this process");
     const facts = reports.flatMap((r) => [
       { label: names[r.job] + ": last successful run", value: when(r.lastSuccessAt) },
       ...(r.lastErrorTag ? [{ label: names[r.job] + ": last error (category)", value: r.lastErrorTag }, { label: names[r.job] + ": consecutive failed runs", value: String(r.consecutiveFailures) }] : []),
     ]);
     if (reports.some((r) => r.state === "stalled")) {
-      return { state: "CRITICAL", summary: "Imports or campaign delivery are stalled: a background run failed or none has finished for several minutes.", facts, action: "Check that the database is reachable and read the server log for [subscriber-import] and [campaign-sender]. They recover by themselves on the next successful run; queued work is not lost." };
+      return { state: "CRITICAL", summary: "Campaign delivery is stalled: a background run failed or none has finished for several minutes.", facts, action: "Check that the database is reachable and read the server log for [campaign-sender]. It recovers by itself on the next successful run; queued work is not lost." };
     }
     if (reports.every((r) => r.state === "disabled")) {
-      return { state: "WARNING", classification: "manual_action", summary: "Background imports and campaign delivery are switched off on this server (DISABLE_IN_PROCESS_POLLER). Queued imports and campaigns wait until it is on again.", facts, action: "Remove DISABLE_IN_PROCESS_POLLER (and restart) to let this server process them." };
+      return { state: "WARNING", classification: "manual_action", summary: "Background campaign delivery is switched off on this server (DISABLE_IN_PROCESS_POLLER). Queued campaigns wait until it is on again.", facts, action: "Remove DISABLE_IN_PROCESS_POLLER (and restart) to let this server process them." };
     }
     if (reports.some((r) => r.state === "not_started")) {
       return { state: "UNKNOWN", summary: "The background worker has not started in this server process (yet), so its state cannot be established.", facts, action: "Wait about a minute after a restart. If this stays, check the server log." };
     }
-    return { state: "HEALTHY", summary: "Imports and campaign delivery are running: both background jobs completed a run recently.", facts };
+    return { state: "HEALTHY", summary: "Campaign delivery is running: the background job completed a run recently.", facts };
   });
 }
 

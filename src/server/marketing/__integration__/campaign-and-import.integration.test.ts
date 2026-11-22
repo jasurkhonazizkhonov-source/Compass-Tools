@@ -2,12 +2,11 @@
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from "vitest";
 import { randomBytes } from "node:crypto";
 
-// REAL-DATABASE proof of the background workers: the SQL behind the claims, the unique rows, the cursor compare-and-swap and the shared rate limit.
+// REAL-DATABASE proof of the background campaign worker (the CSV subscriber import and its worker were removed): the SQL behind the claims, the unique rows, the cursor compare-and-swap and the shared rate limit.
 //   * concurrent workers never send the same recipient twice and never create a recipient row twice;
 //   * a recipient claimed by a worker that died stays UNKNOWN and is never sent again;
 //   * pause / unsubscribe / suppression that happen while a batch is running take effect for the next recipient;
 //   * the per-minute budget is shared through the database (sequential workers cannot exceed it; simultaneous ticks can overshoot by at most one batch each - a documented softness);
-//   * a subscriber import is chunked, resumable, idempotent under concurrent workers, and never changes an unsubscribed or suppressed subscriber.
 // Runs only when INTEGRATION_DATABASE_URL points at a DISPOSABLE PostgreSQL with this repo's migrations applied (the guard in src/test/integration-database-guard.ts enforces it).
 // NOT RUN in the environment where it was written (no disposable database was available); CI (.github/workflows/ci.yml) runs it against its throw-away postgres service.
 
@@ -39,11 +38,9 @@ vi.mock("@/server/queries/company", () => ({
 
 const TAG = `cwi-${Date.now()}`;
 
-describe.skipIf(!enabled)("campaign worker and import worker - real PostgreSQL", () => {
+describe.skipIf(!enabled)("campaign worker - real PostgreSQL", () => {
   let prisma: typeof import("@/lib/prisma").prisma;
   let drain: typeof import("../campaign-worker").drainMarketingCampaigns;
-  let importTick: typeof import("../subscriber-import-worker").processSubscriberImportJobs;
-  let serialize: typeof import("@/lib/subscriber-import").serializeValidRows;
   let senderId: string;
   const campaignIds: string[] = [];
   const COMPANY = "default-company";
@@ -63,14 +60,11 @@ describe.skipIf(!enabled)("campaign worker and import worker - real PostgreSQL",
     await prisma.marketingCampaign.deleteMany({ where: { id: { in: campaignIds } } });
     campaignIds.length = 0;
     await prisma.subscriber.deleteMany({ where: { email: { contains: TAG } } });
-    await prisma.subscriberImportJob.deleteMany({ where: { createdById: senderId } });
   };
 
   beforeAll(async () => {
     ({ prisma } = await import("@/lib/prisma"));
     ({ drainMarketingCampaigns: drain } = await import("../campaign-worker"));
-    ({ processSubscriberImportJobs: importTick } = await import("../subscriber-import-worker"));
-    ({ serializeValidRows: serialize } = await import("@/lib/subscriber-import"));
     await prisma.company.upsert({ where: { id: COMPANY }, update: {}, create: { id: COMPANY, name: "Test Co", signatureTemplate: "Regards" } });
     senderId = (await prisma.account.create({ data: { fullName: "Sender", email: `sender-${TAG}@example.test`, role: "MARKETING_AGENT", status: "ACTIVE", companyId: COMPANY } })).id;
   });
@@ -166,18 +160,5 @@ describe.skipIf(!enabled)("campaign worker and import worker - real PostgreSQL",
     await drain(new Date(Date.now() + 120_000));
     expect(outbox).not.toContain(next!.subscriber.email);
     expect((await prisma.marketingCampaignSend.findUnique({ where: { id: next!.id } }))!.status).toBe("SKIPPED_UNSUBSCRIBED");
-  });
-
-  it("an import is chunked, concurrent workers do not double count, and unsubscribed / suppressed subscribers are untouched", async () => {
-    await prisma.subscriber.create({ data: { companyId: COMPANY, email: `i0001-${TAG}@example.test`, status: "UNSUBSCRIBED", firstName: "Keep" } });
-    await prisma.subscriber.create({ data: { companyId: COMPANY, email: `i0002-${TAG}@example.test`, status: "SUPPRESSED" } });
-    const rows = Array.from({ length: 2_500 }, (_, i) => ({ row: i + 1, email: `i${String(i).padStart(4, "0")}-${TAG}@example.test`, firstName: null, lastName: null }));
-    const job = await prisma.subscriberImportJob.create({ data: { companyId: COMPANY, createdById: senderId, payload: serialize(rows), totalRows: rows.length, validRows: rows.length } });
-    for (let i = 0; i < 4; i++) await Promise.all([importTick(5, 1_000), importTick(5, 1_000)]);
-    const done = await prisma.subscriberImportJob.findUnique({ where: { id: job.id } });
-    expect(done).toMatchObject({ status: "COMPLETED", nextRow: 2_500, importedRows: 2_498, existingRows: 2, skippedUnsubscribedOrSuppressed: 2, payload: null });
-    expect(await prisma.subscriber.count({ where: { email: { startsWith: "i", endsWith: `-${TAG}@example.test` } } })).toBe(2_500);
-    expect(await prisma.subscriber.findFirst({ where: { email: `i0001-${TAG}@example.test` } })).toMatchObject({ status: "UNSUBSCRIBED", firstName: "Keep" });
-    expect((await prisma.subscriber.findFirst({ where: { email: `i0002-${TAG}@example.test` } }))!.status).toBe("SUPPRESSED");
   });
 });

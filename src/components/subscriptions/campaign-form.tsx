@@ -151,8 +151,9 @@ export function CampaignForm({
       toast.error(`Complete the [[${unfilled}]] placeholder before sending.`);
       return;
     }
-    // Nothing is sent by this click: the campaign is handed to background delivery, which sends in small, rate-limited batches, re-checks every
-    // subscriber's status at send time, and can be paused or cancelled from the campaign page.
+    // The campaign is handed to background delivery, which sends in small, rate-limited batches, re-checks every subscriber's status at send time, and can be
+    // paused or cancelled from the campaign page. The one exception is an audience of exactly one subscriber: the server then runs the same worker pass once, right
+    // away (queueCampaign -> processCampaignNow), and says what happened.
     startTransition(async () => {
       try {
         const result = await queueCampaign(campaignId);
@@ -160,7 +161,12 @@ export function CampaignForm({
           toast.error(result.error);
           return;
         }
-        toast.success(`Queued for delivery to up to ${result.audience.toLocaleString("en-US")} subscriber${result.audience === 1 ? "" : "s"}. Sending continues in the background.`);
+        if (result.immediate === "sent") toast.success("Sent to the subscriber.");
+        else if (result.immediate === "unknown") toast.warning("Gmail gave no answer, so delivery could not be confirmed. It will not be sent again automatically - see the history below.");
+        else if (result.immediate === "skipped") toast.info("The subscriber is no longer subscribed, so nothing was sent.");
+        else if (result.immediate === "paused") toast.error("Nothing was sent: the sending Gmail account is not connected. Reconnect it, then resume the campaign.");
+        else if (result.immediate === "waiting") toast.info("Not sent yet - it will be retried automatically in the background.");
+        else toast.success(`Queued for delivery to up to ${result.audience.toLocaleString("en-US")} subscriber${result.audience === 1 ? "" : "s"}. Sending continues in the background.`);
         router.refresh();
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Failed to queue campaign");
@@ -296,7 +302,7 @@ export function CampaignForm({
                     <Send className="h-3.5 w-3.5" /> Send Test
                   </Button>
                   <Button type="button" size="sm" className="gap-1.5" onClick={() => setSendConfirmOpen(true)} disabled={isPending || recipientCount === 0}>
-                    <Send className="h-3.5 w-3.5" /> Queue for {recipientCount} Subscriber{recipientCount === 1 ? "" : "s"}
+                    <Send className="h-3.5 w-3.5" /> {recipientCount === 1 ? "Send to 1 Subscriber" : `Queue for ${recipientCount} Subscribers`}
                   </Button>
                 </>
               )}
@@ -322,9 +328,9 @@ export function CampaignForm({
       <ConfirmDialog
         open={sendConfirmOpen}
         onOpenChange={setSendConfirmOpen}
-        title="Queue this campaign for delivery?"
-        description={`Campaign: ${name || "Untitled"}. Audience: ${recipientCount} active subscriber${recipientCount === 1 ? "" : "s"}.${excludedCount > 0 ? ` Excluded: ${excludedCount} unsubscribed subscriber${excludedCount === 1 ? "" : "s"} (never sent to).` : ""} Emails go out in the background in small batches from your connected Gmail (a few hundred a day at most - Gmail's own limit), so a large list takes days. Anyone who unsubscribes before their turn is skipped. You can pause or cancel at any time.`}
-        confirmLabel="Queue for delivery"
+        title={recipientCount === 1 ? "Send this campaign now?" : "Queue this campaign for delivery?"}
+        description={`Campaign: ${name || "Untitled"}. Audience: ${recipientCount} active subscriber${recipientCount === 1 ? "" : "s"}.${excludedCount > 0 ? ` Excluded: ${excludedCount} unsubscribed subscriber${excludedCount === 1 ? "" : "s"} (never sent to).` : ""}${recipientCount === 1 ? " It is sent right away from your connected Gmail to this one subscriber (unless they have just unsubscribed)." : " Emails go out in the background in small batches from your connected Gmail (a few hundred a day at most - Gmail's own limit), so a large list takes days. Anyone who unsubscribes before their turn is skipped. You can pause or cancel at any time."}`}
+        confirmLabel={recipientCount === 1 ? "Send now" : "Queue for delivery"}
         onConfirm={send}
       />
 
