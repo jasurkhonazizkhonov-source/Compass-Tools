@@ -3,6 +3,10 @@ import type { Prisma } from "@/generated/prisma/client";
 import { contactVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
 import { isEmailRestricted, withEmailPrivacy } from "@/server/privacy/customer-email";
+import { contactSearchConditions } from "@/server/search/contact-search";
+
+// Name (every word), phone (by digits) and email (a complete address for everybody, a fragment only for a viewer who may see full addresses): see contact-search.ts.
+const searchTerms = (q: string, emailRestricted: boolean) => contactSearchConditions(q, { emailRestricted });
 
 export async function getContacts(params: {
   q?: string;
@@ -24,16 +28,7 @@ export async function getContacts(params: {
   const where: Prisma.ContactWhereInput = {
     ...contactVisibilityWhere(params.viewer),
     AND: [
-      params.q
-        ? {
-            OR: [
-              { firstName: { contains: params.q, mode: "insensitive" } },
-              { lastName: { contains: params.q, mode: "insensitive" } },
-              ...(emailRestricted ? [] : [{ primaryEmail: { contains: params.q, mode: "insensitive" as const } }]),
-              { primaryPhone: { contains: params.q, mode: "insensitive" } },
-            ],
-          }
-        : {},
+      params.q && searchTerms(params.q, emailRestricted).length > 0 ? { OR: searchTerms(params.q, emailRestricted) } : {},
       // Same "manual narrowing, never a widening grant" reasoning as
       // Lead's own `?agent=` filter (see queries/leads.ts) — this only
       // narrows further within contactVisibilityWhere's own scope above.
@@ -94,16 +89,7 @@ export async function searchContacts(query: string, viewer: Viewer, excludeConta
   const where: Prisma.ContactWhereInput = {
     ...contactVisibilityWhere(viewer),
     ...(excludeContactId ? { id: { not: excludeContactId } } : {}),
-    ...(query.trim()
-      ? {
-          OR: [
-            { firstName: { contains: query, mode: "insensitive" } },
-            { lastName: { contains: query, mode: "insensitive" } },
-            ...(emailRestricted ? [] : [{ primaryEmail: { contains: query, mode: "insensitive" as const } }]),
-            { primaryPhone: { contains: query, mode: "insensitive" } },
-          ],
-        }
-      : {}),
+    ...(searchTerms(query, emailRestricted).length > 0 ? { OR: searchTerms(query, emailRestricted) } : {}),
   };
 
   const rows = await prisma.contact.findMany({

@@ -8,6 +8,8 @@ import { canViewSubscriptions } from "@/lib/permissions";
 import { parseEmailList } from "@/lib/bulk-subscriber-parse";
 import { sendCrmEmail } from "@/server/email/crm-email";
 import type { SubscriberStatus } from "@/generated/prisma/client";
+import { getEmailViewer } from "@/server/privacy/customer-email";
+import { subscriberSearchWhere } from "@/server/search/subscriber-search";
 
 const emailSchema = z.string().email();
 
@@ -66,9 +68,10 @@ export async function deleteSubscribers(subscriberIds: string[]) {
  * honest, closing a narrow but real staleness gap without changing how the
  * delete itself is authorized or scoped.
  */
-export async function getSubscriberCountForFilter(status?: SubscriberStatus) {
+export async function getSubscriberCountForFilter(status?: SubscriberStatus, q?: string) {
   const admin = await assertMarketingAccess();
-  return prisma.subscriber.count({ where: { companyId: admin.companyId, ...(status ? { status } : {}) } });
+  const viewer = await getEmailViewer(admin);
+  return prisma.subscriber.count({ where: { companyId: admin.companyId, ...(status ? { status } : {}), ...subscriberSearchWhere(q, viewer.restricted) } });
 }
 
 /**
@@ -84,12 +87,16 @@ export async function getSubscriberCountForFilter(status?: SubscriberStatus) {
  * target (an attacker manipulating it can, at worst, delete fewer rows than
  * intended — never more, and never a row outside companyId + status).
  */
-export async function deleteSubscribersMatchingFilter(params: { status?: SubscriberStatus; excludeIds: string[] }) {
+export async function deleteSubscribersMatchingFilter(params: { status?: SubscriberStatus; q?: string; excludeIds: string[] }) {
   const admin = await assertMarketingAccess();
+  // The search text is re-evaluated HERE with the same builder the list and the count use, and with the caller's CURRENT email permission (read fresh), so
+  // "select all matching" deletes exactly the rows the search shows - never more: a restricted viewer's fragment search matches nothing, so it deletes nothing.
+  const viewer = await getEmailViewer(admin);
   const result = await prisma.subscriber.deleteMany({
     where: {
       companyId: admin.companyId,
       ...(params.status ? { status: params.status } : {}),
+      ...subscriberSearchWhere(params.q, viewer.restricted),
       ...(params.excludeIds.length > 0 ? { id: { notIn: params.excludeIds } } : {}),
     },
   });

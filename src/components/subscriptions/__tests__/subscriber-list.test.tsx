@@ -220,6 +220,26 @@ describe("SubscriberList — cross-page 'select all matching filter' (Pass 8 §2
     expect(deleteSubscribers).not.toHaveBeenCalled();
   });
 
+  it("with a search active, 'select all matching' sends the SAME search text to the count and to the delete, so it removes exactly what the search shows", async () => {
+    const user = userEvent.setup();
+    getSubscriberCountForFilter.mockResolvedValueOnce(3);
+    render(<SubscriberList subscribers={makePage(25)} counts={COUNTS} statusParam="all" filteredTotal={30} q="s1@example.com" />);
+    expect(screen.getByRole("searchbox", { name: "Search subscribers by email" })).toHaveValue("s1@example.com");
+    await user.click(screen.getByLabelText("Select all subscribers on this page"));
+    await user.click(screen.getByRole("button", { name: "Select all 30 subscribers matching this filter" }));
+    await user.click(screen.getByRole("button", { name: /remove selected/i }));
+    expect(getSubscriberCountForFilter).toHaveBeenCalledWith(undefined, "s1@example.com");
+    await user.click(screen.getByRole("button", { name: "Remove Selected" }));
+    expect(deleteSubscribersMatchingFilter).toHaveBeenCalledWith({ status: undefined, q: "s1@example.com", excludeIds: [] });
+  });
+
+  it("a viewer who sees masked addresses is told to type the COMPLETE address; one who sees them is not", () => {
+    const { rerender } = render(<SubscriberList subscribers={makePage(2)} counts={COUNTS} statusParam="all" filteredTotal={2} emailMasked />);
+    expect(screen.getByRole("searchbox", { name: "Search subscribers by email" })).toHaveAttribute("placeholder", "Type a complete email address");
+    rerender(<SubscriberList subscribers={makePage(2)} counts={COUNTS} statusParam="all" filteredTotal={2} />);
+    expect(screen.getByRole("searchbox", { name: "Search subscribers by email" })).toHaveAttribute("placeholder", "Search email");
+  });
+
   it("Pass 9 §8 — refreshes the count from the server right before showing the confirmation, so a stale filteredTotal doesn't reach the user", async () => {
     const user = userEvent.setup();
     const rows = makePage(25);
@@ -233,7 +253,7 @@ describe("SubscriberList — cross-page 'select all matching filter' (Pass 8 §2
 
     await user.click(screen.getByRole("button", { name: /remove selected/i }));
 
-    expect(getSubscriberCountForFilter).toHaveBeenCalledWith(undefined);
+    expect(getSubscriberCountForFilter).toHaveBeenCalledWith(undefined, undefined);
     // The confirmation dialog — and the persistent selection banner behind
     // it — now both show the freshly-fetched, accurate count.
     expect(screen.getByText("Delete 227 selected subscribers?")).toBeInTheDocument();

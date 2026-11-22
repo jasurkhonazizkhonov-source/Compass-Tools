@@ -3,6 +3,7 @@ import type { CabinClass, LeadSource, LeadStatus, Prisma, TripType } from "@/gen
 import { leadVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
 import { isEmailRestricted, withEmailPrivacy } from "@/server/privacy/customer-email";
+import { contactSearchConditions, viaContact } from "@/server/search/contact-search";
 
 export type LeadFilters = {
   q?: string;
@@ -47,10 +48,7 @@ export async function getLeads(filters: LeadFilters) {
       filters.q
         ? {
             OR: [
-              { contact: { firstName: { contains: filters.q, mode: "insensitive" } } },
-              { contact: { lastName: { contains: filters.q, mode: "insensitive" } } },
-              ...(emailRestricted ? [] : [{ contact: { primaryEmail: { contains: filters.q, mode: "insensitive" as const } } }]),
-              { contact: { primaryPhone: { contains: filters.q, mode: "insensitive" } } },
+              ...viaContact(contactSearchConditions(filters.q, { emailRestricted })),
               { departureAirport: { iata: { contains: filters.q, mode: "insensitive" } } },
               { departureAirport: { city: { contains: filters.q, mode: "insensitive" } } },
               { arrivalAirport: { iata: { contains: filters.q, mode: "insensitive" } } },

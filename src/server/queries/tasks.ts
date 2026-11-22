@@ -3,6 +3,7 @@ import type { Prisma, TaskStatus, Priority } from "@/generated/prisma/client";
 import { taskVisibilityWhere, leadVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
 import { isEmailRestricted, withEmailPrivacy } from "@/server/privacy/customer-email";
+import { contactSearchConditions, viaContact } from "@/server/search/contact-search";
 
 export type TaskFilters = {
   q?: string;
@@ -148,11 +149,7 @@ export async function searchLeadsForTaskLink(query: string, viewer: Viewer) {
       AND: [
         leadVisibilityWhere(viewer),
         {
-          OR: [
-            { contact: { firstName: { contains: query, mode: "insensitive" } } },
-            { contact: { lastName: { contains: query, mode: "insensitive" } } },
-            ...(emailRestricted ? [] : [{ contact: { primaryEmail: { contains: query, mode: "insensitive" as const } } }]),
-          ],
+          OR: viaContact(contactSearchConditions(query, { emailRestricted })),
         },
       ],
     },

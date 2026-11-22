@@ -11,7 +11,18 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // company-wide viewer (Admin/Manager) still finds every match within their
 // own company, and never crosses into another company's data either.
 
-type FakeContact = { id: string; companyId: string; ownerId: string | null; firstName: string; lastName: string; primaryEmail: string | null; primaryPhone: string | null };
+type FakeContact = {
+  id: string;
+  companyId: string;
+  ownerId: string | null;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  primaryEmail: string | null;
+  primaryPhone: string | null;
+  emails?: Array<{ email: string }>;
+  phones?: Array<{ number: string }>;
+};
 type FakeLead = { id: string; contactId: string; assignedAgentId: string | null };
 type FakeQuote = { id: string; contactId: string; leadId: string | null; agentId: string | null; quoteNumber: string };
 type FakeBooking = { id: string; contactId: string; quoteId: string | null; bookingReference: string; pnr: string | null };
@@ -35,6 +46,26 @@ function textMatch(haystack: string | null | undefined, needle: string): boolean
   return !!haystack && haystack.toLowerCase().includes(needle.toLowerCase());
 }
 
+// General evaluator of the Contact filter the shared search builds (server/search/contact-search.ts): AND / OR, string contains / equals (insensitive) and
+// `some` on the emails / phones relations. The visibility filters keep their own finite shapes below.
+type StrFilter = { contains?: string; equals?: string; mode?: string };
+function strFilter(value: string | null | undefined, f: StrFilter): boolean {
+  if (!value) return false;
+  const a = value.toLowerCase();
+  if (f.contains !== undefined) return a.includes(f.contains.toLowerCase());
+  if (f.equals !== undefined) return a === f.equals.toLowerCase();
+  throw new Error("unsupported string filter");
+}
+function matchContact(c: FakeContact, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([key, val]) => {
+    if (key === "AND") return (val as Record<string, unknown>[]).every((w) => matchContact(c, w));
+    if (key === "OR") return (val as Record<string, unknown>[]).some((w) => matchContact(c, w));
+    if (key === "emails") return (c.emails ?? []).some((e) => strFilter(e.email, (val as { some: { email: StrFilter } }).some.email));
+    if (key === "phones") return (c.phones ?? []).some((n) => strFilter(n.number, (val as { some: { number: StrFilter } }).some.number));
+    return strFilter((c as unknown as Record<string, string | null | undefined>)[key], val as StrFilter);
+  });
+}
+
 // visibility.ts's NOTHING_VISIBLE sentinel for a missing/null viewer —
 // `{ id: "__no_viewer__" }` — never matches any real row's shape below.
 function isNothingVisible(vis: Record<string, unknown>): boolean {
@@ -49,13 +80,7 @@ vi.mock("@/lib/prisma", () => ({
         return contacts.filter((c) => {
           const visOk = isNothingVisible(vis) ? false : "companyId" in vis ? c.companyId === vis.companyId : c.ownerId === (vis as { ownerId: string }).ownerId;
           if (!visOk) return false;
-          return textOr.OR.some((cond) => {
-            if ("firstName" in cond) return textMatch(c.firstName, (cond.firstName as { contains: string }).contains);
-            if ("lastName" in cond) return textMatch(c.lastName, (cond.lastName as { contains: string }).contains);
-            if ("primaryEmail" in cond) return textMatch(c.primaryEmail, (cond.primaryEmail as { contains: string }).contains);
-            if ("primaryPhone" in cond) return textMatch(c.primaryPhone, (cond.primaryPhone as { contains: string }).contains);
-            return false;
-          });
+          return textOr.OR.some((cond) => matchContact(c, cond));
         }).slice(0, 5).map((c) => ({ ...c }));
       }),
     },
@@ -66,16 +91,7 @@ vi.mock("@/lib/prisma", () => ({
           const contact = contacts.find((c) => c.id === l.contactId)!;
           const visOk = isNothingVisible(vis) ? false : "contact" in vis ? contact.companyId === (vis as { contact: { companyId: string } }).contact.companyId : l.assignedAgentId === (vis as { assignedAgentId: string }).assignedAgentId;
           if (!visOk) return false;
-          return textOr.OR.some((cond) => {
-            if ("contact" in cond) {
-              const c = cond as { contact: { firstName?: { contains: string }; lastName?: { contains: string }; primaryEmail?: { contains: string }; primaryPhone?: { contains: string } } };
-              if (c.contact.firstName) return textMatch(contact.firstName, c.contact.firstName.contains);
-              if (c.contact.lastName) return textMatch(contact.lastName, c.contact.lastName.contains);
-              if (c.contact.primaryEmail) return textMatch(contact.primaryEmail, c.contact.primaryEmail.contains);
-              if (c.contact.primaryPhone) return textMatch(contact.primaryPhone, c.contact.primaryPhone.contains);
-            }
-            return false;
-          });
+          return textOr.OR.some((cond) => ("contact" in cond ? matchContact(contact, cond.contact as Record<string, unknown>) : false));
         }).slice(0, 5).map((l) => ({ ...l, contact: contacts.find((c) => c.id === l.contactId), departureAirport: null, arrivalAirport: null }));
       }),
     },
@@ -100,11 +116,7 @@ vi.mock("@/lib/prisma", () => ({
           if (!visOk) return false;
           return textOr.OR.some((cond) => {
             if ("quoteNumber" in cond) return textMatch(q.quoteNumber, (cond.quoteNumber as { contains: string }).contains);
-            if ("contact" in cond) {
-              const c = cond as { contact: { firstName?: { contains: string }; lastName?: { contains: string } } };
-              if (c.contact.firstName) return textMatch(contact.firstName, c.contact.firstName.contains);
-              if (c.contact.lastName) return textMatch(contact.lastName, c.contact.lastName.contains);
-            }
+            if ("contact" in cond) return matchContact(contact, cond.contact as Record<string, unknown>);
             return false;
           });
         }).slice(0, 5).map((q) => ({ ...q, contact: contacts.find((c) => c.id === q.contactId) }));
@@ -133,11 +145,7 @@ vi.mock("@/lib/prisma", () => ({
           return textOr.OR.some((cond) => {
             if ("bookingReference" in cond) return textMatch(b.bookingReference, (cond.bookingReference as { contains: string }).contains);
             if ("pnr" in cond) return textMatch(b.pnr, (cond.pnr as { contains: string }).contains);
-            if ("contact" in cond) {
-              const c = cond as { contact: { firstName?: { contains: string }; lastName?: { contains: string } } };
-              if (c.contact.firstName) return textMatch(contact.firstName, c.contact.firstName.contains);
-              if (c.contact.lastName) return textMatch(contact.lastName, c.contact.lastName.contains);
-            }
+            if ("contact" in cond) return matchContact(contact, cond.contact as Record<string, unknown>);
             return false;
           });
         }).slice(0, 5).map((b) => ({ ...b, contact: contacts.find((c) => c.id === b.contactId) }));
@@ -254,5 +262,59 @@ describe("globalSearch - which kinds of record each role may find", () => {
     currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
     const { globalSearch } = await import("../global-search");
     expect((await globalSearch("REF-XXX")).bookings).toEqual([]);
+  });
+});
+
+describe("globalSearch - finding a customer by the complete email address, phone and full name without revealing the address", () => {
+  beforeEach(() => {
+    contacts[0].primaryPhone = "+14155550123";
+    contacts[0].emails = [{ email: "alice@example.com" }, { email: "alice.work@corp.test" }];
+    currentActor = { id: "agent-a", role: "TRAVEL_AGENT", companyId: "company-1" }; // a restricted viewer: masked addresses, 5 reveals a day
+  });
+
+  it("a restricted agent finds their own customer by the COMPLETE address - and sees it masked", async () => {
+    const { globalSearch } = await import("../global-search");
+    const r = await globalSearch("  ALICE@Example.com ");
+    expect(r.contacts.map((c) => c.id)).toEqual(["contact-a"]);
+    expect(r.leads.map((l) => l.id)).toEqual(["lead-a"]);
+    expect(r.quotes.map((q) => q.id)).toEqual(["quote-a"]);
+    const shown = JSON.stringify(r);
+    expect(shown).not.toContain("alice@example.com"); // the result never carries the address the searcher typed
+    expect(r.contacts[0].sublabel).toMatch(/\*\*\*/);
+  });
+
+  it("... also by a secondary address", async () => {
+    const { globalSearch } = await import("../global-search");
+    expect((await globalSearch("alice.work@corp.test")).contacts.map((c) => c.id)).toEqual(["contact-a"]);
+  });
+
+  it("a fragment of the address finds nothing for a restricted agent (no oracle), but still works for an Administrator", async () => {
+    const { globalSearch } = await import("../global-search");
+    expect((await globalSearch("alice@exam")).contacts).toEqual([]);
+    expect((await globalSearch("example.com")).contacts).toEqual([]);
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    expect((await globalSearch("alice@exam")).contacts.map((c) => c.id)).toEqual(["contact-a"]);
+  });
+
+  it("the complete address of someone ELSE's customer finds nothing: visibility is still applied first (a search is not a way around it)", async () => {
+    const { globalSearch } = await import("../global-search");
+    const r = await globalSearch("bob@example.com");
+    expect(r).toEqual({ contacts: [], leads: [], quotes: [], bookings: [] });
+  });
+
+  it("an address of another company is never found, even by an Administrator", async () => {
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    const { globalSearch } = await import("../global-search");
+    expect((await globalSearch("xander@example.com")).contacts).toEqual([]);
+  });
+
+  it("phone numbers are found by their digits however they are typed", async () => {
+    const { globalSearch } = await import("../global-search");
+    for (const text of ["(415) 555-0123", "+1 415 555 0123", "415.555.0123"]) expect((await globalSearch(text)).contacts.map((c) => c.id), text).toEqual(["contact-a"]);
+  });
+
+  it("first name, last name, full name and partial name all find the customer", async () => {
+    const { globalSearch } = await import("../global-search");
+    for (const text of ["Alice", "Anderson", "Alice Anderson", "anderson alice", "Alic And"]) expect((await globalSearch(text)).contacts.map((c) => c.id), text).toEqual(["contact-a"]);
   });
 });

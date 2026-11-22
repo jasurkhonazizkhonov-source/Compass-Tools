@@ -6,6 +6,7 @@ import { getSubscribers, getSubscriberCounts } from "@/server/queries/subscriber
 import { getMarketingCampaigns } from "@/server/queries/marketing-campaigns";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSubscriptions } from "@/lib/permissions";
+import { getEmailViewer } from "@/server/privacy/customer-email";
 import { EmptyState } from "@/components/crm/empty-state";
 import { StatusBadge } from "@/components/crm/status-badge";
 import { SubscriberList } from "@/components/subscriptions/subscriber-list";
@@ -48,13 +49,16 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
 
   const current = await getCurrentAccount();
   if (!canViewSubscriptions(current?.role)) notFound();
+  // Subscriber addresses follow the customer-email rule: masked unless the viewer is an Administrator or has the unlimited switch (read fresh on every request).
+  const emailViewer = await getEmailViewer(current!);
+  const searchText = typeof sp.q === "string" ? sp.q.slice(0, 200) : "";
 
   const [
     { subscribers, total: subscriberTotal, pageCount: subscriberPageCount, pageSize: subscriberPageSize },
     counts,
     { campaigns, total: campaignTotal, pageCount: campaignPageCount, pageSize: campaignPageSize },
   ] = await Promise.all([
-    getSubscribers({ companyId: current!.companyId, status, page: subscribersPage, pageSize: subscribersPageSize }),
+    getSubscribers({ companyId: current!.companyId, status, q: searchText, emailRestricted: emailViewer.restricted, page: subscribersPage, pageSize: subscribersPageSize }),
     getSubscriberCounts(current!.companyId),
     getMarketingCampaigns({ companyId: current!.companyId, page: campaignsPage, pageSize: campaignsPageSize }),
   ]);
@@ -127,7 +131,7 @@ export default async function SubscriptionsPage({ searchParams }: { searchParams
       <div className="space-y-3">
         <h2 className="text-base font-semibold flex items-center gap-2"><Users className="h-4 w-4" /> Subscribers</h2>
         <SubscriberImportPanel initialJobs={importJobs} />
-        <SubscriberList subscribers={subscribers} counts={counts} statusParam={statusParam} status={status} filteredTotal={subscriberTotal} />
+        <SubscriberList subscribers={subscribers} counts={counts} statusParam={statusParam} status={status} filteredTotal={subscriberTotal} q={searchText} emailMasked={emailViewer.restricted} />
         <PaginationControls page={subscribersPage} pageCount={subscriberPageCount} total={subscriberTotal} pageSize={subscriberPageSize} pageParam="subscribersPage" pageSizeParam="subscribersPageSize" label="subscribers" />
       </div>
     </div>

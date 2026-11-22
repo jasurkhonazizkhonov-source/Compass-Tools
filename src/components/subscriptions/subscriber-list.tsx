@@ -73,6 +73,8 @@ export function SubscriberList({
   statusParam,
   status,
   filteredTotal,
+  q = "",
+  emailMasked = false,
 }: {
   subscribers: Subscriber[];
   counts: { total: number; subscribed: number; unsubscribed: number; suppressed?: number };
@@ -91,6 +93,10 @@ export function SubscriberList({
    * is the number "Select all N matching this filter" advertises and the
    * number deleteSubscribersMatchingFilter is expected to (mostly) affect. */
   filteredTotal: number;
+  /** The current search text (`?q=`), sent to the bulk actions so "select all matching" means exactly what the search shows. */
+  q?: string;
+  /** True when this viewer sees masked addresses (no unlimited customer-email access): the search then needs a COMPLETE address. */
+  emailMasked?: boolean;
 }) {
   const router = useRouter();
   const pathname = usePathname();
@@ -136,7 +142,7 @@ export function SubscriberList({
     // state's own comment above for why.
     setIsRefreshingCount(true);
     try {
-      const count = await getSubscriberCountForFilter(status);
+      const count = await getSubscriberCountForFilter(status, q || undefined);
       setLiveMatchingTotal(count);
     } catch {
       // A failed refresh falls back to the last-known filteredTotal — never
@@ -147,6 +153,16 @@ export function SubscriberList({
       setIsRefreshingCount(false);
       setBulkDeleteOpen(true);
     }
+  }
+
+  function submitSearch(formData: FormData) {
+    const text = String(formData.get("q") ?? "").trim();
+    const params = new URLSearchParams(searchParams.toString());
+    if (text) params.set("q", text);
+    else params.delete("q");
+    params.delete("subscribersPage"); // a new search always starts on page 1
+    resetSelection(); // a selection never carries over to a different result set
+    router.push(`${pathname}?${params.toString()}`);
   }
 
   function setStatusFilter(next: "all" | "active" | "unsubscribed" | "suppressed") {
@@ -235,7 +251,7 @@ export function SubscriberList({
     if (selectAllMatching) {
       startTransition(async () => {
         try {
-          const result = await deleteSubscribersMatchingFilter({ status, excludeIds: [...excludedIds] });
+          const result = await deleteSubscribersMatchingFilter({ status, q: q || undefined, excludeIds: [...excludedIds] });
           resetSelection();
           toast.success(`${result.deleted} subscriber${result.deleted === 1 ? "" : "s"} removed`);
           router.refresh();
@@ -279,6 +295,19 @@ export function SubscriberList({
             </button>
           ))}
         </div>
+
+        <form action={submitSearch} className="flex items-center gap-1.5" role="search">
+          <input
+            name="q"
+            type="search"
+            defaultValue={q}
+            aria-label="Search subscribers by email"
+            placeholder={emailMasked ? "Type a complete email address" : "Search email"}
+            className="h-8 w-56 rounded-md border bg-background px-2 text-sm"
+            autoComplete="off"
+          />
+          <Button type="submit" size="sm" variant="outline">Search</Button>
+        </form>
 
         <div className="flex items-center gap-2">
           {selectedCount > 0 && (

@@ -4,6 +4,8 @@ import { format } from "date-fns";
 import { ArrowLeft } from "lucide-react";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSubscriptions } from "@/lib/permissions";
+import { getEmailViewer } from "@/server/privacy/customer-email";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 import { getMarketingCampaignDetail } from "@/server/queries/marketing-campaigns";
 import { getSubscriberCounts } from "@/server/queries/subscribers";
 import { CampaignForm } from "@/components/subscriptions/campaign-form";
@@ -20,6 +22,8 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
   const { id } = await params;
   const current = await getCurrentAccount();
   if (!canViewSubscriptions(current?.role)) notFound();
+  // Recipient addresses follow the customer-email rule: masked unless the viewer is an Administrator or has the unlimited switch.
+  const emailRestricted = (await getEmailViewer(current!)).restricted;
 
   const campaign = await getMarketingCampaignDetail(id, current!.companyId);
   if (!campaign) notFound();
@@ -77,7 +81,7 @@ export default async function CampaignDetailPage({ params }: { params: Promise<{
                 const sendMeta = MARKETING_SEND_STATUS_META[s.status];
                 return (
                   <li key={s.id} className="flex items-center justify-between text-sm border-b pb-1.5 last:border-b-0">
-                    <span>{s.subscriber.email}</span>
+                    <span>{emailRestricted ? maskCustomerEmail(s.subscriber.email) : s.subscriber.email}</span>
                     <span className="flex items-center gap-2">
                       <StatusBadge label={sendMeta.label} tone={sendMeta.tone} />
                       {s.sentAt && <span className="text-xs text-muted-foreground">{format(s.sentAt, "MMM d, h:mm a")}</span>}

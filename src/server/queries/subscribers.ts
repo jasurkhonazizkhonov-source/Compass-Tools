@@ -1,6 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import type { SubscriberStatus } from "@/generated/prisma/client";
 import { resolvePageSize } from "@/lib/pagination";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
+import { subscriberSearchWhere } from "@/server/search/subscriber-search";
 
 // Pass 7 §17/§18/§28/§29 — database-paginated at 25/page. The status filter
 // (all/active/unsubscribed) moved server-side (was client-side `useMemo`
@@ -11,10 +13,15 @@ import { resolvePageSize } from "@/lib/pagination";
 // subscriber-list.tsx's own comment) — the safer of the two models §29
 // describes, and the only one that doesn't require a separate
 // "select every matching row" query.
-export async function getSubscribers(params: { companyId: string; status?: SubscriberStatus; page?: number; pageSize?: number }) {
+//
+// Subscriber email privacy: a viewer who may not see complete customer addresses (a Marketing Agent without "Unlimited Customer Email Access") gets every
+// address MASKED (same format as customer emails) and can still find a subscriber by typing the COMPLETE address (server/search/subscriber-search.ts); a
+// fragment search matches nothing for them. An Administrator and a user with the unlimited switch see and search complete addresses.
+export async function getSubscribers(params: { companyId: string; status?: SubscriberStatus; q?: string; emailRestricted?: boolean; page?: number; pageSize?: number }) {
   const page = Math.max(1, Math.trunc(params.page ?? 1) || 1);
   const pageSize = resolvePageSize(params.pageSize); // Pass 12 §28/§30 — 25/50/75/100 allow-list
-  const where = { companyId: params.companyId, ...(params.status ? { status: params.status } : {}) };
+  const emailRestricted = params.emailRestricted === true;
+  const where = { companyId: params.companyId, ...(params.status ? { status: params.status } : {}), ...subscriberSearchWhere(params.q, emailRestricted) };
 
   const [rows, total] = await Promise.all([
     prisma.subscriber.findMany({
@@ -55,7 +62,7 @@ export async function getSubscribers(params: { companyId: string; status?: Subsc
     : [];
   const subscribers = rows.map((r) => {
     const last = r.status === "UNSUBSCRIBED" ? sends.find((s) => s.subscriberId === r.id && (!r.unsubscribedAt || !s.sentAt || s.sentAt <= r.unsubscribedAt)) : undefined;
-    return { ...r, lastCampaignName: last?.campaign.name ?? null };
+    return { ...r, email: emailRestricted ? maskCustomerEmail(r.email) : r.email, lastCampaignName: last?.campaign.name ?? null };
   });
 
   return { subscribers, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };
