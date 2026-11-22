@@ -5,10 +5,16 @@
 #   bash deploy/deploy.sh --migrate             # ...and apply pending database migrations (a backup is taken first)
 #   bash deploy/deploy.sh --ref <tag|sha>       # deploy a specific reviewed commit that is on origin/main
 #   bash deploy/deploy.sh --yes                 # do not ask for confirmation
+#   bash deploy/deploy.sh --release-branch release/<name> --ref <FULL 40-character commit id> [--migrate]
+#                                               # deploy an explicitly approved commit of a dedicated release branch WITHOUT merging it into main
+#                                               # (rules: deploy/release-policy.sh). main is never used or changed on this path.
+#   bash deploy/deploy.sh ... --ci-attested     # release-branch mode only: the approver states they checked the CI result themselves
+#                                               # (otherwise GitHub is asked, and the answer must be success for every required check)
 #
 # Safety rules enforced here
 #   * The checkout must be clean: uncommitted changes on the server are never overwritten or discarded - the script stops.
-#   * Only fast-forward updates (no merge commits, no resets). A --ref must already be on origin/main.
+#   * Only fast-forward updates (no merge commits, no resets). A --ref must already be on origin/main - OR, in release-branch mode, be the exact
+#     full commit id on the fetched origin/release/<name>, with every required CI check green for that commit.
 #   * Database migrations are NEVER implicit. Pending ones stop the deploy unless --migrate is given; with --migrate a verified
 #     backup is taken first and only 'prisma migrate deploy' runs (it applies pending migrations; it never resets or drops).
 #   * The images are tagged with the commit id (APP_VERSION), so the previous version stays available for deploy/rollback.sh.
@@ -18,25 +24,50 @@
 # shellcheck source=./common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
+# shellcheck source=./release-policy.sh
+source "$(dirname "${BASH_SOURCE[0]}")/release-policy.sh"
+
 need_cmd docker; need_cmd git
-MIGRATE=0; REF="origin/main"
+MIGRATE=0; REF="origin/main"; RELEASE_BRANCH=""; CI_ATTESTED=0; REF_GIVEN=0
 # shellcheck disable=SC2034  # ASSUME_YES is read by confirm() in common.sh
 while [ $# -gt 0 ]; do
   case "$1" in
     --migrate) MIGRATE=1 ;;
     --yes) ASSUME_YES=1 ;;
-    --ref) shift; REF="${1:-}"; [ -n "$REF" ] || die "--ref needs a value" ;;
+    --ref) shift; REF="${1:-}"; [ -n "$REF" ] || die "--ref needs a value"; REF_GIVEN=1 ;;
+    --release-branch) shift; RELEASE_BRANCH="${1:-}"; [ -n "$RELEASE_BRANCH" ] || die "--release-branch needs a value" ;;
+    --ci-attested) CI_ATTESTED=1 ;;
     *) die "Unknown option: $1" ;;
   esac
   shift
 done
+if [ -n "$RELEASE_BRANCH" ]; then
+  release_branch_name_ok "$RELEASE_BRANCH" || die "--release-branch must be exactly release/<name> (letters, digits, '.', '_', '-'). main and every other branch are refused on this path."
+  [ "$REF_GIVEN" = "1" ] || die "Release-branch mode needs --ref <the full 40-character commit id that was approved>. A branch name is never deployed: it moves."
+  full_sha_ok "$REF" || die "--ref must be the FULL 40-character lower-case commit id in release-branch mode (not a branch, a tag, an abbreviation or HEAD)."
+else
+  [ "$CI_ATTESTED" = "0" ] || die "--ci-attested only applies together with --release-branch."
+fi
 
 step "Pre-flight"
 check_env_file
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { git status --short --untracked-files=no >&2; die "The checkout has uncommitted changes. They are not touched. Commit them in GitHub (preferred) or stash them deliberately, then re-run."; }
 git fetch --tags --prune origin
 TARGET="$(git rev-parse --verify --quiet "$REF^{commit}")" || die "Unknown ref: $REF"
-git merge-base --is-ancestor "$TARGET" origin/main || die "$REF is not on origin/main. Only reviewed (merged) commits are deployed."
+if [ -n "$RELEASE_BRANCH" ]; then
+  # Release-branch mode (deploy/release-policy.sh). main is neither consulted nor changed. Fetch exactly this branch so the check below sees its CURRENT tip.
+  git fetch --prune origin "+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH" || die "Could not fetch $RELEASE_BRANCH from origin. Nothing was changed."
+  release_target_ok "$RELEASE_BRANCH" "$TARGET" || die "$TARGET is not the tip of, or an ancestor of, origin/$RELEASE_BRANCH. Only a commit of the named release branch is deployed on this path. Nothing was changed."
+  if [ "$CI_ATTESTED" = "1" ]; then
+    yellow "CI result NOT queried: --ci-attested says the approver checked that every required check passed for $TARGET."
+  else
+    release_ci_green "$TARGET" || die "GitHub does not report every required check as successful for $TARGET (see above). Wait for CI, or - only if you have checked it yourself - pass --ci-attested. Nothing was changed."
+    green "CI: every required check is green for $TARGET."
+  fi
+  yellow "Release-branch deployment of $TARGET from $RELEASE_BRANCH. main is not used and is not changed."
+else
+  git merge-base --is-ancestor "$TARGET" origin/main || die "$REF is not on origin/main. Only reviewed (merged) commits are deployed. (A commit of a release/<name> branch is deployed with --release-branch release/<name> --ref <full commit id>.)"
+fi
 CURRENT="$(git rev-parse HEAD)"
 PREVIOUS_IMAGE="$(docker inspect --format '{{.Config.Image}}' "$(dc ps -q app 2>/dev/null | head -1)" 2>/dev/null || true)"
 echo "Currently checked out : $(git log -1 --format='%h %s' "$CURRENT")"

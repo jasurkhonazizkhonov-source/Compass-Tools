@@ -12,7 +12,9 @@ on:
   pull_request:
   push:
     # feature/** so a branch is checked (including the Docker smoke test) as soon as it is pushed, without waiting for a pull request.
-    branches: [main, "feature/**"]
+    # release/** so a dedicated release branch is checked the same way: deploy/deploy.sh --release-branch reads this workflow's results for the
+    # exact commit it is asked to deploy. Checking a push never deploys anything.
+    branches: [main, "feature/**", "release/**"]
   workflow_dispatch:
 
 permissions:

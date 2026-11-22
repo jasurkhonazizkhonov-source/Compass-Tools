@@ -17,7 +17,7 @@ need_cmd docker
 VERSION="${1:-}"
 [ -n "$VERSION" ] || die "Usage: bash deploy/rollback.sh <image version>   (list them: docker images compass-tools)"
 case "$VERSION" in *[!A-Za-z0-9._-]*) die "Invalid version string." ;; esac
-docker image inspect "compass-tools:$VERSION" >/dev/null 2>&1 || die "Image compass-tools:$VERSION is not on this server (old versions are pruned after the 5 most recent). Check out that commit and run deploy/deploy.sh --ref <sha> to rebuild it."
+docker image inspect "compass-tools:$VERSION" >/dev/null 2>&1 || die "Image compass-tools:$VERSION is not on this server (old versions are pruned after the 5 most recent). Rebuild it with deploy/deploy.sh --ref <sha> (a commit of main) or, for a release-branch commit, deploy/deploy.sh --release-branch release/<name> --ref <full 40-character sha>."
 check_env_file
 
 RUNNING="$(docker inspect --format '{{.Config.Image}}' "$(dc ps -q app 2>/dev/null | head -1)" 2>/dev/null || true)"

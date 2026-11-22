@@ -378,9 +378,11 @@ describe("daily maintenance (stale upload sweep) is an opt-in timer, not somethi
     }
   });
 
-  it("the CI workflow only checks code: no deploy step, no repository secret, and it also covers feature branches", () => {
+  it("the CI workflow only checks code: no deploy step, no repository secret, and it also covers feature and release branches", () => {
     const ci = read(".github", "workflows", "ci.yml");
-    expect(ci).toMatch(/branches: \[main, "feature\/\*\*"\]/);
+    expect(ci).toMatch(/branches: \[main, "feature\/\*\*", "release\/\*\*"\]/);
+    expect(ci).toMatch(/^permissions:\n {2}contents: read$/m); // read-only token, nothing else granted
+    expect(ci).not.toMatch(/pull_request_target|id-token:|contents: write|packages: write|deployments: write/);
     expect(code(ci)).not.toMatch(/\$\{\{\s*secrets\.|\bssh |\bscp |rsync |docker push|docker login/i); // comments excluded
     expect(ci).toMatch(/shellcheck -x -S warning deploy\/\*\.sh/);
   });

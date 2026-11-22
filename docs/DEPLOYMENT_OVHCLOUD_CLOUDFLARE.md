@@ -264,7 +264,8 @@ bash deploy/deploy.sh --migrate       # first time: needs --migrate because the 
 What it does, in order — and where it stops instead of continuing:
 
 1. **Pre-flight**: `.env` exists with mode `600`; the git checkout is **clean** (local edits are never overwritten or discarded —
-   it stops); `git fetch`; the target commit must already be on `origin/main`.
+   it stops); `git fetch`; the target commit must already be on `origin/main` (or, with `--release-branch release/<name> --ref <full sha>`, be on that
+   release branch with green CI - §19.7).
 2. Shows the incoming commits and which `prisma/migrations` files they add, and asks you to confirm (`--yes` skips the question).
 3. Updates the checkout with `git merge --ff-only` (never a reset or a merge commit).
 4. Builds the images, tagged with the commit id (`compass-tools:<commit>`), so the previous version remains for rollback.
@@ -583,8 +584,8 @@ bash deploy/rollback.sh <version>                                       # restar
 * No rebuild, no data change. Takes seconds.
 * It does **not** undo migrations (forward-only). Usually the older code runs fine on a newer, additive schema. If `verify.sh` complains, or
   the release notes say a migration changed/removed something, restore the pre-deploy backup instead (§12.4) — `deploy.sh --migrate` took one.
-* If the old image was pruned, check out that commit and `bash deploy/deploy.sh --ref <sha>` rebuilds it (only commits already on `origin/main`
-  are accepted).
+* If the old image was pruned, `bash deploy/deploy.sh --ref <sha>` rebuilds it (only commits already on `origin/main` are accepted) - or, for a
+  commit of a release branch, `bash deploy/deploy.sh --release-branch release/<name> --ref <full 40-character sha>` (§19.7).
 * If the **tunnel** is the problem, nothing to roll back: `docker compose restart cloudflared`, or check the token (§15).
 
 ## 15. Secret rotation and recovery
@@ -709,7 +710,10 @@ Everything here uses the scripts and sections above; nothing new is invented. **
 
 ### 19.1 What ships, and the order that matters
 
-* **Release path (verified against `deploy/deploy.sh`: `git merge-base --is-ancestor <target> origin/main` or it stops).** The reviewed work lives on branch `review/crm-verification-2026-11-13`. (1) Push that branch to the GitHub repository from a machine with push rights (the checkout this release was prepared in has its push URL deliberately set to `DISABLED-NO-PUSH`). (2) Open a pull request to `main`; the CI workflow (`.github/workflows/ci.yml`) must pass: **`npm ci`, `prisma migrate deploy` on an empty PostgreSQL, `deploy/check-migration-drift.sh`, and `npx vitest run --no-file-parallelism` WITH the database-backed suites enabled**, plus the Docker smoke test. (3) Merge to `main` through the normal review. (4) Only then, on the VPS, `bash deploy/deploy.sh --migrate` (19.3). Deploying the branch directly is impossible by design (`deploy.sh` also refuses a checkout with uncommitted changes).
+* **Release path.** There are now two deliberate paths, both manual (a push never deploys anything; `deploy.sh` also refuses a checkout with uncommitted changes):
+  * **Release branch (no merge into `main`) - section 19.7.** The approved work lives on the dedicated branch `release/compass-tools-2026-11-22` (it contains the whole history of `review/crm-verification-2026-11-13` plus the later commits; `main` is not changed and nothing is merged into it). CI (`.github/workflows/ci.yml`) runs on every push to a `release/**` branch: **`npm ci`, `prisma migrate deploy` on an empty PostgreSQL, `deploy/check-migration-drift.sh`, and `npx vitest run --no-file-parallelism` WITH the database-backed suites enabled**, plus the Docker smoke test. On the VPS: `bash deploy/deploy.sh --release-branch release/compass-tools-2026-11-22 --ref <the FULL 40-character commit id that was approved> --migrate` (19.7 lists exactly what is checked first).
+  * **Via `main` (unchanged).** `deploy.sh` without `--release-branch` still requires `git merge-base --is-ancestor <target> origin/main`: open a pull request to `main`, CI green, review, merge, then `bash deploy/deploy.sh --migrate` (19.3).
+  * Earlier versions of this guide said the CI workflow ran on every push; it ran only for pull requests and pushes to `main` / `feature/**`. `release/**` was added for the release branch (nothing else about the workflow changed: read-only permissions, SHA-pinned actions, no secrets, no deploy job).
 * **One additive migration**: `20261120000100_security_privacy_marketing_scale` (new tables, new defaulted columns, new enum values, indexes; no column, row or constraint is changed or removed; `Account.unlimitedCustomerEmailAccess` defaults to FALSE so nobody gains access). It was generated offline and has **not been rehearsed on PostgreSQL**: do the rehearsal in 19.2 first. `20261115000100_account_contact_detail_edit_permission` (the contact-edit permission, default TRUE) is also pending if the server is still on an older release.
 * Order: backup -> migration (`--migrate`) -> new app image -> verify. Never start the new application image on the old schema: the new code reads the new tables and columns (the privacy layer fails closed - everything masked - if it cannot read them, but the failed sign-in log, imports and campaigns need the schema).
 * The background jobs (`sequences`, `tasks`, `subscriber-imports`, `campaigns`) run inside the app process (the in-process poller). **Run ONE app instance.** The claims are row-level conditional updates that are designed to be safe across instances, but that has not been demonstrated on PostgreSQL. To stop all background work: set `DISABLE_IN_PROCESS_POLLER=true` and restart (sequence mail then needs `deploy/run-sequence-sweep.sh`; imports and campaigns simply wait).
@@ -755,4 +759,27 @@ Required environment (unchanged names; `.env` is mode 600; **secrets**: `DATABAS
 
 ### 19.6 Known limits to read before relying on this release
 
-PostgreSQL behaviour of the new SQL (reveal counter, send claims, import cursor) is **not verified**; real Gmail behaviour (quota, token refresh, ambiguous outcomes) is **not verified**; Gmail cannot send large campaigns (400/day default, a few hundred a day in reality); campaign "sent" means accepted by Gmail (no open/click/bounce tracking); subscriber search by email is not built; staff notification emails (New Flight Request, reassignment, new sale) carry the complete customer address by design (owner decision pending).
+PostgreSQL behaviour of the new SQL (reveal counter, send claims, import cursor) is **not verified**; real Gmail behaviour (quota, token refresh, ambiguous outcomes) is **not verified**; Gmail cannot send large campaigns (400/day default, a few hundred a day in reality); campaign "sent" means accepted by Gmail (no open/click/bounce tracking); subscriber search by email is not built. Staff notification emails for New Flight Request, lead/contact reassignment and Booking Form Signed hide the customer address from any recipient who may not see it (an Administrator, or a user with unlimited access, still sees it); a recipient whose permissions cannot be read is treated as restricted. The internal New Sale / Cancellation announcement contains no customer address at all (its recipient query has no path to the contact's address), and the airline-confirmation email goes to its own explicitly chosen recipients, so neither is covered by that rule.
+
+### 19.7 Deploying a release-branch commit (without merging into `main`)
+
+Rules live in `deploy/release-policy.sh` and are exercised by `src/__tests__/release-branch-deploy-policy.test.ts`. Pushing a branch never triggers any of this; a person on the VPS has to type both the branch and the full commit id.
+
+```bash
+cd /opt/compass-tools
+bash deploy/backup-db.sh                  # explicit backup first (--migrate also takes one when tables exist)
+bash deploy/deploy.sh --release-branch release/compass-tools-2026-11-22 --ref <FULL-40-CHARACTER-COMMIT-ID> --migrate
+bash deploy/verify.sh
+```
+
+What the script checks before it builds or changes anything (each one stops with a message and "Nothing was changed"):
+
+1. `--release-branch` must be exactly `release/<name>` (letters, digits, `.`, `_`, `-`). `main`, `review/*`, `feature/*`, `..`, option-looking or shell-looking names are refused.
+2. `--ref` is mandatory and must be the **full lower-case 40-character commit id**. A branch name, a tag, an abbreviation, `HEAD` or "latest" is refused: a moving name can never change what gets deployed after someone approved it. There is no default and `main` is never substituted.
+3. The checkout is clean (as always); then **exactly that branch is fetched** and the commit must be its tip or an ancestor of it.
+4. GitHub's public check-runs API must report each required job of the workflow (static checks, unit + real-database integration tests, Docker image + Compose smoke test) as completed + success **for that exact commit**, as reported by the GitHub Actions app (a same-named check from another app does not count; the newest run of each; the report-only dependency audit is not required). If GitHub cannot be asked (private repository, no network, rate limit, unreadable answer) the answer is NO. `--ci-attested` is the explicit, visible way for the approver to say they read the CI result themselves; use it only after checking the green run for that commit in GitHub.
+5. Then the unchanged safeguards apply: confirmation prompt with the incoming commits and migration files, detached checkout of the commit, image tagged with the 12-character commit id, migration gate with a verified backup, health check, `verify.sh`, and `rollback.sh` for the previous image. (`deploy.sh` restores `main` automatically on the next default deploy.)
+
+Dependency on the website: deploy the CRM first and the website second. The website must not send anything the deployed CRM does not accept yet; the v1 signed visitor context and the bearer-key + `Idempotency-Key` contract in this release stay compatible with the website that is live today. The newer request-signing (v2) and per-client flight limiter exist only as uncommitted work of another session and are **not** part of this release (see `COMPASS_SEQUENCE_WORKFLOW_RELEASE_READINESS.md`, section "Release branch").
+
+Production was not touched while preparing this: no connection to the VPS, no deploy, no migration, no restart, no environment or DNS change, no real email.
