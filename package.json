@@ -30,7 +30,7 @@
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.0",
-    "@opennextjs/cloudflare": "1.20.10",
+    "@opennextjs/cloudflare": "1.20.18",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "@radix-ui/react-avatar": "^1.2.6",
@@ -102,7 +102,7 @@
     "typescript": "^5",
     "vitest": "^4.1.10",
     "vitest-axe": "^0.1.0",
-    "wrangler": "4.149.0"
+    "wrangler": "4.166.0"
   },
   "allowScripts": {
     "@prisma/engines@7.10.1": true,

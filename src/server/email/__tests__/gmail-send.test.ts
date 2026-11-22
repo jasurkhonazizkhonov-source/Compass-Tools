@@ -293,3 +293,50 @@ describe("sendViaGmail — RFC 8058 one-click unsubscribe headers (marketing mai
     }
   });
 });
+
+describe("sendViaGmail — the provider's answers a campaign worker must tell apart", () => {
+  async function send(response: { ok: boolean; status?: number; json?: () => Promise<unknown> } | Error) {
+    seedConnection();
+    getAccessToken.mockResolvedValue({ token: "t" });
+    if (response instanceof Error) fetchMock.mockRejectedValue(response);
+    else fetchMock.mockResolvedValue(response);
+    const { sendViaGmail } = await import("../gmail-send");
+    return sendViaGmail(BASE_INPUT);
+  }
+  const loadIsRateLimitError = async () => (await import("@/server/marketing/campaign-worker")).isRateLimitError;
+
+  it.each([
+    ["403 rateLimitExceeded (user sending quota)", 403, "rateLimitExceeded"],
+    ["403 userRateLimitExceeded", 403, "userRateLimitExceeded"],
+    ["403 dailyLimitExceeded", 403, "dailyLimitExceeded"],
+    ["403 quotaExceeded", 403, "quotaExceeded"],
+    ["429", 429, undefined],
+  ])("%s is a definite, retry-later quota answer: never a revoked connection, never ambiguous, and recognised by the worker as a rate limit", async (_label, status, reason) => {
+    const result = await send({ ok: false, status, json: async () => ({ error: { errors: reason ? [{ reason }] : [] } }) });
+    expect(result).toMatchObject({ ok: false, code: "SEND_FAILED" });
+    expect((result as { ambiguous?: boolean }).ambiguous).toBeUndefined();
+    expect(connections.get("acct-1")!.status).toBe("CONNECTED");
+    expect((await loadIsRateLimitError())((result as { error: string }).error)).toBe(true);
+  });
+
+  it.each([500, 502, 503, 504])("a %i from Gmail is AMBIGUOUS (it may have queued the message): the worker must hold it as uncertain, never re-send it", async (status) => {
+    const result = await send({ ok: false, status, json: async () => ({}) });
+    expect(result).toMatchObject({ ok: false, code: "SEND_FAILED", ambiguous: true });
+  });
+
+  it("a timeout / reset connection (no answer) is AMBIGUOUS", async () => {
+    const result = await send(Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" }));
+    expect(result).toMatchObject({ ok: false, ambiguous: true });
+  });
+
+  it("a 4xx rejection (for example an invalid recipient) is a definite failure, not ambiguous", async () => {
+    const result = await send({ ok: false, status: 400, json: async () => ({ error: { errors: [{ reason: "invalidArgument" }], message: "Invalid To header" } }) });
+    expect(result).toMatchObject({ ok: false, code: "SEND_FAILED" });
+    expect((result as { ambiguous?: boolean }).ambiguous).toBeUndefined();
+  });
+
+  it("LOST RESPONSE AFTER ACCEPTANCE: a 2xx whose body cannot be read is still a success (the message is gone; reporting a failure would make a retry send it twice)", async () => {
+    const result = await send({ ok: true, json: async () => { throw new Error("socket closed while reading the body"); } });
+    expect(result).toEqual({ ok: true, messageId: "accepted-without-id" });
+  });
+});

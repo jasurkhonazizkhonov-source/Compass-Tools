@@ -123,7 +123,7 @@ function classifyGmailApiFailure(status: number, body: unknown): { code: "REAUTH
   if (status === 403 && (reason === "insufficientPermissions" || reason === "PERMISSION_DENIED")) {
     return { code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
   }
-  if (status === 429 || reason === "rateLimitExceeded" || reason === "quotaExceeded" || reason === "userRateLimitExceeded") {
+  if (status === 429 || reason === "rateLimitExceeded" || reason === "quotaExceeded" || reason === "userRateLimitExceeded" || reason === "dailyLimitExceeded") {
     return { code: "SEND_FAILED", error: "Gmail is temporarily unable to send (rate limit reached). Please try again shortly." };
   }
   return { code: "SEND_FAILED", error: "Gmail could not send this email. Please try again." };
