@@ -31,6 +31,12 @@ export type AccountSignInDetails = {
   locationSource: string | null;
   /** Tooltip text: that the location is an estimate, and where it came from. Null when there is nothing to add. */
   locationNote: string | null;
+  /** The stored parts of the location, for the Users table to show separately (each only when it was actually resolved; nothing is invented). */
+  city: string | null;
+  region: string | null;
+  country: string | null;
+  countryCode: string | null;
+  timeZone: string | null;
 };
 
 /**
@@ -45,7 +51,7 @@ export async function getAccountSignInDetails(viewer: { role: AccountRole; compa
   if (!viewer || !canManageAccounts(viewer.role)) return out;
   const rows = await prisma.account.findMany({
     where: { companyId: viewer.companyId },
-    select: { id: true, lastSignInAt: true, lastSignInIp: true, lastSignInCity: true, lastSignInRegion: true, lastSignInCountry: true, lastSignInCountryCode: true, lastSignInLocationSource: true, lastSignInLocationAt: true },
+    select: { id: true, lastSignInAt: true, lastSignInIp: true, lastSignInCity: true, lastSignInRegion: true, lastSignInCountry: true, lastSignInCountryCode: true, lastSignInTimeZone: true, lastSignInLocationSource: true, lastSignInLocationAt: true },
   });
   for (const r of rows) {
     const location = formatSignInLocation({ city: r.lastSignInCity, region: r.lastSignInRegion, country: r.lastSignInCountry, countryCode: r.lastSignInCountryCode });
@@ -55,6 +61,11 @@ export async function getAccountSignInDetails(viewer: { role: AccountRole; compa
       location,
       locationSource: location ? r.lastSignInLocationSource : null,
       locationNote: location ? describeLocationSource(r.lastSignInLocationSource, r.lastSignInLocationAt) : null,
+      city: r.lastSignInCity,
+      region: r.lastSignInRegion,
+      country: r.lastSignInCountry,
+      countryCode: r.lastSignInCountryCode,
+      timeZone: r.lastSignInTimeZone,
     });
   }
   return out;

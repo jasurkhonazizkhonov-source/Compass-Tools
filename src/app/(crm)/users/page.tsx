@@ -13,6 +13,7 @@ import { EmptyState } from "@/components/crm/empty-state";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { geoAttributionFor } from "@/server/geo/geoip-attribution";
+import { SignInLocationCell } from "@/components/accounts/sign-in-location";
 
 export const dynamic = "force-dynamic";
 
@@ -167,8 +168,8 @@ export default async function UsersPage() {
                         <TableCell className="text-xs font-mono whitespace-nowrap" data-testid="last-sign-in-ip" title={si?.ip ?? undefined}>
                           {si?.ip ?? <span className="text-muted-foreground font-sans">{si?.lastSignInAt ? "Not recorded" : "—"}</span>}
                         </TableCell>
-                        <TableCell className="text-xs max-w-[14rem] whitespace-normal break-words" data-testid="last-sign-in-location" title={si?.location ? (si.locationNote ? `${si.location} — ${si.locationNote}` : si.location) : undefined}>
-                          {si?.location ?? <span className="text-muted-foreground">{si?.lastSignInAt ? "Location unavailable" : "—"}</span>}
+                        <TableCell className="text-xs max-w-[16rem] whitespace-normal break-words" data-testid="last-sign-in-location">
+                          <SignInLocationCell details={si ? { city: si.city, region: si.region, country: si.country, countryCode: si.countryCode, timeZone: si.timeZone, source: si.locationSource, note: si.locationNote } : undefined} signedIn={!!si?.lastSignInAt} />
                         </TableCell>
                       </>
                     );
