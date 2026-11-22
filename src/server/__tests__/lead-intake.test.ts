@@ -58,6 +58,38 @@ describe("isLeadIdCollision", () => {
     const err = new Prisma.PrismaClientKnownRequestError("dup", { code: "P2002", clientVersion: "test", meta: { modelName: "Lead", target: ["id"] } });
     expect(isLeadIdCollision(err)).toBe(true);
   });
+
+  // The shape Prisma 7.10.1 + @prisma/adapter-pg produces (captured against a real PostgreSQL 17 by lead-capture.integration.test.ts): the constraint is identified
+  // by NAME ({ index: "Lead_pkey" }) and carries no `fields`. The release's dependency update to 7.10.1 made the old-shape-only check answer false, so a concurrent
+  // duplicate of one submission became HTTP 500 instead of "already saved".
+  const named = (modelName: string, index: unknown, extra: Record<string, unknown> = {}) =>
+    new Prisma.PrismaClientKnownRequestError("dup", {
+      code: "P2002",
+      clientVersion: "test",
+      meta: { modelName, driverAdapterError: { name: "DriverAdapterError", cause: { originalCode: "23505", originalMessage: "duplicate key value violates unique constraint", kind: "UniqueConstraintViolation", constraint: { index, ...extra }, table: modelName } } },
+    });
+
+  it("REGRESSION (Prisma 7.10.1 shape): accepts a violation reported by the primary key's NAME, Lead_pkey", () => {
+    expect(isLeadIdCollision(named("Lead", "Lead_pkey"))).toBe(true);
+    expect(isLeadIdCollision(named("Lead", '"Lead_pkey"'))).toBe(true); // quoted, as an identifier can be reported
+  });
+
+  it.each([
+    ["another unique constraint of the Lead table", named("Lead", "Lead_contactId_key")],
+    ["a look-alike name", named("Lead", "Lead_pkey2")],
+    ["a different case", named("Lead", "lead_pkey")],
+    ["the fingerprint table's primary key", named("LeadIngestFingerprint", "LeadIngestFingerprint_pkey")],
+    ["the right name on the wrong model", named("Contact", "Lead_pkey")],
+    ["a Lead_pkey name that is not a string", named("Lead", ["Lead_pkey"])],
+    ["no name and no fields at all", named("Lead", undefined)],
+    ["a name together with a different column list (contradictory: refused, not guessed)", named("Lead", "Lead_pkey", { fields: ["contactId"] })],
+  ])("never mistakes %s for the Lead primary key", (_name, err) => {
+    expect(isLeadIdCollision(err)).toBe(false);
+  });
+
+  it("the 7.9.1 shape (constraint.fields) still works", () => {
+    expect(isLeadIdCollision(p2002("Lead", ["id"]))).toBe(true);
+  });
 });
 
 describe("createWebsiteFlightLead", () => {

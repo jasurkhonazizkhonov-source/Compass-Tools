@@ -698,6 +698,17 @@ describe("enrollLeads — duplicates and races", () => {
     expect(lockArgs).toEqual(["seq-1:lead-a", "seq-1:lead-b", "seq-1:lead-c"]);
   });
 
+  it("REGRESSION (Prisma adapter): every enrolment lock is cast to text - a bare `SELECT pg_advisory_xact_lock(...)` returns type void, which the PostgreSQL adapter cannot read (P2010 UnsupportedNativeDataType)", async () => {
+    seedEnrollContext(["lead-a", "lead-b"]);
+    const { enrollLeads } = await import("../sequences");
+    await enrollLeads("seq-1", ["lead-a", "lead-b"]);
+    const statements = (fakePrismaClient.$queryRaw as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as string[]).join("?"));
+    expect(statements.length).toBe(2);
+    for (const sql of statements) {
+      expect(sql).toMatch(/SELECT\s+pg_advisory_xact_lock\(hashtextextended\(\?,\s*0\)\)::text\s+AS\s+locked/);
+    }
+  });
+
   it("a large selection is processed in bounded chunks of 100, never as one transaction", async () => {
     const ids = Array.from({ length: 250 }, (_, i) => `lead-${String(i).padStart(3, "0")}`);
     seedEnrollContext(ids);

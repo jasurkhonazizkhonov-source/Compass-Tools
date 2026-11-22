@@ -7,6 +7,7 @@ import { resolveAirportCodes } from "@/server/queries/reference-data";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { MAX_LEAD_SEGMENTS } from "@/lib/lead-itinerary";
 import { deriveWebsiteLeadId } from "@/server/website-lead-id";
+import { safeErrorTag } from "@/lib/safe-error-log";
 import { Prisma, type LeadStatus } from "@/generated/prisma/client";
 
 // The ONE implementation of "a customer's flight request arrives from the company website and becomes a CRM Lead". It is shared by
@@ -78,17 +79,22 @@ export function refinePhone(data: { phone: string }, ctx: z.RefinementCtx): void
  * won the insert. Any other failure - a different unique constraint (say the contact's), a connection error, a timeout, a failed nested
  * write - is NOT a duplicate and must surface as a failure the caller can retry.
  *
- * Shape confirmed against Prisma 7.9.1 + @prisma/adapter-pg on PostgreSQL: code "P2002", meta.modelName "Lead", and the constraint's
- * columns under meta.driverAdapterError.cause.constraint.fields (["id"]; meta.target is not set by the driver adapter). A violation of
- * the nested LeadIngestFingerprint primary key reports modelName "LeadIngestFingerprint" instead, so it is not mistaken for this one.
+ * Shapes confirmed against @prisma/adapter-pg on PostgreSQL (code "P2002", meta.modelName "Lead"): Prisma 7.9.1 reported the constraint's columns under
+ * meta.driverAdapterError.cause.constraint.fields (["id"]); Prisma 7.10.1 reports the constraint's NAME instead, under ...constraint.index ("Lead_pkey"). The
+ * 7.10.1 shape was found by the real-PostgreSQL concurrency test (a concurrent duplicate answered HTTP 500 because only the old shape was recognised). Both are
+ * accepted, and nothing broader: the NAME must be exactly "Lead_pkey" (PostgreSQL's name for this primary key), so a violation of any other unique
+ * constraint of the Lead table, or of the nested LeadIngestFingerprint primary key (modelName "LeadIngestFingerprint"), is never mistaken for it.
  * `meta.target` is also honoured in case another engine/driver supplies it. Reads only error metadata, never the message.
  */
 export function isLeadIdCollision(err: unknown): boolean {
   if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== "P2002") return false;
-  const meta = err.meta as { modelName?: unknown; target?: unknown; driverAdapterError?: { cause?: { constraint?: { fields?: unknown } } } } | undefined;
+  const meta = err.meta as { modelName?: unknown; target?: unknown; driverAdapterError?: { cause?: { constraint?: { fields?: unknown; index?: unknown } } } } | undefined;
   if (meta?.modelName !== "Lead") return false;
   const unquote = (v: unknown) => String(v).replace(/^"|"$/g, "");
-  const columns = meta.driverAdapterError?.cause?.constraint?.fields ?? meta.target;
+  const constraint = meta.driverAdapterError?.cause?.constraint;
+  // Prisma 7.10.1+: the constraint is identified by name, and only the primary key's own name counts.
+  if (constraint && "index" in constraint && constraint.fields === undefined) return typeof constraint.index === "string" && unquote(constraint.index) === "Lead_pkey";
+  const columns = constraint?.fields ?? meta.target;
   if (Array.isArray(columns)) return columns.length === 1 && unquote(columns[0]) === "id";
   return typeof columns === "string" && (unquote(columns) === "id" || columns === "Lead_pkey");
 }
@@ -213,6 +219,9 @@ export async function createWebsiteFlightLead(params: {
       const existing = await prisma.lead.findUnique({ where: { id: derivedLeadId }, select: { id: true } }).catch(() => null);
       if (existing) return { status: "duplicate", id: existing.id };
     }
+    // The cause used to vanish here, so a "failed" answer (HTTP 500) could not be told from a database outage in the logs. Only the error class and Prisma code
+    // are logged (safeErrorTag), never a message, a value or a query.
+    console.error(`[lead-intake] could not save the lead (${safeErrorTag(err)})`);
     return { status: "failed" };
   }
 }

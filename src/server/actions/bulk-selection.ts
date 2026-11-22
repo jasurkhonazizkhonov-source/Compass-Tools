@@ -18,6 +18,7 @@ import { canBulkDeleteLeadsAndContacts, canBulkEnrollInSequence } from "@/lib/pe
 import { BULK_SELECTION_MAX, type BulkFailure } from "@/lib/bulk-selection";
 import { contactVisibilityWhere, leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
 import { enrollLeads } from "@/server/actions/sequences";
+import { safeErrorTag } from "@/lib/safe-error-log";
 import { deleteContact } from "@/server/actions/contacts";
 import { deleteLead } from "@/server/actions/leads";
 
@@ -144,7 +145,9 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
         }
       }
       enrolled = enrolledIds.length;
-    } catch {
+    } catch (err) {
+      // Logged by class and Prisma code only (never a message, a value or a lead id): without this a failure here was invisible in the server log.
+      console.error(`[bulk-selection] enrolment failed (${safeErrorTag(err)})`);
       return { ok: false, error: "The sequence could not be applied, so nothing was enrolled. Please try again." };
     }
   }

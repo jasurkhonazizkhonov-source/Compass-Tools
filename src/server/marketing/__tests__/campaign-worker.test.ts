@@ -569,6 +569,41 @@ describe("the quota is claimed atomically: concurrent workers can never overshoo
     expect((lockCall[0] as string[]).join("?")).toContain("pg_advisory_xact_lock");
     expect(lockCall[1]).toBe("campaign-send-quota:sender-1");
   });
+
+  it("REGRESSION (Prisma adapter): the lock statement never returns a bare `void` column - pg_advisory_xact_lock() is cast to text, so the PostgreSQL adapter can read the answer", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { prisma } = await import("@/lib/prisma");
+    const { snapshotAudienceChunk, claimWithinQuota } = await import("../campaign-worker");
+    await snapshotAudienceChunk(c.id, c.companyId, null);
+    await claimWithinQuota("sender-1", { id: sends[0].id, attempts: 0 }, NOW);
+    const lockCalls = (prisma.$queryRaw as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter((call) => (call[0] as string[]).join("?").includes("pg_advisory_xact_lock"));
+    expect(lockCalls.length).toBeGreaterThan(0);
+    const sql = (lockCalls[0][0] as string[]).join("?");
+    // The lock call is the SELECT's only column and it is cast ("... )::text AS locked"): a bare "SELECT pg_advisory_xact_lock(...)" returns type void, which Prisma
+    // cannot deserialize ("Failed to deserialize column of type 'void'"). The real server is exercised by campaign-and-import.integration.test.ts.
+    expect(sql).toMatch(/SELECT\s+pg_advisory_xact_lock\(hashtext\(\?\)\)::text\s+AS\s+locked/);
+    expect(sql).not.toMatch(/SELECT\s+pg_advisory_xact_lock\(hashtext\(\?\)\)\s*$/);
+  });
+
+  it("the lock is taken INSIDE the transaction callback, before the quota is counted and before the claim (never outside it, where a transaction-scoped lock would be released at once)", async () => {
+    addSubscribers(1);
+    const c = addCampaign();
+    const { prisma } = await import("@/lib/prisma");
+    const { snapshotAudienceChunk, claimWithinQuota } = await import("../campaign-worker");
+    await snapshotAudienceChunk(c.id, c.companyId, null);
+    const order: string[] = [];
+    (prisma.$queryRaw as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      order.push("lock");
+      return [];
+    });
+    const count = prisma.marketingCampaignSend.count as unknown as ReturnType<typeof vi.fn>;
+    const update = prisma.marketingCampaignSend.updateMany as unknown as ReturnType<typeof vi.fn>;
+    count.mockImplementationOnce(async () => (order.push("count"), 0)).mockImplementationOnce(async () => (order.push("count"), 0));
+    update.mockImplementationOnce(async () => (order.push("claim"), { count: 1 }));
+    expect(await claimWithinQuota("sender-1", { id: sends[0].id, attempts: 0 }, NOW)).toBe("claimed");
+    expect(order).toEqual(["lock", "count", "count", "claim"]);
+  });
 });
 
 describe("one-click unsubscribe header (RFC 8058)", () => {

@@ -190,7 +190,9 @@ export type QuotaClaim = "claimed" | "quota" | "lost";
 export async function claimWithinQuota(senderId: string, row: { id: string; attempts: number }, now: Date): Promise<QuotaClaim> {
   return prisma.$transaction(
     async (tx) => {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`campaign-send-quota:${senderId}`}))`;
+      // The lock function returns `void`, a column type the Prisma PostgreSQL adapter cannot deserialize ("Failed to deserialize column of type 'void'"), so the
+      // result is cast to text: the lock is taken exactly as before, held until this transaction ends, and the answer is a type the adapter can read.
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`campaign-send-quota:${senderId}`}))::text AS locked`;
       const usedLastMinute = await tx.marketingCampaignSend.count({
         where: { lastAttemptAt: { gte: new Date(now.getTime() - 55_000) }, campaign: { createdById: senderId } },
       });

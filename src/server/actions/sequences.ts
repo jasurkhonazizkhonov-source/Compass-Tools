@@ -229,7 +229,9 @@ async function enrollLeadsCore(sequenceId: string, leadIds: string[], recipientE
     const outcome = await prisma.$transaction(
       async (tx) => {
         for (const leadId of chunk) {
-          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${sequenceId}:${leadId}`}, 0))`;
+          // pg_advisory_xact_lock() returns `void`, which the Prisma PostgreSQL adapter cannot deserialize (P2010 UnsupportedNativeDataType: every enrolment failed on a
+          // real PostgreSQL). Cast to text: the lock is taken exactly as before and held until this transaction ends.
+          await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`${sequenceId}:${leadId}`}, 0))::text AS locked`;
         }
         const taken = new Set(
           (await tx.sequenceEnrollment.findMany({ where: { sequenceId, leadId: { in: chunk }, status: "ACTIVE" }, select: { leadId: true } })).map((en) => en.leadId)

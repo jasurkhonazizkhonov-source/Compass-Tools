@@ -4,8 +4,10 @@ import { randomBytes } from "node:crypto";
 
 // REAL-DATABASE authorization matrix for a lead's submitting IP. For every role/relationship it proves:
 //  (1) getLeadSubmissionInfo — the only read path — never returns the full IP, for anyone;
-//  (2) revealLeadSubmissionIp returns the full IP ONLY to an authorised, granted, recently-signed-in viewer of THAT lead;
-//  (3) another team's lead id, a made-up id, no session, Marketing and an ungranted Manager get nothing;
+//  (2) revealLeadSubmissionIp returns the full IP ONLY to an ADMINISTRATOR who is recently signed in and whose company owns THAT lead (the owner's decision,
+//      commit 5977ef8 and canRevealLeadSubmissionIp: a per-user bookings.reveal_ip grant no longer opens the lead reveal - for a Manager or a Ticketing user);
+//  (3) a Manager (with or without the grant), a Travel Agent, Marketing, Ticketing, another company's Administrator, another team's lead id, a made-up id and
+//      no session get the SAME generic refusal (nothing says whether the lead or its IP exists);
 //  (4) every Reveal attempt (allowed or refused) writes an audit record that never contains the IP.
 // Production-class behaviour (the 15-minute sign-in rule) is switched on through the environment seam.
 // Runs only when INTEGRATION_DATABASE_URL points at a DISPOSABLE PostgreSQL with this repo's migrations applied.
@@ -40,6 +42,7 @@ describe.skipIf(!enabled)("lead IP — per-role authorization — real PostgreSQ
   const accountIds: string[] = [];
   const leads: Record<string, string> = {};
   const contactIds: string[] = [];
+  const extraCompanyIds: string[] = [];
 
   async function makeAccount(name: string, role: Role, extra: { managerId?: string; bookingPermissions?: string[] } = {}) {
     const a = await prisma.account.create({ data: { fullName: name, email: `${name.toLowerCase()}-${TAG}@example.test`, role, status: "ACTIVE", companyId: "default-company", ...(extra.managerId ? { managerId: extra.managerId } : {}) } });
@@ -89,6 +92,7 @@ describe.skipIf(!enabled)("lead IP — per-role authorization — real PostgreSQ
     await prisma.contact.deleteMany({ where: { id: { in: contactIds } } });
     await prisma.account.updateMany({ where: { id: { in: accountIds } }, data: { managerId: null } });
     await prisma.account.deleteMany({ where: { id: { in: accountIds } } });
+    await prisma.company.deleteMany({ where: { id: { in: extraCompanyIds } } }); // only the companies this suite created
     await prisma.$disconnect();
   });
 
@@ -126,9 +130,15 @@ describe.skipIf(!enabled)("lead IP — per-role authorization — real PostgreSQ
       expect(JSON.stringify(row.metadata)).not.toContain(IP_ONE);
     });
 
-    it("the owning Manager WITH the IP grant: allowed (recent sign-in)", async () => {
+    it("the owning Manager WITH the bookings.reveal_ip grant is REFUSED (a grant no longer opens the lead reveal), and the refusal is audited without the address", async () => {
       as("MgrGranted");
-      expect(await reveal.revealLeadSubmissionIp(leads.one)).toEqual({ ipAddress: IP_ONE, ipVersion: "v4" });
+      await expect(reveal.revealLeadSubmissionIp(leads.one)).rejects.toThrow(/not authorized/i);
+      const rows = await prisma.auditLog.findMany({ where: { actorId: actors.MgrGranted.id, entityId: leads.one, action: "LEAD_IP_REVEAL_DENIED" } });
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[rows.length - 1].metadata).toMatchObject({ result: "DENIED", reason: "MISSING_PERMISSION" });
+      expect(JSON.stringify(rows)).not.toContain(IP_ONE);
+      // and nothing was recorded as a successful reveal for that account
+      expect(await prisma.auditLog.count({ where: { actorId: actors.MgrGranted.id, action: "LEAD_IP_REVEALED" } })).toBe(0);
     });
 
     it("a stale sign-in (older than 15 minutes) is refused with a message and audited — even for Admin", async () => {
@@ -158,12 +168,45 @@ describe.skipIf(!enabled)("lead IP — per-role authorization — real PostgreSQ
       expect(JSON.stringify(rows)).not.toContain(IP_ONE);
     });
 
-    it("a granted Manager of ANOTHER team cannot reveal this lead (lead-id tampering): same refusal as a missing lead", async () => {
+    it("a granted Manager of ANOTHER team cannot reveal this lead (lead-id tampering): the same refusal as a missing lead, and not even their OWN team's lead opens", async () => {
       as("MgrOther");
-      await expect(reveal.revealLeadSubmissionIp(leads.one)).rejects.toThrow(/not authorized/i);
-      await expect(reveal.revealLeadSubmissionIp("no-such-lead")).rejects.toThrow(/not authorized/i);
-      // their own team's lead still works
-      expect(await reveal.revealLeadSubmissionIp(leads.two)).toEqual({ ipAddress: IP_TWO, ipVersion: "v4" });
+      const message = async (id: string) => {
+        try {
+          await reveal.revealLeadSubmissionIp(id);
+        } catch (error) {
+          return (error as Error).message;
+        }
+        throw new Error("expected a refusal");
+      };
+      const [foreignLead, missingLead, ownTeamLead] = [await message(leads.one), await message("no-such-lead"), await message(leads.two)];
+      expect(foreignLead).toMatch(/not authorized/i);
+      // identical text for another team's lead, a lead that does not exist and their own team's lead: nothing tells which of them exists or has an IP
+      expect(missingLead).toBe(foreignLead);
+      expect(ownTeamLead).toBe(foreignLead);
+      const rows = await prisma.auditLog.findMany({ where: { actorId: actors.MgrOther.id, action: "LEAD_IP_REVEAL_DENIED" } });
+      expect(rows.length).toBeGreaterThanOrEqual(3);
+      expect(JSON.stringify(rows)).not.toContain(IP_ONE);
+      expect(JSON.stringify(rows)).not.toContain(IP_TWO);
+    });
+
+    it("lead-id tampering by the one role that CAN reveal: an Administrator of ANOTHER company gets the same refusal as for a missing lead, audited as 'not accessible'", async () => {
+      const otherCompanyId = `other-co-${TAG}`;
+      await prisma.company.create({ data: { id: otherCompanyId, name: `Other company ${TAG}`, signatureTemplate: "Regards" } });
+      extraCompanyIds.push(otherCompanyId);
+      const outsider = await prisma.account.create({ data: { fullName: "AdminOtherCo", email: `adminotherco-${TAG}@example.test`, role: "ADMIN", status: "ACTIVE", companyId: otherCompanyId } });
+      accountIds.push(outsider.id);
+      actors.AdminOtherCo = { ...actors.Admin, id: outsider.id, companyId: otherCompanyId, fullName: "AdminOtherCo", email: outsider.email };
+      as("AdminOtherCo");
+      const [foreign, missing] = [
+        await reveal.revealLeadSubmissionIp(leads.one).catch((e: Error) => e.message),
+        await reveal.revealLeadSubmissionIp("no-such-lead").catch((e: Error) => e.message),
+      ];
+      expect(foreign).toMatch(/not authorized/i);
+      expect(missing).toBe(foreign);
+      const rows = await prisma.auditLog.findMany({ where: { actorId: outsider.id, action: "LEAD_IP_REVEAL_DENIED" } });
+      expect(rows.map((r) => (r.metadata as { reason?: string }).reason)).toEqual(["NOT_ACCESSIBLE_OR_NOT_CAPTURED", "NOT_ACCESSIBLE_OR_NOT_CAPTURED"]);
+      expect(JSON.stringify(rows)).not.toContain(IP_ONE);
+      expect(await prisma.auditLog.count({ where: { actorId: outsider.id, action: "LEAD_IP_REVEALED" } })).toBe(0);
     });
 
     it("another team's Travel Agent cannot reveal or even see it", async () => {

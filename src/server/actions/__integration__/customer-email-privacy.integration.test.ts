@@ -34,6 +34,9 @@ describe.skipIf(!enabled)("customer email reveal allowance - real PostgreSQL", (
   beforeAll(async () => {
     ({ prisma } = await import("@/lib/prisma"));
     ({ revealCustomerEmails: reveal } = await import("@/server/privacy/customer-email"));
+    // Account.companyId and Contact.companyId are real foreign keys: the company must exist BEFORE its accounts and contacts. This test owns a company of its own
+    // (unique to this run) and removes it last, so it never touches another suite's company and the constraint stays exactly as the schema defines it.
+    await prisma.company.create({ data: { id: CO, name: `Customer email privacy test ${TAG}`, signatureTemplate: "Regards" } });
     for (const name of ["a", "b"]) {
       const acc = await prisma.account.create({ data: { fullName: `Agent ${name}`, email: `${name}-${TAG}@example.test`, role: "TRAVEL_AGENT", status: "ACTIVE", companyId: CO } });
       accountIds.push(acc.id);
@@ -48,9 +51,12 @@ describe.skipIf(!enabled)("customer email reveal allowance - real PostgreSQL", (
     if (!enabled) return;
     await prisma.customerEmailRevealEvent.deleteMany({ where: { userId: { in: accountIds } } });
     await prisma.customerEmailRevealUsage.deleteMany({ where: { userId: { in: accountIds } } });
-    await prisma.auditLog.deleteMany({ where: { actorId: { in: accountIds } } });
+    // Audit rows are append-only at the database (a trigger refuses DELETE and UPDATE: audit-log-integrity.integration.test.ts proves it), so cleanup cannot
+    // remove them and must not try to defeat that. They reference accounts only by id text (no foreign key), so removing the accounts below is unaffected.
+    await prisma.auditLog.deleteMany({ where: { actorId: { in: accountIds } } }).catch(() => undefined);
     await prisma.contact.deleteMany({ where: { id: { in: contactIds } } });
     await prisma.account.deleteMany({ where: { id: { in: accountIds } } });
+    await prisma.company.deleteMany({ where: { id: CO } }); // last: nothing references it any more
     await prisma.$disconnect();
   });
 

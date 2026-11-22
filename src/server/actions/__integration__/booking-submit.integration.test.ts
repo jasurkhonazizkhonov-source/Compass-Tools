@@ -296,12 +296,30 @@ describe.skipIf(!enabled)("submitBooking against a real PostgreSQL database", ()
     await flushDeferred();
     expect(result.ok).toBe(true);
     const sig = await prisma.signature.findFirstOrThrow({ where: { booking: { quoteId: quote.id } } });
-    expect(sig.ipAddress).toBe(ipv6);
-    expect(sig.ipAddress).toHaveLength(ipv6.length);
+    // ONE stored spelling per address (src/lib/request-ip.ts normalizeIp): the canonical RFC 5952 text - lower case, leading zeros dropped, the longest zero run
+    // compressed - so the same visitor can never be recorded, or hashed for the vault's exact-match search and velocity checks, as two different strings. The
+    // old assertion expected the proxy's long spelling back; the address is the same, only its single stored spelling is fixed.
+    const canonical = "2001:db8:85a3::8a2e:370:7334";
+    expect(sig.ipAddress).toBe(canonical);
+    // "Complete (untruncated)" still holds, and is checked on the ADDRESS, not on a string length: expanding the stored text gives back all eight groups of the input.
+    const expand = (text: string) => {
+      const [head, tail = ""] = text.split("::");
+      const h = head ? head.split(":") : [];
+      const t = tail ? tail.split(":") : [];
+      return [...h, ...Array(8 - h.length - t.length).fill("0"), ...t].map((g) => g.padStart(4, "0")).join(":");
+    };
+    expect(expand(sig.ipAddress as string)).toBe(ipv6);
     const vault = await prisma.ipCapture.findMany({ where: { booking: { quoteId: quote.id } } });
     expect(vault.length).toBeGreaterThan(0);
-    // The vault row never holds the plain address.
+    // The vault row never holds the plain address, in either spelling ...
     expect(JSON.stringify(vault)).not.toContain(ipv6);
+    expect(JSON.stringify(vault)).not.toContain(canonical);
+    // ... yet it holds exactly the SAME normalised address as the signature row, both encrypted and in its blind-index hash.
+    const { decryptIp, hashIpForSearch, ipHashesEqual } = await import("@/server/security/ip-encryption");
+    for (const row of vault) {
+      expect(decryptIp(row.encryptedIp)).toBe(canonical);
+      expect(ipHashesEqual(row.ipHash, hashIpForSearch(canonical))).toBe(true);
+    }
   });
 
   it("SPOOF-PROOF signer IP: a client-supplied Forwarded / CF-Connecting-IP header cannot set the recorded address on Vercel", async () => {

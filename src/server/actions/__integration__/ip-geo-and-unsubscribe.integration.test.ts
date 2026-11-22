@@ -138,7 +138,7 @@ describe.skipIf(!enabled)("IP/geo capture and unsubscribe — real PostgreSQL", 
       await prisma.account.update({ where: { id: accounts.Agent.id }, data: { managerId: accounts.Mgr.id } });
     });
 
-    it("the FULL IP only comes from the audited Reveal: Admin yes; a Travel Agent no (even on their own lead); a Manager only with the grant and only for their team; the audit never holds the address", async () => {
+    it("the FULL IP only comes from the audited Reveal: Admin yes; a Travel Agent no (even on their own lead); a Manager NO - with or without the bookings.reveal_ip grant, on the lead's team or not (owner decision: Administrators only); the audit never holds the address", async () => {
       const { revealLeadSubmissionIp } = await import("../lead-submission");
       const id = await capture("0007", EDGE);
       const lead = await prisma.lead.findUniqueOrThrow({ where: { id }, select: { contactId: true } });
@@ -155,15 +155,19 @@ describe.skipIf(!enabled)("IP/geo capture and unsubscribe — real PostgreSQL", 
 
       as("Mgr"); // on the agent's team but WITHOUT the grant
       await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
+      // The per-user grant no longer opens the LEAD reveal (canRevealLeadSubmissionIp is Administrator-only): the owning Manager WITH the grant is refused too ...
       accounts.Mgr.bookingPermissions = ["bookings.reveal_ip"];
-      expect(await revealLeadSubmissionIp(id)).toMatchObject({ ipAddress: "203.0.113.42" });
+      await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
+      // ... and so is a granted Manager of another team (the refusal is the same either way: nothing says whether the lead exists).
       accounts.Mgr2.bookingPermissions = ["bookings.reveal_ip"];
-      as("Mgr2"); // has the grant, but not this lead's team
+      as("Mgr2");
       await expect(revealLeadSubmissionIp(id)).rejects.toThrow(/not authorized/i);
 
       const audit = await prisma.auditLog.findMany({ where: { entityType: "Lead", entityId: id } });
-      expect(audit.filter((a) => a.action === "LEAD_IP_REVEALED")).toHaveLength(2);
-      expect(audit.filter((a) => a.action === "LEAD_IP_REVEAL_DENIED").length).toBeGreaterThanOrEqual(4);
+      expect(audit.filter((a) => a.action === "LEAD_IP_REVEALED")).toHaveLength(1); // the Administrator's, and no other
+      expect(audit.filter((a) => a.action === "LEAD_IP_REVEALED").map((a) => a.actorId)).toEqual([accounts.Admin.id]);
+      expect(audit.filter((a) => a.action === "LEAD_IP_REVEAL_DENIED")).toHaveLength(5); // Agent, Marketer, Mgr, Mgr with the grant, Mgr2 with the grant
+      expect(audit.filter((a) => a.action === "LEAD_IP_REVEAL_DENIED").every((a) => (a.metadata as { reason?: string }).reason === "MISSING_PERMISSION")).toBe(true);
       expect(JSON.stringify(audit)).not.toContain("203.0.113.42");
     });
 
