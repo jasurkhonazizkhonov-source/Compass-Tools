@@ -81,7 +81,7 @@ export function resolveUploadRoot(env: Env = process.env, cwd: string = process.
   if (raw.includes("\0") || !path.isAbsolute(raw)) return { problem: "misconfigured" };
   const root = path.resolve(raw);
   if (path.parse(root).root === root) return { problem: "misconfigured" };
-  if (production && (root === path.resolve(cwd) || isInside(path.resolve(cwd), root))) return { problem: "misconfigured" };
+  if (production && (root === path.resolve(/*turbopackIgnore: true*/ cwd) || isInside(path.resolve(/*turbopackIgnore: true*/ cwd), root))) return { problem: "misconfigured" };
   return { root };
 }
 
@@ -113,7 +113,7 @@ export function isValidKey(key: unknown): key is string {
 /** The ONLY place a key becomes a path. Throws for anything that is not exactly a key this module could have generated. */
 export function pathForKey(key: string, root: string = requireRoot()): string {
   if (!isValidKey(key)) throw new LocalStorageError("invalid_key");
-  const full = path.join(root, key.slice(0, 2), key.slice(3));
+  const full = path.join(/*turbopackIgnore: true*/ root, key.slice(0, 2), key.slice(3));
   if (!isInside(root, full)) throw new LocalStorageError("invalid_key");
   return full;
 }

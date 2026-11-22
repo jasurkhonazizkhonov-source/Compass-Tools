@@ -254,6 +254,16 @@ describe("subscriber import actions", () => {
     expect(importJobs).toHaveLength(0);
   });
 
+  it("the supported maximum is the SMALLER of 250,000 rows and 4 MB: exactly 250,000 short rows are accepted, one more row is refused, and a multi-byte file is measured in BYTES", async () => {
+    const { createSubscriberImportJob } = await import("../subscriber-imports");
+    const rows = (n: number) => Array.from({ length: n }, (_, i) => `${i}@e.co`).join("\n");
+    const ok = await createSubscriberImportJob(rows(250_000));
+    expect(ok).toMatchObject({ ok: true, validRows: 250_000 });
+    expect(String(importJobs.at(-1)!.payload).length).toBeLessThan(4 * 1024 * 1024); // the stored payload fits the byte limit too
+    expect(await createSubscriberImportJob(rows(250_001))).toMatchObject({ ok: false, error: expect.stringMatching(/250,000/) });
+    // 1.5 million 3-byte characters: only ~1.5 million UTF-16 units but ~4.5 MB of bytes -> refused on bytes, not on length
+    expect(await createSubscriberImportJob("\u20AC".repeat(1_500_000))).toMatchObject({ ok: false, error: expect.stringMatching(/larger than 4 MB/) });
+  });
   it("lists only this company's jobs, never exposing the payload, and cancel / resume only act on this company's job in a valid state", async () => {
     const { listSubscriberImportJobs, cancelSubscriberImport, resumeSubscriberImport } = await import("../subscriber-imports");
     importJobs.push({ id: "mine", companyId: "co-1", status: "PROCESSING", payload: "secret@example.com,,\n" }, { id: "theirs", companyId: "co-2", status: "PROCESSING", payload: "x@y.co,," });

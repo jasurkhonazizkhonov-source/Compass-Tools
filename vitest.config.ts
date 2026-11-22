@@ -1,4 +1,4 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import path from "node:path";
 
 export default defineConfig({
@@ -8,6 +8,9 @@ export default defineConfig({
     },
   },
   test: {
+    // Test discovery is limited to the SOURCE tree: build output and tool folders can never contribute test files to a run. (One earlier full run listed 27 more files, all
+    // database-gated and all skipped, than every later run and than the files on disk; their origin was not identified, and this keeps any build/tooling copy out of a run.)
+    exclude: [...configDefaults.exclude, ".next/**", ".open-next/**", ".claude/**", ".wrangler/**", "docs/**"],
     environment: "node",
     // Fail-closed gate in front of every database-backed test (src/test/integration-database-guard.ts): when INTEGRATION_DATABASE_URL is set it must
     // be the approved local disposable database (loopback literal, exactly `compass_test`) and the live server must confirm it, or the whole run is

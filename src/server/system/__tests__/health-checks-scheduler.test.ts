@@ -84,3 +84,51 @@ describe("System Health - Automatic sequence sending", () => {
     expect(JSON.stringify(r)).not.toMatch(/postgres(ql)?:\/\/|\bat\s+\S+\s+\(|@[a-z0-9.-]+\.[a-z]{2,}/i);
   });
 });
+
+import { checkMarketingWorkers } from "../health-checks";
+import { markSweepStarted } from "@/server/scheduler-status";
+
+describe("System Health - Subscriber imports and campaign delivery", () => {
+  const ok = (job: "subscriber-imports" | "campaigns", at: number) => {
+    markSweepStarted(job, at - 1000);
+    markSweepFinished(job, { ok: true, processed: 3, sent: 2, failed: 0 }, at);
+  };
+
+  it("HEALTHY only when BOTH jobs completed a run recently", async () => {
+    markPollerStarted(NOW - 5 * 60_000);
+    ok("subscriber-imports", NOW - 20_000);
+    ok("campaigns", NOW - 30_000);
+    const r = await checkMarketingWorkers(NOW);
+    expect(r.state).toBe("HEALTHY");
+    expect(fact(r as never, "Imports: last successful run")).toBe("2026-11-20 11:59:40 UTC");
+    expect(fact(r as never, "Campaign delivery: last successful run")).toBe("2026-11-20 11:59:30 UTC");
+  });
+
+  it("CRITICAL when either job failed on its last run - error CATEGORY only, with the consecutive count", async () => {
+    markPollerStarted(NOW - 5 * 60_000);
+    ok("subscriber-imports", NOW - 20_000);
+    markSweepFinished("campaigns", { ok: false, errorTag: "PrismaClientKnownRequestError" }, NOW - 10_000);
+    const r = await checkMarketingWorkers(NOW);
+    expect(r.state).toBe("CRITICAL");
+    expect(fact(r as never, "Campaign delivery: last error (category)")).toBe("PrismaClientKnownRequestError");
+    expect(JSON.stringify(r)).not.toMatch(/@|postgres:|password/i);
+  });
+
+  it("CRITICAL when a job has been silent longer than the stall window; it recovers on the next successful run", async () => {
+    markPollerStarted(NOW - 30 * 60_000);
+    ok("subscriber-imports", NOW - SCHEDULER_STALL_AFTER_MS - 60_000);
+    ok("campaigns", NOW - 10_000);
+    expect((await checkMarketingWorkers(NOW)).state).toBe("CRITICAL");
+    ok("subscriber-imports", NOW - 5_000);
+    expect((await checkMarketingWorkers(NOW)).state).toBe("HEALTHY");
+  });
+
+  it("WARNING (manual action) when the poller is switched off, UNKNOWN before it started, and neither is shown as healthy", async () => {
+    vi.stubEnv("DISABLE_IN_PROCESS_POLLER", "true");
+    const off = await checkMarketingWorkers(NOW);
+    expect(off.state).toBe("WARNING");
+    expect(off.classification).toBe("manual_action");
+    vi.stubEnv("DISABLE_IN_PROCESS_POLLER", "");
+    expect((await checkMarketingWorkers(NOW)).state).toBe("UNKNOWN");
+  });
+});

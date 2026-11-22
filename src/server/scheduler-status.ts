@@ -113,3 +113,31 @@ export function sequenceSchedulerReport(pollerDisabled: boolean, now = Date.now(
     operational: s === "running",
   };
 }
+
+/**
+ * The same four states for one of the OTHER background jobs ("subscriber-imports", "campaigns"). Unlike the sequence sweep these have no external-scheduler route, so with the
+ * in-process poller disabled they simply wait ("disabled"); otherwise: not started -> "not_started"; last run failed -> "stalled"; silent for more than three minutes -> "stalled".
+ */
+export function backgroundJobState(job: SweepJob, pollerDisabled: boolean, now = Date.now()): SequenceSchedulerState {
+  const s = state();
+  if (pollerDisabled) return "disabled";
+  if (s.pollerStartedAt === null) return "not_started";
+  const j = s.jobs[job];
+  if (j.lastOk === false) return "stalled";
+  const reference = j.lastFinishedAt ?? s.pollerStartedAt;
+  return now - reference > SCHEDULER_STALL_AFTER_MS ? "stalled" : "running";
+}
+
+export type BackgroundJobReport = { job: SweepJob; state: SequenceSchedulerState; lastSuccessAt: Date | null; lastErrorTag: string | null; consecutiveFailures: number; lastSweep: { processed: number; sent: number; failed: number } | null };
+
+export function backgroundJobReport(job: SweepJob, pollerDisabled: boolean, now = Date.now()): BackgroundJobReport {
+  const j = state().jobs[job];
+  return {
+    job,
+    state: backgroundJobState(job, pollerDisabled, now),
+    lastSuccessAt: j.lastSuccessAt === null ? null : new Date(j.lastSuccessAt),
+    lastErrorTag: j.lastOk === false ? j.lastErrorTag : null,
+    consecutiveFailures: j.consecutiveFailures,
+    lastSweep: j.lastFinishedAt === null ? null : { processed: j.lastProcessed, sent: j.lastSent, failed: j.lastFailed },
+  };
+}

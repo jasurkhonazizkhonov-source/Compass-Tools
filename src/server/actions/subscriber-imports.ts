@@ -29,7 +29,7 @@ export type ImportPreview = {
 type Guarded = { ok: true; text: string } | { ok: false; error: string };
 function guard(text: unknown): Guarded {
   if (typeof text !== "string" || !text.trim()) return { ok: false, error: "Paste or upload a list of email addresses first." };
-  if (text.length > IMPORT_MAX_BYTES) return { ok: false, error: `That list is larger than ${Math.round(IMPORT_MAX_BYTES / 1024 / 1024)} MB. Split it into smaller files.` };
+  if (Buffer.byteLength(text, "utf8") > IMPORT_MAX_BYTES) return { ok: false, error: `That list is larger than ${Math.round(IMPORT_MAX_BYTES / 1024 / 1024)} MB. Split it into smaller files.` };
   return { ok: true, text };
 }
 
