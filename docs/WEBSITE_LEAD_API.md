@@ -186,16 +186,66 @@ answered on the public hostname; because Cloudflare adds those headers to every 
 alone: for defence in depth also add a Cloudflare rule that blocks `/api/v1/website/*` on the public hostname. Only if the website must call the CRM over its public `https://` URL (for example
 it runs on another provider) set `WEBSITE_API_ALLOW_PUBLIC_ROUTE=true` — then the bearer key and the rate limits are the only barrier; prefer the private network.
 
-## Visitor IP and approximate location (optional)
+## Request signature v2 (website routes) and the visitor IP / approximate location
 
-Because the call comes from the website's server, the connection's addresses describe **that server, not the visitor**, and are never recorded. To record the
-visitor's IP and approximate location, forward what the website's edge observed in the existing **signed visitor context** (HMAC with `LEAD_INGEST_SECRET`,
-≥ 32 characters, identical on both sides):
+**Signing v2 replaces the v1 visitor-context signature on the three website routes** (`POST /api/v1/website/flight-inquiries`, `POST /api/public/contact-inquiry`,
+`POST /api/public/subscribe`). The v1 signature vouched only for the visitor fields; it bound neither the method, the path, the company nor the body, and had no
+nonce, so a captured envelope could be re-attached to a different request for five minutes. v2 binds all of them and is single-use. Implementation:
+`src/server/website-request-signature.ts` (verifier), `src/server/website-signature-guard.ts` (policy), the three routes.
+(`/api/public/lead-capture`, which has other callers, keeps the v1 context unchanged.)
 
 ```
-x-ct-visitor-context:   base64url( JSON { v: 1, ts: <unix seconds>, ip?, city?, region?, country?, timezone? } )
-x-ct-visitor-signature: hex( HMAC-SHA256( LEAD_INGEST_SECRET, <the context header value exactly as sent> ) )
+x-ct-visitor-context:   base64url( JSON { v: 2, ts: <unix seconds>, nonce: <22-64 chars [A-Za-z0-9_-], 128 random bits>, ip?, city?, region?, country?, timezone?, source? } )
+x-ct-visitor-signature: hex( HMAC-SHA256( LEAD_INGEST_SECRET, canonicalMessage ) )
+
+canonicalMessage = "CT-WEBSITE-REQUEST-V2" LF field LF field ...      each field is written as  <byte length of its UTF-8 form>:<field>, in this order:
+  METHOD (upper case) | path (pathname only, no query) | companyId | ts (decimal) | nonce | SHA-256 of the EXACT body bytes (64 lower-case hex) | the context header value as sent
 ```
+
+The method, path, company and body hash are **not sent**: the CRM recomputes them from the request it received (the company is the credential's company on the
+flight route and the body's `companyId` on the public routes), so changing any of them breaks the signature. Length prefixes make the encoding unambiguous.
+Known-answer vector (shared with the website's tests): secret `known-answer-secret-0123456789-abcdefghij`, `POST /api/public/contact-inquiry`, company `company-1`,
+`ts` 1800000000, nonce `AAAAAAAAAAAAAAAAAAAAAA`, body `{"companyId":"company-1","email":"a@example.test"}` → signature
+`5bafec282f9a6cb99071361647e971dcb3e34659f691528f9b33afd0667ed6d6`.
+
+What the CRM checks, in order: a signature is present; the secret is configured (≥ 32 characters); the context is ≤ 2048 bytes and valid base64url JSON; `v` is 2
+(**in strict mode v1 and every other version are refused on these routes: no downgrade**); `ts` is an integer; the nonce is well-formed; the HMAC matches (constant-time, against `LEAD_INGEST_SECRET` and, during a rotation, `LEAD_INGEST_SECRET_PREVIOUS`);
+`ts` is at most **120 s old** and at most **30 s ahead**; and the nonce has not been used before (**one-time**). Only then is anything stored. Failures are `401`
+(`invalid_signature` on the flight route, `{ ok: false, error: "Invalid request signature." }` on the public routes) with a fixed log tag
+(`[website-signature] refused: <reason>`: never the context, the nonce, the body or the IP). If the one-time store cannot be reached the answer is `503` (fail closed).
+
+**When it is required (rollout: CRM first, website second).** Strict mode needs BOTH a `LEAD_INGEST_SECRET` (≥ 32 characters) and the explicit switch
+`WEBSITE_SIGNATURE_REQUIRED=true`; then a valid v2 signature is **required** on those three routes and an unsigned or v1 request is refused with 401 (no unsigned
+fallback). The switch exists so that the CRM can be deployed before the website without refusing the website that is live today:
+
+1. Deploy the CRM with `LEAD_INGEST_SECRET` set and the switch **unset** (transitional): a valid v2 signature is verified, single-use and rate-limited per visitor;
+   a request without one (today's website) is handled exactly as before this release, and no visitor fact is trusted without a verified signature.
+2. Deploy the updated website (it signs every request with v2).
+3. Check that real submissions arrive with their visitor IP/location, then set `WEBSITE_SIGNATURE_REQUIRED=true` and restart the CRM (strict mode).
+
+With no secret nothing can be verified and the routes behave as they always did (no visitor IP or location is recorded). To roll back strict mode, unset the switch;
+to switch verification off entirely, unset the secret.
+
+**Key rotation.** Put the new value in `LEAD_INGEST_SECRET` and the old one in `LEAD_INGEST_SECRET_PREVIOUS` on the CRM, deploy the new value on the website, then remove
+`LEAD_INGEST_SECRET_PREVIOUS`. Both are checked in constant time; a previous secret shorter than 32 characters is ignored. Neither value is ever logged or returned.
+
+**Replay protection.** The nonce is consumed once per company with one `INSERT ... ON CONFLICT ("key") DO NOTHING` into the existing `RateLimitCounter` table
+(key `nonce:v2:<company>:<nonce>`, `expiresAt` = signing time + 180 s, purged by the existing cron cleanup): atomic across concurrent requests, instances and
+restarts, **no schema change and no migration**. A legitimate retry is a **new** request (the website signs every attempt afresh); the unchanged `Idempotency-Key`
+(flight) or `submissionId` (contact) turns the retry into a duplicate instead of a second record. Re-sending a consumed signature is refused.
+
+**Rate limiting of website traffic.** The per-IP limiter on the public routes cannot see the visitor behind the website's server. After a request's signature is
+verified, the visitor IP it carries is the client key for a per-visitor limit in a website-only bucket (`<ENDPOINT>:website`); requests the website could not
+attribute share one bucket with five times the allowance. A visitor cannot choose that key (it is signed).
+
+The flight route (`POST /api/v1/website/flight-inquiries`) applies it too, with the lead-capture allowance (20 requests per 15 minutes per visitor, bucket `WEBSITE_FLIGHT:website`) in addition to
+the account-wide budget (120 per minute for the whole website), and answers `429` with `Retry-After` and the error code `rate_limited`. Before this was added the flight route
+had only the shared account-wide budget, so one visitor or script could use all of it and make every other visitor's request fail. The limiter runs only after the signature
+has been verified: an unsigned or badly signed request never counts against a real visitor.
+
+**Visitor IP and approximate location.** Because the call comes from the website's server, the connection's addresses describe **that server, not the visitor**,
+and are never recorded. Only the facts inside a verified context are used (never a private/reserved IP; the location source only from the allow-list `vercel` /
+`cloudflare`).
 
 Without a valid context the lead is created with **no IP and no location** (never the connection's). A context that fails verification (wrong secret, bad
 signature, older than 5 minutes, malformed, private/reserved IP) is ignored the same way. The IP and location are shown only in the lead's permission-gated

@@ -8,7 +8,8 @@ import { NextResponse } from "next/server";
 
 export const PUBLIC_JSON_MAX_BYTES = 64 * 1024;
 
-export type LimitedJson = { ok: true; value: unknown } | { ok: false; response: NextResponse };
+/** `raw` is the exact body bytes that were received (the signature of a website request is computed over them, never over a re-serialisation). */
+export type LimitedJson = { ok: true; value: unknown; raw: Buffer } | { ok: false; response: NextResponse };
 
 const tooLarge = () => NextResponse.json({ ok: false, error: "Request body is too large." }, { status: 413 });
 const badJson = () => NextResponse.json({ ok: false, error: "Invalid JSON body" }, { status: 400 });
@@ -35,8 +36,9 @@ export async function readLimitedJson(req: Request, maxBytes: number = PUBLIC_JS
   } catch {
     return { ok: false, response: badJson() };
   }
+  const raw = Buffer.concat(chunks);
   try {
-    return { ok: true, value: JSON.parse(Buffer.concat(chunks).toString("utf8")) };
+    return { ok: true, value: JSON.parse(raw.toString("utf8")), raw };
   } catch {
     return { ok: false, response: badJson() };
   }

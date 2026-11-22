@@ -9,8 +9,11 @@ const post = (body: BodyInit | null, headers: Record<string, string> = {}) =>
 
 describe("readLimitedJson", () => {
   it("parses a normal body exactly as Request.json() would", async () => {
-    const r = await readLimitedJson(post(JSON.stringify({ a: 1, name: "Zoë ✈" })));
-    expect(r).toEqual({ ok: true, value: { a: 1, name: "Zoë ✈" } });
+    const text = JSON.stringify({ a: 1, name: "Zoë ✈" });
+    const r = await readLimitedJson(post(text));
+    expect(r).toMatchObject({ ok: true, value: { a: 1, name: "Zoë ✈" } });
+    // The exact received bytes come back too: the website's request signature (v2) is computed over them, never over a re-serialisation.
+    expect(r.ok && r.raw.equals(Buffer.from(text, "utf8"))).toBe(true);
   });
 
   it("a body at the cap is accepted; one byte over is refused with 413", async () => {

@@ -11,6 +11,8 @@ import { deriveInquiryId } from "@/server/inquiry-id";
 import { buildInquirySubmissionInfo } from "@/server/inquiry-submission-info";
 import { checkPublicRateLimit, type RateLimitConfig } from "@/server/security/rate-limit";
 import { readLimitedJson } from "@/server/security/read-limited-json";
+import { guardWebsiteRequest, websiteGuardResponse } from "@/server/website-signature-guard";
+import type { VerifiedVisitor } from "@/server/website-request-signature";
 
 // The one implementation behind BOTH public inquiry endpoints. Each endpoint
 // is a thin route file that names the inquiry SOURCE it stands for:
@@ -119,6 +121,16 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
     return NextResponse.json({ ok: false, error: INVALID_EMAIL_MESSAGE }, { status: 400 });
   }
 
+  // The Business Flights website's SERVER posts here: its request must carry a v2 signature that binds the method, this path, the company and the exact
+  // body bytes, and is single-use (website-request-signature.ts, website-signature-guard.ts). Once verified, the visitor IP it signed is the client key
+  // for per-visitor rate limiting (the connection itself is the website's server). Direct visitors (the CRM's own inquiry page) are unaffected.
+  let verifiedVisitor: VerifiedVisitor | undefined;
+  if (options.serverToServer) {
+    const guard = await guardWebsiteRequest({ req, body: limited.raw, companyId: data.companyId, rateLimit: { endpoint: options.rateLimitEndpoint, config: options.rateLimit } });
+    if (!guard.ok) return websiteGuardResponse(guard);
+    verifiedVisitor = guard.visitor;
+  }
+
   // Honeypot: a real visitor's browser never populates this field (it is
   // hidden from sighted users and removed from the tab order and the
   // accessibility tree alike). Reporting success without writing anything
@@ -148,7 +160,7 @@ export async function handlePublicInquiryPost(req: Request, options: HandlePubli
   // guarded block.
   // Full IP + approximate location of whoever submitted, from the server's own trusted view of the request - never from the body. Best effort:
   // it returns undefined (and never throws) when nothing trustworthy is known, so it can never cost the business an inquiry.
-  const submissionInfo = await buildInquirySubmissionInfo(req.headers, { serverToServer: options.serverToServer === true });
+  const submissionInfo = await buildInquirySubmissionInfo(req.headers, { serverToServer: options.serverToServer === true, verifiedVisitor });
 
   let inquiryId = "";
   let isDuplicate = false;

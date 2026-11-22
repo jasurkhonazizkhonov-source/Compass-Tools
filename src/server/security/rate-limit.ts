@@ -55,7 +55,17 @@ export type RateLimitResult = { allowed: true } | { allowed: false; retryAfterSe
 export async function checkPublicRateLimit(headers: Headers, endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
   const ip = getClientIp(headers);
   if (!ip) return { allowed: true };
+  return checkPublicRateLimitForKey(ip, endpoint, config);
+}
 
+/**
+ * The same atomic fixed-window counter for a caller-supplied client key. Used for the Business Flights website's SERVER-TO-SERVER requests: their
+ * connection is the website's own server, so checkPublicRateLimit (which reads the connection's trusted headers) finds no client IP and lets
+ * everything through. After a request's v2 signature is verified, the visitor IP the website signed is the trustworthy client key (a visitor cannot
+ * choose it); when the website could not determine one, the caller passes a shared "unattributed" key with a larger allowance.
+ */
+export async function checkPublicRateLimitForKey(clientKey: string, endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
+  const ip = clientKey;
   const windowBucket = Math.floor(Date.now() / config.windowMs);
   const key = `${ip}|${endpoint}|${windowBucket}`;
   const expiresAt = new Date((windowBucket + 1) * config.windowMs);

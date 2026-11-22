@@ -3,6 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { notifyNewSubscriber } from "@/server/admin-notifications";
 import { readLimitedJson } from "@/server/security/read-limited-json";
+import { guardWebsiteRequest, websiteGuardResponse } from "@/server/website-signature-guard";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 
 // Part 10 — the public company website's newsletter/marketing signup form
@@ -36,6 +37,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: "Invalid submission" }, { status: 400 });
   }
   const { companyId, source } = parsed.data;
+  // The Business Flights website posts here from its server: a v2 signature (method, path, company, exact body, single use) is required whenever this
+  // server has a LEAD_INGEST_SECRET, so nobody can enrol arbitrary addresses by calling this public route directly (website-signature-guard.ts).
+  const guard = await guardWebsiteRequest({ req, body: limited.raw, companyId, rateLimit: { endpoint: "SUBSCRIBE", config: RATE_LIMITS.SUBSCRIBE } });
+  if (!guard.ok) return websiteGuardResponse(guard);
   // Normalized the same way every other email field in this CRM is
   // (ContactEmail, bulk-contact-validation.ts, etc.) — without this,
   // "John@example.com" and "john@example.com" would pass the DB's

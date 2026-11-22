@@ -82,7 +82,19 @@ export function resolveVisitorContext(headers: Headers, nowMs: number = Date.now
   if (!payload || typeof payload !== "object" || payload.v !== 1 || typeof payload.ts !== "number" || !Number.isFinite(payload.ts)) return { state: "invalid" };
   if (Math.abs(nowMs / 1000 - payload.ts) > VISITOR_CONTEXT_MAX_SKEW_SECONDS) return { state: "invalid" };
 
-  // Even a correctly signed value is validated like any other: shape, and never a private/reserved address.
+  return { state: "verified", ...visitorFromContextPayload(payload) };
+}
+
+/**
+ * The visitor facts of an ALREADY AUTHENTICATED context payload (v1 here, v2 in website-request-signature.ts). Even a correctly signed value is
+ * validated like any other: shape, never a private/reserved address, location values only through the same reader the platform headers use, and the
+ * location source only from the allow-list above.
+ */
+export function visitorFromContextPayload(payload: Partial<Pick<VisitorContextPayload, "ip" | "city" | "region" | "country" | "timezone" | "source">>): {
+  ip?: string;
+  location?: ApproximateLocation;
+  locationSource?: string;
+} {
   let ip: string | undefined;
   if (typeof payload.ip === "string") {
     const candidate = normalizeIp(payload.ip.trim());
@@ -100,5 +112,5 @@ export function resolveVisitorContext(headers: Headers, nowMs: number = Date.now
   if (timezone) geoHeaders.set("x-vercel-ip-timezone", timezone);
   const location = readApproximateLocation(geoHeaders);
   const named = typeof payload.source === "string" && Object.prototype.hasOwnProperty.call(CONTEXT_LOCATION_SOURCES, payload.source) ? CONTEXT_LOCATION_SOURCES[payload.source] : undefined;
-  return { state: "verified", ip, location, ...(location ? { locationSource: named ?? GEO_SOURCE } : {}) };
+  return { ip, location, ...(location ? { locationSource: named ?? GEO_SOURCE } : {}) };
 }

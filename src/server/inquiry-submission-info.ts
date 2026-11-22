@@ -14,6 +14,7 @@
 // When nothing trustworthy is known no row is written at all. A failed geolocation never loses the IP and never fails the inquiry.
 import { resolveSignInContext } from "@/server/auth/sign-in-context";
 import { resolveVisitorContext } from "@/server/lead-ingest-context";
+import type { VerifiedVisitor } from "@/server/website-request-signature";
 import { lookupIpLocation } from "@/server/geo/ip-geolocation";
 import { GEO_SOURCE } from "@/lib/request-geo";
 import type { Prisma } from "@/generated/prisma/client";
@@ -22,11 +23,12 @@ export type InquirySubmissionInfoCreate = Prisma.InquirySubmissionInfoCreateWith
 
 export async function buildInquirySubmissionInfo(
   headerList: Headers,
-  options: { serverToServer: boolean },
+  // `verifiedVisitor`: the visitor facts of a request whose v2 signature the CALLER already verified (website-request-signature.ts); it replaces the header lookup.
+  options: { serverToServer: boolean; verifiedVisitor?: VerifiedVisitor },
   now: Date = new Date()
 ): Promise<InquirySubmissionInfoCreate | undefined> {
   try {
-    const visitor = resolveVisitorContext(headerList, now.getTime());
+    const visitor = options.verifiedVisitor ? ({ state: "verified", ...options.verifiedVisitor } as const) : resolveVisitorContext(headerList, now.getTime());
 
     if (visitor.state === "verified") {
       const ip = visitor.ip ?? null;
