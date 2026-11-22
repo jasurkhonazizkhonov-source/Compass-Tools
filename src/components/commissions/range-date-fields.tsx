@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState } from "react";
 import { format, isValid, parseISO } from "date-fns";
+import type { Matcher } from "react-day-picker";
 import { CalendarIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Calendar, CalendarDayButton } from "@/components/ui/calendar";
@@ -31,6 +32,9 @@ function DateField({
   onChange,
   rangeFrom,
   rangeTo,
+  testId,
+  clearable = false,
+  disabledDays,
 }: {
   label: string;
   name: "from" | "to";
@@ -39,6 +43,12 @@ function DateField({
   /** The other bound(s), only to draw the highlighted span in this calendar; they never change what this field submits. */
   rangeFrom?: Date;
   rangeTo?: Date;
+  /** Defaults to the Commissions / Salesboard id. */
+  testId?: string;
+  /** An optional field (a filter): offers "Clear date" so it can go back to empty. The Commissions range is required, so it is off there. */
+  clearable?: boolean;
+  /** Days that cannot be chosen (react-day-picker matchers), used to make a reversed From / To range impossible to pick. */
+  disabledDays?: Matcher;
 }) {
   const [open, setOpen] = useState(false);
   const labelId = useId();
@@ -55,7 +65,7 @@ function DateField({
             type="button"
             variant="outline"
             aria-labelledby={labelId}
-            data-testid={`commission-date-${name}`}
+            data-testid={testId ?? `commission-date-${name}`}
             className={cn("h-8 w-[10.5rem] justify-start gap-2 px-2.5 font-normal tabular-nums", !selected && "text-muted-foreground")}
           >
             <CalendarIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
@@ -73,6 +83,7 @@ function DateField({
               setOpen(false);
             }}
             autoFocus
+            disabled={disabledDays}
             modifiers={spanOk ? { inRange: { from: rangeFrom!, to: rangeTo! } } : undefined}
             modifiersClassNames={{ inRange: "bg-primary/10 data-[selected=true]:bg-transparent" }}
             buttonVariant="outline"
@@ -95,10 +106,93 @@ function DateField({
               ),
             }}
           />
+          {clearable && selected && (
+            <div className="border-t p-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full"
+                onClick={() => {
+                  onChange("");
+                  setOpen(false);
+                }}
+              >
+                Clear date
+              </Button>
+            </div>
+          )}
         </PopoverContent>
       </Popover>
       {/* the value the server receives - the same field name and yyyy-MM-dd text the native input submitted */}
       <input type="hidden" name={name} value={value} />
+    </div>
+  );
+}
+
+/**
+ * The OPTIONAL From / To filter pair of an administration list (the failed sign-in log), using the same calendar as the reports above. Either date may be left empty (an open-ended
+ * filter), and each submits `yyyy-MM-dd` text under the names `from` and `to` exactly as the native inputs did, so the query, the pagination links and the day-range
+ * conversion on the server (business-zone calendar days) are untouched. A reversed range cannot be picked (days after To are disabled in From, days before From in To), and a
+ * hand-built one is stopped at submit with a message.
+ */
+export function DateRangeFilterFields({ initialFrom, initialTo, testIdPrefix = "date-range" }: { initialFrom: string; initialTo: string; testIdPrefix?: string }) {
+  const [from, setFrom] = useState(initialFrom);
+  const [to, setTo] = useState(initialTo);
+  const [error, setError] = useState<string | null>(null);
+  const wrapper = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const form = wrapper.current?.closest("form");
+    if (!form) return;
+    const onSubmit = (e: Event) => {
+      if (from && to && from > to) {
+        // yyyy-MM-dd text compares correctly as text
+        e.preventDefault();
+        setError("The From date must be on or before the To date.");
+      }
+    };
+    form.addEventListener("submit", onSubmit);
+    return () => form.removeEventListener("submit", onSubmit);
+  }, [from, to]);
+
+  const fromDate = toDate(from);
+  const toDay = toDate(to);
+  return (
+    <div ref={wrapper} className="flex flex-wrap items-end gap-2">
+      <DateField
+        label="From"
+        name="from"
+        value={from}
+        rangeFrom={fromDate}
+        rangeTo={toDay}
+        testId={`${testIdPrefix}-from`}
+        clearable
+        disabledDays={toDay ? { after: toDay } : undefined}
+        onChange={(v) => {
+          setFrom(v);
+          setError(null);
+        }}
+      />
+      <DateField
+        label="To"
+        name="to"
+        value={to}
+        rangeFrom={fromDate}
+        rangeTo={toDay}
+        testId={`${testIdPrefix}-to`}
+        clearable
+        disabledDays={fromDate ? { before: fromDate } : undefined}
+        onChange={(v) => {
+          setTo(v);
+          setError(null);
+        }}
+      />
+      {error && (
+        <p role="alert" className="basis-full text-xs text-destructive" data-testid={`${testIdPrefix}-error`}>
+          {error}
+        </p>
+      )}
     </div>
   );
 }

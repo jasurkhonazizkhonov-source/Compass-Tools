@@ -11,6 +11,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { EmptyState } from "@/components/crm/empty-state";
+import { DateRangeFilterFields } from "@/components/commissions/range-date-fields";
 import { deleteFailedSignInEvents } from "@/server/actions/failed-signins";
 import { FAILED_SIGNIN_REASONS, FAILED_SIGNIN_METHODS, reasonLabel, methodLabel } from "@/lib/failed-signin";
 import { businessDayKey, formatBusinessTime, formatDayKey } from "@/lib/business-time";
@@ -65,14 +66,8 @@ export function FailedSignInsView({ data, filters }: { data: Data; filters: Fail
           Search
           <Input name="q" defaultValue={filters.q ?? ""} placeholder="Name, email, IP address or event ID" maxLength={120} />
         </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-          From
-          <Input name="from" type="date" defaultValue={filters.from ?? ""} />
-        </label>
-        <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
-          To
-          <Input name="to" type="date" defaultValue={filters.to ?? ""} />
-        </label>
+        {/* Keyed by the applied filter, so Clear / a new search resets the pickers (they hold their own state). */}
+        <DateRangeFilterFields key={`${filters.from ?? ""}|${filters.to ?? ""}`} initialFrom={filters.from ?? ""} initialTo={filters.to ?? ""} testIdPrefix="failed-signins-date" />
         <label className="flex flex-col gap-1 text-xs font-medium text-muted-foreground">
           Reason
           <select name="reason" defaultValue={filters.reason ?? ""} className="h-9 rounded-lg border border-input bg-transparent px-2 text-sm text-foreground dark:bg-input/30">
