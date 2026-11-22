@@ -130,7 +130,7 @@ export function PhoneManager({ contactId, phones, leadId, readOnly = false }: { 
   );
 }
 
-export function EmailManager({ contactId, emails, leadId, readOnly = false }: { contactId: string; emails: EmailRow[]; leadId?: string; /** the viewer may not change email addresses: list only, no add / make-primary / delete controls */ readOnly?: boolean }) {
+export function EmailManager({ contactId, emails, leadId, readOnly = false, masked = false }: { contactId: string; emails: EmailRow[]; leadId?: string; /** the addresses are masked for this viewer: they cannot be made primary or deleted until revealed (a new address can still be added) */ masked?: boolean; /** the viewer may not change email addresses: list only, no add / make-primary / delete controls */ readOnly?: boolean }) {
   const [adding, setAdding] = useState(false);
   const [newEmail, setNewEmail] = useState("");
   const [newType, setNewType] = useState("PERSONAL");
@@ -172,7 +172,7 @@ export function EmailManager({ contactId, emails, leadId, readOnly = false }: { 
               {e.isPrimary && <span className="text-[10px] font-medium text-primary shrink-0">Primary</span>}
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              {!readOnly && !e.isPrimary && (
+              {!readOnly && !masked && !e.isPrimary && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -187,7 +187,7 @@ export function EmailManager({ contactId, emails, leadId, readOnly = false }: { 
                   <TooltipContent>Make primary</TooltipContent>
                 </Tooltip>
               )}
-              {!readOnly && emails.length > 1 && (
+              {!readOnly && !masked && emails.length > 1 && (
                 <Button
                   variant="ghost"
                   size="icon-sm"

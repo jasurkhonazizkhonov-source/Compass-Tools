@@ -9,6 +9,8 @@ import { InlineEditField } from "@/components/crm/inline-edit-field";
 import { PhoneValueInput } from "@/components/crm/phone-input";
 import { PhoneManager, EmailManager } from "@/components/contacts/phone-email-manager";
 import { CustomerEmailReveal } from "@/components/crm/customer-email-reveal";
+import { useRevealExpired } from "@/components/crm/reveal-expiry";
+import { maskCustomerEmail } from "@/lib/customer-email-mask";
 import { formatPhoneInternational } from "@/lib/phone";
 import { updatePrimaryPhoneNumber, updatePrimaryEmailAddress, updateContactField } from "@/server/actions/contacts";
 
@@ -42,10 +44,16 @@ export function CustomerInfoCard({
    * The server actions enforce the same rule; this only avoids offering controls that would be refused. Names stay editable. */
   canEditContactDetails?: boolean;
   /** Customer-email privacy. Present only for a viewer who is subject to masking. `emails` then already holds the viewer-visible form (masked until revealed). */
-  emailPrivacy?: { masked: boolean; used: number; limit: number };
+  emailPrivacy?: { masked: boolean; used: number; limit: number; resetsAt?: string };
 }) {
-  const primaryEmail = emails.find((e) => e.isPrimary)?.email;
-  const emailMasked = emailPrivacy?.masked === true;
+  // A reveal belongs to a period that ends at 13:15 Pacific. If this page outlives it, the addresses are masked here at once (and the server is asked for a fresh render); the server
+  // re-checks the period on every request and action regardless, so this only hides what a stale tab would otherwise keep showing.
+  const revealExpired = useRevealExpired(emailPrivacy?.resetsAt, !!emailPrivacy && !emailPrivacy.masked);
+  const emailMasked = emailPrivacy?.masked === true || revealExpired;
+  const shownEmails = revealExpired ? emails.map((e) => ({ ...e, email: maskCustomerEmail(e.email) })) : emails;
+  const primaryEmail = shownEmails.find((e) => e.isPrimary)?.email;
+  // An existing address can be edited only while it is visible to this viewer: edit permission alone is not enough, and a masked address has nothing to edit.
+  const canEditEmail = canEditContactDetails && !emailMasked;
   return (
     <Card className="shadow-none">
       <CardHeader className="flex flex-row items-center justify-between">
@@ -87,20 +95,21 @@ export function CustomerInfoCard({
 
         <InlineEditField<string>
           label="Primary Email"
-          // A masked value is never an editing starting point: an edit while masked starts blank and replaces the address.
+          // The pencil exists only while the address is revealed; a masked value is never an editing starting point.
           currentValue={emailMasked ? "" : primaryEmail ?? ""}
           displayValue={primaryEmail ?? "Not set"}
           editor={(value, setValue) => <Input type="email" value={value} onChange={(e) => setValue(e.target.value)} />}
           onSave={(v) => updatePrimaryEmailAddress(contactId, v, leadId)}
           successMessage="Email updated"
-          readOnly={!canEditContactDetails}
+          readOnly={!canEditEmail}
         />
-        {emailPrivacy && <CustomerEmailReveal contactId={contactId} leadId={leadId} masked={emailPrivacy.masked} used={emailPrivacy.used} limit={emailPrivacy.limit} />}
+        {emailPrivacy && <CustomerEmailReveal contactId={contactId} leadId={leadId} masked={emailMasked} used={emailPrivacy.used} limit={emailPrivacy.limit} />}
+        {canEditContactDetails && emailMasked && <p className="text-xs text-muted-foreground">Reveal the email address to edit it.</p>}
 
         <Separator />
         <PhoneManager contactId={contactId} phones={phones} leadId={leadId} readOnly={!canEditContactDetails} />
         <Separator />
-        <EmailManager contactId={contactId} emails={emails} leadId={leadId} readOnly={!canEditContactDetails} />
+        <EmailManager contactId={contactId} emails={shownEmails} leadId={leadId} readOnly={!canEditContactDetails} masked={emailMasked} />
         {!canEditContactDetails && (
           <p className="text-xs text-muted-foreground">You do not have permission to change phone numbers or email addresses. Ask an Administrator if one needs updating.</p>
         )}

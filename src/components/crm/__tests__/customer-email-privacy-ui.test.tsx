@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@/test/rtl-setup";
 
-// The browser side of customer-email privacy: the Reveal button + "n / 5 used today" indicator, and the composer that addresses a customer by opaque id.
+// The browser side of customer-email privacy: the Reveal button + "n / 5 used this period" indicator, and the composer that addresses a customer by opaque id.
 
 const refresh = vi.fn();
 vi.mock("next/navigation", () => ({ useRouter: () => ({ refresh, push: vi.fn() }) }));
@@ -26,7 +26,7 @@ beforeEach(() => vi.clearAllMocks());
 describe("CustomerEmailReveal", () => {
   it("shows the allowance indicator and a Reveal button while the customer is masked", () => {
     render(<CustomerEmailReveal contactId="c1" masked used={2} limit={5} />);
-    expect(screen.getByTestId("customer-email-usage")).toHaveTextContent("Customer email reveals: 2 / 5 used today");
+    expect(screen.getByTestId("customer-email-usage")).toHaveTextContent("Customer email reveals: 2 / 5 used this period");
     expect(screen.getByRole("button", { name: "Reveal customer email" })).toBeEnabled();
   });
 
@@ -50,7 +50,7 @@ describe("CustomerEmailReveal", () => {
     const user = userEvent.setup();
     render(<CustomerEmailReveal contactId="c1" masked used={5} limit={5} />);
     expect(screen.getByRole("button", { name: "Reveal customer email" })).toBeDisabled();
-    expect(screen.getByText(/resets at midnight Pacific/)).toBeInTheDocument();
+    expect(screen.getByText(/resets at 1:15 PM Pacific time/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Reveal customer email" }));
     expect(reveal).not.toHaveBeenCalled();
   });

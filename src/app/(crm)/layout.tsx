@@ -11,6 +11,7 @@ import { getGmailConnectionState } from "@/server/queries/gmail-connection";
 import { getCompanyForAccountId, getCompanyById } from "@/server/queries/company";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 import { SkipLink } from "@/components/layout/skip-link";
+import { RevealResetRefresher } from "@/components/crm/reveal-expiry";
 
 // Vercel's default function limit is 10s. This app talks to Postgres over a
 // high-latency link and every CRM page issues many sequential statements — a healthy-but-slow request must not be
@@ -68,6 +69,8 @@ export default async function CrmLayout({ children }: { children: React.ReactNod
     <div className="min-h-screen bg-muted/30">
       <SkipLink />
       <PresenceHeartbeat accountId={current?.id} />
+      {/* Everyone except an Administrator may be subject to customer-email masking: at the daily 13:15 Pacific reset, re-render the open page so revealed addresses are masked again. */}
+      {current && current.role !== "ADMIN" && <RevealResetRefresher />}
       <Suspense fallback={null}>
         <GmailConnectToast />
       </Suspense>

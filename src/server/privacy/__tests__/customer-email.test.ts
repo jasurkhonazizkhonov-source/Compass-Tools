@@ -192,7 +192,7 @@ describe("reveal allowance - five per business day", () => {
     const results = await Promise.all(Array.from({ length: 10 }, (_, i) => revealCustomerEmails(viewerOf("agent-1"), { contactId: `c${i}`, now: NOON })));
     expect(results.filter((r) => r.ok)).toHaveLength(5);
     expect(results.filter((r) => !r.ok && r.code === "LIMIT_REACHED")).toHaveLength(5);
-    expect(usage.get("agent-1|2026-11-20")).toBe(5);
+    expect(usage.get("agent-1|p20261119")).toBe(5); // NOON is before 13:15, so it belongs to the period that started Nov 19 at 13:15
     expect(events).toHaveLength(5);
   });
 
@@ -201,7 +201,7 @@ describe("reveal allowance - five per business day", () => {
     const results = await Promise.all(Array.from({ length: 6 }, () => revealCustomerEmails(viewerOf("agent-1"), { contactId: "c3", now: NOON })));
     expect(results.every((r) => r.ok)).toBe(true);
     expect(results.filter((r) => r.ok && r.charged)).toHaveLength(1);
-    expect(usage.get("agent-1|2026-11-20")).toBe(1);
+    expect(usage.get("agent-1|p20261119")).toBe(1);
   });
 
   it("a failure while reading the addresses consumes nothing (the reveal record and the counter roll back with it)", async () => {
@@ -224,13 +224,14 @@ describe("reveal allowance - five per business day", () => {
     expect(await revealCustomerEmails(viewerOf("agent-2"), { contactId: "c0", now: NOON })).toMatchObject({ ok: true, charged: true, usage: { used: 1 } });
   });
 
-  it("the allowance resets at midnight Pacific time, not at midnight UTC and not after 24 hours", async () => {
+  it("the allowance resets at 1:15 PM Pacific time - not at midnight (Pacific or UTC) and not after 24 hours", async () => {
     const { revealCustomerEmails } = await import("../customer-email");
-    const lateEvening = new Date("2026-11-21T07:59:00Z"); // 23:59 PST, Nov 20
-    for (let i = 0; i < 5; i++) await revealCustomerEmails(viewerOf("agent-1"), { contactId: `c${i}`, now: lateEvening });
-    expect(await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c6", now: new Date("2026-11-21T07:59:59Z") })).toMatchObject({ ok: false, code: "LIMIT_REACHED" });
-    // 00:00:00 PST on Nov 21 is a new business day (even though it is only one second later)
-    expect(await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c6", now: new Date("2026-11-21T08:00:00Z") })).toMatchObject({ ok: true, charged: true, usage: { used: 1 } });
+    const beforeReset = new Date("2026-11-21T21:14:00Z"); // 13:14 PST, Nov 21
+    for (let i = 0; i < 5; i++) await revealCustomerEmails(viewerOf("agent-1"), { contactId: `c${i}`, now: beforeReset });
+    // midnight (Pacific, 08:00 UTC Nov 21) has already passed for these five: it is NOT a reset any more
+    expect(await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c6", now: new Date("2026-11-21T21:14:59Z") })).toMatchObject({ ok: false, code: "LIMIT_REACHED" });
+    // 13:15:00 PST is a new reveal period, one second later
+    expect(await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c6", now: new Date("2026-11-21T21:15:00Z") })).toMatchObject({ ok: true, charged: true, usage: { used: 1, remaining: 4 } });
   });
 
   it("an unrestricted viewer reveals without counting anything or writing any record", async () => {
@@ -371,5 +372,136 @@ describe("recipientsMaySeeCustomerEmail - who may be shown an address inside an 
       throw new Error("db down");
     });
     expect(await recipientsMaySeeCustomerEmail(["admin"])).toBe(false); // unreadable -> fail closed
+  });
+});
+
+// ───────────────────────── the 13:15 America/Los_Angeles reveal period ─────────────────────────
+// Reveal state lives in the database, keyed by the reveal period; the server re-reads it on every call. Clocks are controlled (explicit `now`, or fake timers where a function
+// reads the clock itself) - nothing here waits for a real reset.
+
+describe("reveal period: allowance AND visibility reset together at 1:15 PM Pacific", () => {
+  const AGENT = { id: "agent-1", role: "TRAVEL_AGENT", companyId: "co-1" };
+  const T_BEFORE = new Date("2026-11-21T21:14:00Z"); // 13:14 PST Nov 21
+  const T_RESET = new Date("2026-11-21T21:15:00Z"); // 13:15 PST Nov 21 - the new period
+  const row = (i: number) => [{ id: `e${i}`, email: `customer${i}@example.com`, isPrimary: true }];
+
+  it("1-2. a period starts with five reveals, and each successful reveal uses one", async () => {
+    const { getEmailUsage, revealCustomerEmails } = await import("../customer-email");
+    expect(await getEmailUsage(viewerOf("agent-1"), T_BEFORE)).toMatchObject({ used: 0, limit: 5, remaining: 5, unlimited: false });
+    await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c0", now: T_BEFORE });
+    await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c1", now: T_BEFORE });
+    expect(await getEmailUsage(viewerOf("agent-1"), T_BEFORE)).toMatchObject({ used: 2, remaining: 3 });
+  });
+
+  it("the usage tells the browser exactly when the period ends (the next 13:15 Pacific), as a UTC instant", async () => {
+    const { getEmailUsage } = await import("../customer-email");
+    expect((await getEmailUsage(viewerOf("agent-1"), T_BEFORE)).resetsAt).toBe("2026-11-21T21:15:00.000Z");
+    expect((await getEmailUsage(viewerOf("agent-1"), new Date("2026-07-10T20:20:00Z"))).resetsAt).toBe("2026-07-11T20:15:00.000Z"); // summer: 13:15 PDT
+  });
+
+  it("3. a revealed address is visible to that user for the rest of the period, and the edit gate passes", async () => {
+    const { revealCustomerEmails, revealedContactIdsToday, assertEmailRevealedForEdit } = await import("../customer-email");
+    await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c0", now: T_BEFORE });
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], new Date("2026-11-21T21:14:59Z"))).has("c0")).toBe(true);
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", new Date("2026-11-21T21:14:59Z"))).resolves.toBeUndefined();
+  });
+
+  it("4-7. at 13:15 the counter refills, the revealed address is MASKED again, the edit gate refuses, and a new reveal is required (and costs one)", async () => {
+    const { revealCustomerEmails, revealedContactIdsToday, getEmailUsage, assertEmailRevealedForEdit, buildContactEmailView, EMAIL_MASKED_EDIT_DENIAL } = await import("../customer-email");
+    for (let i = 0; i < 5; i++) await revealCustomerEmails(viewerOf("agent-1"), { contactId: `c${i}`, now: T_BEFORE });
+    expect(await getEmailUsage(viewerOf("agent-1"), T_BEFORE)).toMatchObject({ used: 5, remaining: 0 });
+
+    expect(await getEmailUsage(viewerOf("agent-1"), T_RESET)).toMatchObject({ used: 0, remaining: 5 }); // refilled
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0", "c1", "c2", "c3", "c4"], T_RESET)).size).toBe(0); // all masked again
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", T_RESET)).rejects.toThrow(EMAIL_MASKED_EDIT_DENIAL); // so the edit is refused again
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(T_BEFORE);
+      expect((await buildContactEmailView(AGENT, "c0", row(0), "customer0@example.com")).masked).toBe(false);
+      vi.setSystemTime(T_RESET);
+      const view = await buildContactEmailView(AGENT, "c0", row(0), "customer0@example.com");
+      expect(view.masked).toBe(true);
+      expect(view.rows[0].email).toBe("c*******0@example.com");
+      expect(JSON.stringify(view)).not.toContain("customer0@example.com");
+      expect(view.privacy).toMatchObject({ masked: true, used: 0, limit: 5, resetsAt: "2026-11-22T21:15:00.000Z" });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const again = await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c0", now: T_RESET });
+    expect(again).toMatchObject({ ok: true, charged: true, usage: { used: 1, remaining: 4 } }); // not free: the old reveal belongs to the old period
+  });
+
+  it("10. a stale session / open tab holds no privilege of its own: the same viewer, the same contact, one second after the reset is masked and refused", async () => {
+    const { revealCustomerEmails, assertEmailRevealedForEdit, revealedContactIdsToday } = await import("../customer-email");
+    const staleViewer = viewerOf("agent-1");
+    await revealCustomerEmails(staleViewer, { contactId: "c0", now: T_BEFORE });
+    expect((await revealedContactIdsToday(staleViewer, ["c0"], new Date("2026-11-21T21:14:59Z"))).size).toBe(1);
+    expect((await revealedContactIdsToday(staleViewer, ["c0"], new Date("2026-11-21T21:15:01Z"))).size).toBe(0);
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", new Date("2026-11-21T21:15:01Z"))).rejects.toThrow();
+  });
+
+  it("9. across spring-forward (Mar 8 2026) the boundary is still 13:15 local: a reveal at 13:14 PDT is masked at 13:15 PDT", async () => {
+    const { revealCustomerEmails, revealedContactIdsToday } = await import("../customer-email");
+    await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c0", now: new Date("2026-03-08T20:14:00Z") });
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], new Date("2026-03-08T20:14:59Z"))).size).toBe(1);
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], new Date("2026-03-08T20:15:00Z"))).size).toBe(0);
+  });
+
+  it("9. across fall-back (Nov 1 2026) the same holds in standard time", async () => {
+    const { revealCustomerEmails, revealedContactIdsToday } = await import("../customer-email");
+    await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c0", now: new Date("2026-11-01T21:14:00Z") });
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], new Date("2026-11-01T21:14:59Z"))).size).toBe(1);
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], new Date("2026-11-01T21:15:00Z"))).size).toBe(0);
+  });
+
+  it("an old midnight-style key row can never make anything look revealed in the new scheme", async () => {
+    const { revealedContactIdsToday } = await import("../customer-email");
+    events.push({ id: "legacy", userId: "agent-1", contactId: "c0", dayKey: "2026-11-21", method: "DAILY_ALLOWANCE" });
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], T_RESET)).size).toBe(0);
+    expect((await revealedContactIdsToday(viewerOf("agent-1"), ["c0"], T_BEFORE)).size).toBe(0);
+  });
+
+  it("the limit of five is unchanged, and the refusal message names the new reset time", async () => {
+    const { revealCustomerEmails } = await import("../customer-email");
+    for (let i = 0; i < 5; i++) await revealCustomerEmails(viewerOf("agent-1"), { contactId: `c${i}`, now: T_BEFORE });
+    const sixth = await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c6", now: T_BEFORE });
+    expect(sixth).toMatchObject({ ok: false, code: "LIMIT_REACHED" });
+    expect(sixth.ok ? "" : sixth.error).toContain("resets at 1:15 PM Pacific time");
+  });
+});
+
+describe("assertEmailRevealedForEdit - who may change an existing address", () => {
+  const AGENT = { id: "agent-1", role: "TRAVEL_AGENT", companyId: "co-1" };
+
+  it("masked for this viewer: refused, with a message that says what to do", async () => {
+    const { assertEmailRevealedForEdit } = await import("../customer-email");
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", NOON)).rejects.toThrow("Reveal this customer's email address before changing it.");
+  });
+
+  it("revealing ONE customer does not unlock another", async () => {
+    const { revealCustomerEmails, assertEmailRevealedForEdit } = await import("../customer-email");
+    await revealCustomerEmails(viewerOf("agent-1"), { contactId: "c0", now: NOON });
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", NOON)).resolves.toBeUndefined();
+    await expect(assertEmailRevealedForEdit(AGENT, "c1", NOON)).rejects.toThrow();
+  });
+
+  it("another user's reveal does not unlock it for this user", async () => {
+    const { revealCustomerEmails, assertEmailRevealedForEdit } = await import("../customer-email");
+    await revealCustomerEmails(viewerOf("agent-2"), { contactId: "c0", now: NOON });
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", NOON)).rejects.toThrow();
+  });
+
+  it("an Administrator and a user with Unlimited Customer Email Access are never masked, so they always pass", async () => {
+    const { assertEmailRevealedForEdit } = await import("../customer-email");
+    await expect(assertEmailRevealedForEdit({ id: "admin-1", role: "ADMIN", companyId: "co-1" }, "c0", NOON)).resolves.toBeUndefined();
+    await expect(assertEmailRevealedForEdit({ id: "trusted-1", role: "TRAVEL_AGENT", companyId: "co-1" }, "c0", NOON)).resolves.toBeUndefined();
+  });
+
+  it("fails closed: if the permission cannot be read the viewer is treated as masked, and with no reveal record the edit is refused", async () => {
+    const { assertEmailRevealedForEdit } = await import("../customer-email");
+    failAccountRead = true;
+    await expect(assertEmailRevealedForEdit(AGENT, "c0", NOON)).rejects.toThrow();
   });
 });

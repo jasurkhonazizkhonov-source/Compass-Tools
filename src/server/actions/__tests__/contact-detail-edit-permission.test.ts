@@ -10,6 +10,8 @@ const writes: string[] = [];
 const record = (name: string) => vi.fn(async (...args: unknown[]) => { void args; writes.push(name); return { id: "row-1", count: 1 }; });
 
 vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => currentActor) }));
+// The reveal gate (a masked address cannot be edited) has its own tests in email-edit-requires-reveal.test.ts; this file is about something else, so the gate is neutral here.
+vi.mock("@/server/privacy/customer-email", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/server/privacy/customer-email")>()), assertEmailRevealedForEdit: vi.fn(async () => undefined) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/server/activity-log", () => ({ logActivity: vi.fn(async () => {}) }));
 vi.mock("@/server/record-touch", () => ({ touchContactLeads: vi.fn(async () => {}) }));
@@ -107,5 +109,55 @@ describe("other contact edits are unaffected by the phone/email permission", () 
     await expect(updateContactField("contact-1", { firstName: "  " })).rejects.toThrow(/invalid/i);
     await expect(updateContactField("contact-1", { lastName: 5 } as never)).rejects.toThrow(/invalid/i);
     expect(contactUpdate).not.toHaveBeenCalled();
+  });
+});
+
+describe("a MASKED email address cannot be edited, even by a user who has the permission (direct server action calls)", () => {
+  const MASKED = "Reveal this customer's email address before changing it.";
+
+  async function gate() {
+    const mod = await import("@/server/privacy/customer-email");
+    return mod.assertEmailRevealedForEdit as unknown as ReturnType<typeof vi.fn>;
+  }
+
+  it("replacing the primary address, making another primary and deleting one are each refused while masked, and NOTHING is written", async () => {
+    (await gate()).mockRejectedValue(new Error(MASKED));
+    const all = await calls();
+    for (const name of ["updatePrimaryEmailAddress", "setPrimaryEmail", "deleteContactEmail"]) {
+      await expect(all[name](), name).rejects.toThrow(MASKED);
+    }
+    expect(writes).toEqual([]);
+    (await gate()).mockReset();
+    (await gate()).mockResolvedValue(undefined);
+  });
+
+  it("the gate is asked about THIS contact, for the signed-in actor, by exactly those three actions", async () => {
+    const g = await gate();
+    g.mockClear();
+    const all = await calls();
+    for (const name of Object.keys(all)) await all[name]();
+    const gated = g.mock.calls.length;
+    expect(gated).toBe(3);
+    for (const call of g.mock.calls) expect(call.slice(0, 2)).toEqual([expect.objectContaining({ id: "agent-1", role: "TRAVEL_AGENT" }), "contact-1"]);
+  });
+
+  it("phone editing is completely unaffected by a masked email: every phone action still succeeds while the email gate refuses", async () => {
+    (await gate()).mockRejectedValue(new Error(MASKED));
+    const all = await calls();
+    for (const name of ["updatePrimaryPhoneNumber", "addContactPhone", "setPrimaryPhone", "deleteContactPhone"]) {
+      await expect(all[name](), name).resolves.not.toThrow();
+    }
+    (await gate()).mockReset();
+    (await gate()).mockResolvedValue(undefined);
+  });
+
+  it("adding a NEW address is not blocked by masking (it does not change a masked one; lead creation relies on it), but still needs the permission", async () => {
+    (await gate()).mockRejectedValue(new Error(MASKED));
+    const all = await calls();
+    await expect(all["addContactEmail"]()).resolves.not.toThrow();
+    currentActor = { id: "u", role: "TRAVEL_AGENT", companyId: "company-1", canEditContactDetails: false };
+    await expect(all["addContactEmail"]()).rejects.toThrow(DENIED);
+    (await gate()).mockReset();
+    (await gate()).mockResolvedValue(undefined);
   });
 });

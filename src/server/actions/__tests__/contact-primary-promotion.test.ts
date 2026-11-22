@@ -18,6 +18,8 @@ let contactPrimaryPhone: string | null;
 let contactPrimaryEmail: string | null;
 
 vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => ({ id: "agent-1", role: "TRAVEL_AGENT", companyId: "company-1", canEditContactDetails: true })) }));
+// The reveal gate (a masked address cannot be edited) has its own tests in email-edit-requires-reveal.test.ts; this file is about something else, so the gate is neutral here.
+vi.mock("@/server/privacy/customer-email", async (importOriginal) => ({ ...(await importOriginal<typeof import("@/server/privacy/customer-email")>()), assertEmailRevealedForEdit: vi.fn(async () => undefined) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/server/activity-log", () => ({ logActivity: vi.fn(async () => {}) }));
 vi.mock("@/server/visibility", () => ({

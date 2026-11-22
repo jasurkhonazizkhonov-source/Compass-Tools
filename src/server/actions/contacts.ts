@@ -11,7 +11,7 @@ import { touchContactLeads } from "@/server/record-touch";
 import { normalizePhoneNumberWithRecovery } from "@/lib/phone";
 import { performContactReassignment, recheckContactOwnershipMatch } from "@/server/contact-reassignment";
 import { sendCrmEmail } from "@/server/email/crm-email";
-import { getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
+import { assertEmailRevealedForEdit, getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
 import type { AccountRole } from "@/generated/prisma/client";
 import { storageKeysForLeads, purgeStorageObjects } from "@/server/attachments/cleanup";
 
@@ -261,6 +261,7 @@ export async function updatePrimaryPhoneNumber(contactId: string, number: string
  * Primary Email field on the Lead/Contact detail page (Part 14). */
 export async function updatePrimaryEmailAddress(contactId: string, email: string, leadId?: string) {
   const actor = await assertContactDetailEditAccess(contactId, leadId);
+  await assertEmailRevealedForEdit(actor, contactId); // a masked address cannot be edited (reveal it first)
   const trimmed = email.trim().toLowerCase();
   const primary = await prisma.contactEmail.findFirst({ where: { contactId, isPrimary: true } });
 
@@ -413,7 +414,8 @@ export async function addContactEmail(input: z.infer<typeof emailSchema>) {
 }
 
 export async function setPrimaryEmail(contactId: string, emailId: string, leadId?: string) {
-  await assertContactDetailEditAccess(contactId, leadId);
+  const actor = await assertContactDetailEditAccess(contactId, leadId);
+  await assertEmailRevealedForEdit(actor, contactId);
   await prisma.contactEmail.updateMany({ where: { contactId }, data: { isPrimary: false } });
   // Scoped by contactId, not just emailId — same reasoning as setPrimaryPhone.
   await prisma.contactEmail.updateMany({ where: { id: emailId, contactId }, data: { isPrimary: true } });
@@ -423,7 +425,8 @@ export async function setPrimaryEmail(contactId: string, emailId: string, leadId
 }
 
 export async function deleteContactEmail(contactId: string, emailId: string, leadId?: string) {
-  await assertContactDetailEditAccess(contactId, leadId);
+  const actor = await assertContactDetailEditAccess(contactId, leadId);
+  await assertEmailRevealedForEdit(actor, contactId);
   // Scoped by contactId — same reasoning as deleteContactPhone.
   await prisma.contactEmail.deleteMany({ where: { id: emailId, contactId } });
   await syncPrimaryEmail(contactId);

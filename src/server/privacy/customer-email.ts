@@ -5,7 +5,9 @@
 //   - Users whose Account.unlimitedCustomerEmailAccess is on (an Administrator's per-user switch): complete addresses, no allowance. Read FRESH from the database on every
 //     decision, so revoking the switch takes effect on the very next request.
 //   - Everyone else (managers, travel agents, ...): a masked address (see lib/customer-email-mask) until they Reveal. A reveal of a customer costs one of
-//     DAILY_EMAIL_REVEAL_LIMIT per business day (America/Los_Angeles day); revealing the SAME customer again that day is free and stays revealed.
+//     DAILY_EMAIL_REVEAL_LIMIT per REVEAL PERIOD (13:15 to 13:15 America/Los_Angeles, see business-time.ts emailRevealPeriod); revealing the SAME customer again in that period is
+//     free and stays revealed. The period key is stored with every reveal AND with the counter, so when a new period starts the allowance refills and every address is masked again
+//     in the same step: visibility is decided by the server on each request from these rows, never remembered by the browser.
 //
 // What a "customer email" is: an address stored on a Contact (ContactEmail rows / Contact.primaryEmail) - the customer a lead, quote or booking belongs to. Staff
 // addresses (Account.email), the company's own addresses and supplier/airline addresses are NOT customer emails and are never masked here.
@@ -14,7 +16,7 @@
 // the address, so there is nothing to un-hide in the browser. The reveal is an atomic database operation (below), not a client-side counter.
 import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { businessDayKey } from "@/lib/business-time";
+import { REVEAL_RESET_LABEL, emailRevealPeriod } from "@/lib/business-time";
 import { DAILY_EMAIL_REVEAL_LIMIT, maskCustomerEmail, type RecipientOption } from "@/lib/customer-email-mask";
 
 export type EmailViewerActor = { id: string; role: string; companyId: string };
@@ -83,12 +85,12 @@ export async function withEmailPrivacy<T>(actor: MaybeViewer, rows: T[], pick: (
   });
 }
 
-/** Contact ids whose complete address this viewer has already revealed on the current business day. */
+/** Contact ids whose complete address this viewer has revealed in the CURRENT reveal period (13:15 to 13:15 Pacific). Re-read from the database on every call. */
 export async function revealedContactIdsToday(viewer: EmailViewer, contactIds: string[], now = new Date()): Promise<Set<string>> {
   if (!viewer.restricted || contactIds.length === 0) return new Set(contactIds);
   try {
     const rows = await prisma.customerEmailRevealEvent.findMany({
-      where: { userId: viewer.id, dayKey: businessDayKey(now), contactId: { in: contactIds } },
+      where: { userId: viewer.id, dayKey: emailRevealPeriod(now).key, contactId: { in: contactIds } },
       select: { contactId: true },
     });
     return new Set(rows.map((r) => r.contactId));
@@ -99,19 +101,21 @@ export async function revealedContactIdsToday(viewer: EmailViewer, contactIds: s
   }
 }
 
-export type EmailUsage = { used: number; limit: number; remaining: number; unlimited: boolean };
+export type EmailUsage = { used: number; limit: number; remaining: number; unlimited: boolean; /** ISO instant of the next 13:15 Pacific: the allowance refills and revealed addresses are masked again. */ resetsAt: string };
 
 export async function getEmailUsage(viewer: EmailViewer, now = new Date()): Promise<EmailUsage> {
-  if (!viewer.restricted) return { used: 0, limit: DAILY_EMAIL_REVEAL_LIMIT, remaining: DAILY_EMAIL_REVEAL_LIMIT, unlimited: true };
+  const period = emailRevealPeriod(now);
+  const resetsAt = period.endsAt.toISOString();
+  if (!viewer.restricted) return { used: 0, limit: DAILY_EMAIL_REVEAL_LIMIT, remaining: DAILY_EMAIL_REVEAL_LIMIT, unlimited: true, resetsAt };
   let count = 0;
   try {
-    const row = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: viewer.id, dayKey: businessDayKey(now) } }, select: { count: true } });
+    const row = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: viewer.id, dayKey: period.key } }, select: { count: true } });
     count = row?.count ?? 0;
   } catch {
     count = 0; // unreadable: show 0 used; the reveal itself is authoritative and still enforces the limit atomically
   }
   const used = Math.min(count, DAILY_EMAIL_REVEAL_LIMIT);
-  return { used, limit: DAILY_EMAIL_REVEAL_LIMIT, remaining: DAILY_EMAIL_REVEAL_LIMIT - used, unlimited: false };
+  return { used, limit: DAILY_EMAIL_REVEAL_LIMIT, remaining: DAILY_EMAIL_REVEAL_LIMIT - used, unlimited: false, resetsAt };
 }
 
 /** What a page/prop may carry for one stored address. `address` is present ONLY when this viewer may see the full value. */
@@ -143,7 +147,7 @@ export async function revealCustomerEmails(
   input: { contactId: string; leadId?: string | null; now?: Date; correlationId?: string }
 ): Promise<RevealOutcome> {
   const now = input.now ?? new Date();
-  const dayKey = businessDayKey(now);
+  const dayKey = emailRevealPeriod(now).key; // the column keeps its old name; it now holds the reveal-period key
   const readAddresses = async (db: Pick<typeof prisma, "contactEmail" | "contact">) => {
     const rows = await db.contactEmail.findMany({ where: { contactId: input.contactId }, select: { id: true, email: true }, orderBy: { createdAt: "asc" } });
     if (rows.length > 0) return rows.map((r) => ({ id: r.id, address: r.email }));
@@ -189,7 +193,7 @@ export async function revealCustomerEmails(
     return { ok: true, addresses: outcome.addresses, charged: outcome.charged, usage: await getEmailUsage(viewer, now) };
   } catch (err) {
     if (err instanceof LimitReached) {
-      return { ok: false, code: "LIMIT_REACHED", error: `You have used all ${DAILY_EMAIL_REVEAL_LIMIT} customer email reveals for today. The allowance resets at midnight Pacific time.`, usage: await getEmailUsage(viewer, now).catch(() => undefined) };
+      return { ok: false, code: "LIMIT_REACHED", error: `You have used all ${DAILY_EMAIL_REVEAL_LIMIT} customer email reveals for this period. The allowance resets at ${REVEAL_RESET_LABEL}.`, usage: await getEmailUsage(viewer, now).catch(() => undefined) };
     }
     console.error("[customer-email] reveal failed:", err instanceof Error ? err.name : "error");
     return { ok: false, code: "ERROR", error: "The email could not be revealed. Nothing was counted against your allowance." };
@@ -220,7 +224,7 @@ export type ContactEmailView<E extends { id: string; email: string; isPrimary: b
   /** true -> addresses (and any address inside free text on this page) must be shown masked. */
   masked: boolean;
   /** Present only for a viewer subject to masking: drives the Reveal button + "n / 5 used today" indicator. */
-  privacy?: { masked: boolean; used: number; limit: number };
+  privacy?: { masked: boolean; used: number; limit: number; resetsAt: string };
 };
 
 /** One call for a detail page: decides masked vs complete for this viewer and customer, and returns display-safe rows, composer recipients and the indicator. */
@@ -243,8 +247,23 @@ export async function buildContactEmailView<E extends { id: string; email: strin
     primaryDisplay: primaryEmail ? (full ? primaryEmail : maskCustomerEmail(primaryEmail)) : null,
     recipients: buildRecipientOptions(contactId, emails, primaryEmail, full),
     masked: !full,
-    privacy: usage ? { masked: !full, used: usage.used, limit: usage.limit } : undefined,
+    privacy: usage ? { masked: !full, used: usage.used, limit: usage.limit, resetsAt: usage.resetsAt } : undefined,
   };
+}
+
+export const EMAIL_MASKED_EDIT_DENIAL = "Reveal this customer's email address before changing it.";
+
+/**
+ * An existing email address can be replaced, deleted or made primary only by someone who can currently SEE it. For a viewer subject to masking that means: this customer is revealed
+ * in the CURRENT reveal period. Decided on the server from the reveal rows on every call (never from what a page or tab still shows), so a stale tab, a replayed request or a direct
+ * call cannot edit a masked address - and after the 13:15 Pacific reset the same call is refused again until the address is revealed anew. Administrators and users with Unlimited
+ * Customer Email Access are never masked, so for them this always passes. Adding a NEW address does not modify a masked one and is not gated here.
+ */
+export async function assertEmailRevealedForEdit(actor: EmailViewerActor, contactId: string, now = new Date()): Promise<void> {
+  const viewer = await getEmailViewer(actor);
+  if (!viewer.restricted) return;
+  const revealed = await revealedContactIdsToday(viewer, [contactId], now);
+  if (!revealed.has(contactId)) throw new Error(EMAIL_MASKED_EDIT_DENIAL);
 }
 
 const REFUSED_RAW_ADDRESS = "Choose the recipient from the list.";

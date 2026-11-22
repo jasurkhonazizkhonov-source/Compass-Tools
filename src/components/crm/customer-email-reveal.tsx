@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Eye, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { revealContactEmails } from "@/server/actions/customer-email";
+import { REVEAL_RESET_LABEL } from "@/lib/business-time";
 
 /**
  * The "Reveal" control and the daily-allowance indicator for a customer's email addresses. Rendered only for a viewer who is subject to masking (the server decides
@@ -28,7 +29,9 @@ export function CustomerEmailReveal({
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const [counter, setCounter] = useState(used);
+  // The server's count is the truth; a count returned by a reveal is shown until the server sends a different one (for example after the 13:15 Pacific reset).
+  const [local, setLocal] = useState<{ forUsed: number; value: number } | null>(null);
+  const counter = local && local.forUsed === used ? local.value : used;
   const [error, setError] = useState<string | null>(null);
   const exhausted = counter >= limit;
 
@@ -38,12 +41,12 @@ export function CustomerEmailReveal({
       try {
         const result = await revealContactEmails(contactId, leadId);
         if (!result.ok) {
-          if (result.usage) setCounter(result.usage.used);
+          if (result.usage) setLocal({ forUsed: used, value: result.usage.used });
           setError(result.error);
           toast.error(result.error);
           return;
         }
-        setCounter(result.usage.used);
+        setLocal({ forUsed: used, value: result.usage.used });
         router.refresh();
       } catch {
         setError("The email could not be revealed. Nothing was counted against your allowance.");
@@ -60,9 +63,9 @@ export function CustomerEmailReveal({
         </Button>
       )}
       <span className="text-muted-foreground" data-testid="customer-email-usage">
-        Customer email reveals: {counter} / {limit} used today
+        Customer email reveals: {counter} / {limit} used this period
       </span>
-      {masked && exhausted && <span className="text-muted-foreground">No reveals left today. The allowance resets at midnight Pacific time.</span>}
+      {masked && exhausted && <span className="text-muted-foreground">No reveals left. The allowance resets at {REVEAL_RESET_LABEL}.</span>}
       {error && (
         <span role="alert" className="text-destructive">
           {error}

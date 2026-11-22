@@ -65,7 +65,7 @@ describe.skipIf(!enabled)("customer email reveal allowance - real PostgreSQL", (
     expect(results.filter((r) => r.ok)).toHaveLength(5);
     expect(results.filter((r) => !r.ok && r.code === "LIMIT_REACHED")).toHaveLength(15);
     expect(await prisma.customerEmailRevealEvent.count({ where: { userId: accountIds[0] } })).toBe(5);
-    const usage = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: accountIds[0], dayKey: "2026-11-20" } } });
+    const usage = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: accountIds[0], dayKey: "p20261119" } } }); // NOW is 12:00 PST: still the period that began Nov 19 at 13:15
     expect(usage?.count).toBe(5);
   });
 
@@ -73,10 +73,10 @@ describe.skipIf(!enabled)("customer email reveal allowance - real PostgreSQL", (
     expect(await reveal(viewer(accountIds[1]), { contactId: contactIds[0], now: NOW })).toMatchObject({ ok: true, charged: true, usage: { used: 1 } });
   });
 
-  it("the next business day starts fresh (midnight Pacific), the previous day's count is untouched", async () => {
-    const next = new Date("2026-11-21T08:00:00Z");
+  it("the next reveal period starts fresh at 13:15 Pacific (not at midnight), the previous period's count is untouched", async () => {
+    const next = new Date("2026-11-20T21:15:00Z"); // 13:15:00 PST on Nov 20
     expect(await reveal(viewer(accountIds[0]), { contactId: contactIds[19], now: next })).toMatchObject({ ok: true, charged: true, usage: { used: 1 } });
-    const prev = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: accountIds[0], dayKey: "2026-11-20" } } });
+    const prev = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: accountIds[0], dayKey: "p20261119" } } });
     expect(prev?.count).toBe(5);
   });
 
@@ -85,7 +85,7 @@ describe.skipIf(!enabled)("customer email reveal allowance - real PostgreSQL", (
     const results = await Promise.all(Array.from({ length: 8 }, () => reveal(viewer(accountIds[1]), { contactId: first, now: new Date("2026-11-22T20:00:00Z") })));
     expect(results.every((r) => r.ok)).toBe(true);
     expect(results.filter((r) => r.ok && r.charged)).toHaveLength(1);
-    const usage = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: accountIds[1], dayKey: "2026-11-22" } } });
+    const usage = await prisma.customerEmailRevealUsage.findUnique({ where: { userId_dayKey: { userId: accountIds[1], dayKey: "p20261121" } } }); // 12:00 PST Nov 22 -> the period that began Nov 21 at 13:15
     expect(usage?.count).toBe(1);
   });
 
