@@ -40,14 +40,14 @@ describe("AccountMenu — accessible name independent of responsive text visibil
 
 describe("LeadQueueToggle — accessible name independent of responsive text visibility", () => {
   it("exposes the queue position and status via aria-label even though the equivalent text span is hidden below lg", async () => {
-    vi.doMock("@/server/actions/lead-queue", () => ({ joinLeadQueue: vi.fn(), leaveLeadQueue: vi.fn() }));
+    vi.doMock("@/server/actions/lead-queue-actions", () => ({ joinLeadQueue: vi.fn(), leaveLeadQueue: vi.fn() }));
     const { LeadQueueToggle } = await import("../lead-queue-toggle");
     render(<LeadQueueToggle initialIsActive={true} initialPosition={3} />);
     expect(screen.getByRole("button", { name: /queue.*#3.*accepting/i })).toBeInTheDocument();
   });
 
   it("still has a real, non-empty accessible name when there's no queue position yet (the icon-only case)", async () => {
-    vi.doMock("@/server/actions/lead-queue", () => ({ joinLeadQueue: vi.fn(), leaveLeadQueue: vi.fn() }));
+    vi.doMock("@/server/actions/lead-queue-actions", () => ({ joinLeadQueue: vi.fn(), leaveLeadQueue: vi.fn() }));
     const { LeadQueueToggle } = await import("../lead-queue-toggle");
     render(<LeadQueueToggle initialIsActive={false} initialPosition={null} />);
     expect(screen.getByRole("button", { name: /accept leads/i })).toBeInTheDocument();

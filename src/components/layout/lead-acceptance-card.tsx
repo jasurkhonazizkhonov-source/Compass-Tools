@@ -6,7 +6,7 @@ import { Play, Pause, Loader2, Users } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
-import { joinLeadQueue, leaveLeadQueue } from "@/server/actions/lead-queue";
+import { joinLeadQueue, leaveLeadQueue } from "@/server/actions/lead-queue-actions";
 
 export function LeadAcceptanceCard({
   initialIsActive,

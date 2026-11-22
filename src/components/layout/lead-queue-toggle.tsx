@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { Play, Pause, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { joinLeadQueue, leaveLeadQueue } from "@/server/actions/lead-queue";
+import { joinLeadQueue, leaveLeadQueue } from "@/server/actions/lead-queue-actions";
 
 export function LeadQueueToggle({
   initialIsActive,

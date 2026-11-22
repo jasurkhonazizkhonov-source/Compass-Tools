@@ -33,7 +33,7 @@ beforeEach(() => {
   announce = vi.fn(async () => "played");
   accept = vi.fn(async () => ({ ok: true }));
   skip = vi.fn(async () => ({ ok: true }));
-  vi.doMock("@/server/actions/lead-queue", () => ({
+  vi.doMock("@/server/actions/lead-queue-actions", () => ({
     getMyLeadOffer: (...args: unknown[]) => (getMyLeadOfferMock as AnyFn)(...args),
     acceptLeadOffer: (...args: unknown[]) => (accept as AnyFn)(...args),
     skipLeadOffer: (...args: unknown[]) => (skip as AnyFn)(...args),

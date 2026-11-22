@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { BellRing, Loader2, Mail, Phone, Tag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { getMyLeadOffer, acceptLeadOffer, skipLeadOffer } from "@/server/actions/lead-queue";
+import { getMyLeadOffer, acceptLeadOffer, skipLeadOffer } from "@/server/actions/lead-queue-actions";
 import { leadSourceLabel } from "@/lib/status-meta";
 import { formatPhoneInternational } from "@/lib/phone";
 import { useSharedPoll } from "@/lib/use-shared-poll";

@@ -1,4 +1,6 @@
-"use server";
+// NOT a "use server" file, on purpose. Everything exported here is called by server code (and by the thin Server Actions in lead-queue-actions.ts, the only ones a browser may call).
+// distributeNewWebsiteLead / distributePendingWebsiteLeads in particular have no signed-in caller (cron, website intake, the post-response pickup) and trust whoever calls them, so they
+// must never be registered as public endpoints. The five user-facing functions below re-check the signed-in account themselves on every call.
 
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
