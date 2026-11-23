@@ -48,7 +48,6 @@ describe("wide tables keep their row actions reachable", () => {
   const cases: Array<[string, string]> = [
     ["src/components/failed-signins/failed-signins-view.tsx", "Inspect"],
     ["src/components/subscriptions/subscriber-list.tsx", "Remove"],
-    ["src/components/sequences/sequence-enrollments-table.tsx", "Actions"],
     ["src/app/(crm)/sequences/page.tsx", "Row actions"],
   ];
   for (const [file, what] of cases) {
@@ -59,6 +58,12 @@ describe("wide tables keep their row actions reachable", () => {
       expect(text).toMatch(/className="group[ "]|className="group hover/); // rows are `group` so the pinned cell can follow the row's hover colour
     });
   }
+
+  // Not pinned on purpose: the enrollments table's Actions cell holds Unenroll PLUS the recovery buttons and, after a failed retry, a whole Gmail problem notice. Pinned at the right edge of a
+  // 254 px phone container (320 px screen) it covered most of the table and the lead's name (found on re-inspection, 2026-11-23). It scrolls with the table like every other column.
+  it("the sequence enrollments table does not pin its variable-width Actions cell", () => {
+    expect(read("src/components/sequences/sequence-enrollments-table.tsx")).not.toMatch(/sticky right-0/);
+  });
 
   it("Inspect and Delete are separated by a gap (they used to touch)", () => {
     const text = read("src/components/failed-signins/failed-signins-view.tsx");
