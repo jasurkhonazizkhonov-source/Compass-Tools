@@ -94,7 +94,7 @@ What the repository now provides (all inert until the operator acts):
    and put it in the volume with `docker compose --profile tools run --rm -v "$PWD/city.mmdb:/tmp/city.mmdb:ro" --entrypoint npx geoip-update tsx scripts/geoip-database.ts install /tmp/city.mmdb`.
 3. Check **System Health → IP geolocation database**: it should say Ready with the product name and build date. **No app restart is needed**: the app re-checks the file at most
    once a minute and swaps a valid replacement in; a bad replacement keeps the previous database.
-4. **Monthly refresh:** repeat step 2 (DB-IP publishes on the 1st). A file older than 90 days still works but raises a warning in System Health.
+4. **Monthly refresh:** repeat step 2 (DB-IP publishes on the 1st). A file older than 90 days still works but raises a warning in System Health. The command refuses to install a file that is older than, or less than half the size of, the one in use, and two runs cannot overlap (section 3b). `docker compose --profile tools run --rm --entrypoint npx geoip-update tsx scripts/geoip-database.ts status` prints the installed database and the outcome of the last attempt.
 5. **Rollback:** `docker compose --profile tools run --rm --entrypoint rm geoip-update -f /var/lib/compass-tools/geoip/city.mmdb` (or delete the `geoip_data` volume): locations fall back to country level. No customer data is
    in the volume.
 
@@ -117,7 +117,7 @@ Any MaxMind-format **City** database (`.mmdb`) works. Both candidates below were
 | Licence (read 2026-11-08 from the vendors' pages) | CC BY 4.0 — credit DB-IP.com; use in your application allowed | CC BY-SA 4.0 + GeoLite EULA — credit MaxMind; no redistribution; must use updates promptly and delete old versions within 30 days; some commercial uses need the Commercial GeoLite licence | commercial, no attribution |
 | Updates | monthly (published on the 1st) | frequent — see MaxMind's page | per vendor |
 | Size | ~121 MB (IPv4 + IPv6 in one tree) | see MaxMind's page | per vendor |
-| Fields typically present | city, subdivision, country, latitude/longitude (no time zone or accuracy radius — measured) | adds time zone and accuracy radius | more |
+| Fields present (see section 3a) | city, subdivision **name**, country (code and name), latitude/longitude. **No time zone, no subdivision code, no accuracy radius.** | adds subdivision code, time zone and accuracy radius | more |
 | Accuracy (vendor's own index) | 77, vs 96 for DB-IP's paid product (7.8 M records vs 40.3 M) | not independently measured here | highest |
 
 Neither free database is "accurate to a person": expect country to be right almost always, region/city right much of the time
@@ -149,7 +149,41 @@ serving the old one. Databases older than 90 days still work but are flagged and
 is safe by design (validate-then-rename, keeps `.previous`), but it makes an outbound request from the server and changes a file in
 production, so enabling it is an operations decision. A suggested crontab (not activated anywhere): `15 4 2 * *`.
 
-Attribution (a licence condition) is shown automatically under the Users table whenever a stored location came from DB-IP or MaxMind.
+Attribution (a licence condition) is shown automatically wherever a stored location that came from DB-IP or MaxMind is displayed: under the Users table, on the Failed sign-ins page, and in the lead and CRM-inquiry "Submission & IP Information" panels (a location from the edge's own country header, or no location, carries no credit).
+
+### 3a. What each edition provides, and what Compass-Tools does with it
+
+Checked against DB-IP's published MMDB schema (https://db-ip.com/db/format/ip-to-city-lite/mmdb.html) and against the fields the code reads:
+
+| Field | DB-IP "IP to City Lite" (the default) | MaxMind GeoLite2 City | What Compass-Tools does |
+|---|---|---|---|
+| Country name and ISO code | yes | yes | stored and shown; a country-only record stays country-only |
+| First-level subdivision (state, province) | **name** only | name and ISO code | the **name** is stored as the region; the code is stored nowhere and shown nowhere |
+| City | yes (a district in brackets is stripped) | yes | stored and shown only when the record has one; never inferred from a region, country or ISP |
+| Time zone | **no** | yes (`location.time_zone`) | shown only if the database supplies one; **with DB-IP Lite it is empty and is not guessed from the country** (a country can span several zones) |
+| Latitude / longitude | yes | yes | read, never stored |
+| Accuracy radius | no | yes | read, never stored or shown |
+
+So with the default database the application can honestly show **City, Region, Country** and the country code, but **not a time zone**. If a reliably sourced time zone is required, the options are MaxMind GeoLite2 City (free account, licence key, GeoLite EULA, CC BY-SA 4.0 credit) or a paid edition; both are installed with `install <file>` and need no code change. That is an owner decision; nothing was downloaded or switched in this review.
+
+**Licence.** DB-IP Lite is CC BY 4.0: commercial use inside an application is allowed provided DB-IP.com is credited with a link on pages that display or use its results (https://db-ip.com/db/download/ip-to-city-lite). The credit is shown where listed above. DB-IP's own paid product needs no credit. MaxMind GeoLite2's terms differ (EULA; keep to its update and deletion rules) - read them before choosing it.
+
+**Accuracy.** Country is almost always right; region and city are estimates of where the network is registered or routed. DB-IP rates its free city data well below its paid product (the figures are in section 3). Nothing in the application claims more than "approximate", and a location is never used to accuse, discipline or block anyone.
+
+### 3b. Update safeguards, status and recovery
+
+`npm run geoip:download` / `geoip:install` (and the `geoip-update` job) never put a worse file in place of a working one:
+
+1. the download goes to a temporary directory and is unpacked there; a failed or partial download leaves the database untouched;
+2. the file must open as a City database with a sane build date (not in the future, not a country-only or ASN file, not truncated), and the **copy** that will be swapped in is validated again;
+3. a file **built earlier** than the one in use, or **less than half its size**, is refused (`--allow-older` / `--allow-smaller` for a deliberate rollback or edition change); an installed file that is itself unusable never blocks a good replacement;
+4. an exclusive lock file (`city.mmdb.lock`) is held for the whole install, so two updates cannot collide; a lock left by a crashed run expires after 30 minutes;
+5. the swap is one rename, and the file it replaced is kept as `city.mmdb.previous` (roll back by renaming it);
+6. every attempt, successful or not, is recorded beside the database in `city.mmdb.update.json` (time, outcome, a short reason with no file paths). The command is safe to repeat.
+
+The running application notices a replaced file within a minute and swaps it in without a restart; a replacement that fails to load keeps the previous database serving. **System Health -> IP geolocation database** (and `/api/health` `readiness.geoIpDatabase`, a category only) shows: Ready, Out of date (over 90 days), Not installed, or Unusable, plus when the file was built, when it was installed here, the last update attempt and the last successful update. A failed latest attempt raises a warning even while the old database is still serving, and says so.
+
+If the application starts with no database, or a broken one, nothing else changes: the lookup returns "no location" (never throws), sign-in and form submissions proceed, the IP is still recorded, and locations are country-level at best.
 
 ## 4. IP capture and the trust boundary (`TRUSTED_PROXY`)
 
@@ -166,7 +200,7 @@ Rules enforced in code: only the configured mode's headers are read (a forged `X
 the value must parse as IPv4/IPv6; IPv4-mapped IPv6 (`::ffff:203.0.113.9`) is stored as the plain IPv4; **IPv6 is stored in full
 as received** (the column is unbounded text); private, loopback, link-local, unique-local and carrier-grade-NAT (`100.64.0.0/10`)
 addresses are refused — they are an internal hop (a Docker bridge, Tailscale, a misconfigured proxy), never a visitor — and then no
-IP and no location are stored for that sign-in.
+IP and no location are stored for that sign-in. Since 2026-11-23 the refusal also covers IPv6 forms that carry or stand in for such an address: 6to4 (`2002::/16`) and NAT64 (`64:ff9b::/96`) wrapping a private IPv4, the local-use NAT64 prefix, the discard prefix `100::/64` and the deprecated IPv4-compatible `::/96`. (The documentation ranges 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 and 2001:db8::/32 are deliberately not refused: they are what every test uses as a stand-in for a public visitor, and no real traffic uses them.)
 
 Recommended configuration for the VPS + Cloudflare Tunnel deployment: `TRUSTED_PROXY=cloudflare`, with the app container reachable
 **only** from the `cloudflared` container (internal Docker network, no `ports:` mapping to the host). **Production configuration is
