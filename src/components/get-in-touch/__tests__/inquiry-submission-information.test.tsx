@@ -85,3 +85,16 @@ describe("InquirySubmissionInformation", () => {
     expect(screen.queryByRole("button", { name: /Reveal/ })).toBeNull();
   });
 });
+
+describe("InquirySubmissionInformation - the data licence credit", () => {
+  it("credits DB-IP when the location came from its database, and credits nobody for an edge country or an empty location", () => {
+    const { unmount } = render(<InquirySubmissionInformation inquiryId="inq-1" source="CRM_WEBSITE" createdAt={createdAt} info={{ ...info, geoSource: "DBIP-City-Lite (2026-11-01)" }} />);
+    expect(screen.getByTestId("geoip-attribution").textContent).toMatch(/DB-IP .*CC BY 4\.0/);
+    unmount();
+    const second = render(<InquirySubmissionInformation inquiryId="inq-1" source="CRM_WEBSITE" createdAt={createdAt} info={{ ...info, geoSource: "Cloudflare edge country (CF-IPCountry)" }} />);
+    expect(screen.queryByTestId("geoip-attribution")).toBeNull();
+    second.unmount();
+    render(<InquirySubmissionInformation inquiryId="inq-1" source="CRM_WEBSITE" createdAt={createdAt} info={{ hasIp: true, ipVersion: "v4", ipMasked: "203.x.x.x", city: null, region: null, country: null, countryCode: null, timeZone: null, geoSource: "DBIP-City-Lite (2026-11-01)" }} />);
+    expect(screen.queryByTestId("geoip-attribution")).toBeNull();
+  });
+});

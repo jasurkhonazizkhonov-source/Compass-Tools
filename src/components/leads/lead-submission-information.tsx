@@ -2,6 +2,7 @@ import { MapPin } from "lucide-react";
 import { formatCapturedAt } from "@/components/leads/lead-captured-event";
 import { hasIpLocation } from "@/components/security/ip-location";
 import { LeadIpReveal } from "@/components/leads/lead-ip-reveal";
+import { geoAttributionFor } from "@/server/geo/geoip-attribution";
 
 export type LeadSubmissionDetails = {
   /** Whether an IP address was captured — the address itself never reaches this component. */
@@ -74,6 +75,8 @@ export function LeadSubmissionInformation({ leadId, createdAt, info, fromWebsite
     );
   }
   const located = hasIpLocation({ city: info.city, region: info.region, country: info.country, countryCode: info.countryCode, timeZone: info.timeZone });
+  // CC BY 4.0 asks for a credit wherever the database's results are shown (the Users page already carries it).
+  const geoCredit = geoAttributionFor([info.geoSource]);
   return (
     <section className="mb-5 rounded-lg border px-4 py-3" aria-labelledby="lead-submission-heading" data-testid="lead-submission-information">
       <h3 id="lead-submission-heading" className="mb-2 flex items-center gap-2 text-sm font-medium">
@@ -100,6 +103,11 @@ export function LeadSubmissionInformation({ leadId, createdAt, info, fromWebsite
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
         {located ? "Location is approximate and derived from the submitting IP address." : "No location could be determined for this IP address."}
       </p>
+      {located && geoCredit.length > 0 && (
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground" data-testid="geoip-attribution">
+          {geoCredit.join(" ")}
+        </p>
+      )}
     </section>
   );
 }

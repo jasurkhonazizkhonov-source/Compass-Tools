@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { geoAttributionFor } from "@/server/geo/geoip-attribution";
+import { formatLocationLine } from "@/components/accounts/sign-in-location";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { EmptyState } from "@/components/crm/empty-state";
@@ -20,7 +22,8 @@ import type { FailedSignInPage, FailedSignInFilters, FailedSignInRow } from "@/s
 type Row = Omit<FailedSignInRow, "occurredAt"> & { occurredAt: string };
 type Data = Omit<FailedSignInPage, "rows"> & { rows: Row[] };
 
-const place = (r: Row) => [r.city, r.region, r.country].filter(Boolean).join(", ") || "Location unavailable";
+// The same one-line format as the Users page ("City, Region, Country (CC)": only the parts that exist, a repeated neighbour dropped).
+const place = (r: Row) => formatLocationLine(r) ?? "Location unavailable";
 const identity = (r: Row) => ({
   name: r.verifiedFullName ?? "Unavailable",
   email: r.verifiedEmail ?? r.attemptedEmail ?? "Unavailable",
@@ -48,6 +51,8 @@ export function FailedSignInsView({ data, filters }: { data: Data; filters: Fail
   }, [data.rows]);
 
   const pageIds = data.rows.map((r) => r.id);
+  // CC BY 4.0 asks for a credit wherever the database's results are shown (as on the Users page).
+  const geoCredit = geoAttributionFor(data.rows.map((r) => r.geoSource));
   const allSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
   const someSelected = pageIds.some((id) => selected.has(id));
   const toggle = (id: string) =>
@@ -188,6 +193,12 @@ export function FailedSignInsView({ data, filters }: { data: Data; filters: Fail
             </div>
           </details>
         ))
+      )}
+
+      {geoCredit.length > 0 && (
+        <p className="text-xs text-muted-foreground" data-testid="geoip-attribution">
+          Locations are approximate estimates from the IP address (a network&apos;s likely area), not where a person is. {geoCredit.join(" ")}
+        </p>
       )}
 
       <ConfirmDialog

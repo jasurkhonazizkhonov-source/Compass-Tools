@@ -2,6 +2,7 @@ import { MapPin } from "lucide-react";
 import { formatCapturedAt } from "@/components/leads/lead-captured-event";
 import { hasIpLocation } from "@/components/security/ip-location";
 import { LeadIpReveal } from "@/components/leads/lead-ip-reveal";
+import { geoAttributionFor } from "@/server/geo/geoip-attribution";
 import { revealInquirySubmissionIp } from "@/server/actions/inquiry-submission";
 import type { InquirySource } from "@/generated/prisma/client";
 
@@ -44,6 +45,8 @@ export function InquirySubmissionInformation({ inquiryId, source, createdAt, inf
     );
   }
   const located = hasIpLocation({ city: info.city, region: info.region, country: info.country, countryCode: info.countryCode, timeZone: info.timeZone });
+  // CC BY 4.0 asks for a credit wherever the database's results are shown (the Users page already carries it).
+  const geoCredit = geoAttributionFor([info.geoSource]);
   return (
     <section className="rounded-lg border px-4 py-3" aria-labelledby="inquiry-submission-heading" data-testid="inquiry-submission-information">
       <h3 id="inquiry-submission-heading" className="mb-2 flex items-center gap-2 text-sm font-medium">
@@ -69,6 +72,11 @@ export function InquirySubmissionInformation({ inquiryId, source, createdAt, inf
       <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
         {located ? "Location is approximate and derived from the submitting IP address." : "No location could be determined for this IP address."}
       </p>
+      {located && geoCredit.length > 0 && (
+        <p className="mt-1 text-[11px] leading-snug text-muted-foreground" data-testid="geoip-attribution">
+          {geoCredit.join(" ")}
+        </p>
+      )}
     </section>
   );
 }

@@ -178,3 +178,23 @@ describe("Reveal (permission-gated, audited, recent sign-in)", () => {
     expect(document.cookie).not.toContain(FULL_IP);
   });
 });
+
+describe("LeadSubmissionInformation - the data licence credit", () => {
+  it("a location that came from DB-IP carries the CC BY 4.0 credit; one from the edge's own header, or no location at all, carries none", () => {
+    const { unmount } = view({ ...FULL, geoSource: "DBIP-City-Lite (2026-11-01)" });
+    expect(screen.getByTestId("geoip-attribution").textContent).toMatch(/IP geolocation by DB-IP \(https:\/\/db-ip\.com\), licensed under CC BY 4\.0/);
+    unmount();
+    view({ ...FULL, geoSource: "Cloudflare edge country (CF-IPCountry)" });
+    expect(screen.queryByTestId("geoip-attribution")).toBeNull();
+  });
+
+  it("a MaxMind GeoLite source is credited to MaxMind", () => {
+    view({ ...FULL, geoSource: "GeoLite2-City (2026-11-03)" });
+    expect(screen.getByTestId("geoip-attribution").textContent).toMatch(/GeoLite data created by MaxMind/);
+  });
+
+  it("no location, no credit (nothing from the database is being shown)", () => {
+    view({ hasIp: true, ipVersion: "v4", ipMasked: "203.x.x.x", city: null, region: null, country: null, countryCode: null, timeZone: null, geoSource: "DBIP-City-Lite (2026-11-01)" } as LeadSubmissionDetails);
+    expect(screen.queryByTestId("geoip-attribution")).toBeNull();
+  });
+});

@@ -175,3 +175,35 @@ describe("filters", () => {
     for (const name of ["q", "from", "to", "reason", "method", "ip"]) expect(form.querySelector(`[name='${name}']`), name).toBeTruthy();
   });
 });
+
+describe("FailedSignInsView - the data licence credit", () => {
+  it("shows the DB-IP CC BY 4.0 credit once when any location on the page came from DB-IP, and nothing when none did", () => {
+    const withDbip = { ...DATA, rows: DATA.rows.map((r, i) => (i === 0 ? { ...r, geoSource: "DBIP-City-Lite (2026-11-01)" } : r)) };
+    const { unmount } = render(<FailedSignInsView data={withDbip as never} filters={{}} />);
+    const credit = screen.getAllByTestId("geoip-attribution");
+    expect(credit).toHaveLength(1);
+    expect(credit[0].textContent).toMatch(/approximate estimates .* not where a person is/);
+    expect(credit[0].textContent).toMatch(/IP geolocation by DB-IP \(https:\/\/db-ip\.com\), licensed under CC BY 4\.0/);
+    unmount();
+    render(<FailedSignInsView data={DATA as never} filters={{}} />);
+    expect(screen.queryByTestId("geoip-attribution")).toBeNull();
+  });
+});
+
+describe("FailedSignInsView - location format matches the Users page", () => {
+  it("'City, Region, Country (CC)' with only the parts that exist and a repeated neighbour dropped; nothing known reads 'Location unavailable'", () => {
+    const rows = [
+      { ...DATA.rows[0], id: "f1", city: "Frankfurt am Main", region: "Hesse", country: "Germany", countryCode: "DE" },
+      { ...DATA.rows[0], id: "f2", city: "Singapore", region: "Singapore", country: "Singapore", countryCode: "SG" },
+      { ...DATA.rows[0], id: "f3", city: null, region: null, country: "France", countryCode: "FR" },
+      { ...DATA.rows[0], id: "f4", city: null, region: null, country: null, countryCode: null },
+    ];
+    render(<FailedSignInsView data={{ ...DATA, rows, total: 4 } as never} filters={{}} />);
+    const text = screen.getAllByTestId("failed-signin-row").map((r) => r.textContent ?? "").join("\n");
+    expect(text).toContain("Frankfurt am Main, Hesse, Germany (DE)");
+    expect(text).toContain("Singapore, Singapore (SG)");
+    expect(text).not.toContain("Singapore, Singapore, Singapore");
+    expect(text).toContain("France (FR)");
+    expect(text).toContain("Location unavailable");
+  });
+});
