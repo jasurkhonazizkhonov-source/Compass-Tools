@@ -13,10 +13,9 @@ import { sweepStalePendingAttachments } from "@/server/attachments/cleanup";
 // Tasks" button on the Tasks page — this route is what a production
 // scheduler should call instead once one is configured (see vercel.json).
 //
-// If CRON_SECRET is set, requests must carry it as a bearer token —
-// otherwise (e.g. this dev environment, where no scheduler exists yet)
-// the route stays open so `curl`/the instrumentation poller can reach it
-// without extra configuration.
+// If CRON_SECRET is set, requests must carry it as a bearer token. If it is NOT set the route is
+// DISABLED (503) in a production-class environment (cron-auth.ts fails closed); it stays open only
+// in local development, so `curl`/the instrumentation poller can reach it without setup.
 export async function GET(request: NextRequest) {
   const denied = rejectUnauthorizedCron(request);
   if (denied) return denied;

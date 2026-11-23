@@ -11,8 +11,8 @@ import { markSweepFinished, markSweepStarted } from "@/server/scheduler-status";
 // If CRON_SECRET is set, requests must carry it as a bearer token —
 // matching /api/cron/tasks's gate. This route actually sends real emails
 // (sequence steps), so unlike lead distribution it must not stay reachable
-// by anyone once a real scheduler/secret is configured; it stays open only
-// when CRON_SECRET is unset (this dev environment).
+// by anyone: with no CRON_SECRET it is disabled (503) in a production-class
+// environment, and open only in local development (cron-auth.ts).
 export async function GET(request: NextRequest) {
   const denied = rejectUnauthorizedCron(request);
   if (denied) return denied;
