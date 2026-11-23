@@ -107,6 +107,9 @@ if docker compose exec -T app sh -c 'printf x > /var/lib/compass-tools/geoip/.ap
 docker compose --profile tools run --rm --no-deps -T --entrypoint sh geoip-update -c 'rm -f /var/lib/compass-tools/geoip/.probe'
 geo="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health",{headers:{authorization:"Bearer "+(process.env.CRON_SECRET||"")}}).then(r=>r.json()).then(h=>console.log(h.readiness.geoIpDatabase))')"
 [ "$geo" = "missing" ] && ok "readiness.geoIpDatabase=missing (no database installed - optional, country-level locations)" || fail "readiness.geoIpDatabase is $geo (expected missing: nothing was downloaded)"
+# The update command itself runs inside the tools image (tsx, the MMDB reader, the volume): "status" changes nothing and needs no network, so it can run here.
+status_out="$(docker compose --profile tools run --rm --no-deps -T --entrypoint npx geoip-update tsx scripts/geoip-database.ts status 2>&1)" || fail "the geoip-update command failed to run: $status_out"
+case "$status_out" in *"not usable"*"no record"*) ok "geoip-update status runs in the tools image (nothing installed, no update recorded)" ;; *) fail "unexpected geoip-update status output: $status_out" ;; esac
 geo_net="$(docker compose --profile tools config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s).services;const on=n=>Object.keys(c[n].networks||{});console.log(on("geoip-update").join(",")+"|"+["app","db","tools","cloudflared","cvv-cleanup"].filter(n=>on(n).includes("egress")).join(","))})')"
 [ "$geo_net" = "egress|" ] && ok "geoip-update is on the egress network only; no long-running service is" || fail "unexpected networks: $geo_net"
 

@@ -20,6 +20,7 @@ import path from "node:path";
 import type { Reader, CityResponse } from "mmdb-lib";
 import { open } from "maxmind";
 import { isPrivateOrReservedIp, isValidIpAddress, normalizeIp } from "@/lib/request-ip";
+import { readUpdateStatus, type GeoIpUpdateStatus } from "@/server/geo/geoip-update-status";
 
 export type IpLocation = {
   city: string | null;
@@ -169,7 +170,17 @@ async function ensureDatabase(): Promise<void> {
 }
 
 export type GeoIpDatabaseState = "ready" | "stale" | "missing" | "unusable";
-export type GeoIpDatabaseStatus = { state: GeoIpDatabaseState; databaseType?: string; builtAt?: Date; ageDays?: number };
+export type GeoIpDatabaseStatus = {
+  state: GeoIpDatabaseState;
+  databaseType?: string;
+  /** When the vendor built the data (from the file's own metadata). */
+  builtAt?: Date;
+  ageDays?: number;
+  /** When the file was put in place here (the file's modification time). */
+  installedAt?: Date;
+  /** The outcome of the last attempt to update it, when the update command has run against this location. Present only when there is a record. */
+  update?: GeoIpUpdateStatus;
+};
 
 /**
  * What the local database looks like right now, for System Health and /api/health - the very same loader the lookups use, so what is reported is what is served:
@@ -180,14 +191,22 @@ export type GeoIpDatabaseStatus = { state: GeoIpDatabaseState; databaseType?: st
  * Never throws and never reports a path, an address or any record.
  */
 export async function getGeoIpDatabaseStatus(): Promise<GeoIpDatabaseStatus> {
+  const update = await readUpdateStatus(geoipDatabasePath()); // never throws; null without a record
+  const withUpdate = <T extends GeoIpDatabaseStatus>(s: T): T => (update ? { ...s, update } : s);
   try {
     await ensureDatabase();
   } catch {
-    return { state: "unusable" };
+    return withUpdate({ state: "unusable" });
   }
-  if (!current) return { state: lastLoadError === "error" ? "unusable" : "missing" };
+  if (!current) return withUpdate({ state: lastLoadError === "error" ? "unusable" : "missing" });
   const ageDays = Math.floor((Date.now() - current.builtAt.getTime()) / 86_400_000);
-  return { state: ageDays > MAX_DATABASE_AGE_DAYS ? "stale" : "ready", databaseType: current.databaseType, builtAt: current.builtAt, ageDays };
+  return withUpdate({
+    state: ageDays > MAX_DATABASE_AGE_DAYS ? ("stale" as const) : ("ready" as const),
+    databaseType: current.databaseType,
+    builtAt: current.builtAt,
+    ageDays,
+    installedAt: new Date(current.mtimeMs),
+  });
 }
 
 /** Resolves a (trusted-path) client IP to an approximate location. Never throws. */

@@ -62,6 +62,46 @@ describe("System Health - IP geolocation database", () => {
     expect(fact(r, "State")).toBe("Unusable");
   });
 
+  it("ready, installed and last updated: the row says when, and stays healthy", async () => {
+    status.mockResolvedValue({
+      state: "ready", databaseType: "DBIP-City-Lite", builtAt: new Date("2026-11-01T00:00:00Z"), ageDays: 21, installedAt: new Date("2026-11-02T04:10:00Z"),
+      update: { lastAttemptAt: new Date("2026-11-02T04:10:00Z"), lastOutcome: "success", lastError: null, lastSuccessAt: new Date("2026-11-02T04:10:00Z") },
+    });
+    const r = await checkGeoIpDatabase();
+    expect(r.state).toBe("HEALTHY");
+    expect(fact(r, "Installed here")).toBe("2026-11-02");
+    expect(fact(r, "Last update attempt")).toBe("Succeeded 2026-11-02");
+    expect(fact(r, "Last successful update")).toBe("2026-11-02");
+  });
+
+  it("the most recent update FAILED while the database in use is still ready: a WARNING that says the database in use is unchanged, with the plain reason and the next step", async () => {
+    status.mockResolvedValue({
+      state: "ready", databaseType: "DBIP-City-Lite", builtAt: new Date("2026-11-01T00:00:00Z"), ageDays: 40, installedAt: new Date("2026-11-02T04:10:00Z"),
+      update: { lastAttemptAt: new Date("2026-12-02T04:10:00Z"), lastOutcome: "failed", lastError: "download failed: HTTP 503", lastSuccessAt: new Date("2026-11-02T04:10:00Z") },
+    });
+    const r = await checkGeoIpDatabase();
+    expect(r.state).toBe("WARNING");
+    expect(r.classification).toBe("manual_action");
+    expect(r.summary).toMatch(/last attempt to update .* failed \(download failed: HTTP 503\)/);
+    expect(r.summary).toMatch(/database in use is unchanged and is 40 days old/);
+    expect(r.action).toMatch(/geoip-update/);
+    expect(fact(r, "Last update attempt")).toBe("Failed 2026-12-02 - download failed: HTTP 503");
+    expect(fact(r, "Last successful update")).toBe("2026-11-02");
+  });
+
+  it("nothing installed and the first installation failed: a WARNING (not the quiet 'optional' note) that says locations stay country-level", async () => {
+    status.mockResolvedValue({ state: "missing", update: { lastAttemptAt: new Date("2026-11-23T04:00:00Z"), lastOutcome: "failed", lastError: "no DB-IP Lite file found for 2026-11 or 2026-10", lastSuccessAt: null } });
+    const r = await checkGeoIpDatabase();
+    expect(r.state).toBe("WARNING");
+    expect(r.summary).toMatch(/No database is installed, so locations stay country-level/);
+    expect(fact(r, "Last successful update")).toBe("Never recorded");
+  });
+
+  it("the row never carries a file path even if a reason somehow does (records are cleaned when read)", async () => {
+    status.mockResolvedValue({ state: "missing", update: { lastAttemptAt: new Date("2026-11-23T04:00:00Z"), lastOutcome: "failed", lastError: "open <path> failed", lastSuccessAt: null } });
+    expect(JSON.stringify(await checkGeoIpDatabase())).not.toMatch(/\.mmdb|\/var\/|\/srv\/|[A-Za-z]:\\\\/);
+  });
+
   it("a failure of the status call is one UNKNOWN row (never an unhandled error, never a guess)", async () => {
     status.mockRejectedValue(new Error("boom"));
     expect((await checkGeoIpDatabase()).state).toBe("UNKNOWN");

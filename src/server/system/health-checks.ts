@@ -400,6 +400,21 @@ export async function checkGeoIpDatabase(): Promise<HealthCheckResult> {
     const facts: Array<{ label: string; value: string }> = [{ label: "State", value: { ready: "Ready", stale: "Out of date", missing: "Not installed", unusable: "Unusable" }[s.state] }];
     if (s.databaseType) facts.push({ label: "Database", value: s.databaseType });
     if (s.builtAt) facts.push({ label: "Built", value: `${s.builtAt.toISOString().slice(0, 10)} (${s.ageDays} days ago)` });
+    if (s.installedAt) facts.push({ label: "Installed here", value: s.installedAt.toISOString().slice(0, 10) });
+    if (s.update) {
+      facts.push({ label: "Last update attempt", value: `${s.update.lastOutcome === "success" ? "Succeeded" : "Failed"} ${s.update.lastAttemptAt.toISOString().slice(0, 10)}${s.update.lastError ? ` - ${s.update.lastError}` : ""}` });
+      facts.push({ label: "Last successful update", value: s.update.lastSuccessAt ? s.update.lastSuccessAt.toISOString().slice(0, 10) : "Never recorded" });
+    }
+    // The most recent update attempt failed: whatever the database's own state, a person should look (the database that is serving is unchanged by a failed attempt).
+    if (s.update?.lastOutcome === "failed" && s.state !== "unusable") {
+      return {
+        state: "WARNING",
+        classification: "manual_action",
+        summary: `The last attempt to update the IP geolocation database failed${s.update.lastError ? ` (${s.update.lastError})` : ""}. ${s.state === "missing" ? "No database is installed, so locations stay country-level." : `The database in use is unchanged${s.ageDays !== undefined ? ` and is ${s.ageDays} days old` : ""}.`}`,
+        facts,
+        action: "Run the geoip-update tools service again (docs/GEOIP.md section 2b); `npm run geoip:status` inside it shows the same record.",
+      };
+    }
     if (s.state === "ready") return { state: "HEALTHY", summary: "City-level approximate locations are available for sign-ins and website submissions (estimated from the IP address, never exact).", facts };
     if (s.state === "stale") {
       return {

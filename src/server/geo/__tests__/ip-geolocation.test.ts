@@ -105,7 +105,7 @@ describe("lookupIpLocation — resolving", () => {
 });
 
 describe("lookupIpLocation — addresses that must never be geolocated", () => {
-  it.each(["10.1.2.3", "172.17.0.2", "192.168.1.10", "127.0.0.1", "169.254.1.1", "100.64.0.1", "100.127.255.254", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1"])("%s is internal infrastructure, not a visitor", async (ip) => {
+  it.each(["10.1.2.3", "172.17.0.2", "192.168.1.10", "127.0.0.1", "169.254.1.1", "100.64.0.1", "100.127.255.254", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1", "2002:a00:1::1", "64:ff9b::a00:1", "100::1", "::cb00:7109"])("%s is internal infrastructure, not a visitor", async (ip) => {
     expect(await lookupIpLocation(ip)).toEqual({ status: "unresolved", reason: "non-public-ip" });
   });
 
@@ -262,6 +262,70 @@ describe("getGeoIpDatabaseStatus - what System Health and /api/health report (re
     writeFileSync(later, buildCityDatabase({ entries: ENTRIES, buildEpochSec: FRESH }));
     vi.setSystemTime(new Date("2026-11-08T12:05:00Z")); // past the one-minute re-check interval
     expect((await getGeoIpDatabaseStatus()).state).toBe("ready");
+    vi.stubEnv("GEOIP_DB_PATH", dbFile);
+  });
+});
+
+describe("what the DB-IP Lite edition actually provides (fixtures shaped like its MMDB: names only, no time zone, no subdivision code, no accuracy radius)", () => {
+  const DBIP_ENTRIES = [
+    { cidr: "203.0.113.0/24", record: { city: "Frankfurt am Main", subdivision: { name: "Hesse" }, country: { name: "Germany", iso: "DE" } } }, // city + region + country
+    { cidr: "198.51.100.0/24", record: { subdivision: { name: "Bavaria" }, country: { name: "Germany", iso: "DE" } } }, // region + country, no city
+    { cidr: "192.0.2.0/24", record: { country: { name: "France", iso: "FR" } } }, // country only
+  ];
+  beforeEach(() => {
+    resetIpGeolocationForTests();
+    install(buildCityDatabase({ entries: DBIP_ENTRIES, buildEpochSec: FRESH }));
+  });
+
+  it("city level: city, region NAME and country come back; the fields this edition does not carry stay empty (time zone, subdivision code, accuracy radius, coordinates)", async () => {
+    const r = await lookupIpLocation("203.0.113.5");
+    if (r.status !== "resolved") throw new Error("expected resolved");
+    expect(r.location).toEqual({ city: "Frankfurt am Main", region: "Hesse", regionCode: null, country: "Germany", countryCode: "DE", timeZone: null, latitude: null, longitude: null, accuracyRadiusKm: null });
+    expect(r.source).toBe("DBIP-City-Lite (2026-11-01)");
+  });
+
+  it("region level: a record with a region and no city does not get a city", async () => {
+    const r = await lookupIpLocation("198.51.100.9");
+    if (r.status !== "resolved") throw new Error("expected resolved");
+    expect(r.location).toMatchObject({ city: null, region: "Bavaria", country: "Germany", countryCode: "DE", timeZone: null });
+  });
+
+  it("country level: no city, no region, no time zone is inferred from the country", async () => {
+    const r = await lookupIpLocation("192.0.2.77");
+    if (r.status !== "resolved") throw new Error("expected resolved");
+    expect(r.location).toMatchObject({ city: null, region: null, regionCode: null, country: "France", countryCode: "FR", timeZone: null });
+  });
+
+  it("IPv6 text in different spellings of one address resolves to the same answer", async () => {
+    install(buildCityDatabase({ entries: [{ cidr: "2001:db8:85a3::/48", record: { city: "Sydney", subdivision: { name: "New South Wales" }, country: { name: "Australia", iso: "AU" } } }], buildEpochSec: FRESH }));
+    resetIpGeolocationForTests();
+    const forms = ["2001:db8:85a3::8a2e:370:7334", "2001:DB8:85A3:0:0:8A2E:370:7334", "2001:0db8:85a3:0000:0000:8a2e:0370:7334"];
+    const cities = await Promise.all(forms.map(async (ip) => { const r = await lookupIpLocation(ip); return r.status === "resolved" ? r.location.city : r.reason; }));
+    expect(cities).toEqual(["Sydney", "Sydney", "Sydney"]);
+  });
+});
+
+describe("getGeoIpDatabaseStatus - install time and the last update attempt", () => {
+  it("reports when the file was installed here, and the last attempt only when the update command left a record", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    const without = await getGeoIpDatabaseStatus();
+    expect(without.installedAt).toBeInstanceOf(Date);
+    expect(without).not.toHaveProperty("update");
+    writeFileSync(`${dbFile}.update.json`, JSON.stringify({ lastAttemptAt: "2026-11-02T04:00:00Z", lastOutcome: "failed", lastError: "download failed: HTTP 503", lastSuccessAt: "2026-11-01T04:00:00Z" }));
+    const withRecord = await getGeoIpDatabaseStatus();
+    expect(withRecord.update).toEqual({ lastAttemptAt: new Date("2026-11-02T04:00:00Z"), lastOutcome: "failed", lastError: "download failed: HTTP 503", lastSuccessAt: new Date("2026-11-01T04:00:00Z") });
+    rmSync(`${dbFile}.update.json`, { force: true });
+  });
+
+  it("a failed attempt on a location with NO database is still visible (the first installation failed)", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    const absent = path.join(dir, "never-installed.mmdb");
+    vi.stubEnv("GEOIP_DB_PATH", absent);
+    resetIpGeolocationForTests();
+    writeFileSync(`${absent}.update.json`, JSON.stringify({ lastAttemptAt: "2026-11-02T04:00:00Z", lastOutcome: "failed", lastError: "no DB-IP Lite file found for 2026-11 or 2026-10", lastSuccessAt: null }));
+    const s = await getGeoIpDatabaseStatus();
+    expect(s.state).toBe("missing");
+    expect(s.update?.lastOutcome).toBe("failed");
     vi.stubEnv("GEOIP_DB_PATH", dbFile);
   });
 });

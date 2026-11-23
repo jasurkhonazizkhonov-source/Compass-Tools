@@ -2,9 +2,15 @@
 // it never runs by itself, and it never touches the application database. Run with: npx tsx scripts/geoip-database.ts <command>
 //
 //   verify [file]                         Check a database file and print its type, build date and age. Add --ip <address> to try a lookup.
-//   install <file> [--target <path>]      Validate a downloaded .mmdb and atomically put it in place (previous copy kept as <target>.previous).
-//   download --accept-cc-by-4.0 [--target <path>] [--month YYYY-MM]
+//   status [--target <path>]              Show the installed database and the outcome of the last update attempt (changes nothing).
+//   install <file> [--target <path>] [--allow-older] [--allow-smaller]
+//                                         Validate a downloaded .mmdb and atomically put it in place (previous copy kept as <target>.previous).
+//   download --accept-cc-by-4.0 [--target <path>] [--month YYYY-MM] [--allow-older] [--allow-smaller]
 //                                         Fetch DB-IP "IP to City Lite" from the official download host, validate it, install it.
+//
+// An update never replaces a working database with a bad one: the download goes to a temporary directory, the file is validated (and validated again as a copy), an older or
+// much smaller file is refused unless you pass the flags above, two updates cannot run at once, and the previous file is kept. Every attempt - success or failure - is recorded
+// beside the database (<target>.update.json) so System Health can show when it was last refreshed.
 //
 // The target defaults to $GEOIP_DB_PATH, else data/geoip/city.mmdb. DB-IP Lite needs no account or key; its licence (CC BY 4.0)
 // requires crediting DB-IP.com, which the Admin Users page does. For MaxMind GeoLite2 (account + licence key + EULA) download the
@@ -16,12 +22,15 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { createGunzip } from "node:zlib";
 import { geoipDatabasePath } from "../src/server/geo/ip-geolocation";
-import { installDatabaseFile, validateDatabaseFile, type DatabaseInfo } from "../src/server/geo/geoip-database-file";
+import { installDatabaseFile, validateDatabaseFile, type DatabaseInfo, type InstallOptions } from "../src/server/geo/geoip-database-file";
+import { readUpdateStatus, recordUpdateAttempt } from "../src/server/geo/geoip-update-status";
 
 function flag(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 }
+
+const installOptions = (args: string[]): InstallOptions => ({ allowOlder: args.includes("--allow-older"), allowSmaller: args.includes("--allow-smaller") });
 
 function print(info: DatabaseInfo) {
   console.log(`  type:       ${info.databaseType}`);
@@ -56,7 +65,8 @@ async function download(args: string[]) {
       if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
       const file = path.join(work, `dbip-city-lite-${m}.mmdb`);
       await pipeline(Readable.fromWeb(res.body as never), createGunzip(), createWriteStream(file));
-      const info = await installDatabaseFile(file, target);
+      const info = await installDatabaseFile(file, target, installOptions(args));
+      await recordUpdateAttempt(target, "success");
       console.log(`Installed ${target}`);
       print(info);
       console.log("The running application picks the new file up within a minute; no restart or rebuild is needed.");
@@ -80,12 +90,39 @@ async function main() {
     const candidate = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--target");
     if (!candidate) throw new Error("usage: install <file.mmdb> [--target <path>]");
     const target = flag(args, "--target") ?? geoipDatabasePath();
-    print(await installDatabaseFile(candidate, target));
+    try {
+      print(await installDatabaseFile(candidate, target, installOptions(args)));
+    } catch (error) {
+      await recordUpdateAttempt(target, "failed", error);
+      throw error;
+    }
+    await recordUpdateAttempt(target, "success");
     console.log(`Installed ${target}`);
   } else if (command === "download") {
-    await download(args);
+    const target = flag(args, "--target") ?? geoipDatabasePath();
+    try {
+      await download(args);
+    } catch (error) {
+      // A missing licence flag is a usage error, not an update attempt; everything else (network, 404 for both months, validation, refusal) is recorded.
+      if (args.includes("--accept-cc-by-4.0")) await recordUpdateAttempt(target, "failed", error);
+      throw error;
+    }
+  } else if (command === "status") {
+    const target = flag(args, "--target") ?? geoipDatabasePath();
+    const status = await readUpdateStatus(target);
+    try {
+      console.log(`Installed database (${target}):`);
+      print(await validateDatabaseFile(target));
+    } catch (error) {
+      console.log(`  not usable: ${(error as Error).message}`);
+    }
+    if (!status) console.log("Last update attempt: no record (the update command has not run against this location).");
+    else {
+      console.log(`Last update attempt: ${status.lastOutcome} at ${status.lastAttemptAt.toISOString()}${status.lastError ? ` - ${status.lastError}` : ""}`);
+      console.log(`Last successful update: ${status.lastSuccessAt ? status.lastSuccessAt.toISOString() : "never recorded"}`);
+    }
   } else {
-    console.log("usage: geoip-database.ts verify [file] [--ip <address>] | install <file> [--target <path>] | download --accept-cc-by-4.0 [--target <path>] [--month YYYY-MM]");
+    console.log("usage: geoip-database.ts verify [file] [--ip <address>] | status [--target <path>] | install <file> [--target <path>] [--allow-older] [--allow-smaller] | download --accept-cc-by-4.0 [--target <path>] [--month YYYY-MM] [--allow-older] [--allow-smaller]");
     process.exitCode = command ? 2 : 0;
   }
 }

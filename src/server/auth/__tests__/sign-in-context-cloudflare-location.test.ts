@@ -121,3 +121,77 @@ describe("resolveSignInContext behind Cloudflare", () => {
     expect(JSON.stringify(withoutTimestamp)).not.toMatch(/50\.1|8\.7|33\.9|151\.2/);
   });
 });
+
+describe("resolveSignInContext - who is believed (every address below is a documentation range)", () => {
+  const NOTHING = { ip: null, city: null, region: null, country: null, countryCode: null, timeZone: null, locationSource: null, locationResolvedAt: null };
+  const FORGED_EDGE = { "cf-connecting-ip": "203.0.113.42", "cf-ipcountry": "DE", "cf-ipcity": "Berlin", "cf-region": "Berlin", "x-forwarded-for": "198.51.100.9", "x-real-ip": "198.51.100.8", "x-vercel-forwarded-for": "198.51.100.7", "x-vercel-ip-city": "Paris", "x-vercel-ip-country": "FR" };
+
+  it("no trusted proxy configured: NO header is believed - no address, no location, and the local database is never asked", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "");
+    const asked = vi.fn(async () => LOCAL_DB);
+    lookup = asked;
+    expect(await ctxFor(FORGED_EDGE)).toEqual(NOTHING);
+    expect(asked).not.toHaveBeenCalled();
+  });
+
+  it("TRUSTED_PROXY=none is explicit distrust: the same", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "none");
+    expect(await ctxFor(FORGED_EDGE)).toEqual(NOTHING);
+  });
+
+  it("Cloudflare mode reads CF-Connecting-IP and nothing else: a Vercel city header or an X-Forwarded-For hop cannot change the address or the place", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "cloudflare");
+    lookup = async () => ({ status: "unresolved", reason: "not-found" });
+    const ctx = await ctxFor({ "cf-connecting-ip": "203.0.113.42", "x-forwarded-for": "198.51.100.9", "x-real-ip": "198.51.100.8", "x-vercel-forwarded-for": "198.51.100.7", "x-vercel-ip-city": "Paris", "x-vercel-ip-country": "FR" });
+    expect(ctx.ip).toBe("203.0.113.42");
+    expect(ctx.city).toBeNull();
+    expect(ctx.countryCode).toBeNull();
+  });
+
+  it("the database is asked about the trusted address only: a forged forwarded-for next to the real CF-Connecting-IP is never looked up", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "cloudflare");
+    const asked = vi.fn(async () => LOCAL_DB);
+    lookup = asked;
+    await ctxFor({ "cf-connecting-ip": "203.0.113.42", "x-forwarded-for": "198.51.100.66" });
+    expect(asked).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveBeenCalledWith("203.0.113.42");
+  });
+
+  it.each(["10.1.2.3", "172.17.0.2", "192.168.0.5", "127.0.0.1", "::1", "fd00::1", "100.64.0.1", "2002:a00:1::1", "64:ff9b::a00:1", "::ffff:10.0.0.1", "not-an-ip", "203.0.113.42, 198.51.100.1", "[::1]", "1.2.3", "999.1.1.1", ""])(
+    "a CF-Connecting-IP of %j (an internal hop or malformed) records no address and no location, and the database is not asked",
+    async (value) => {
+      vi.stubEnv("TRUSTED_PROXY", "cloudflare");
+      const asked = vi.fn(async () => LOCAL_DB);
+      lookup = asked;
+      const ctx = await ctxFor({ "cf-connecting-ip": value, "cf-ipcountry": "DE" });
+      expect(ctx.ip).toBeNull();
+      expect(ctx.city).toBeNull();
+      expect(ctx.locationSource).toBeNull();
+      expect(asked).not.toHaveBeenCalled();
+    }
+  );
+
+  it("a proxy that appends a port to the address is tolerated by design (the port is dropped, the address is still the trusted one)", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "cloudflare");
+    expect((await ctxFor({ "cf-connecting-ip": "203.0.113.42:8080" })).ip).toBe("203.0.113.42");
+  });
+
+  it("a failing, slow-to-fail or malformed database answer never breaks the sign-in: the address is kept and the location is simply absent", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "cloudflare");
+    for (const broken of [async () => { throw new Error("boom"); }, async () => ({ status: "resolved", location: "not an object" }), async () => null, async () => ({ status: "unresolved", reason: "database-error" })]) {
+      lookup = broken as typeof lookup;
+      const ctx = await ctxFor({ "cf-connecting-ip": "203.0.113.42" });
+      expect(ctx.ip).toBe("203.0.113.42");
+      expect(ctx.city).toBeNull();
+      expect(ctx.country).toBeNull();
+    }
+  });
+
+  it("a Cloudflare country that is unknown (XX), Tor (T1), malformed or lower-case junk names no place", async () => {
+    vi.stubEnv("TRUSTED_PROXY", "cloudflare");
+    for (const code of ["XX", "T1", "D", "DEU", "1A", "de!"]) {
+      const ctx = await ctxFor({ "cf-connecting-ip": "203.0.113.42", "cf-ipcountry": code });
+      expect(ctx.countryCode, code).toBeNull();
+    }
+  });
+});

@@ -26,6 +26,7 @@
     "migration:safety-check": "tsx scripts/migration-safety-check.ts",
     "geoip:verify": "tsx scripts/geoip-database.ts verify",
     "geoip:install": "tsx scripts/geoip-database.ts install",
+    "geoip:status": "tsx scripts/geoip-database.ts status",
     "geoip:download": "tsx scripts/geoip-database.ts download"
   },
   "dependencies": {

@@ -108,13 +108,16 @@ describe("isPrivateOrReservedIp", () => {
     "224.0.0.1", "239.255.255.255", "240.0.0.1", "255.255.255.255", "198.18.0.1", "198.19.255.255", "192.0.0.8",
     "::1", "::", "fc00::1", "fd12:3456::1", "fe80::1", "febf::1", "fec0::1", "ff02::1", "ff00::",
     "::ffff:10.0.0.1", "::ffff:a00:1", "0:0:0:0:0:ffff:192.168.0.1", "::ffff:7f00:1", // IPv4-mapped private addresses, in any spelling
+    // IPv6 forms that CARRY a private / reserved IPv4 address, or are reserved prefixes themselves (a client never connects from them)
+    "2002:a00:1::1", "2002:c0a8:101::5", "2002:7f00:1::1", "64:ff9b::a00:1", "64:ff9b::c0a8:101", "64:ff9b::7f00:1", "64:ff9b:1::1", "100::1", "100::ffff:ffff:ffff:ffff", "::cb00:7109", "::2",
   ])("%s is private/reserved", (ip) => {
     expect(isPrivateOrReservedIp(ip)).toBe(true);
   });
 
   it.each([
     "203.0.113.9", "198.51.100.7", "192.0.2.1", "8.8.8.8", "172.15.0.1", "172.32.0.1", "100.63.255.255", "100.128.0.1", "198.17.255.255", "198.20.0.1",
-    "2001:db8::1", "2a00:1450::1", "2606:4700::1111", "::ffff:203.0.113.9", "64:ff9b::1",
+    "2001:db8::1", "2a00:1450::1", "2606:4700::1111", "::ffff:203.0.113.9",
+    "2002:808:808::1", "64:ff9b::808:808", "100:0:0:1::1", "2001::1", // 6to4 / NAT64 wrapping a PUBLIC IPv4, a prefix next to 100::/64, Teredo: judged as what they are
   ])("%s is a public (or documentation/test) address", (ip) => {
     expect(isPrivateOrReservedIp(ip)).toBe(false);
   });

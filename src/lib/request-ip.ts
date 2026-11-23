@@ -213,8 +213,32 @@ function isPrivateOrReservedIpv4(ip: string): boolean {
   return false;
 }
 
+/** The 16-bit groups of a canonical (compressed) IPv6 address, or undefined when it cannot be expanded. */
+function ipv6Groups(canonical: string): number[] | undefined {
+  const halves = canonical.split("::");
+  if (halves.length > 2) return undefined;
+  const head = halves[0] ? halves[0].split(":") : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  if (halves.length === 1 && head.length !== 8) return undefined;
+  const fill = 8 - head.length - tail.length;
+  if (fill < 0) return undefined;
+  const groups = [...head, ...Array<string>(halves.length === 2 ? fill : 0).fill("0"), ...tail].map((g) => parseInt(g, 16));
+  return groups.length === 8 && groups.every((g) => Number.isInteger(g) && g >= 0 && g <= 0xffff) ? groups : undefined;
+}
+
+const dotted = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+
 function isPrivateOrReservedIpv6(canonical: string): boolean {
   if (canonical === "::1" || canonical === "::") return true; // loopback / unspecified
+  const g = ipv6Groups(canonical);
+  if (g) {
+    if (g.slice(0, 6).every((x) => x === 0)) return true; // ::/96 - the deprecated IPv4-compatible form ("::203.0.113.9"); no client connects from it
+    if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true; // 100::/64 - discard-only prefix (RFC 6666)
+    // Transition addresses that CARRY an IPv4 address: a private / reserved IPv4 inside them is as internal as the plain IPv4 would be, however it is wrapped.
+    if (g[0] === 0x2002 && isPrivateOrReservedIpv4(dotted(g[1], g[2]))) return true; // 6to4 (2002::/16): the IPv4 is in bits 16-47
+    if (g[0] === 0x64 && g[1] === 0xff9b && g.slice(2, 6).every((x) => x === 0) && isPrivateOrReservedIpv4(dotted(g[6], g[7]))) return true; // NAT64 64:ff9b::/96
+    if (g[0] === 0x64 && g[1] === 0xff9b && g[2] === 1) return true; // 64:ff9b:1::/48 - local-use NAT64 translation prefix (RFC 8215)
+  }
   if (/^f[cd][0-9a-f]{2}:/.test(canonical)) return true; // fc00::/7 — unique local (RFC 4193)
   if (/^fe[89ab][0-9a-f]:/.test(canonical)) return true; // fe80::/10 — link-local
   if (/^fe[c-f][0-9a-f]:/.test(canonical)) return true; // fec0::/10 — deprecated site-local
