@@ -109,5 +109,14 @@
     "prisma@7.10.1": true,
     "unrs-resolver@1.12.2": true,
     "esbuild@0.28.2": true
+  },
+  "overrides": {
+    "effect": "3.22.5",
+    "@opennextjs/cloudflare": {
+      "glob": "14.0.6"
+    },
+    "shadcn": {
+      "ts-morph": "28.0.0"
+    }
   }
 }

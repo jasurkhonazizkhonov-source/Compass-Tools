@@ -2,6 +2,24 @@
 
 Scope: `compass-tools-updated`, the actual `package-lock.json`. Tool: `npm audit` (read-only; the registry advisory database), `npm ls` for dependency paths. **No `npm audit fix --force`, no major framework upgrade, no `package.json` range change.** The raw audit JSON files are kept outside the repository next to the audit notes (`F:\Claude Workspace\audit-2026-11-22\npm-audit-*.json`); this document is the human-readable record. Nothing here is a claim that the project is "security-clean": it is the list of what the registry reports, what was changed, and what was left and why.
 
+## 0. Second pass (2026-11-22, after release `75df7b7`): all nine advisories are fixed - `npm audit` reports 0 (0 critical, 0 high, 0 moderate)
+
+The nine advisories were three ROOT advisories and their propagation. Each root had a published, stable, patched release; what stopped `npm audit fix` was that the parent packages pin or cap the old version. Three **scoped `overrides`** in `package.json` reach the fixes; nothing was upgraded across the tree, `--force` was not used, no release candidate or prerelease is involved.
+
+| Root advisory | Vulnerable | Fixed in (stable) | Why the parent could not take it | Override | Effect on the nine |
+|---|---|---|---|---|---|
+| GHSA-7589-6fvf-x4pw `effect`: ReDoS in `Schema.TemplateLiteral` | <= 3.22.0 | **3.22.5** (same 3.x series; installed was 3.20.0) | `@prisma/config` (even the newest stable 7.10.1) pins the exact version `3.20.0`; Prisma's only newer line is `8.0.0-rc.34`, a release candidate | `"effect": "3.22.5"` | clears `effect`, `@prisma/config`, `prisma` (the 3 high) |
+| GHSA-3g3m-2fjr-6pw4 `glob`: AbortSignal cancellation bypass | 9.0.0 - 14.0.1 | **14.0.6** (installed was 13.0.7) | `@opennextjs/cloudflare` (newest 1.20.18) requires `glob ^13` | `"@opennextjs/cloudflare": { "glob": "14.0.6" }` | clears `glob`, `@opennextjs/cloudflare` |
+| GHSA-g3hv-75wg-m249 `minimatch`: DoS through globparts amplification | 7.0.0 - 11.0.0 | **11.0.1+** (installed 10.2.6; no 10.x backport exists) | `glob 13` and `@ts-morph/common 0.27` require `minimatch ^10`; `shadcn` (newest 4.23.0) requires `ts-morph ^26` | glob 14 brings `minimatch ^11`; `"shadcn": { "ts-morph": "28.0.0" }` brings `@ts-morph/common 0.29.1` (`minimatch ^11`) | clears `minimatch`, `@ts-morph/common`, `ts-morph`, `shadcn` |
+
+**Is it a breaking change?** `glob` 14, `minimatch` 11 (both ESM-only) and `ts-morph` 28 are major versions for the two CLI tools that use them, and neither tool's maintainer has adopted them yet, so this combination is not one their authors tested. It was therefore **exercised, not assumed**, with the project's own tools (all passed): `npm ci` from the new lockfile; `prisma validate`, `prisma generate` and `prisma migrate diff` (each loads `prisma.config.ts` through `effect 3.22.5`); the unit suite and the production build; `ts-morph` parsing real project files through its glob (so through minimatch 11); the `shadcn` CLI starting; and the exact `glob` / `globSync` calls (same patterns and options) that `@opennextjs/cloudflare` makes, run with glob 14 against this project's real `.next` output (68 trace files, 384 manifests found). **Not exercised end-to-end:** a full `npm run cf:build` Workers build, and `shadcn add` (it needs the component registry over the network). Those two are developer / Cloudflare-Workers tooling that is not part of the Docker image or the VPS deployment; if either misbehaves the override can be removed without touching application code.
+
+**Reachability (unchanged from section 3):** none of the nine ran in the production image (the runner stage contains only the traced standalone server); they are build-time or developer tools. They were fixed anyway because `npm audit` cannot tell an exposure from a presence, and a clean result is easier to keep honest than an explained exception.
+
+**Guard:** `src/__tests__/dependency-advisory-guards.test.ts` runs in the required unit job (the CI `npm audit` step is report-only) and fails if the overrides disappear or the lockfile resolves any copy inside a vulnerable range again. **Revisit** the three overrides when Prisma, `@opennextjs/cloudflare` and `shadcn` ship releases that carry these versions themselves, and remove them then.
+
+The sections below are the earlier history and are kept for the record; section 3's "what remains" is superseded by this section.
+
 ## 1. Result
 
 | | Critical | High | Moderate | Total |
