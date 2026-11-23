@@ -9,6 +9,8 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 type Row = { id: string; fullName: string; email: string; role: string; status: string; companyId: string; accountsVisible: boolean };
 
 let accountRows: Row[];
+// The signed-in account the agent pickers see (they are "use server" exports: each call re-checks who is asking, see reference-data.ts staffListScope).
+let actor: { id: string; role: string; companyId: string } | null;
 let queueRows: Array<{ id: string; joinedAt: Date; isActive: boolean; account: Row }>;
 
 function matchesAccount(a: Row, where: Record<string, unknown>): boolean {
@@ -25,6 +27,8 @@ function matchesAccount(a: Row, where: Record<string, unknown>): boolean {
   }
   return true;
 }
+
+vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => actor) }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -50,6 +54,7 @@ beforeEach(() => {
   const b = acct("b");
   const inactive = acct("gone", { status: "INACTIVE" });
   accountRows = [a, hidden, b, inactive];
+  actor = { id: "admin-1", role: "ADMIN", companyId: "co-1" };
   queueRows = [
     { id: "q1", joinedAt: new Date("2026-01-01"), isActive: true, account: a },
     { id: "q2", joinedAt: new Date("2026-01-02"), isActive: true, account: hidden },
@@ -102,6 +107,53 @@ describe("agent pickers (assignment dropdowns)", () => {
   it("includeHidden (audit views such as Commissions) lists hidden accounts without ever resurrecting inactive ones", async () => {
     const { listLeadEligibleAgents } = await import("../reference-data");
     expect((await listLeadEligibleAgents("co-1", { includeHidden: true })).map((x) => x.id)).toEqual(["a", "hidden", "b"]);
+  });
+});
+
+describe("the agent pickers are callable endpoints: they answer only a signed-in caller about their OWN company", () => {
+  it("no signed-in account: an empty list, and the database is not read at all", async () => {
+    actor = null;
+    const { prisma } = await import("@/lib/prisma");
+    const { listLeadEligibleAgents, listTaskEligibleAgents } = await import("../reference-data");
+    expect(await listLeadEligibleAgents("co-1")).toEqual([]);
+    expect(await listTaskEligibleAgents("co-1")).toEqual([]);
+    expect(prisma.account.findMany).not.toHaveBeenCalled();
+  });
+
+  it("another company's id (the classic cross-tenant read) is refused with an empty list and no query - names and emails of company B never reach a user of company A", async () => {
+    accountRows.push(acct("other-staff", { companyId: "co-2" }));
+    actor = { id: "a", role: "TRAVEL_AGENT", companyId: "co-1" };
+    const { prisma } = await import("@/lib/prisma");
+    const { listLeadEligibleAgents, listTaskEligibleAgents } = await import("../reference-data");
+    expect(await listLeadEligibleAgents("co-2")).toEqual([]);
+    expect(await listTaskEligibleAgents("co-2", { includeHidden: true })).toEqual([]);
+    expect(prisma.account.findMany).not.toHaveBeenCalled();
+    expect((await listLeadEligibleAgents("co-1")).map((x) => x.id)).not.toContain("other-staff");
+  });
+
+  it("a malformed company id (not a string) is refused rather than reaching the query", async () => {
+    const { listLeadEligibleAgents } = await import("../reference-data");
+    expect(await listLeadEligibleAgents(undefined as never)).toEqual([]);
+    expect(await listLeadEligibleAgents({ not: "x" } as never)).toEqual([]);
+  });
+
+  it("hidden accounts are returned only to an Administrator: includeHidden is ignored for everyone else", async () => {
+    const { listLeadEligibleAgents } = await import("../reference-data");
+    for (const role of ["MANAGER", "TRAVEL_AGENT", "TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"]) {
+      actor = { id: "x", role, companyId: "co-1" };
+      expect((await listLeadEligibleAgents("co-1", { includeHidden: true })).map((x) => x.id), role).toEqual(["a", "b"]);
+    }
+    actor = { id: "admin-1", role: "ADMIN", companyId: "co-1" };
+    expect((await listLeadEligibleAgents("co-1", { includeHidden: true })).map((x) => x.id)).toEqual(["a", "hidden", "b"]);
+  });
+
+  it("what is returned never carries more than the pickers need (no password-like or session fields exist to leak): id, name, role (and email for the lead picker)", async () => {
+    const { listLeadEligibleAgents, listTaskEligibleAgents } = await import("../reference-data");
+    const { prisma } = await import("@/lib/prisma");
+    await listLeadEligibleAgents("co-1");
+    await listTaskEligibleAgents("co-1");
+    const selects = (prisma.account.findMany as unknown as { mock: { calls: Array<[{ select: Record<string, boolean> }]> } }).mock.calls.map((c) => Object.keys(c[0].select).sort());
+    expect(selects).toEqual([["email", "fullName", "id", "role"], ["fullName", "id", "role"]]);
   });
 });
 

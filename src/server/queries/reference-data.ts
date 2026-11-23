@@ -1,6 +1,7 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
+import { getCurrentAccount } from "@/lib/dev-session";
 import type { Prisma } from "@/generated/prisma/client";
 import airportsData from "@/data/reference/airports.json";
 import airlinesData from "@/data/reference/airlines.json";
@@ -16,6 +17,11 @@ function chunk<T>(arr: T[], size: number): T[][] {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
 }
+
+// Every async export of a "use server" file is a callable endpoint, and the airport / airline / aircraft lookups below are PUBLIC reference data used by the customer booking form
+// too - so they stay open, but bounded: a search text is cut to this many characters and a code list to this many codes, so one call cannot be made to do unbounded work.
+const MAX_QUERY_LENGTH = 100;
+const MAX_CODES_PER_CALL = 500;
 
 let seedPromise: Promise<void> | null = null;
 
@@ -106,7 +112,7 @@ export type AirportOption = {
 
 export async function searchAirports(query: string): Promise<AirportOption[]> {
   await ensureReferenceDataSeeded();
-  const q = query.trim();
+  const q = query.trim().slice(0, MAX_QUERY_LENGTH);
   if (!q) {
     const popular = await prisma.airport.findMany({
       where: { iata: { in: ["JFK", "LAX", "ORD", "LHR", "DXB", "CDG", "SFO", "MIA", "ATL", "DFW"] } },
@@ -164,7 +170,7 @@ export type AirlineOption = {
 
 export async function searchAirlines(query: string): Promise<AirlineOption[]> {
   await ensureReferenceDataSeeded();
-  const q = query.trim();
+  const q = query.trim().slice(0, MAX_QUERY_LENGTH);
   if (!q) {
     const popular = await prisma.airline.findMany({
       where: { isActive: true, iata: { not: null } },
@@ -210,7 +216,7 @@ export type AircraftOption = {
 
 export async function searchAircraft(query: string): Promise<AircraftOption[]> {
   await ensureReferenceDataSeeded();
-  const q = query.trim();
+  const q = query.trim().slice(0, MAX_QUERY_LENGTH);
   if (!q) {
     const popular = await prisma.aircraftType.findMany({
       select: { id: true, code: true, displayName: true, manufacturer: true },
@@ -256,7 +262,7 @@ function normalizeReferenceCode(code: string): string {
 
 export async function resolveAirportCodes(codes: string[]): Promise<Record<string, AirportOption | null>> {
   await ensureReferenceDataSeeded();
-  const originals = [...new Set(codes.filter(Boolean))];
+  const originals = [...new Set(codes.filter(Boolean))].slice(0, MAX_CODES_PER_CALL);
   if (originals.length === 0) return {};
   const normalized = [...new Set(originals.map(normalizeReferenceCode))];
   const airports = await prisma.airport.findMany({
@@ -294,7 +300,7 @@ export async function resolveAirportCodes(codes: string[]): Promise<Record<strin
  */
 export async function resolveAirlineCodes(codes: string[]): Promise<Record<string, AirlineOption | null>> {
   await ensureReferenceDataSeeded();
-  const originals = [...new Set(codes.filter(Boolean))];
+  const originals = [...new Set(codes.filter(Boolean))].slice(0, MAX_CODES_PER_CALL);
   if (originals.length === 0) return {};
   const normalized = [...new Set(originals.map(normalizeReferenceCode))];
   const airlines = await prisma.airline.findMany({
@@ -313,7 +319,7 @@ export async function resolveAirlineCodes(codes: string[]): Promise<Record<strin
 
 export async function resolveAircraftCodes(codes: string[]): Promise<Record<string, AircraftOption | null>> {
   await ensureReferenceDataSeeded();
-  const originals = [...new Set(codes.filter(Boolean))];
+  const originals = [...new Set(codes.filter(Boolean))].slice(0, MAX_CODES_PER_CALL);
   if (originals.length === 0) return {};
   const normalized = [...new Set(originals.map(normalizeReferenceCode))];
   const aircraft = await prisma.aircraftType.findMany({
@@ -346,6 +352,19 @@ function visibleAccountsFilter(opts?: AgentListOptions): Prisma.AccountWhereInpu
   return keep.length > 0 ? { OR: [{ accountsVisible: true }, { id: { in: keep } }] } : { accountsVisible: true };
 }
 
+/**
+ * These two lists are exported from a "use server" file, so each is a callable endpoint that receives its `companyId` from whoever calls it. Their legitimate callers are the CRM's own
+ * server pages, which pass the signed-in account's company - so the rule enforced HERE, on every call, is exactly that: the caller must be signed in and must be asking about their
+ * OWN company (anything else answers an empty list and reads nothing), and hidden accounts (`includeHidden`, used only by the Administrator's Commissions filter) are returned to an
+ * Administrator only. Staff names of one's own company are visible to every signed-in user in the Accounts directory already, so this adds no new exposure for them.
+ */
+async function staffListScope(companyId: string, opts?: AgentListOptions): Promise<{ opts: AgentListOptions | undefined } | null> {
+  const actor = await getCurrentAccount();
+  if (!actor || typeof companyId !== "string" || actor.companyId !== companyId) return null;
+  const includeHidden = opts?.includeHidden === true && actor.role === "ADMIN";
+  return { opts: { includeIds: opts?.includeIds, includeHidden } };
+}
+
 /** Every active, VISIBLE (not hidden — see AgentListOptions) account in the caller's own company EXCEPT
  * TICKETING_AGENT/FLIGHT_EXPERT/MARKETING_AGENT — the roles explicitly
  * excluded from the lead/contact-ownership workflow (see
@@ -356,8 +375,10 @@ function visibleAccountsFilter(opts?: AgentListOptions): Prisma.AccountWhereInpu
  * schema.prisma) — an agent must never see or assign work to another
  * company's staff. */
 export async function listLeadEligibleAgents(companyId: string, opts?: AgentListOptions) {
+  const scope = await staffListScope(companyId, opts);
+  if (!scope) return [];
   return prisma.account.findMany({
-    where: { status: "ACTIVE", companyId, role: { notIn: ["TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] }, ...visibleAccountsFilter(opts) },
+    where: { status: "ACTIVE", companyId, role: { notIn: ["TICKETING_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"] }, ...visibleAccountsFilter(scope.opts) },
     orderBy: { fullName: "asc" },
     // email is additive — existing callers (New Lead dialog, Contact
     // reassignment) simply don't read it; Bulk Contacts' Assigned User
@@ -376,8 +397,10 @@ export async function listLeadEligibleAgents(companyId: string, opts?: AgentList
  * are deliberately left in this list — task assignment for those two
  * roles is pre-existing behavior, unrelated to this fix. */
 export async function listTaskEligibleAgents(companyId: string, opts?: AgentListOptions) {
+  const scope = await staffListScope(companyId, opts);
+  if (!scope) return [];
   return prisma.account.findMany({
-    where: { status: "ACTIVE", companyId, role: { not: "MARKETING_AGENT" }, ...visibleAccountsFilter(opts) },
+    where: { status: "ACTIVE", companyId, role: { not: "MARKETING_AGENT" }, ...visibleAccountsFilter(scope.opts) },
     orderBy: { fullName: "asc" },
     select: { id: true, fullName: true, role: true },
   });
