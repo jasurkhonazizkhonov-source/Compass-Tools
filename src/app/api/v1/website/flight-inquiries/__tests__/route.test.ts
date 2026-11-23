@@ -156,6 +156,12 @@ describe("the CRM is strict and fails safely", () => {
     ["too many adults", { ...ONE_WAY, adults: 21 }],
     ["a non-positive budget", { ...ROUND_TRIP, approximateBudget: 0 }],
     ["a bad currency", { ...ROUND_TRIP, budgetCurrency: "dollars" }],
+    ["a date flexibility above 3 days", { ...ONE_WAY, dateFlexibilityDays: 4 }],
+    ["a negative date flexibility", { ...ONE_WAY, dateFlexibilityDays: -1 }],
+    ["a fractional date flexibility", { ...ONE_WAY, dateFlexibilityDays: 1.5 }],
+    ["a date flexibility sent as text", { ...ONE_WAY, dateFlexibilityDays: "2" }],
+    ["exact dates yet 'flexible'", { ...ONE_WAY, dateFlexibilityDays: 0, datesFlexible: true }],
+    ["3 days yet 'not flexible'", { ...ONE_WAY, dateFlexibilityDays: 3, datesFlexible: false }],
   ])("rejects %s with 400 validation_failed, field paths only, nothing created", async (_n, body) => {
     const res = await call(body);
     expect(res.status).toBe(400);
@@ -403,5 +409,28 @@ describe("per-visitor rate limiting on the flight route (keyed on the IP inside 
     const retry = await call(ONE_WAY, {}, false, as("203.0.113.9"));
     expect(retry.status).not.toBe(429);
     expect(visitorLimitCalls).toHaveLength(2);
+  });
+});
+
+describe("date flexibility (the website's four choices) reaches the lead intake as the choice itself", () => {
+  it.each([0, 1, 2, 3])("%i days is accepted together with its matching Boolean and passed on unchanged", async (days) => {
+    const res = await call({ ...ONE_WAY, datesFlexible: days > 0, dateFlexibilityDays: days });
+    expect(res.status).toBe(201);
+    expect(created[0].data).toMatchObject({ datesFlexible: days > 0, dateFlexibilityDays: days });
+  });
+
+  it("the number alone is enough (the Boolean follows from it), and the Boolean alone still works exactly as before", async () => {
+    const withoutBoolean = Object.fromEntries(Object.entries(ONE_WAY).filter(([key]) => key !== "datesFlexible"));
+    expect((await call({ ...withoutBoolean, dateFlexibilityDays: 2 })).status).toBe(201);
+    expect((await call({ ...ONE_WAY, datesFlexible: true })).status).toBe(201);
+    expect(created[0].data).toMatchObject({ dateFlexibilityDays: 2 });
+    expect(created[1].data).toMatchObject({ datesFlexible: true });
+    expect(created[1].data).not.toHaveProperty("dateFlexibilityDays");
+  });
+
+  it("two requests that differ only in the choice are different requests (idempotency fingerprint), so a retry cannot hide a changed choice", async () => {
+    await call({ ...ONE_WAY, datesFlexible: true, dateFlexibilityDays: 1 });
+    await call({ ...ONE_WAY, datesFlexible: true, dateFlexibilityDays: 3 });
+    expect(created[1].idempotency.requestHash).not.toBe(created[0].idempotency.requestHash);
   });
 });

@@ -175,6 +175,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
             childrenCount={lead.children}
             infants={lead.infants}
             flexibleDates={lead.flexibleDates}
+            dateFlexibilityDays={lead.dateFlexibilityDays}
             preferredAirline={lead.preferredAirline}
             budget={lead.budget ? Number(lead.budget) : null}
             additionalNotes={lead.notes}

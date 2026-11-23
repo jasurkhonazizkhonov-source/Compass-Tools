@@ -14,6 +14,7 @@
 // see them, but still show the relevant Company's own logo where useful.
 
 import { maskIp } from "@/server/security/ip-encryption";
+import { describeLeadFlexibility } from "@/lib/date-flexibility";
 import { sanitizeCampaignHtml } from "@/server/email/sanitize-campaign-html";
 import { PRODUCT_NAME, type ResolvedCompanyBranding } from "@/lib/company-config";
 import { LEAD_STATUS_META, leadSourceLabel } from "@/lib/status-meta";
@@ -1507,6 +1508,8 @@ export type NewFlightRequestEmailParams = {
   /** The ordered legs of a MULTI_CITY request, when it has any — every one is shown. */
   segments?: Array<{ departureAirport: NewFlightRequestAirport | null; arrivalAirport: NewFlightRequestAirport | null; departureDate: Date | null }>;
   flexibleDates: boolean;
+  /** The customer's choice from the website form (0 = exact dates, 1-3 = days either side); null/absent when not stated. */
+  dateFlexibilityDays?: number | null;
   preferredAirline: string | null;
   budget: number | null;
   notes: string | null;
@@ -1603,6 +1606,7 @@ type LeadDetailInput = Pick<
   | "returnDate"
   | "segments"
   | "flexibleDates"
+  | "dateFlexibilityDays"
   | "preferredAirline"
   | "budget"
   | "notes"
@@ -1630,7 +1634,9 @@ function leadDetailBlocks(d: LeadDetailInput) {
   ];
   if (d.departureDate) tripRows.push(["Departure date", newRequestDate(d.departureDate)]);
   if (d.returnDate) tripRows.push(["Return date", newRequestDate(d.returnDate)]);
-  if (d.flexibleDates) tripRows.push(["Dates", "Flexible"]);
+  // The choice in the customer's terms ("± 2 days", "Exact dates"); a flexible request with no number still says only "Flexible", as before.
+  const flexibility = describeLeadFlexibility(d.flexibleDates, d.dateFlexibilityDays);
+  if (flexibility) tripRows.push([d.dateFlexibilityDays != null ? "Date flexibility" : "Dates", escapeHtml(flexibility)]);
   if (d.preferredAirline) tripRows.push(["Preferred airline", escapeHtml(d.preferredAirline)]);
   if (d.budget != null) tripRows.push(["Approximate budget", `$${d.budget.toLocaleString("en-US")}`]);
 

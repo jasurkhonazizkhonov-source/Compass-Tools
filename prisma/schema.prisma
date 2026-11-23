@@ -471,6 +471,10 @@ model Lead {
   children       Int        @default(0)
   infants        Int        @default(0)
   flexibleDates  Boolean    @default(false)
+  // How far the customer's dates can move, as the customer chose it on the website form: 0 = exact dates, 1-3 = days either side. NULL = not stated (every older lead,
+  // a lead typed in by staff, a request from an old website bundle that only had a checkbox). The Boolean above stays the "is it flexible at all" flag; a CHECK constraint in the
+  // database keeps this NULL or 0-3.
+  dateFlexibilityDays Int?
   preferredAirline String?
   budget         Decimal?   @db.Decimal(10, 2)
   notes          String?

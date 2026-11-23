@@ -51,6 +51,9 @@ export const flightInquiryBase = z.object({
   infants: z.number().min(0).max(20).default(0),
 
   datesFlexible: z.boolean().optional(),
+  // How far the dates can move, as the customer chose it: 0 = exact dates, 1-3 = days either side. Optional and additive: a form that only knows the Boolean above keeps
+  // working exactly as before (the value is then stored as "not stated"). When both are sent they must agree (flexible if and only if more than 0 days).
+  dateFlexibilityDays: z.number().int().min(0).max(3).optional(),
   preferredAirline: z.string().max(200).optional(),
   approximateBudget: z.number().positive().optional(),
   // ISO 4217 code of the currency the budget was entered in — kept with the submission details, never mixed into the amount.
@@ -62,6 +65,22 @@ export const flightInquiryBase = z.object({
 });
 
 export type FlightInquiry = z.infer<typeof flightInquiryBase>;
+
+/**
+ * The flexibility a request means, from the two fields it may carry. `dateFlexibilityDays` (0-3) is the choice itself and implies the Boolean; with only the Boolean
+ * (an older website bundle, the public capture form) the number stays "not stated" (null) - it is never invented from a Boolean.
+ */
+export function resolveFlexibility(data: { datesFlexible?: boolean; dateFlexibilityDays?: number }): { flexibleDates: boolean; dateFlexibilityDays: number | null } {
+  if (data.dateFlexibilityDays !== undefined) return { flexibleDates: data.dateFlexibilityDays > 0, dateFlexibilityDays: data.dateFlexibilityDays };
+  return { flexibleDates: data.datesFlexible ?? false, dateFlexibilityDays: null };
+}
+
+/** A refinement for the entry points: the two fields must not contradict each other (exact dates yet "flexible", or 3 days yet "not flexible"). */
+export function refineFlexibility(data: { datesFlexible?: boolean; dateFlexibilityDays?: number }, ctx: z.RefinementCtx): void {
+  if (data.dateFlexibilityDays !== undefined && data.datesFlexible !== undefined && data.datesFlexible !== data.dateFlexibilityDays > 0) {
+    ctx.addIssue({ code: "custom", path: ["dateFlexibilityDays"], message: "dateFlexibilityDays and datesFlexible disagree" });
+  }
+}
 
 /**
  * Hard-rejects a phone number that cannot be a real, possible number — the same standard the authenticated manual "New Lead" form applies
@@ -186,7 +205,7 @@ export async function createWebsiteFlightLead(params: {
         adults: data.adults,
         children: data.children,
         infants: data.infants,
-        flexibleDates: data.datesFlexible ?? false,
+        ...resolveFlexibility(data),
         preferredAirline: data.preferredAirline,
         budget: data.approximateBudget,
         notes: data.additionalNotes,

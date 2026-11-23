@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { readLimitedJson } from "@/server/security/read-limited-json";
 import { checkPublicRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { buildLeadSubmissionInfoCreate, withLocalLocation } from "@/server/lead-submission-info";
-import { createWebsiteFlightLead, flightInquiryBase, refinePhone } from "@/server/lead-intake";
+import { createWebsiteFlightLead, flightInquiryBase, refineFlexibility, refinePhone } from "@/server/lead-intake";
 import { guardWebsiteRequest, websiteGuardResponse } from "@/server/website-signature-guard";
 
 // Part 12/25 — the public company website's flight-request form posts
@@ -27,7 +27,8 @@ const leadCaptureSchema = flightInquiryBase
   .extend({ companyId: z.string().min(1) })
   // This endpoint is unauthenticated and reachable by anyone, not just the real website widget — a direct POST with phone: "123" must
   // be rejected here rather than silently creating a low-quality Lead.
-  .superRefine(refinePhone);
+  .superRefine(refinePhone)
+  .superRefine(refineFlexibility);
 
 export async function POST(req: Request) {
   // Pass 26 §35 — public-endpoint rate limiting, checked first, before any parsing/DB work. Uses the Request's own headers directly.

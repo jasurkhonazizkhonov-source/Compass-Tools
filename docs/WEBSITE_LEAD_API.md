@@ -53,7 +53,8 @@ Content-Type: application/json
 | `segments` | array of 1–`MAX_LEAD_SEGMENTS` (20) legs `{ departureAirportIata, arrivalAirportIata, departureDate? }` | no | multi-city itinerary; every leg is stored, in order, and the lead-level route mirrors the first leg |
 | `cabinClass` | `ECONOMY` \| `PREMIUM_ECONOMY` \| `BUSINESS` \| `FIRST` | no | default `ECONOMY` |
 | `adults` / `children` / `infants` | integer | no | `adults` 1–20 (default 1); `children`, `infants` 0–20 (default 0) |
-| `datesFlexible` | boolean | no | |
+| `datesFlexible` | boolean | no | is the customer flexible at all |
+| `dateFlexibilityDays` | integer 0-3 | no | how far the dates can move, as the customer chose it on the website form: `0` = exact dates, `1`-`3` = that many days either side. Stored as `Lead.dateFlexibilityDays`; `NULL` means not stated (older leads, a request that sends only `datesFlexible`). It implies the Boolean (flexible if and only if more than 0) and a request whose two fields disagree is refused with `400 validation_failed`. **Deploy the CRM before a website that sends it**: the endpoint is strict, so an older CRM answers `400` to this field |
 | `preferredAirline` | string ≤ 200 | no | |
 | `approximateBudget` | number > 0 | no | |
 | `budgetCurrency` | ISO 4217 code | no | upper-cased; kept with the submission details |
@@ -83,6 +84,7 @@ curl -sS -X POST http://compass-crm:3000/api/v1/website/flight-inquiries \
     "adults": 2,
     "children": 1,
     "datesFlexible": true,
+    "dateFlexibilityDays": 2,
     "preferredAirline": "Lufthansa",
     "approximateBudget": 3200,
     "budgetCurrency": "EUR",

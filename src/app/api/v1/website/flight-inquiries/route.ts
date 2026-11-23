@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { arrivedViaPublicEdge, authenticateWebsiteApi, publicRouteAllowed, websiteApiCompanyId } from "@/server/security/website-api-auth";
 import { buildLeadSubmissionInfoCreate, withLocalLocation } from "@/server/lead-submission-info";
-import { createWebsiteFlightLead, flightInquiryBase, refinePhone } from "@/server/lead-intake";
+import { createWebsiteFlightLead, flightInquiryBase, refineFlexibility, refinePhone } from "@/server/lead-intake";
 import { auditWebsiteApi } from "@/server/website-api-audit";
 import { guardWebsiteRequest } from "@/server/website-signature-guard";
 
@@ -90,7 +90,8 @@ const apiSchema = flightInquiryBase
   // error, not silently ignored - the caller should learn about a mistake instead of believing it took effect.
   .omit({ submissionId: true })
   .strict()
-  .superRefine(refinePhone);
+  .superRefine(refinePhone)
+  .superRefine(refineFlexibility);
 
 /**
  * Safety net only. Every expected outcome below already returns its own documented status; this catches what nothing anticipated (for

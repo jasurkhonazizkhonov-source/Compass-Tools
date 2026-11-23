@@ -145,6 +145,33 @@ describe.skipIf(!enabled)("website API — real PostgreSQL", () => {
     expect(segs.map((s) => `${s.departureAirport?.iata}-${s.arrivalAirport?.iata}`)).toEqual(["FRA-MSP", "MSP-LAX", "LAX-FRA"]);
   });
 
+  it("stores the customer's date-flexibility CHOICE (0-3) beside the Boolean; the Boolean alone leaves it NULL (never invented); a contradiction is refused and nothing is stored", async () => {
+    for (const days of [0, 1, 2, 3]) {
+      const res = await call(payload({ datesFlexible: days > 0, dateFlexibilityDays: days }));
+      expect(res.status, `choice ${days}`).toBe(201);
+      const j = await json(res);
+      track(j.leadId);
+      expect(await prisma.lead.findUniqueOrThrow({ where: { id: j.leadId }, select: { flexibleDates: true, dateFlexibilityDays: true } })).toEqual({ flexibleDates: days > 0, dateFlexibilityDays: days });
+    }
+    const booleanOnly = await json(await call(payload({ datesFlexible: true })));
+    track(booleanOnly.leadId);
+    expect(await prisma.lead.findUniqueOrThrow({ where: { id: booleanOnly.leadId }, select: { flexibleDates: true, dateFlexibilityDays: true } })).toEqual({ flexibleDates: true, dateFlexibilityDays: null });
+    const before = await prisma.lead.count({ where: { contact: { primaryEmail: { endsWith: `-${TAG}@example.test` } } } });
+    const contradiction = await call(payload({ datesFlexible: true, dateFlexibilityDays: 0 }));
+    expect(contradiction.status).toBe(400);
+    expect((await json(contradiction)).error?.code).toBe("validation_failed");
+    expect(await prisma.lead.count({ where: { contact: { primaryEmail: { endsWith: `-${TAG}@example.test` } } } })).toBe(before);
+  });
+
+  it("the database itself keeps the choice NULL or 0-3 (CHECK constraint), whatever writes to it", async () => {
+    const j = await json(await call(payload({ dateFlexibilityDays: 1, datesFlexible: true })));
+    track(j.leadId);
+    for (const ok of [0, 3]) await prisma.$executeRaw`UPDATE "Lead" SET "dateFlexibilityDays" = ${ok} WHERE id = ${j.leadId}`;
+    await prisma.$executeRaw`UPDATE "Lead" SET "dateFlexibilityDays" = NULL WHERE id = ${j.leadId}`;
+    for (const bad of [4, -1]) await expect(prisma.$executeRaw`UPDATE "Lead" SET "dateFlexibilityDays" = ${bad} WHERE id = ${j.leadId}`).rejects.toThrow();
+    expect((await prisma.lead.findUniqueOrThrow({ where: { id: j.leadId }, select: { dateFlexibilityDays: true } })).dateFlexibilityDays).toBeNull();
+  });
+
   it("a repeat customer's lead goes to that contact's existing owner (the shared business rule), without a second contact", async () => {
     const owner = await prisma.account.create({ data: { fullName: "Owner", email: `owner-${TAG}@example.test`, role: "TRAVEL_AGENT", status: "ACTIVE", companyId: "default-company" } });
     try {

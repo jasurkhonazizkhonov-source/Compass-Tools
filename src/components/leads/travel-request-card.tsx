@@ -1,5 +1,6 @@
 "use client";
 
+import { describeLeadFlexibility } from "@/lib/date-flexibility";
 import { format } from "date-fns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -45,6 +46,7 @@ export function TravelRequestCard({
   childrenCount,
   infants,
   flexibleDates,
+  dateFlexibilityDays = null,
   preferredAirline,
   budget,
   additionalNotes,
@@ -61,6 +63,8 @@ export function TravelRequestCard({
   childrenCount: number;
   infants: number;
   flexibleDates: boolean;
+  /** The customer's choice from the website form: 0 = exact dates, 1-3 = days either side; null = not stated. */
+  dateFlexibilityDays?: number | null;
   preferredAirline: string | null;
   budget: number | null;
   /** "Anything else we should know?" — captured verbatim from the
@@ -196,7 +200,14 @@ export function TravelRequestCard({
         </div>
 
         <div className="flex items-center justify-between rounded-md border px-3 py-2">
-          <span className="text-sm">Flexible dates</span>
+          <span className="text-sm">
+            Flexible dates
+            {describeLeadFlexibility(flexibleDates, dateFlexibilityDays) && (
+              <span className="ml-2 text-xs text-muted-foreground" data-testid="date-flexibility-choice">
+                {describeLeadFlexibility(flexibleDates, dateFlexibilityDays)}
+              </span>
+            )}
+          </span>
           <Switch
             checked={flexibleDates}
             aria-label="Flexible dates"

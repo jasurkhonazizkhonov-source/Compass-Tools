@@ -106,6 +106,24 @@ describe("buildNewFlightRequestEmail", () => {
     expect(html).toContain("Test Travel Co");
   });
 
+  it.each([
+    [0, "Exact dates"],
+    [1, "± 1 day"],
+    [2, "± 2 days"],
+    [3, "± 3 days"],
+  ])("states the customer's date-flexibility choice (%i) in words, not as a bare 'Flexible'", (days, words) => {
+    const { html } = buildNewFlightRequestEmail({ ...FULL, flexibleDates: days > 0, dateFlexibilityDays: days });
+    expect(html).toContain("Date flexibility");
+    expect(html).toContain(words);
+  });
+
+  it("a flexible request whose number was never stated (an older lead or website bundle) still says only 'Flexible'; nothing is invented", () => {
+    const { html } = buildNewFlightRequestEmail({ ...FULL, flexibleDates: true, dateFlexibilityDays: null });
+    expect(html).toContain("Flexible");
+    expect(html).not.toMatch(/± \d day/);
+    expect(html).not.toContain("Exact dates");
+  });
+
   it("omits optional sections entirely rather than fabricating values", () => {
     const { html } = buildNewFlightRequestEmail({
       ...FULL,

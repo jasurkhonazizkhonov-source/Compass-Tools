@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { logActivity } from "@/server/activity-log";
+import { flexibilityDaysAfterToggle } from "@/lib/date-flexibility";
 import { distributeNewWebsiteLead } from "@/server/actions/lead-queue";
 import { addContactPhone, addContactEmail } from "@/server/actions/contacts";
 import { searchContacts } from "@/server/queries/contacts";
@@ -520,7 +521,7 @@ export async function updateLeadField(leadId: string, patch: z.infer<typeof upda
   const actor = await getCurrentAccount();
   const existing = await prisma.lead.findFirst({
     where: { id: leadId, ...leadVisibilityWhere(actor) },
-    select: { id: true, assignedAgentId: true },
+    select: { id: true, assignedAgentId: true, dateFlexibilityDays: true },
   });
   if (!existing) throw new Error("Lead not found");
 
@@ -553,6 +554,12 @@ export async function updateLeadField(leadId: string, patch: z.infer<typeof upda
   }
 
   const normalized: Record<string, unknown> = { ...data };
+  // Switching "Flexible dates" must not leave the customer's stored choice contradicting it (see flexibilityDaysAfterToggle).
+  if (typeof data.flexibleDates === "boolean") {
+    const before = existing.dateFlexibilityDays ?? null;
+    const after = flexibilityDaysAfterToggle(data.flexibleDates, before);
+    if (after !== before) normalized.dateFlexibilityDays = after;
+  }
   if ("departureDate" in data) normalized.departureDate = data.departureDate ? new Date(data.departureDate) : null;
   if ("returnDate" in data) normalized.returnDate = data.returnDate ? new Date(data.returnDate) : null;
 
