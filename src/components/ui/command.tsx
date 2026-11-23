@@ -53,7 +53,8 @@ function CommandDialog({
     <Dialog {...props}>
       <DialogContent
         className={cn(
-          "top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0",
+          // Near the top on a phone (top-3), a third of the way down from sm up: with the on-screen keyboard open, a palette that starts a third of the way down has its results underneath the keyboard.
+          "top-3 translate-y-0 overflow-hidden rounded-xl! p-0 sm:top-1/3",
           className
         )}
         showCloseButton={showCloseButton}

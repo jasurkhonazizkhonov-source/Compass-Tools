@@ -89,7 +89,7 @@ export function NotesPanel({
                   <p className="text-sm whitespace-pre-wrap">{n.body}</p>
                   <div className="mt-2 flex items-center justify-between">
                     <NoteMeta authorName={n.author?.fullName} createdAt={n.createdAt} />
-                    <div className="opacity-0 group-hover:opacity-100 flex gap-1">
+                    <div className="opacity-0 group-hover:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100 flex gap-1">
                       <Button
                         variant="ghost"
                         size="icon-sm"

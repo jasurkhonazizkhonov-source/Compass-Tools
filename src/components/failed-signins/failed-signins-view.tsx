@@ -137,7 +137,8 @@ export function FailedSignInsView({ data, filters }: { data: Data; filters: Fail
                     <TableHead>Exact time</TableHead>
                     <TableHead>Reason</TableHead>
                     <TableHead>Method</TableHead>
-                    <TableHead className="text-right">Actions</TableHead>
+                    {/* Sticky to the right edge: on a phone the table scrolls sideways and Inspect / Delete would otherwise sit about 900px away. Same technique as the Users table's sticky Name column. */}
+                    <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -145,7 +146,7 @@ export function FailedSignInsView({ data, filters }: { data: Data; filters: Fail
                     const who = identity(r);
                     const notes = data.indicators[r.id] ?? [];
                     return (
-                      <TableRow key={r.id} data-testid="failed-signin-row">
+                      <TableRow key={r.id} data-testid="failed-signin-row" className="group">
                         <TableCell>
                           <Checkbox checked={selected.has(r.id)} onCheckedChange={() => toggle(r.id)} aria-label={`Select attempt ${r.id}`} />
                         </TableCell>
@@ -169,13 +170,15 @@ export function FailedSignInsView({ data, filters }: { data: Data; filters: Fail
                           ))}
                         </TableCell>
                         <TableCell className="text-xs">{methodLabel(r.method)}</TableCell>
-                        <TableCell className="whitespace-nowrap text-right">
-                          <Button type="button" variant="ghost" size="sm" onClick={() => setInspected(r)} aria-label={`Inspect attempt ${r.id}`}>
-                            Inspect
-                          </Button>
-                          <Button type="button" variant="ghost" size="sm" onClick={() => setConfirming([r.id])} aria-label={`Delete attempt ${r.id}`}>
-                            Delete
-                          </Button>
+                        <TableCell className="sticky right-0 z-10 bg-card text-right whitespace-nowrap shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] group-hover:bg-[color-mix(in_srgb,var(--muted)_50%,var(--card))]">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button type="button" variant="ghost" size="sm" onClick={() => setInspected(r)} aria-label={`Inspect attempt ${r.id}`}>
+                              Inspect
+                            </Button>
+                            <Button type="button" variant="ghost" size="sm" onClick={() => setConfirming([r.id])} aria-label={`Delete attempt ${r.id}`}>
+                              Delete
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );

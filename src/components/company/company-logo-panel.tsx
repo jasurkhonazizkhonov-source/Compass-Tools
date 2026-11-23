@@ -64,7 +64,7 @@ export function CompanyLogoPanel({
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-4">
+      <div className="flex flex-wrap items-center gap-4">
         <div className="flex h-20 w-40 items-center justify-center rounded-md border bg-muted/30 p-2">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
@@ -73,8 +73,9 @@ export function CompanyLogoPanel({
             className="max-h-full max-w-full object-contain"
           />
         </div>
-        <div className="space-y-1.5">
-          <Badge variant={meta.variant} className="gap-1">
+        <div className="min-w-0 space-y-1.5">
+          {/* whitespace-normal / h-auto: the long "No logo uploaded - ..." label must wrap on a phone instead of running past the card edge */}
+          <Badge variant={meta.variant} className="h-auto gap-1 whitespace-normal py-1 text-left">
             {status === "PROCESSED" && <CheckCircle2 className="h-3 w-3" />}
             {status === "FAILED" && <XCircle className="h-3 w-3" />}
             {isPending ? "Uploading…" : meta.label}

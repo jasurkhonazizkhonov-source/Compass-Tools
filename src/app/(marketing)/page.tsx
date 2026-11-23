@@ -131,7 +131,7 @@ export default async function HomePage() {
                   <feature.icon className="h-6 w-6 text-[#1c3a5e] dark:text-[#d4a24e]" aria-hidden />
                   <h3 className="mt-4 text-sm font-semibold text-foreground">{feature.navLabel}</h3>
                   <p className="mt-2 flex-1 text-sm text-muted-foreground">{feature.summary}</p>
-                  <span className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-foreground opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100">
+                  <span className="mt-4 inline-flex items-center gap-1 text-sm font-medium text-foreground opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                     Learn more <ArrowRight className="h-3.5 w-3.5" aria-hidden />
                   </span>
                 </Link>

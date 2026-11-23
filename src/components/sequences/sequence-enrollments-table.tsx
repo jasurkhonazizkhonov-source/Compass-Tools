@@ -64,7 +64,7 @@ export function SequenceEnrollmentsTable({
             <TableHead>Progress</TableHead>
             <TableHead>Last sent</TableHead>
             <TableHead>Next step</TableHead>
-            <TableHead className="text-right">Actions</TableHead>
+            <TableHead className="text-right sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -80,7 +80,7 @@ export function SequenceEnrollmentsTable({
             const uncertainNote = state.key === "unconfirmed" ? markerReason(e.stepLogs.find((l) => isUncertainMarker(l) || isInFlightMarker(l))?.error) : null;
             const email = e.recipientEmail ?? e.lead.contact.primaryEmail;
             return (
-              <TableRow key={e.id} data-testid="enrollment-row" data-status={e.status}>
+              <TableRow key={e.id} data-testid="enrollment-row" data-status={e.status} className="group">
                 <TableCell className="whitespace-nowrap">
                   <Link href={`/leads/${e.leadId}`} className="font-medium hover:underline">
                     {e.lead.contact.firstName} {e.lead.contact.lastName}
@@ -128,7 +128,7 @@ export function SequenceEnrollmentsTable({
                       : `Step ${waiting.position} · paused`
                     : <span className="text-muted-foreground">{e.status === "ACTIVE" ? "-" : "No further steps"}</span>}
                 </TableCell>
-                <TableCell className="text-right">
+                <TableCell className="text-right sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] group-hover:bg-[color-mix(in_srgb,var(--muted)_40%,var(--card))]">
                   {canUnenroll ? (
                     <div className="flex flex-col items-end gap-1.5">
                       <EnrollmentRecoveryActions enrollmentId={e.id} leadId={e.leadId} state={state.key} sequenceName={sequenceName} />

@@ -99,14 +99,14 @@ export default async function SequencesPage({ searchParams }: { searchParams: Se
                 <TableHead>Active Enrollments</TableHead>
                 <TableHead>Total Enrolled</TableHead>
                 {showOwnerColumn && <TableHead>Owner</TableHead>}
-                <TableHead className="w-10"><span className="sr-only">Row actions</span></TableHead>
+                <TableHead className="w-10 sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]"><span className="sr-only">Row actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {sequences.map((s) => {
                 const canDelete = canManageAllSequences(currentAccount?.role) || s.createdById === currentAccount?.id;
                 return (
-                  <TableRow key={s.id} className="hover:bg-muted/40">
+                  <TableRow key={s.id} className="group hover:bg-muted/40">
                     <TableCell>
                       <Link href={`/sequences/${s.id}`} className="font-medium hover:underline hover:text-primary">
                         {s.name}
@@ -122,7 +122,7 @@ export default async function SequencesPage({ searchParams }: { searchParams: Se
                     {showOwnerColumn && (
                       <TableCell className="text-sm text-muted-foreground">{s.createdBy?.fullName ?? "—"}</TableCell>
                     )}
-                    <TableCell>
+                    <TableCell className="sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] group-hover:bg-[color-mix(in_srgb,var(--muted)_40%,var(--card))]">
                       {canDelete && <SequenceDeleteButton sequenceId={s.id} name={s.name} />}
                     </TableCell>
                   </TableRow>

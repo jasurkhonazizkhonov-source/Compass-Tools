@@ -121,7 +121,7 @@ export function AccountFullNameEditor({ accountId, fullName, canEdit }: { accoun
         className="group flex items-center gap-1.5 text-sm"
       >
         {fullName}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }
@@ -181,7 +181,7 @@ export function AccountPhoneEditor({ accountId, phone, canEdit }: { accountId: s
         className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         {phone ?? "—"}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }
@@ -261,7 +261,7 @@ export function AccountEmailEditor({
         className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         {email}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }
@@ -320,7 +320,7 @@ export function AccountHiredAtEditor({ accountId, hiredAt, canEdit }: { accountI
         className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         {display}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }
@@ -376,7 +376,7 @@ export function AccountLocationEditor({ accountId, location, canEdit }: { accoun
         className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         {location ?? "—"}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }
@@ -438,7 +438,7 @@ export function AccountCommissionPercentEditor({ accountId, commissionPercent, c
         className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         {display}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }
@@ -511,7 +511,7 @@ export function AccountTipPercentEditor({ accountId, tipPercent, canEdit }: { ac
         className="group flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
       >
         {display}
-        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
+        <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60 group-focus-visible:opacity-60 [@media(hover:none)]:opacity-50" />
       </button>
     );
   }

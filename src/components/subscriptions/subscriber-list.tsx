@@ -377,12 +377,12 @@ export function SubscriberList({
                 <TableHead>Source</TableHead>
                 <TableHead>Subscribed</TableHead>
                 <TableHead>Unsubscribe details</TableHead>
-                <TableHead className="w-10"><span className="sr-only">Select</span></TableHead>
+                <TableHead className="w-10 sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)]"><span className="sr-only">Remove</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {subscribers.map((s) => (
-                <TableRow key={s.id} className="hover:bg-muted/40">
+                <TableRow key={s.id} className="group hover:bg-muted/40">
                   <TableCell>
                     <Checkbox checked={selectAllMatching ? !excludedIds.has(s.id) : pageSelected.has(s.id)} onCheckedChange={() => toggleSelected(s.id)} aria-label={`Select ${s.email}`} />
                   </TableCell>
@@ -422,7 +422,7 @@ export function SubscriberList({
                       <span className="text-sm text-muted-foreground">—</span>
                     )}
                   </TableCell>
-                  <TableCell>
+                  <TableCell className="sticky right-0 z-10 bg-card shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.25)] group-hover:bg-[color-mix(in_srgb,var(--muted)_40%,var(--card))]">
                     <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" onClick={() => setRemoveOneId(s.id)} aria-label={`Remove ${s.email}`} title="Remove subscriber">
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>

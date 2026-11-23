@@ -248,7 +248,7 @@ export default async function DashboardPage() {
                           {t.dueAt && formatDistanceToNow(t.dueAt, { addSuffix: true })}
                         </span>
                         {t.lead && (
-                          <Link href={`/leads/${t.lead.id}`}>
+                          <Link href={`/leads/${t.lead.id}`} aria-label={`Open the lead for task: ${t.title}`} className="-m-2 inline-flex p-2">
                             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
                           </Link>
                         )}

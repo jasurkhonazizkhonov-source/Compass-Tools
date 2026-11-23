@@ -55,7 +55,7 @@ export function InlineEditField<T>({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="opacity-0 group-hover:opacity-100 shrink-0"
+            className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 shrink-0"
             onClick={() => {
               setValue(currentValue);
               setEditing(true);
