@@ -108,6 +108,10 @@ describe("CampaignBuilder", () => {
     await user.type(screen.getByLabelText("Campaign name"), "Spring");
     await user.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("The button needs a label."));
+    // The toast fires INSIDE the save transition; the button stays disabled (`pending`) until React has committed the end of that transition. Clicking before that is a click on a
+    // disabled button: nothing happens and the second save never reaches the server. Under load the commit can lag the toast by seconds (this was the intermittent full-suite
+    // failure, 2026-11-22), so wait for the button to be usable again - exactly what a person does.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Save draft" })).toBeEnabled());
     saveCampaignDesign.mockResolvedValueOnce({ ok: true, campaignId: "c9", issues: [] });
     await user.click(screen.getByRole("button", { name: "Save draft" }));
     await waitFor(() => expect(replace).toHaveBeenCalledWith("/subscriptions/campaigns/builder?id=c9"));

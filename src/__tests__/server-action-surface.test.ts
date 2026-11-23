@@ -37,7 +37,7 @@ function exportedFunctions(file: string): Fn[] {
 const all = useServerFiles.flatMap(exportedFunctions);
 
 // What counts as an authorization step: the signed-in account is read and checked, a role / permission / visibility helper is applied, or an unguessable per-record token is required.
-const AUTH = /getCurrentAccount|assert[A-Z]\w*\(|authorize[A-Z]\w*\(|require[A-Z]\w*\(|currentAccount|canView\w*\(|can[A-Z]\w*\(|checkPublicRateLimit|getEmailViewer|stepUp|verifyGoogle|establishSession/;
+const AUTH = /getCurrentAccount|assert[A-Z]\w*\(|authorize[A-Z]\w*\(|require[A-Z]\w*\(|currentAccount|canView\w*\(|can[A-Z]\w*\(|getEmailViewer|stepUp|verifyGoogle|establishSession/;
 function hasAuthMarker(fn: Fn): boolean {
   if (AUTH.test(fn.body)) return true;
   const text = read(fn.file);
@@ -54,6 +54,9 @@ const PUBLIC_BY_DESIGN: Record<string, string> = {
   "actions/booking.ts: trackQuoteView": "the customer's secure quote page: the unguessable per-quote token IS the credential; it only advances that quote's own status",
   "actions/booking.ts: trackViewDealClicked": "same: token-gated, only that quote's own status",
   "actions/booking.ts: trackBookingFormStarted": "same: token-gated, one activity row on that quote",
+  // These two used to pass only because they call the PUBLIC rate limiter, which is not authorization: a rate limit does not say who is calling. They are public by design, so they are listed.
+  "actions/booking.ts: submitBooking": "the customer booking form: the quote's unguessable secure token (looked up inside) is the credential, and the call is rate limited per client",
+  "actions/cancellation.ts: confirmCancellationByCustomer": "the customer cancellation page: the quote's unguessable secure token (looked up inside) is the credential, and the call is rate limited per client",
   "queries/reference-data.ts: searchAirports": "PUBLIC reference data (the customer booking form uses it); results capped at 20, search text capped",
   "queries/reference-data.ts: searchAirlines": "public airport / airline / aircraft reference data, bounded exactly like searchAirports / resolveAirportCodes",
   "queries/reference-data.ts: searchAircraft": "public airport / airline / aircraft reference data, bounded exactly like searchAirports / resolveAirportCodes",
