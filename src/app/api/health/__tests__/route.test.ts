@@ -102,7 +102,7 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
     expect(body.pool).toEqual({ max: 5, total: 2, idle: 1, waiting: 0 });
   });
 
-  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "CARD_ENCRYPTION_KEYS", "CARD_ENCRYPTION_KEY_ID", "CARD_VAULT_MODE", "VERCEL", "VERCEL_ENV", "NODE_ENV", "LEAD_INGEST_SECRET"];
+  const KEYS = ["APP_ENV", "TRUSTED_PROXY", "CARD_ENCRYPTION_KEY", "CARD_ENCRYPTION_KEYS", "CARD_ENCRYPTION_KEY_ID", "CARD_VAULT_MODE", "VERCEL", "VERCEL_ENV", "NODE_ENV", "LEAD_INGEST_SECRET", "WEBSITE_SIGNATURE_REQUIRED"];
   async function withEnv(vars: Record<string, string | undefined>, fn: (get: () => Promise<{ readiness: Record<string, unknown> }>) => Promise<void>) {
     const saved = Object.fromEntries(KEYS.map((k) => [k, process.env[k]]));
     for (const k of KEYS) delete process.env[k];
@@ -137,6 +137,8 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
         databaseTls: "unverified",
         leadIngestSecret: "not_configured",
         websiteApi: "not_configured",
+        websiteSignature: "not_configured",
+        geoIpDatabase: expect.stringMatching(/^(ready|stale|missing|unusable)$/), // depends on whether a developer has installed the file; a category either way
         signerIpCapture: "enabled",
         uploadStorage: expect.stringMatching(/^(ready|low_space|unavailable)$/),
         sequenceScheduler: expect.stringMatching(/^(running|not_started|stalled|disabled)$/),
@@ -156,6 +158,8 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
         databaseTls: "unverified",
         leadIngestSecret: "not_configured",
         websiteApi: "not_configured",
+        websiteSignature: "not_configured",
+        geoIpDatabase: expect.stringMatching(/^(ready|stale|missing|unusable)$/), // depends on whether a developer has installed the file; a category either way
         signerIpCapture: "disabled",
         uploadStorage: expect.stringMatching(/^(ready|low_space|unavailable)$/),
         sequenceScheduler: expect.stringMatching(/^(running|not_started|stalled|disabled)$/),
@@ -330,5 +334,40 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe("GET /api/health - how website requests are authenticated, and the GeoIP database (categories only)", () => {
+  it("websiteSignature: not_configured without a secret, optional with a secret (the transitional state), required once strict mode is on - and the secret itself is never in the answer", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const { resetHealthCacheForTests } = await import("@/lib/health-check");
+    const { GET } = await import("../route");
+    const read = async () => {
+      resetHealthCacheForTests();
+      const res = await GET(detail());
+      return { json: (await res.json()) as { readiness: Record<string, unknown> }, text: JSON.stringify(res) };
+    };
+    const SECRET = "0123456789-abcdefghijklmnopqrstuvwxyz-secret-value-xx";
+    vi.stubEnv("LEAD_INGEST_SECRET", "");
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "");
+    expect((await read()).json.readiness.websiteSignature).toBe("not_configured");
+    vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
+    const optional = await read();
+    expect(optional.json.readiness).toMatchObject({ websiteSignature: "optional", leadIngestSecret: "configured" });
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true");
+    const required = await read();
+    expect(required.json.readiness.websiteSignature).toBe("required");
+    expect(JSON.stringify(required.json)).not.toContain(SECRET);
+    // the switch alone, without a secret, requires nothing (nothing could be verified)
+    vi.stubEnv("LEAD_INGEST_SECRET", "");
+    expect((await read()).json.readiness.websiteSignature).toBe("not_configured");
+  });
+
+  it("geoIpDatabase is one of four categories and the anonymous answer still carries nothing but the status", async () => {
+    queryRaw.mockResolvedValue([{}]);
+    const { GET } = await import("../route");
+    const detailed = (await (await GET(detail())).json()) as { readiness: { geoIpDatabase: string } };
+    expect(["ready", "stale", "missing", "unusable"]).toContain(detailed.readiness.geoIpDatabase);
+    expect(await (await GET(anonymous())).json()).toEqual({ status: "ok" });
   });
 });

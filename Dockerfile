@@ -55,6 +55,9 @@ RUN case "${APP_BASE_URL}" in \
 # ---- tools ------------------------------------------------------------------------------------------------------------------
 FROM builder AS tools
 ENV NODE_ENV=production
+# The IP-geolocation database directory, owned by `node`, so a NEW named volume mounted here (compose: geoip_data) is initialised writable by the
+# unprivileged user that runs `geoip-update`. Public data only; docs/GEOIP.md section 2b.
+RUN mkdir -p /var/lib/compass-tools/geoip && chown node:node /var/lib/compass-tools/geoip
 USER node
 # Default is read-only: it only reports migration status. Applying migrations is always an explicit, separate command.
 CMD ["npx", "prisma", "migrate", "status"]
@@ -83,6 +86,9 @@ COPY --from=builder --chown=node:node /app/scripts/healthcheck.mjs /app/scripts/
 RUN mkdir -p /var/lib/compass-tools/uploads \
  && chown node:node /var/lib/compass-tools/uploads \
  && chmod 0700 /var/lib/compass-tools/uploads
+# Same for the IP-geolocation database: compose mounts the named volume geoip_data here READ-ONLY. The directory exists with the same owner as in the
+# tools image so a first-created volume gets one consistent ownership whichever service creates it.
+RUN mkdir -p /var/lib/compass-tools/geoip && chown node:node /var/lib/compass-tools/geoip
 # Defence in depth: a local .env must never be present in the image (the build context excludes it; this fails the build if one slipped in).
 RUN ! find /app -maxdepth 2 \( -name '.env' -o -name '.env.*' \) ! -name '.env.example' | grep -q .
 USER node

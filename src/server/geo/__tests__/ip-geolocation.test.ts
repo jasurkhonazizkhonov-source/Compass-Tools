@@ -202,3 +202,66 @@ describe("lookupIpLocation — replacing the database without a restart", () => 
     vi.stubEnv("GEOIP_DB_PATH", dbFile);
   });
 });
+
+describe("getGeoIpDatabaseStatus - what System Health and /api/health report (real files, no mocks)", () => {
+  it("a fresh City database is 'ready', named and dated", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    const s = await getGeoIpDatabaseStatus();
+    expect(s).toMatchObject({ state: "ready", databaseType: "DBIP-City-Lite", ageDays: 7 });
+    expect(s.builtAt?.toISOString().slice(0, 10)).toBe("2026-11-01");
+  });
+
+  it("a database older than the 90-day limit is 'stale' - still used for lookups, but flagged", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    install(buildCityDatabase({ entries: ENTRIES, buildEpochSec: Math.floor(Date.UTC(2026, 6, 1) / 1000) })); // 130 days before the faked 'now'
+    resetIpGeolocationForTests();
+    const s = await getGeoIpDatabaseStatus();
+    expect(s.state).toBe("stale");
+    expect(s.ageDays).toBeGreaterThan(MAX_DATABASE_AGE_DAYS);
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    expect((await lookupIpLocation("203.0.113.9")).status).toBe("resolved"); // stale data is still served
+  });
+
+  it("no file at the configured path is 'missing' (country-level locations only), and nothing throws", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    vi.stubEnv("GEOIP_DB_PATH", path.join(dir, "not-there.mmdb"));
+    resetIpGeolocationForTests();
+    expect(await getGeoIpDatabaseStatus()).toEqual({ state: "missing" });
+    vi.stubEnv("GEOIP_DB_PATH", dbFile);
+  });
+
+  it("a corrupt or truncated file is 'unusable', not 'missing' and not a crash", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    install(Buffer.from("truncated download"));
+    resetIpGeolocationForTests();
+    expect(await getGeoIpDatabaseStatus()).toEqual({ state: "unusable" });
+  });
+
+  it("a database that is not a City database (for example country-only) is 'unusable' - it cannot answer a city lookup honestly", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    install(buildCityDatabase({ databaseType: "DBIP-Country-Lite", entries: ENTRIES, buildEpochSec: FRESH }));
+    resetIpGeolocationForTests();
+    expect(await getGeoIpDatabaseStatus()).toEqual({ state: "unusable" });
+  });
+
+  it("the report never contains the file path or any record: only a state, the product name, a build date and an age", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    const text = JSON.stringify(await getGeoIpDatabaseStatus());
+    expect(text).not.toContain(dir);
+    expect(text).not.toMatch(/Frankfurt|203\.0\.113|city\.mmdb/);
+  });
+
+  it("once the file is replaced the next report follows it without a restart (missing -> ready)", async () => {
+    const { getGeoIpDatabaseStatus } = await import("../ip-geolocation");
+    const later = path.join(dir, "appears-later.mmdb");
+    vi.stubEnv("GEOIP_DB_PATH", later);
+    resetIpGeolocationForTests();
+    expect((await getGeoIpDatabaseStatus()).state).toBe("missing");
+    writeFileSync(later, buildCityDatabase({ entries: ENTRIES, buildEpochSec: FRESH }));
+    vi.setSystemTime(new Date("2026-11-08T12:05:00Z")); // past the one-minute re-check interval
+    expect((await getGeoIpDatabaseStatus()).state).toBe("ready");
+    vi.stubEnv("GEOIP_DB_PATH", dbFile);
+  });
+});

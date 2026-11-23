@@ -63,34 +63,49 @@ Unchanged on purpose: only an address that passed the trusted-proxy rules is eve
 
 **Tests (synthetic documentation-range IPs only).** `src/server/geo/__tests__/complete-location.test.ts` (provider answers: city + country, country-only, region missing, invalid IP, private IP, database missing / corrupt, no record, timeout, synchronous failure, malformed answers, country and region conflicts, label length) plus the sign-in, inquiry, lead and display tests listed in the final report. The real mmdb reader is covered by the existing `ip-geolocation.test.ts`.
 
-### 2b. What production needs for city-level results (investigated 2026-11-22; NOTHING was downloaded, installed or changed)
+### 2b. City-level locations in production: prepared, NOT installed (prepared 2026-11-22)
 
-City-level lookup works only when a MaxMind-format City database is readable by the **running app container**. Facts established from the repository:
+**State today: nothing is installed on the production server and nothing has been downloaded there.** Until someone runs the one-time steps below, production shows
+**country-level** locations at best (or "Location unavailable" when even the country is unknown). That is honest and safe: a city is never shown unless a database returned it.
 
-* The runtime image (`Dockerfile` runner stage) contains only the traced standalone server, `@img` and two scripts; it has **no `tsx` and no `scripts/geoip-database.ts`**, so `npm run geoip:download` cannot be run inside it. The file must be placed from the **host** (a checkout with dependencies, or a manual download).
-* The `app` service in `compose.yaml` mounts only the uploads directory and sets no `GEOIP_DB_PATH`. The default path (`data/geoip/city.mmdb` under `/app`) is inside the image, is never persisted, and is not there.
-* The module re-checks the file's size and modification time at most once a minute and swaps in a replacement **without a restart** (a bad replacement keeps the previous database). A missing file is not an error: lookups answer `database-missing` and only the country (from Cloudflare) remains. **System Health shows nothing about this**, so a missing database is silent apart from the country-only results.
+What the repository now provides (all inert until the operator acts):
 
-What to do, when you approve it (a deployment change, deliberately not made here):
+* `compose.yaml` forwards `GEOIP_DB_PATH` to the app (default `/var/lib/compass-tools/geoip/city.mmdb`) and mounts the **named volume `geoip_data` read-only** into the app at
+  `/var/lib/compass-tools/geoip`. The app can read the file but can never write or replace it.
+* A `tools`-profile one-shot service **`geoip-update`** is the only writer of that volume. It is never started by `docker compose up`; it has **no database access**,
+  no secrets and no uploads; its only network is a separate `egress` network used to reach `download.db-ip.com`; no long-running service is on that network. It runs
+  `scripts/geoip-database.ts download --accept-cc-by-4.0`, which validates the file (City database, sane build date, sample lookups) and installs it with an atomic
+  rename, keeping the previous copy as `city.mmdb.previous`. A failed or truncated download can never replace a working file.
+* The Dockerfile creates the mount point owned by the unprivileged `node` user in both the runner and tools stages, so a freshly created volume is writable by the job and
+  readable by the app. The CI smoke test (`deploy/ci-smoke.sh`) checks exactly this: the job writes, the app reads, the app cannot write.
+* Status is visible: System Health row **IP geolocation database** (Ready / Out of date / Unusable / Not installed) and `/api/health` `readiness.geoIpDatabase`
+  (`ready`, `stale`, `missing`, `unusable`; categories only, never a path or a record). Not installed is reported as optional (healthy with a note), out of date (> 90 days) and
+  unusable are warnings. A stale file is still used.
 
-1. **Source and licence.** DB-IP "IP to City Lite": free, no account, **CC BY 4.0** - the credit line is already shown on the Users page (`geoip-attribution.ts`) - published monthly (about 121 MB). Alternatives: MaxMind GeoLite2 City (free account and licence key, CC BY-SA 4.0 plus the GeoLite EULA: no redistribution, delete old versions promptly) or a paid GeoIP2 / DB-IP file. Read the vendor's current terms before use.
-2. **Get the file onto the VPS host** (outside the container), for example `/srv/compass-tools/geoip/city.mmdb`, owned by uid/gid 1000 and readable; verify it with `npm run geoip:verify` from a checkout.
-3. **Mount the DIRECTORY read-only into the `app` service and point the variable at it** - a directory, not the single file, so the monthly atomic rename is visible inside the container:
-   ```yaml
-   # compose.yaml, service app (example - not applied)
-   volumes:
-     - type: bind
-       source: ${GEOIP_HOST_DIR:-/srv/compass-tools/geoip}
-       target: /var/lib/compass-tools/geoip
-       read_only: true
-       bind: { create_host_path: false }
-   environment:
-     GEOIP_DB_PATH: /var/lib/compass-tools/geoip/city.mmdb
+**To enable city-level results (an owner-approved deployment step; the person who runs it accepts the licence):**
+
+1. Deploy the version that contains this change (`bash deploy/deploy.sh`). This recreates the app with the empty read-only volume; behaviour is unchanged (country-level).
+2. Load the database, once, from the deployment directory on the VPS:
+   ```bash
+   docker compose --profile tools run --rm geoip-update
    ```
-   This needs one `docker compose up -d app` (a restart of the app container) the first time only.
-4. **Updates:** each month place the new file next to the old one and rename it over `city.mmdb` (the install script does exactly that and keeps `city.mmdb.previous`). No restart. A file older than 90 days is still used but logged as stale.
-5. **Memory and cost:** about 125 MB of RAM for the loaded file (the `app` limit is 1,536 MB); no per-lookup cost and no third-party request.
-6. **Expectation:** country is almost always right; city and region are right much of the time for fixed-line networks and wrong for mobile carriers, VPNs and cloud / anycast addresses. A city is never shown when the database does not return one.
+   Running this command is the operator's confirmation of the DB-IP licence (CC BY 4.0, attribution "IP geolocation by DB-IP", already shown on the Admin Users page). It needs
+   outbound HTTPS from the VPS to `download.db-ip.com` and about 125 MB of disk and RAM. MaxMind GeoLite2 City (account, licence key, EULA) is the alternative: download it yourself
+   and put it in the volume with `docker compose --profile tools run --rm -v "$PWD/city.mmdb:/tmp/city.mmdb:ro" --entrypoint npx geoip-update tsx scripts/geoip-database.ts install /tmp/city.mmdb`.
+3. Check **System Health → IP geolocation database**: it should say Ready with the product name and build date. **No app restart is needed**: the app re-checks the file at most
+   once a minute and swaps a valid replacement in; a bad replacement keeps the previous database.
+4. **Monthly refresh:** repeat step 2 (DB-IP publishes on the 1st). A file older than 90 days still works but raises a warning in System Health.
+5. **Rollback:** `docker compose --profile tools run --rm --entrypoint rm geoip-update -f /var/lib/compass-tools/geoip/city.mmdb` (or delete the `geoip_data` volume): locations fall back to country level. No customer data is
+   in the volume.
+
+**What accuracy to expect.** The country is almost always right. City and region are right much of the time for fixed-line networks and wrong for mobile carriers, VPNs and
+cloud / anycast addresses; they are estimates of the network's registration or routing, never the person's position. The application never invents a city or region: it
+shows only what the database returned for the trusted IP, labels it approximate, and distinguishes "city-level", "country-only", "private/reserved address" and "unavailable".
+
+**Not verified here:** Docker is not available on the development machine, so the compose and Dockerfile changes were checked by YAML parsing, the compose guard tests and the new
+CI smoke step, not by running the stack locally. The download from DB-IP was **not** performed against the real host in this review (only the CLI's validation and the
+lookup code are covered by tests, with generated databases).
+
 
 ## 3. Choosing and installing the database
 

@@ -116,6 +116,20 @@ services:
       # --- scheduled jobs and ingestion ---
       CRON_SECRET: ${CRON_SECRET:?Set CRON_SECRET in .env (openssl rand -base64 32); without it every /api/cron/* endpoint refuses}
       LEAD_INGEST_SECRET: ${LEAD_INGEST_SECRET:-}
+      # Rotation: the secret being retired, accepted alongside LEAD_INGEST_SECRET until the website has moved. Empty = none.
+      LEAD_INGEST_SECRET_PREVIOUS: ${LEAD_INGEST_SECRET_PREVIOUS:-}
+      # Strict website signing (docs/WEBSITE_LEAD_API.md, "Enabling strict mode"). Empty = transitional: signed requests are verified, unsigned
+      # ones still accepted. "true" (with LEAD_INGEST_SECRET set) = every website request must carry a valid single-use signature.
+      # Forwarded here because a variable that is not named in this block never reaches the container, whatever .env says.
+      WEBSITE_SIGNATURE_REQUIRED: ${WEBSITE_SIGNATURE_REQUIRED:-}
+      # --- Campaign sending budgets (empty = the code defaults of 20 per minute and 400 per rolling 24 h per sending account) ---
+      CAMPAIGN_SENDS_PER_MINUTE: ${CAMPAIGN_SENDS_PER_MINUTE:-}
+      CAMPAIGN_DAILY_LIMIT: ${CAMPAIGN_DAILY_LIMIT:-}
+      # Empty = the in-process task poller stays ON (the default). "true" only when an external scheduler calls /api/cron/tasks.
+      DISABLE_IN_PROCESS_POLLER: ${DISABLE_IN_PROCESS_POLLER:-}
+      # --- IP geolocation database (optional; docs/GEOIP.md section 2b). The named volume below is mounted READ-ONLY into this service;
+      # only the `geoip-update` tools service can write it. Without a file in it, locations are country-level only. ---
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/var/lib/compass-tools/geoip/city.mmdb}
       # --- Authenticated website API (POST /api/v1/website/flight-inquiries, docs/WEBSITE_LEAD_API.md). Empty = the API answers 503. ---
       WEBSITE_API_KEY: ${WEBSITE_API_KEY:-}
       WEBSITE_API_KEY_NEXT: ${WEBSITE_API_KEY_NEXT:-}
@@ -145,6 +159,11 @@ services:
         target: /var/lib/compass-tools/uploads
         bind:
           create_host_path: false
+      # The IP-geolocation database: READ-ONLY here. The application can only read it; it is replaced by `geoip-update` (docs/GEOIP.md).
+      - type: volume
+        source: geoip_data
+        target: /var/lib/compass-tools/geoip
+        read_only: true
     <<: *hardening
     tmpfs:
       - /tmp
@@ -236,7 +255,36 @@ services:
     mem_limit: 1536m
     logging: *default-logging
 
+  # On-demand IP-geolocation database refresh (docs/GEOIP.md section 2b). Never started by `up`: run it by hand, about monthly:
+  #   docker compose --profile tools run --rm geoip-update
+  # It has NO database access (not on `data`), no secrets and no uploads; its only network is `egress`, used to reach download.db-ip.com.
+  # The operator confirms the CC BY 4.0 licence by running the command; it is not accepted on anyone's behalf. Nothing here touches the
+  # application database, and nothing is installed on a server until someone runs this.
+  geoip-update:
+    profiles: ["tools"]
+    image: compass-tools-tools:${APP_VERSION:-local}
+    pull_policy: never
+    restart: "no"
+    entrypoint: ["npx", "tsx", "scripts/geoip-database.ts"]
+    command: ["download", "--accept-cc-by-4.0"]
+    environment:
+      GEOIP_DB_PATH: ${GEOIP_DB_PATH:-/var/lib/compass-tools/geoip/city.mmdb}
+      CHECKPOINT_DISABLE: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    networks: [egress]
+    volumes:
+      - type: volume
+        source: geoip_data
+        target: /var/lib/compass-tools/geoip
+    <<: *hardening
+    tmpfs:
+      - /tmp
+    mem_limit: 1024m
+    logging: *default-logging
+
 networks:
+  # A normal (internet-capable) network used ONLY by the geoip-update job; no long-running service is attached to it.
+  egress: {}
   # internal: true = no route to the internet. Only db, app and tools are on it.
   data:
     internal: true
@@ -248,3 +296,5 @@ networks:
 
 volumes:
   postgres_data: {}
+  # Holds only the downloaded IP-geolocation database (public data, no customer data). Safe to delete: locations fall back to country level.
+  geoip_data: {}

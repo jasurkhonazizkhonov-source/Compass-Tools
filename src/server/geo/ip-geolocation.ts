@@ -168,6 +168,28 @@ async function ensureDatabase(): Promise<void> {
   await loading;
 }
 
+export type GeoIpDatabaseState = "ready" | "stale" | "missing" | "unusable";
+export type GeoIpDatabaseStatus = { state: GeoIpDatabaseState; databaseType?: string; builtAt?: Date; ageDays?: number };
+
+/**
+ * What the local database looks like right now, for System Health and /api/health - the very same loader the lookups use, so what is reported is what is served:
+ *   ready    - a City database is loaded and no older than MAX_DATABASE_AGE_DAYS;
+ *   stale    - loaded and used, but older than that (updates were missed);
+ *   missing  - there is no file at the configured path: locations can only be country-level (from the edge, if any);
+ *   unusable - a file exists but cannot be used (unreadable, corrupt, not an .mmdb, not a City database).
+ * Never throws and never reports a path, an address or any record.
+ */
+export async function getGeoIpDatabaseStatus(): Promise<GeoIpDatabaseStatus> {
+  try {
+    await ensureDatabase();
+  } catch {
+    return { state: "unusable" };
+  }
+  if (!current) return { state: lastLoadError === "error" ? "unusable" : "missing" };
+  const ageDays = Math.floor((Date.now() - current.builtAt.getTime()) / 86_400_000);
+  return { state: ageDays > MAX_DATABASE_AGE_DAYS ? "stale" : "ready", databaseType: current.databaseType, builtAt: current.builtAt, ageDays };
+}
+
 /** Resolves a (trusted-path) client IP to an approximate location. Never throws. */
 export async function lookupIpLocation(rawIp: string | null | undefined): Promise<IpLookupResult> {
   const trimmed = typeof rawIp === "string" ? rawIp.trim() : "";

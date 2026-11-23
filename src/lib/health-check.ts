@@ -6,6 +6,8 @@ import { getCardVaultStatus } from "@/server/security/card-vault-status";
 import { getDatabaseTlsMode } from "@/lib/db-tls";
 import { isWebsiteApiConfigured } from "@/server/security/website-api-auth";
 import { isLeadIngestSecretConfigured } from "@/server/lead-ingest-context";
+import { websiteSignatureRequired } from "@/server/website-request-signature";
+import { getGeoIpDatabaseStatus } from "@/server/geo/ip-geolocation";
 import { status as uploadStorageStatus } from "@/server/storage/local";
 import { inProcessPollerDisabled } from "@/lib/poller-config";
 import { sequenceSchedulerState } from "@/server/scheduler-status";
@@ -48,6 +50,10 @@ export type HealthBody = {
     leadIngestSecret: "configured" | "not_configured";
     /** "configured" = the authenticated website API (POST /api/v1/website/flight-inquiries) has a usable key and is enabled; "not_configured" = it answers 503. A category only — never the key. */
     websiteApi: "configured" | "not_configured";
+    /** How website-to-CRM requests are authenticated: "required" (strict: every request must carry a valid single-use v2 signature), "optional" (a secret is set but WEBSITE_SIGNATURE_REQUIRED is not: unsigned requests are still accepted - the transitional state) or "not_configured" (no secret: nothing can be verified). A category only - never the secret. */
+    websiteSignature: "required" | "optional" | "not_configured";
+    /** The local IP-geolocation database: "ready", "stale" (older than 90 days, still used), "missing" (locations are country-level at best) or "unusable". A category only - never a path. */
+    geoIpDatabase: "ready" | "stale" | "missing" | "unusable";
     /** "disabled" = the signer's IP address is not recorded (no trusted proxy — see request-ip.ts). */
     signerIpCapture: "enabled" | "disabled";
     /**
@@ -72,7 +78,7 @@ type HealthResult = { body: HealthBody; status: number };
 let cached: { at: number; result: HealthResult } | null = null;
 let inflight: Promise<HealthResult> | null = null;
 
-function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null, uploadStorage: HealthBody["readiness"]["uploadStorage"]): HealthBody["readiness"] {
+function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null, uploadStorage: HealthBody["readiness"]["uploadStorage"], geoIpDatabase: HealthBody["readiness"]["geoIpDatabase"]): HealthBody["readiness"] {
   const vault = getCardVaultStatus();
   return {
     bookingCardStorage: vault.storageAvailable ? "available" : "unavailable",
@@ -84,6 +90,8 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
     databaseTls: ((mode) => (mode === "unverified" ? "unverified" : mode === "disabled" ? "disabled" : "verified"))(getDatabaseTlsMode()),
     leadIngestSecret: isLeadIngestSecretConfigured() ? "configured" : "not_configured",
     websiteApi: isWebsiteApiConfigured() ? "configured" : "not_configured",
+    websiteSignature: !isLeadIngestSecretConfigured() ? "not_configured" : websiteSignatureRequired() ? "required" : "optional",
+    geoIpDatabase,
     signerIpCapture: trustedProxyMode() === "none" ? "disabled" : "enabled",
     uploadStorage,
     sequenceScheduler: sequenceSchedulerState(inProcessPollerDisabled()),
@@ -95,6 +103,15 @@ function readiness(schema: Awaited<ReturnType<typeof getMigrationStatus>> | null
 function poolSnapshot() {
   const stats = getPrismaPoolStats();
   return stats ? { max: getPoolSettings().max, ...stats } : null;
+}
+
+/** The GeoIP database category for the report; never throws (a failure to look is reported as "unusable", not as an error of the database probe). */
+async function geoIpState(): Promise<HealthBody["readiness"]["geoIpDatabase"]> {
+  try {
+    return (await getGeoIpDatabaseStatus()).state;
+  } catch {
+    return "unusable";
+  }
 }
 
 async function runCheck(): Promise<HealthResult> {
@@ -114,14 +131,14 @@ async function runCheck(): Promise<HealthResult> {
         // is the steady-state round trip to the database.
         database: { ok: true, firstQueryMs: Math.round(t1 - t0), secondQueryMs: Math.round(t2 - t1) },
         pool: poolSnapshot(),
-        readiness: readiness(schema, (await uploadStorageStatus()).state),
+        readiness: readiness(schema, (await uploadStorageStatus()).state, await geoIpState()),
       },
     };
   } catch (err) {
     console.error(`[health] DATABASE_CHECK_FAILED (${safeErrorTag(err)})`);
     return {
       status: 503,
-      body: { status: "down", checkedAt: new Date().toISOString(), database: { ok: false, error: safeErrorTag(err) }, pool: poolSnapshot(), readiness: readiness(null, (await uploadStorageStatus()).state) },
+      body: { status: "down", checkedAt: new Date().toISOString(), database: { ok: false, error: safeErrorTag(err) }, pool: poolSnapshot(), readiness: readiness(null, (await uploadStorageStatus()).state, await geoIpState()) },
     };
   }
 }

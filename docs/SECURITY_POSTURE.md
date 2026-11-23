@@ -137,3 +137,13 @@ No critical vulnerability was found in this review; two items are new observatio
 | Daily reveal reset | The allowance (5) and the visibility of revealed addresses share one key, the reveal period, which ends at **13:15 `America/Los_Angeles`** computed with Intl (not a fixed UTC offset; 23 / 24 / 25-hour periods across daylight saving). A tab left open masks itself at the boundary and refreshes. A browser cannot be forced to forget what it already holds; the server refuses everything after the boundary. | **Resolved**; copy / screenshot of a revealed address before the reset is **not preventable** (accepted limitation) |
 | Individual campaign recipient cancellation | One atomic `PENDING -> CANCELLED` update; the worker's claim is a compare-and-swap on `PENDING`; company-scoped; marketing roles only; audited; honest refusal when the send had begun. | **Resolved** in code and fake-database tests; real-PostgreSQL concurrency is exercised by CI only |
 | Dependencies | `npm audit fix` (non-breaking) offers nothing; every fix is `--force` (downgrade or major). Prisma's newer line is `8.0.0-rc.34`. | **Accepted limitation, pending the owner's explicit acceptance** (unchanged; not in the runtime image) |
+
+### Updated 2026-11-22 (third pass) - supersedes the rows above where they disagree
+
+Full finding-by-finding record with classifications: `docs/SECURITY_REMEDIATION_THIRD_PASS_2026-11-22.md`.
+
+* **The nine npm advisories are closed** (three scoped `overrides`, `npm audit` = 0); the row above that says they remain is history. Guarded by `dependency-advisory-guards.test.ts`.
+* **`/api/public/lead-capture` is now behind the website signature guard** (it was the one website route that could still be posted to unsigned in strict mode).
+* **`compose.yaml` now forwards `WEBSITE_SIGNATURE_REQUIRED`, `LEAD_INGEST_SECRET_PREVIOUS`, the two campaign budgets, `DISABLE_IN_PROCESS_POLLER` and `GEOIP_DB_PATH`**; before, the documented strict-mode switch could not reach the VPS container. Strict mode itself remains an owner decision: `docs/WEBSITE_SIGNING_STRICT_MODE.md`.
+* **The staff agent pickers are tenant- and session-bound**; hidden accounts are listed only for an Administrator. `server-action-surface.test.ts` keeps the whole `"use server"` surface authorised or explicitly allow-listed.
+* **GeoIP:** status is visible (System Health, `/api/health`); city-level production enablement is prepared and documented but **not installed** (`docs/GEOIP.md` section 2b).

@@ -21,6 +21,9 @@ import { getCardVaultStatus, CARD_VAULT_MODE_ACCEPTED } from "@/server/security/
 import { getKeyringStatus } from "@/server/security/card-keyring";
 import { getDatabaseTlsMode } from "@/lib/db-tls";
 import { getCardRetentionDays } from "@/server/security/card-retention-schedule";
+import { getGeoIpDatabaseStatus, MAX_DATABASE_AGE_DAYS } from "@/server/geo/ip-geolocation";
+import { websiteSignatureRequired } from "@/server/website-request-signature";
+import { isLeadIngestSecretConfigured } from "@/server/lead-ingest-context";
 
 export type HealthState = "HEALTHY" | "WARNING" | "CRITICAL" | "UNKNOWN";
 export type HealthGroup = "critical" | "warning" | "informational";
@@ -386,6 +389,77 @@ async function checkSignerIp(): Promise<HealthCheckResult> {
   });
 }
 
+/**
+ * The local IP-geolocation database (docs/GEOIP.md). OPTIONAL: without it every sign-in / submission location is country-level at best (what the edge supplies), which is honest and
+ * harmless - so "not installed" is HEALTHY with a plain note (the catalogue's rule for optional features), while a file that EXISTS but is stale or unusable is a WARNING because
+ * something that was set up has stopped working. Reports a category, the database product name and its build date - never a path, an address or a record.
+ */
+export async function checkGeoIpDatabase(): Promise<HealthCheckResult> {
+  return guarded("geo.database", "security", "IP geolocation database", async () => {
+    const s = await getGeoIpDatabaseStatus();
+    const facts: Array<{ label: string; value: string }> = [{ label: "State", value: { ready: "Ready", stale: "Out of date", missing: "Not installed", unusable: "Unusable" }[s.state] }];
+    if (s.databaseType) facts.push({ label: "Database", value: s.databaseType });
+    if (s.builtAt) facts.push({ label: "Built", value: `${s.builtAt.toISOString().slice(0, 10)} (${s.ageDays} days ago)` });
+    if (s.state === "ready") return { state: "HEALTHY", summary: "City-level approximate locations are available for sign-ins and website submissions (estimated from the IP address, never exact).", facts };
+    if (s.state === "stale") {
+      return {
+        state: "WARNING",
+        classification: "manual_action",
+        summary: `The IP geolocation database is ${s.ageDays} days old (limit ${MAX_DATABASE_AGE_DAYS}). It is still used, but cities and regions may be out of date.`,
+        facts,
+        action: "Update the file (monthly): docs/GEOIP.md section 2b - run the geoip-update tools service. No restart is needed.",
+      };
+    }
+    if (s.state === "unusable") {
+      return {
+        state: "WARNING",
+        classification: "manual_action",
+        summary: "An IP geolocation database file is present but cannot be used (unreadable, corrupt or not a City database). Locations fall back to country-level.",
+        facts,
+        action: "Replace it: docs/GEOIP.md section 2b (npm run geoip:verify names the problem).",
+      };
+    }
+    return {
+      state: "HEALTHY",
+      classification: "informational",
+      summary: "No IP geolocation database is installed (optional): sign-in and submission locations are country-level at best, and shown that way. City and region need the free DB-IP file - see docs/GEOIP.md section 2b.",
+      facts,
+    };
+  });
+}
+
+/**
+ * How website-to-CRM requests are authenticated (docs/WEBSITE_LEAD_API.md, "Strict mode"). Strict mode is the intended final state; "optional" is the deliberate transitional
+ * state (the CRM deployed before the website), so it is a WARNING that asks for one manual step, not a fault. Outside production nothing is asked.
+ */
+export async function checkWebsiteSigning(): Promise<HealthCheckResult> {
+  return guarded("website.signing", "security", "Website request signing", async () => {
+    const configured = isLeadIngestSecretConfigured();
+    const required = websiteSignatureRequired();
+    const facts = [
+      { label: "Shared signing secret", value: configured ? "Configured" : "Missing" },
+      { label: "Strict mode (WEBSITE_SIGNATURE_REQUIRED)", value: required ? "On" : "Off" },
+    ];
+    if (required) return { state: "HEALTHY", summary: "Strict: every website request must carry a valid, single-use signature bound to its method, path, company and body. Unsigned, replayed and modified requests are refused.", facts };
+    if (!isProductionEnvironment()) return { state: "HEALTHY", summary: "Local/development: website requests are not required to be signed.", facts };
+    if (!configured) {
+      return {
+        state: "WARNING",
+        summary: "No website signing secret is configured: website requests cannot be authenticated and no visitor IP or location is recorded for them.",
+        facts,
+        action: "Set LEAD_INGEST_SECRET (at least 32 characters, identical on the website) - docs/WEBSITE_LEAD_API.md.",
+      };
+    }
+    return {
+      state: "WARNING",
+      classification: "manual_action",
+      summary: "Transitional: valid signatures are verified, but a website request WITHOUT a signature is still accepted. This is expected until the updated website is deployed.",
+      facts,
+      action: "After the updated website is live and signing (same LEAD_INGEST_SECRET), set WEBSITE_SIGNATURE_REQUIRED=true and recreate the app container (docker compose up -d app) - docs/WEBSITE_SIGNING_STRICT_MODE.md.",
+    };
+  });
+}
+
 async function checkEncryptionKeys(): Promise<HealthCheckResult> {
   return guarded("security.keys", "security", "Encryption keys", async () => {
     const ipEnc = base64KeyStatus(process.env.IP_ENCRYPTION_KEY, 32);
@@ -489,6 +563,8 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkMarketingWorkers(),
     checkCardVault(),
     checkSignerIp(),
+    checkGeoIpDatabase(),
+    checkWebsiteSigning(),
     checkEncryptionKeys(),
     checkBookingIntegrity(),
     checkLeadQueue(),

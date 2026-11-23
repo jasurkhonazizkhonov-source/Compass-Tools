@@ -41,6 +41,9 @@ IP_HASH_KEY=$(rand_b64)
 CRON_SECRET=$(openssl rand -hex 24)
 WEBSITE_API_KEY=$(openssl rand -hex 32)
 UPLOADS_HOST_DIR=$UPLOADS
+# Only to prove the variable REACHES the container (see the "Settings reach the container" step). With no LEAD_INGEST_SECRET it cannot make anything strict.
+WEBSITE_SIGNATURE_REQUIRED=true
+CAMPAIGN_DAILY_LIMIT=123
 EOF
 chmod 600 "$TMP/env"
 CRON_SECRET="$(grep '^CRON_SECRET=' "$TMP/env" | cut -d= -f2-)"
@@ -92,6 +95,20 @@ db_mounts="$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}'
 case "$db_mounts" in *compass-tools/uploads*) fail "the uploads are mounted into the database container" ;; *) ok "the database container does not see the uploads" ;; esac
 tools_rw="$(docker compose --profile tools config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=JSON.parse(s).services.tools.volumes||[];console.log(v.length>0&&v.every(x=>x.read_only)?"ro":"rw")})')"
 [ "$tools_rw" = "ro" ] && ok "the maintenance container sees the uploads read-only" || fail "the tools container can write to the uploads"
+
+step "Settings reach the container (a variable compose.yaml does not name never arrives, whatever .env says)"
+[ "$(docker compose exec -T app printenv WEBSITE_SIGNATURE_REQUIRED)" = "true" ] && ok "WEBSITE_SIGNATURE_REQUIRED from .env reaches the app" || fail "WEBSITE_SIGNATURE_REQUIRED did not reach the app container"
+[ "$(docker compose exec -T app printenv CAMPAIGN_DAILY_LIMIT)" = "123" ] && ok "CAMPAIGN_DAILY_LIMIT from .env reaches the app" || fail "CAMPAIGN_DAILY_LIMIT did not reach the app container"
+
+step "IP-geolocation volume: the job writes it, the app can only read it"
+docker compose --profile tools run --rm --no-deps -T --entrypoint sh geoip-update -c 'printf geo > /var/lib/compass-tools/geoip/.probe' && ok "the geoip-update job can write the volume (mount owned by the unprivileged user)" || fail "geoip-update cannot write /var/lib/compass-tools/geoip"
+docker compose exec -T app sh -c '[ "$(cat /var/lib/compass-tools/geoip/.probe)" = geo ]' && ok "the app reads what the job wrote" || fail "the app cannot read the geoip volume"
+if docker compose exec -T app sh -c 'printf x > /var/lib/compass-tools/geoip/.app-write' 2>/dev/null; then fail "the app can WRITE to the geoip volume (it must be read-only)"; else ok "the app cannot write to the geoip volume"; fi
+docker compose --profile tools run --rm --no-deps -T --entrypoint sh geoip-update -c 'rm -f /var/lib/compass-tools/geoip/.probe'
+geo="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health",{headers:{authorization:"Bearer "+(process.env.CRON_SECRET||"")}}).then(r=>r.json()).then(h=>console.log(h.readiness.geoIpDatabase))')"
+[ "$geo" = "missing" ] && ok "readiness.geoIpDatabase=missing (no database installed - optional, country-level locations)" || fail "readiness.geoIpDatabase is $geo (expected missing: nothing was downloaded)"
+geo_net="$(docker compose --profile tools config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s).services;const on=n=>Object.keys(c[n].networks||{});console.log(on("geoip-update").join(",")+"|"+["app","db","tools","cloudflared","cvv-cleanup"].filter(n=>on(n).includes("egress")).join(","))})')"
+[ "$geo_net" = "egress|" ] && ok "geoip-update is on the egress network only; no long-running service is" || fail "unexpected networks: $geo_net"
 
 step "Operator scripts pick the INSTALLED image version (APP_VERSION unset), never ':local'"
 ver="$(env -u APP_VERSION bash -c 'source deploy/common.sh; require_app_version; echo "$APP_VERSION"')"
