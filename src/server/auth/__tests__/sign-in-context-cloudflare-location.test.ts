@@ -114,6 +114,10 @@ describe("resolveSignInContext behind Cloudflare", () => {
     lookup = async () => LOCAL_DB; // the database knows latitude/longitude
     const ctx = await ctxFor({ ...IP, "cf-iplatitude": "-33.9", "cf-iplongitude": "151.2" });
     expect(Object.keys(ctx).join()).not.toMatch(/lat|lon/i);
-    expect(JSON.stringify(ctx)).not.toMatch(/50\.1|8\.7|33\.9|151\.2/);
+    // locationResolvedAt is `new Date()`: serialised, its seconds.milliseconds (e.g. "...:08.712Z") can contain "8.7", "50.1" or "33.9" by chance (roughly 1 run in 75, which is
+    // how this failed CI on 2026-11-23). A timestamp is not a coordinate, so it is left out of the text that is searched.
+    const { locationResolvedAt, ...withoutTimestamp } = ctx;
+    expect(locationResolvedAt === null || locationResolvedAt instanceof Date).toBe(true);
+    expect(JSON.stringify(withoutTimestamp)).not.toMatch(/50\.1|8\.7|33\.9|151\.2/);
   });
 });
