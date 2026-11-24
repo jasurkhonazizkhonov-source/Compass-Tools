@@ -72,7 +72,7 @@ describe.skipIf(!enabled)("sequence replies and scheduling - real PostgreSQL", (
     leadIds.push(lead.id);
     const due = opts.due !== false;
     const enrollment = await prisma.sequenceEnrollment.create({
-      data: { sequenceId, leadId: lead.id, status: opts.status ?? "ACTIVE", currentStepIdx: opts.stepIdx ?? 0, nextSendAt: due ? new Date(Date.now() - 60_000 - n) : new Date(Date.now() + 3_600_000) },
+      data: { sequenceId, leadId: lead.id, contactId: contact.id, status: opts.status ?? "ACTIVE", currentStepIdx: opts.stepIdx ?? 0, nextSendAt: due ? new Date(Date.now() - 60_000 - n) : new Date(Date.now() + 3_600_000) },
     });
     return { enrollment, lead, contact };
   }

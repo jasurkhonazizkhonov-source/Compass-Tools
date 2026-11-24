@@ -120,7 +120,7 @@ export function BulkEnrollDialog({
               <DialogTitle>Enroll {count} {noun}?</DialogTitle>
               <DialogDescription>
                 {count} {noun} will be enrolled in <strong>{chosen.name}</strong> ({chosen.stepCount} step{chosen.stepCount === 1 ? "" : "s"}).
-                {kind === "contacts" && " Contacts are enrolled through their most recent lead; a contact with no lead you can access is skipped."}
+                {kind === "contacts" && " A contact with a lead you can access is enrolled through its most recent lead; a contact without one is enrolled as a contact - a lead is never needed."}
                 {" "}Records already actively enrolled in this sequence are skipped, not enrolled twice.
               </DialogDescription>
             </DialogHeader>

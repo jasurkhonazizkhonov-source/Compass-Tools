@@ -21,7 +21,7 @@ const TITLE: Record<GmailBlock["problem"], string> = {
  *   - someone else's Gmail needs connecting: no button (it can only be connected from that person's own account) - the message names them;
  *   - a temporary problem: NO "connect Gmail" advice, just "Check again".
  */
-export function GmailProblemNotice({ gmail, message, leadId, onCheckAgain, checking }: { gmail: GmailBlock; message: string; leadId: string; onCheckAgain?: () => void; checking?: boolean }) {
+export function GmailProblemNotice({ gmail, message, leadId, onCheckAgain, checking }: { gmail: GmailBlock; message: string; leadId: string | null; onCheckAgain?: () => void; checking?: boolean }) {
   const [pending, startTransition] = useTransition();
   const canConnect = gmail.needsReconnect && gmail.senderIsViewer;
   return (
@@ -38,7 +38,7 @@ export function GmailProblemNotice({ gmail, message, leadId, onCheckAgain, check
             disabled={pending}
             onClick={() =>
               startTransition(async () => {
-                await startGmailConnect(`/leads/${leadId}`); // redirects to Google's consent screen, then back to this lead
+                await (leadId ? startGmailConnect(`/leads/${leadId}`) : startGmailConnect()); // redirects to Google's consent screen, then back to this lead
               })
             }
             className="gap-1.5"

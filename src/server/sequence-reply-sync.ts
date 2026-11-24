@@ -4,6 +4,7 @@ import { hasReplyDetectionScope } from "@/server/auth/gmail-oauth-config";
 import { GmailInboundError, inboundApiForConnection, type GmailInboundApi } from "@/server/email/gmail-inbound";
 import { classifyInboundMessage, type InboundMessageMeta } from "@/lib/reply-detection";
 import { pollerStopRequested } from "@/server/background-poller";
+import { activitySubject } from "@/server/sequence-sender";
 
 // Automatic stop when a customer replies. The ONLY place that reads a mailbox, and it reads the narrowest thing that answers the question.
 //
@@ -68,11 +69,11 @@ export async function recordSequenceReply(input: {
       if (stopped.count === 0) return { duplicate: false, stopped: false };
 
       await tx.sequenceReply.updateMany({ where: { gmailConnectionId: input.gmailConnectionId, gmailMessageId: input.gmailMessageId }, data: { stoppedEnrollment: true } });
-      const enrollment = await tx.sequenceEnrollment.findUnique({ where: { id: input.enrollmentId }, select: { leadId: true, sequence: { select: { name: true } }, currentStepIdx: true } });
+      const enrollment = await tx.sequenceEnrollment.findUnique({ where: { id: input.enrollmentId }, select: { leadId: true, contactId: true, sequence: { select: { name: true } }, currentStepIdx: true } });
       if (enrollment) {
         await tx.activity.create({
           data: {
-            leadId: enrollment.leadId,
+            ...activitySubject(enrollment),
             type: "SEQUENCE_REPLIED",
             description: `The customer replied to sequence "${enrollment.sequence.name}" (after step ${enrollment.currentStepIdx}). The remaining emails were cancelled automatically.`,
           },

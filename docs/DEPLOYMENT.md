@@ -310,6 +310,42 @@ Four behaviours of the sequence system changed. None of them needs a new environ
 * **Enroll All Contacts** (sequence page, active sequences, people who may manage sequences): the browser never receives the contacts. The server enrolls them in batches of 100 through the existing enrollment (each contact through its most recent lead it can see), skipping anyone already actively enrolled through any lead, with a summary by reason; a failed batch does not undo earlier ones, a run can be stopped, and running it again is harmless.
 * **Which addresses.** Every enrollment path asks: *Primary email only* (default) or *All available email addresses* (every valid address once, one email to all of them, so a reply from any stops it). Invalid addresses, duplicates and addresses of a marketing subscriber who **unsubscribed or is suppressed** (bounce/complaint) are never used - checked at enrollment **and again at send time**. A contact whose only usable address is blocked is refused with that reason.
 
+### Contact-only enrollment: a contact never needs a lead (2026-11-25)
+
+**The defect.** A sequence enrollment stored only a `leadId`, so selecting Contacts that had no lead produced "Has no lead you can access - sequences are enrolled through a lead". A contact with a valid
+address is a customer or prospect in its own right; making staff create an artificial lead to email them was wrong.
+
+**The model** (`SequenceEnrollment` in `prisma/schema.prisma`, migration `20261125000100_sequence_enrollment_contact_subject`):
+
+| | lead-based (unchanged) | contact-only (new) |
+|---|---|---|
+| `contactId` | the lead's contact (backfilled for every existing row) | the contact |
+| `leadId` | the lead | **null** |
+| sender | the lead's assigned agent | the contact's **owner**, else the account that **enrolled** it (`server/sequence-sender.ts`; follows a reassignment of the contact) |
+| history / audit | on the lead | on the contact (`Activity.contactId`), plus an append-only `SEQUENCE_CONTACTS_ENROLLED` batch entry |
+| trip variables (`{{departure_city}}` ...) | the lead's | empty (the contact's and the sender's are filled) |
+| Gmail reply detection | by the conversation id of the step's sent email | **identical** (it never used the lead) |
+
+* **Who goes which way.** From the Contacts list (selection, "Add to sequence") and **Enroll All Contacts**: a contact with a lead you can access is enrolled through its most recent such lead, exactly as before; a contact **without** one is
+  enrolled as a contact. No lead is required, created or changed, and nothing about the contact is modified. A lead-based enrollment from a Leads list or a lead page is unchanged.
+* **One decision point.** `classifyContactsForEnrollment` (`server/sequence-contact-eligibility.ts`) mirrors `classifyLeadsForEnrollment` and reuses the same pieces: row-level contact visibility (company, owner, manager team), the recipient rules
+  (primary only by default, or all valid addresses; invalid and duplicate addresses dropped; unsubscribed or suppressed subscribers removed - see `server/sequence-recipients.ts`), a real Gmail readiness check of the sending account, and the rule
+  that the sender must belong to the **same company** as the person enrolling. The reason shown for each contact is one of: enrolled, already enrolled, no valid email address, unsubscribed or suppressed, not available to you, or the Gmail problem.
+  None of them mentions a lead.
+* **Duplicate policy (explicit; no identity matching is invented).** One ACTIVE enrollment per **contact** and sequence, whichever kind: enrolling a contact that already has an active lead-based enrollment in the sequence (through any of its
+  leads) is "already enrolled", and enrolling a lead whose contact already has an active contact-only enrollment is too. Lead-vs-lead is decided per lead, as it always was (a contact with two leads can still be enrolled through each by someone who
+  picks the leads). Nothing links a Contact and a Lead except the existing `Lead.contactId`; no records are merged. Concurrency: advisory locks per (sequence, lead) and (sequence, contact), always taken in the same order (lead locks, then contact locks),
+  plus a **partial unique index** `SequenceEnrollment_one_active_contact_only` as the last resort.
+* **Suppression** is checked at enrollment **and again immediately before every send** (an address that unsubscribes after enrolling is never emailed; the enrollment fails visibly). A customer's one-click unsubscribe link in a contact-only email stops that contact's active contact-only enrollments.
+* **Found on the way and fixed (it affected lead-based enrollments too):** with "All addresses" and a primary address that was unsubscribed, suppressed or invalid but one other good address, the enrollment stored no recipient list, so at send time the rule fell back to the unusable primary and failed the enrollment. The usable list is now stored whenever it is not exactly the primary.
+* **Migration safety.** Additive and ordered: add `contactId` nullable, backfill it from each enrollment's lead, then `NOT NULL`, relax `leadId` to nullable, add the foreign key (`ON DELETE CASCADE`, like the lead's) and indexes. Nothing is deleted or rewritten;
+  sent-email history and replies are untouched. Rehearsed on PostgreSQL 17.11 with existing lead enrollments (backfill verified; `prisma migrate diff` shows no drift) and the rollback in the migration's header was run in a transaction. Before any contact-only enrollment exists the rollback is the
+  documented `DELETE ... WHERE "leadId" IS NULL` plus the reversed `ALTER`s; afterwards, restore the database backup taken before the deployment.
+
+**What was verified, and how:** the test file `src/server/actions/__integration__/contact-only-enrollment.integration.test.ts` (22 tests on a real PostgreSQL: enroll with and without a lead,
+first and follow-up emails from the right sender, completion, multiple addresses, no valid address, suppression at enrollment and at send, duplicates, ten simultaneous requests, pause/resume, unenroll, retry, a reply stopping exactly the right enrollment and unrelated
+messages stopping nothing, role / ownership / company boundaries) plus the existing lead-based suites, all green. **Not verified:** a real connected mailbox (the mailbox in these tests is a scripted fake), a browser run of the new reasons list, production.
+
 ### The email builder
 
 * New steps use the visual editor (formatting, colours, headings, lists, links, images with size and description, call-to-action button, divider, spacer, desktop/email-width/mobile preview, an HTML source view, undo/redo, drafts kept in the browser, duplicate, reorder). **Every existing step stays plain text** (`SequenceStep.bodyFormat` defaults to TEXT) and can be converted deliberately.

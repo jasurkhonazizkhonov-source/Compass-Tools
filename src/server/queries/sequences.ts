@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { leadVisibilityWhere, sequenceVisibilityWhere, type Viewer } from "@/server/visibility";
+import { contactVisibilityWhere, leadVisibilityWhere, sequenceVisibilityWhere, type Viewer } from "@/server/visibility";
 import { resolvePageSize } from "@/lib/pagination";
 import { withEmailPrivacy } from "@/server/privacy/customer-email";
 import { maskEmailsInText } from "@/lib/customer-email-mask";
@@ -131,7 +131,9 @@ export async function getSequenceEnrollments(params: { sequenceId: string; viewe
       // `id` tiebreaker for deterministic pagination (Pass 7 §25 convention).
       orderBy: [{ enrolledAt: "desc" }, { id: "desc" }],
       include: {
-        lead: { include: { contact: true, departureAirport: true, arrivalAirport: true } },
+        // The contact is ALWAYS there (a contact-only enrollment has no lead: leadId and lead are null).
+        contact: true,
+        lead: { include: { departureAirport: true, arrivalAirport: true } },
         stepLogs: { orderBy: { createdAt: "desc" } },
       },
       skip: (page - 1) * pageSize,
@@ -143,18 +145,24 @@ export async function getSequenceEnrollments(params: { sequenceId: string; viewe
   // The contact's email address is shown only for leads this viewer may see (the same row-level rule as the Leads list). A sequence can be visible to someone
   // for whom a particular enrolled lead is not (for example a Manager looking at a sequence an agent outside their team used), and seeing the sequence must not
   // reveal that lead's contact details.
-  const leadIds = [...new Set(enrollments.map((e) => e.leadId))];
+  // A lead-based enrollment is judged by the LEAD's visibility (unchanged); a contact-only one by the CONTACT's (the same row-level rule as the Contacts list).
+  const leadIds = [...new Set(enrollments.map((e) => e.leadId).filter((id): id is string => !!id))];
+  const contactOnlyIds = [...new Set(enrollments.filter((e) => !e.leadId).map((e) => e.contactId))];
   const visibleLeads = leadIds.length
     ? await prisma.lead.findMany({ where: { AND: [{ id: { in: leadIds } }, leadVisibilityWhere(params.viewer)] }, select: { id: true } })
     : [];
+  const visibleContacts = contactOnlyIds.length
+    ? await prisma.contact.findMany({ where: { AND: [{ id: { in: contactOnlyIds } }, contactVisibilityWhere(params.viewer)] }, select: { id: true } })
+    : [];
   const visible = new Set(visibleLeads.map((l) => l.id));
-  const withVisibility = enrollments.map((e) => ({ ...e, leadVisible: visible.has(e.leadId) }));
+  const visibleContact = new Set(visibleContacts.map((c) => c.id));
+  const withVisibility = enrollments.map((e) => ({ ...e, leadVisible: e.leadId ? visible.has(e.leadId) : visibleContact.has(e.contactId) }));
   // Customer-email privacy: a viewer who may not see complete addresses gets the masked primary email and a masked per-enrollment recipient.
   const masked = await withEmailPrivacy(
     params.viewer,
     withVisibility,
-    (e) => e.lead?.contact,
-    (e, email) => ({ ...e, lead: { ...e.lead, contact: { ...e.lead.contact, primaryEmail: email } }, recipientEmail: e.recipientEmail ? maskEmailsInText(e.recipientEmail) : e.recipientEmail })
+    (e) => e.contact,
+    (e, email) => ({ ...e, contact: { ...e.contact, primaryEmail: email }, recipientEmail: e.recipientEmail ? maskEmailsInText(e.recipientEmail) : e.recipientEmail })
   );
 
   return { enrollments: masked, total, page, pageSize, pageCount: Math.max(1, Math.ceil(total / pageSize)) };

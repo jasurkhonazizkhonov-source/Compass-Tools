@@ -9,7 +9,9 @@ import { isInFlightMarker, isRealFailure, isUncertainMarker, markerReason } from
 
 export type SequenceEnrollmentRow = {
   id: string;
-  leadId: string;
+  /** Null for a contact-only enrollment (made without a lead). */
+  leadId: string | null;
+  contactId: string;
   status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED" | "REPLIED";
   currentStepIdx: number;
   enrolledAt: Date;
@@ -18,9 +20,9 @@ export type SequenceEnrollmentRow = {
   stopReason?: string | null;
   stoppedAt?: Date | null;
   waitReason?: string | null;
-  /** False when the viewer may not see this lead: its contact's email is then withheld. */
+  /** False when the viewer may not see this lead (or, for a contact-only enrollment, this contact): the email is then withheld. */
   leadVisible: boolean;
-  lead: { contact: { firstName: string; lastName: string; primaryEmail: string | null } };
+  contact: { firstName: string; lastName: string; primaryEmail: string | null };
   stepLogs: { stepId: string; status: "SENT" | "FAILED"; sentAt: Date | null; createdAt: Date; error: string | null }[];
 };
 
@@ -81,13 +83,14 @@ export function SequenceEnrollmentsTable({
             const failedStep = progress.find((p) => p.status === "failed");
             const lastError = e.stepLogs.find((l) => isRealFailure(l))?.error ?? null;
             const uncertainNote = state.key === "unconfirmed" ? markerReason(e.stepLogs.find((l) => isUncertainMarker(l) || isInFlightMarker(l))?.error) : null;
-            const email = e.recipientEmail ?? e.lead.contact.primaryEmail;
+            const email = e.recipientEmail ?? e.contact.primaryEmail;
             return (
               <TableRow key={e.id} data-testid="enrollment-row" data-status={e.status}>
                 <TableCell className="whitespace-nowrap">
-                  <Link href={`/leads/${e.leadId}`} className="font-medium hover:underline">
-                    {e.lead.contact.firstName} {e.lead.contact.lastName}
+                  <Link href={e.leadId ? `/leads/${e.leadId}` : `/contacts/${e.contactId}`} className="font-medium hover:underline">
+                    {e.contact.firstName} {e.contact.lastName}
                   </Link>
+                  {!e.leadId && <span className="ml-2 text-[11px] text-muted-foreground">Contact</span>}
                 </TableCell>
                 <TableCell className="max-w-[16rem] truncate">{e.leadVisible ? (email ?? <span className="text-muted-foreground">No email</span>) : <span className="text-muted-foreground">Hidden</span>}</TableCell>
                 <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{stamp(e.enrolledAt)}</TableCell>
@@ -98,7 +101,7 @@ export function SequenceEnrollmentsTable({
                   <p className="text-xs text-muted-foreground whitespace-nowrap">
                     {sentCount} of {steps.length} sent
                   </p>
-                  <ol className="mt-1 flex flex-wrap gap-1" aria-label={`Step progress for ${e.lead.contact.firstName} ${e.lead.contact.lastName}`}>
+                  <ol className="mt-1 flex flex-wrap gap-1" aria-label={`Step progress for ${e.contact.firstName} ${e.contact.lastName}`}>
                     {progress.map((p) => (
                       <li
                         key={p.stepId}

@@ -64,9 +64,15 @@ export function chooseRecipients(contact: ContactEmails, mode: RecipientMode, bl
   return usable.length === 0 ? { ok: false, reason: "addressSuppressed" } : { ok: true, addresses: usable };
 }
 
-/** What the enrollment stores: nothing for "primary" (the primary is read at send time, as always), the comma-separated list when more than one address is used. */
-export function recipientToStore(mode: RecipientMode, addresses: readonly string[]): string | undefined {
-  return mode === "all" && addresses.length > 1 ? addresses.join(", ") : undefined;
+/**
+ * What the enrollment stores: nothing for "primary" (the primary is read at send time, as always); for "all", the comma-separated list of the usable addresses - unless that
+ * list is exactly the contact's primary address, which needs no storing. (It used to store only when MORE THAN ONE address was usable, so a contact whose primary was unsubscribed,
+ * suppressed or invalid but who had one other good address stored nothing - and the send-time rule then fell back to the unusable primary and failed the enrollment.)
+ */
+export function recipientToStore(mode: RecipientMode, addresses: readonly string[], primaryEmail?: string | null): string | undefined {
+  if (mode !== "all" || addresses.length === 0) return undefined;
+  const onlyThePrimary = addresses.length === 1 && !!primaryEmail && normalizeAddress(primaryEmail) === addresses[0];
+  return onlyThePrimary ? undefined : addresses.join(", ");
 }
 
 /** The stored list, split into addresses (an enrollment's recipientEmail is comma-separated). */

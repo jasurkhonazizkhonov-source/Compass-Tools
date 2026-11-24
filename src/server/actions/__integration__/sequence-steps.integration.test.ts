@@ -161,7 +161,7 @@ describe.skipIf(!enabled)("sequence step content - real PostgreSQL", () => {
       const contact = await prisma.contact.create({ data: { firstName: "C", lastName: "T", primaryEmail: `c-${TAG}@example.test`, companyId: COMPANY } });
       contactIds.push(contact.id);
       const lead = await prisma.lead.create({ data: { contactId: contact.id, assignedAgentId: ownerId, source: "WEBSITE", status: "ATTEMPTING_TO_CONTACT" } });
-      const enrollment = await prisma.sequenceEnrollment.create({ data: { sequenceId: s.id, leadId: lead.id, status: "ACTIVE", currentStepIdx: 1, nextSendAt: new Date(Date.now() + 3_600_000) } });
+      const enrollment = await prisma.sequenceEnrollment.create({ data: { sequenceId: s.id, leadId: lead.id, contactId: contact.id, status: "ACTIVE", currentStepIdx: 1, nextSendAt: new Date(Date.now() + 3_600_000) } });
       const refused = await actions.moveStep(a.id, "down");
       expect(refused).toMatchObject({ ok: false });
       expect((refused as { error: string }).error).toMatch(/1 person is part-way through/);
@@ -213,7 +213,7 @@ describe.skipIf(!enabled)("sequence step content - real PostgreSQL", () => {
       const contact = await prisma.contact.create({ data: { firstName, lastName: "Smith", primaryEmail: `sent-${TAG}-${contactIds.length}@example.test`, companyId: COMPANY } });
       contactIds.push(contact.id);
       const lead = await prisma.lead.create({ data: { contactId: contact.id, assignedAgentId: ownerId, source: "WEBSITE", status: "ATTEMPTING_TO_CONTACT" } });
-      const enrollment = await prisma.sequenceEnrollment.create({ data: { sequenceId: s.id, leadId: lead.id, status: "ACTIVE", nextSendAt: new Date(Date.now() - 1000) } });
+      const enrollment = await prisma.sequenceEnrollment.create({ data: { sequenceId: s.id, leadId: lead.id, contactId: contact.id, status: "ACTIVE", nextSendAt: new Date(Date.now() - 1000) } });
       await run({ enrollmentIds: [enrollment.id] });
       return { email: sent[sent.length - 1], enrollmentId: enrollment.id };
     }

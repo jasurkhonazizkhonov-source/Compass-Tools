@@ -42,14 +42,15 @@ export async function GET(req: Request) {
 
   const enrollment = await prisma.sequenceEnrollment.findUnique({
     where: { id: enrollmentId },
-    select: { id: true, leadId: true },
+    select: { id: true, leadId: true, contactId: true },
   });
   if (!enrollment) {
     return unsubscribeResponse({ kind: "invalid" });
   }
 
+  // A lead-based enrollment stops every ACTIVE enrollment of that lead (unchanged); a contact-only one (no lead) stops the contact's ACTIVE contact-only enrollments.
   await prisma.sequenceEnrollment.updateMany({
-    where: { leadId: enrollment.leadId, status: "ACTIVE" },
+    where: enrollment.leadId ? { leadId: enrollment.leadId, status: "ACTIVE" } : { leadId: null, contactId: enrollment.contactId, status: "ACTIVE" },
     data: { status: "UNSUBSCRIBED", nextSendAt: null, waitReason: null, stopReason: "CUSTOMER_UNSUBSCRIBED", stoppedAt: new Date() },
   });
 

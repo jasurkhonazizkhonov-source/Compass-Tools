@@ -13,12 +13,15 @@ import { pollerStopRequested } from "@/server/background-poller";
 import { DEFAULT_RATE_LIMIT_BACKOFF_MS, checkSenderCapacity, senderLockKey } from "@/server/sender-quota";
 import { resolveSendRecipients } from "@/server/sequence-recipients";
 import { renderStepBodyHtml } from "@/server/email/sequence-content";
+import { activitySubject, enrollmentSender, senderIsOneOf } from "@/server/sequence-sender";
 
 // The sequence-step sweep, kept OUT of the "use server" module src/server/actions/sequences.ts on purpose: everything exported from a "use server" file
 // is a public Server Action with no check of its own. The sweep's legitimate callers are the cron route /api/cron/sequences (behind CRON_SECRET) and
 // the signed-in "Process Due Steps" button, which now calls a role-checked wrapper (processDueSequenceSteps in actions/sequences.ts). The code below is
 // unchanged from where it used to live.
 
+// The personalisation values. A contact-only enrollment has no lead, so the trip values (cities, dates, trip type, cabin) are EMPTY for it - exactly what a lead without them
+// already produces - and the contact's and sender's values are filled as usual.
 function buildVariableContext(
   enrollment: {
     lead: {
@@ -28,31 +31,31 @@ function buildVariableContext(
       returnDate: Date | null;
       tripType: string;
       cabinClass: string;
-      contact: { firstName: string; lastName: string; primaryPhone: string | null; primaryEmail: string | null };
-      assignedAgent: { fullName: string; email: string; phone: string | null } | null;
-    };
+    } | null;
+    contact: { firstName: string; lastName: string; primaryPhone: string | null; primaryEmail: string | null };
   },
+  sender: { fullName: string; email: string; phone: string | null } | null,
   companyName: string
 ): SequenceVariableContext {
-  const { lead } = enrollment;
-  const [senderFirstName, ...rest] = (lead.assignedAgent?.fullName ?? "Your Agent").split(" ");
+  const { lead, contact } = enrollment;
+  const [senderFirstName, ...rest] = (sender?.fullName ?? "Your Agent").split(" ");
   return {
-    contactFirstName: lead.contact.firstName,
-    contactLastName: lead.contact.lastName,
-    contactPhone: lead.contact.primaryPhone ?? "",
-    contactEmail: lead.contact.primaryEmail ?? "",
-    departureCity: lead.departureAirport?.city ?? "",
-    departureAirport: lead.departureAirport?.iata ?? "",
-    arrivalCity: lead.arrivalAirport?.city ?? "",
-    arrivalAirport: lead.arrivalAirport?.iata ?? "",
-    departureDate: lead.departureDate ? lead.departureDate.toDateString() : "",
-    returnDate: lead.returnDate ? lead.returnDate.toDateString() : "",
-    tripType: lead.tripType.replace("_", " "),
-    cabinClass: lead.cabinClass.replace("_", " "),
+    contactFirstName: contact.firstName,
+    contactLastName: contact.lastName,
+    contactPhone: contact.primaryPhone ?? "",
+    contactEmail: contact.primaryEmail ?? "",
+    departureCity: lead?.departureAirport?.city ?? "",
+    departureAirport: lead?.departureAirport?.iata ?? "",
+    arrivalCity: lead?.arrivalAirport?.city ?? "",
+    arrivalAirport: lead?.arrivalAirport?.iata ?? "",
+    departureDate: lead?.departureDate ? lead.departureDate.toDateString() : "",
+    returnDate: lead?.returnDate ? lead.returnDate.toDateString() : "",
+    tripType: lead ? lead.tripType.replace("_", " ") : "",
+    cabinClass: lead ? lead.cabinClass.replace("_", " ") : "",
     senderFirstName,
     senderLastName: rest.join(" "),
-    senderPhone: lead.assignedAgent?.phone ?? "",
-    senderEmail: lead.assignedAgent?.email ?? "",
+    senderPhone: sender?.phone ?? "",
+    senderEmail: sender?.email ?? "",
     companyName,
   };
 }
@@ -93,7 +96,10 @@ const MAX_SEQUENCES_PER_PASS = 25;
 
 const DUE_INCLUDE = {
   sequence: { include: { steps: { orderBy: { order: "asc" as const } } } },
-  lead: { include: { contact: true, departureAirport: true, arrivalAirport: true, assignedAgent: true } },
+  // The lead is present only for a lead-based enrollment; the contact is ALWAYS present (its owner and the enrolling account are the sender of a contact-only one).
+  lead: { include: { departureAirport: true, arrivalAirport: true, assignedAgent: true } },
+  contact: { include: { owner: true } },
+  enrolledBy: true,
 };
 
 /**
@@ -110,9 +116,8 @@ function dueWhere(options: { enrollmentIds?: string[]; excludeSenders?: string[]
     // The approved-enrollment flow sends the FIRST step of just the enrollment(s) it created, right away, instead of waiting for the next scheduler tick.
     // Every other rule (claim lease, delivery marker, dispatch-time re-check, retry limits) is identical to a scheduled run.
     ...(options.enrollmentIds ? { id: { in: options.enrollmentIds } } : {}),
-    ...(options.excludeSenders && options.excludeSenders.length > 0
-      ? { OR: [{ lead: { assignedAgentId: null } }, { lead: { assignedAgentId: { notIn: options.excludeSenders } } }] }
-      : {}),
+    // A mailbox with no capacity left holds back ALL of its rows, whichever kind of enrollment they are.
+    ...(options.excludeSenders && options.excludeSenders.length > 0 ? { NOT: senderIsOneOf(options.excludeSenders) } : {}),
   };
 }
 
@@ -171,7 +176,7 @@ export async function runDueSequenceSteps(options: { enrollmentIds?: string[]; e
     // Shutdown requested: take on no further enrollment (the unclaimed ones stay due and are picked up by the next process).
     if (pollerStopRequested()) break;
     // A mailbox that has just run out of capacity: do not even claim its other rows this pass.
-    const senderId = enrollment.lead.assignedAgent?.id;
+    const senderId = enrollmentSender(enrollment)?.id;
     if (senderId && noCapacity.has(senderId)) {
       deferred++;
       continue;
@@ -193,7 +198,7 @@ export async function runDueSequenceSteps(options: { enrollmentIds?: string[]; e
   for (const [senderId, reason] of noCapacity) {
     await prisma.sequenceEnrollment
       .updateMany({
-        where: { status: "ACTIVE", nextSendAt: { lte: new Date() }, sequence: { isActive: true }, lead: { assignedAgentId: senderId }, OR: [{ waitReason: null }, { NOT: { waitReason: reason } }] },
+        where: { status: "ACTIVE", nextSendAt: { lte: new Date() }, sequence: { isActive: true }, AND: [senderIsOneOf([senderId]), { OR: [{ waitReason: null }, { NOT: { waitReason: reason } }] }] },
         data: { waitReason: reason },
       })
       .catch(() => undefined);
@@ -232,7 +237,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
   // The address(es) explicitly chosen at enroll time win when set; otherwise the contact's primary email (the behaviour for every enrollment that never
   // had a choice to make). Decided NOW, not at enrollment: an address that has since become invalid, or whose owner unsubscribed or was suppressed, is dropped
   // (the others still get it); when none is left the enrollment fails visibly instead of emailing someone who asked not to be.
-  const recipients = await resolveSendRecipients(enrollment, enrollment.lead.contact);
+  const recipients = await resolveSendRecipients(enrollment, enrollment.contact);
 
   // Neither of these is transient: nothing about the passage of time fixes a missing email or a missing agent, only a person editing the Contact/Lead.
   // The ENROLLMENT itself becomes FAILED (visible, not due) instead of retrying invisibly forever; staff can restart it from the lead or the sequence page.
@@ -250,10 +255,15 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
   }
   const toEmail = recipients.to;
 
-  const agent = enrollment.lead.assignedAgent;
+  const agent = enrollmentSender(enrollment);
   if (!agent) {
     await prisma.sequenceStepLog.create({
-      data: { enrollmentId: enrollment.id, stepId: step.id, status: "FAILED", error: "Lead has no assigned agent to send from" },
+      data: {
+        enrollmentId: enrollment.id,
+        stepId: step.id,
+        status: "FAILED",
+        error: enrollment.leadId ? "Lead has no assigned agent to send from" : "Nobody is set up to send this contact's emails (the contact has no owner and the account that enrolled it is gone)",
+      },
     });
     await prisma.sequenceEnrollment.update({ where: { id: enrollment.id }, data: { status: "FAILED", nextSendAt: null } });
     return "failed";
@@ -279,7 +289,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
     const held = await prisma.sequenceEnrollment.updateMany({ where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx }, data: { nextSendAt: null } });
     if (held.count > 0) {
       await logActivity({
-        leadId: enrollment.leadId,
+        ...activitySubject(enrollment),
         type: "SEQUENCE_DELIVERY_UNCERTAIN",
         description: `Sequence "${enrollment.sequence.name}" step ${enrollment.currentStepIdx + 1} was held: an earlier send did not report whether it was delivered. Check the sender's Gmail Sent folder, then confirm it was sent or send it again.`,
       });
@@ -288,7 +298,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
   }
 
   const company = await getCompanyForAccountId(agent.id);
-  const context = buildVariableContext(enrollment, company.name);
+  const context = buildVariableContext(enrollment, agent, company.name);
   const renderedSubject = renderSequenceTemplate(step.subject, context);
   // A step written in the visual editor (HTML) is personalised with escaped values, cleaned and styled for email clients; every older step is plain text, read exactly as before.
   const isHtml = (step as { bodyFormat?: string }).bodyFormat === "HTML";
@@ -373,7 +383,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
         status: "SENT",
         messageId: result.messageId,
         leadId: enrollment.leadId,
-        contactId: enrollment.lead.contactId,
+        contactId: enrollment.contactId,
       },
     });
     const nextIdx = enrollment.currentStepIdx + 1;
@@ -397,7 +407,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
     const held = await prisma.sequenceEnrollment.updateMany({ where: { id: enrollment.id, status: "ACTIVE", currentStepIdx: enrollment.currentStepIdx }, data: { nextSendAt: null } });
     if (held.count > 0) {
       await logActivity({
-        leadId: enrollment.leadId,
+        ...activitySubject(enrollment),
         type: "SEQUENCE_DELIVERY_UNCERTAIN",
         description: `Sequence "${enrollment.sequence.name}" step ${enrollment.currentStepIdx + 1}: Gmail did not confirm whether the email was sent. It was not resent automatically. Check the sender's Gmail Sent folder, then confirm it was sent or send it again.`,
       });
@@ -431,7 +441,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
       status: "FAILED",
       errorMessage: result.error,
       leadId: enrollment.leadId,
-      contactId: enrollment.lead.contactId,
+      contactId: enrollment.contactId,
     },
   });
 
@@ -449,7 +459,7 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
     });
     if (ended.count > 0) {
       await logActivity({
-        leadId: enrollment.leadId,
+        ...activitySubject(enrollment),
         type: "SEQUENCE_FAILED",
         description: `Sequence "${enrollment.sequence.name}" stopped at step ${enrollment.currentStepIdx + 1}: ${result.error}`,
       });

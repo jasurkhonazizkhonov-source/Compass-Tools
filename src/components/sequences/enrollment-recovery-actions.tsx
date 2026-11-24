@@ -22,7 +22,7 @@ const when = (iso: string | null) => (iso ? format(new Date(iso), "MMM d, yyyy '
  *     warns that the customer may then receive it twice.
  * A Gmail problem found during the retry is shown right here with the connect / check-again actions; the lead page and the sequence page both refresh.
  */
-export function EnrollmentRecoveryActions({ enrollmentId, leadId, state, sequenceName }: { enrollmentId: string; leadId: string; state: EnrollmentStateKey; sequenceName: string }) {
+export function EnrollmentRecoveryActions({ enrollmentId, leadId, state, sequenceName }: { enrollmentId: string; leadId: string | null; state: EnrollmentStateKey; sequenceName: string }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [problem, setProblem] = useState<Extract<RecoveryResult, { ok: false }> | null>(null);

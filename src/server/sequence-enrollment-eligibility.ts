@@ -25,14 +25,14 @@ export type SendingAgent = { id: string; fullName: string };
 /** Distinct sending accounts whose refresh token is checked against Google in ONE classification; the rest get the local-only check. */
 export const GMAIL_VERIFY_LIMIT = 25;
 
-export function describeGmailProblem(code: GmailProblemCode, agent: SendingAgent, actorId: string | undefined): string {
+export function describeGmailProblem(code: GmailProblemCode, agent: SendingAgent, actorId: string | undefined, subject: "lead" | "contact" = "lead"): string {
   const mine = agent.id === actorId;
   const who = mine ? "Your Gmail" : `${agent.fullName}'s Gmail`;
   const how = mine ? "Use the account menu (top right) > Connect Gmail, then try again." : `Ask ${agent.fullName} to connect Gmail from their account menu, then try again.`;
-  const nothing = "No emails have been sent and this lead has not been enrolled.";
+  const nothing = `No emails have been sent and this ${subject} has not been enrolled.`;
   switch (code) {
     case "NOT_CONNECTED":
-      return `Gmail is not connected. ${who} is not connected, and it is the account that sends this lead's sequence emails. ${nothing} ${how}`;
+      return `Gmail is not connected. ${who} is not connected, and it is the account that sends this ${subject}'s sequence emails. ${nothing} ${how}`;
     case "REAUTH_REQUIRED":
       return `Gmail needs to be reconnected. ${who} authorization has expired or been revoked. ${nothing} ${how}`;
     case "MISSING_PERMISSION":
@@ -49,6 +49,8 @@ export type EnrollmentClassification = {
   verdicts: Map<string, LeadVerdict>;
   /** Explicit recipient address(es) validated against the lead's own contact emails (only when one was requested and valid). */
   recipientByLead: Map<string, string>;
+  /** The contact each ELIGIBLE lead belongs to (an enrollment always records its contact as well as its lead). */
+  contactByLead: Map<string, string>;
   /** Leads refused because their sending agent's Gmail is unavailable, with the agent that would have sent. */
   blocked: Array<{ leadId: string; agent: SendingAgent; code: GmailProblemCode }>;
   gmailProblem?: GmailProblemCode;
@@ -70,6 +72,7 @@ export async function classifyLeadsForEnrollment(params: {
   const requestedIds = [...new Set(params.leadIds)];
   const verdicts = new Map<string, LeadVerdict>();
   const recipientByLead = new Map<string, string>();
+  const contactByLead = new Map<string, string>();
   const blocked: EnrollmentClassification["blocked"] = [];
 
   // A lead can only be enrolled by someone who can actually see it - never trust a client-supplied id list blindly.
@@ -83,7 +86,7 @@ export async function classifyLeadsForEnrollment(params: {
     if (visible.has(id)) ids.push(id);
     else verdicts.set(id, "inaccessible");
   }
-  if (ids.length === 0) return { verdicts, recipientByLead, blocked };
+  if (ids.length === 0) return { verdicts, recipientByLead, contactByLead, blocked };
 
   // Only a genuinely ACTIVE enrollment blocks a new one.
   const active = new Set(
@@ -94,6 +97,18 @@ export async function classifyLeadsForEnrollment(params: {
     if (active.has(id)) verdicts.set(id, "alreadyActive");
     else toCheck.push(id);
   }
+  // Duplicate policy (documented in docs/SEQUENCES.md): a person is never in the same sequence twice at once through the two kinds of enrollment. A lead whose CONTACT already has
+  // an ACTIVE contact-only enrollment in this sequence is "already enrolled" (lead-vs-lead is unchanged: it is still decided per lead).
+  const contactOnlyActive = toCheck.length
+    ? new Set(
+        (
+          await prisma.sequenceEnrollment.findMany({
+            where: { sequenceId, leadId: null, status: "ACTIVE", contact: { leads: { some: { id: { in: toCheck } } } } },
+            select: { contactId: true },
+          })
+        ).map((e) => e.contactId)
+      )
+    : new Set<string>();
 
   const details =
     toCheck.length > 0
@@ -101,6 +116,7 @@ export async function classifyLeadsForEnrollment(params: {
           where: { id: { in: toCheck } },
           select: {
             id: true,
+            contactId: true,
             contact: { select: { companyId: true, primaryEmail: true, emails: { select: { email: true } } } },
             assignedAgent: { select: { id: true, fullName: true, companyId: true } },
           },
@@ -122,6 +138,10 @@ export async function classifyLeadsForEnrollment(params: {
 
   const candidates: Array<{ id: string; agent: SendingAgent }> = [];
   for (const lead of details) {
+    if (contactOnlyActive.has(lead.contactId)) {
+      verdicts.set(lead.id, "alreadyActive");
+      continue;
+    }
     const known = new Set(
       [lead.contact.primaryEmail, ...lead.contact.emails.map((em) => em.email)].filter((a): a is string => !!a).map((a) => a.toLowerCase())
     );
@@ -143,7 +163,7 @@ export async function classifyLeadsForEnrollment(params: {
         verdicts.set(lead.id, choice.reason);
         continue;
       }
-      toStore = recipientToStore(mode, choice.addresses);
+      toStore = recipientToStore(mode, choice.addresses, lead.contact.primaryEmail);
     }
     if (!lead.assignedAgent) {
       verdicts.set(lead.id, "noAssignedAgent"); // no sender to send from: the worker would only fail this enrollment on its first run
@@ -156,6 +176,7 @@ export async function classifyLeadsForEnrollment(params: {
       continue;
     }
     if (toStore) recipientByLead.set(lead.id, toStore);
+    contactByLead.set(lead.id, lead.contactId);
     candidates.push({ id: lead.id, agent: lead.assignedAgent });
   }
   // A lead that vanished between the visibility query and this one is simply not eligible.
@@ -176,7 +197,7 @@ export async function classifyLeadsForEnrollment(params: {
       blocked.push({ leadId: c.id, agent: c.agent, code: r.code });
     }
   }
-  const out: EnrollmentClassification = { verdicts, recipientByLead, blocked };
+  const out: EnrollmentClassification = { verdicts, recipientByLead, contactByLead, blocked };
   if (blocked.length > 0) {
     out.gmailProblem = blocked[0].code;
     out.gmailMessage = describeGmailProblem(blocked[0].code, blocked[0].agent, actor?.id);

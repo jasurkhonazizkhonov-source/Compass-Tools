@@ -233,7 +233,7 @@ describe("Gmail OAuth callback", () => {
 
     await GET(makeRequest("?code=abc&state=expected-state-value"));
 
-    expect(connections.get("acct-1")!.inboundError).toBeNull();
+    expect((connections.get("acct-1") as { inboundError?: string | null }).inboundError).toBeNull();
   });
 
   // Real defect found and fixed: encryptRefreshToken() was the one step in

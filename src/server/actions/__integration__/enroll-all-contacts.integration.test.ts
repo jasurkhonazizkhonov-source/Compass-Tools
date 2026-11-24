@@ -68,7 +68,7 @@ describe.skipIf(!enabled)("Enroll All Contacts and recipient addresses - real Po
   }
   type Tally = Record<string, number>;
   async function runAll(sequenceId: string, recipientMode: "primary" | "all" = "primary", limit = 100): Promise<Tally> {
-    const total: Tally = { processed: 0, enrolled: 0, alreadyEnrolled: 0, noLead: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, failedOther: 0, batches: 0 };
+    const total: Tally = { processed: 0, enrolled: 0, alreadyEnrolled: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, failedOther: 0, batches: 0 };
     let cursor: string | null = null;
     for (let i = 0; i < limit; i++) {
       const r = await batch({ sequenceId, recipientMode, cursor });
@@ -119,7 +119,8 @@ describe.skipIf(!enabled)("Enroll All Contacts and recipient addresses - real Po
     // The Admin sees every contact of the company, including other tests' leftovers, so count only the ones created here.
     const eligible: string[] = [];
     for (let i = 0; i < 230; i++) eligible.push((await newContact()).contact.id);
-    for (let i = 0; i < 4; i++) await newContact({ leads: 0 });
+    const noLead: string[] = [];
+    for (let i = 0; i < 4; i++) noLead.push((await newContact({ leads: 0 })).contact.id); // contacts WITHOUT a lead
     for (let i = 0; i < 3; i++) await newContact({ email: null });
     for (let i = 0; i < 3; i++) await newContact({ email: "not-an-email" });
     const unsub = addr("unsub");
@@ -140,26 +141,29 @@ describe.skipIf(!enabled)("Enroll All Contacts and recipient addresses - real Po
 
     const t = await runAll(sequence.id);
     expect(t.batches).toBeGreaterThanOrEqual(3); // 100 contacts at a time
-    expect(t.noLead).toBeGreaterThanOrEqual(4);
+    // A contact with no lead is NOT refused for it: each is enrolled as a contact (contact-only), and no lead was created or touched.
+    expect(await prisma.sequenceEnrollment.count({ where: { sequenceId: sequence.id, status: "ACTIVE", leadId: null, contactId: { in: noLead } } })).toBe(4);
+    expect(await prisma.lead.count({ where: { contactId: { in: noLead } } })).toBe(0);
     expect(t.missingEmail).toBeGreaterThanOrEqual(6); // no address, and an address that is not one
     expect(t.addressSuppressed).toBeGreaterThanOrEqual(2);
     expect(t.noAssignedAgent).toBeGreaterThanOrEqual(2);
     expect(t.failedOther).toBe(0);
 
     // Every eligible contact has exactly ONE active enrollment in this sequence.
-    const rows = await prisma.sequenceEnrollment.findMany({ where: { sequenceId: sequence.id, status: "ACTIVE" }, select: { leadId: true, recipientEmail: true, lead: { select: { contactId: true } } } });
+    const rows = await prisma.sequenceEnrollment.findMany({ where: { sequenceId: sequence.id, status: "ACTIVE" }, select: { leadId: true, contactId: true, recipientEmail: true } });
     const perContact = new Map<string, number>();
-    for (const r of rows) perContact.set(r.lead.contactId, (perContact.get(r.lead.contactId) ?? 0) + 1);
+    for (const r of rows) perContact.set(r.contactId, (perContact.get(r.contactId) ?? 0) + 1);
     for (const id of eligible) expect(perContact.get(id), id).toBe(1);
+    for (const id of noLead) expect(perContact.get(id), id).toBe(1);
     expect([...perContact.values()].every((n) => n === 1)).toBe(true);
     // "Primary only" stores nothing: the primary address is read at send time.
     expect(rows.every((r) => r.recipientEmail === null)).toBe(true);
     // A contact with two leads is enrolled through its MOST RECENT lead only.
     const latest = twoLeads.leads[1].id;
-    expect(rows.filter((r) => r.lead.contactId === twoLeads.contact.id).map((r) => r.leadId)).toEqual([latest]);
+    expect(rows.filter((r) => r.contactId === twoLeads.contact.id).map((r) => r.leadId)).toEqual([latest]);
     expect((await prisma.sequenceEnrollment.count({ where: { sequenceId: sequence.id } })) - before).toBeGreaterThanOrEqual(eligible.length + 1);
     // Nobody was enrolled who must not be.
-    expect(await prisma.sequenceEnrollment.count({ where: { sequenceId: sequence.id, lead: { contact: { primaryEmail: { in: [unsub, supp, "not-an-email"] } } } } })).toBe(0);
+    expect(await prisma.sequenceEnrollment.count({ where: { sequenceId: sequence.id, contact: { primaryEmail: { in: [unsub, supp, "not-an-email"] } } } })).toBe(0);
   });
 
   it("running it again changes nothing: everyone already enrolled is skipped, nobody gets a second enrollment", async () => {
@@ -208,9 +212,9 @@ describe.skipIf(!enabled)("Enroll All Contacts and recipient addresses - real Po
     await prisma.sequenceStep.create({ data: { sequenceId: own.id, order: 0, subject: "Hi", body: "Hello", delayMinutes: 0 } });
     const t = await runAll(own.id);
     expect(t.failedOther).toBe(0);
-    const enrolled = await prisma.sequenceEnrollment.findMany({ where: { sequenceId: own.id }, select: { lead: { select: { contactId: true } } } });
-    expect(enrolled.map((e) => e.lead.contactId)).toContain(mine.contact.id);
-    expect(enrolled.map((e) => e.lead.contactId)).not.toContain(others.contact.id);
+    const enrolled = await prisma.sequenceEnrollment.findMany({ where: { sequenceId: own.id }, select: { contactId: true } });
+    expect(enrolled.map((e) => e.contactId)).toContain(mine.contact.id);
+    expect(enrolled.map((e) => e.contactId)).not.toContain(others.contact.id);
     // Someone else's sequence is not even visible to them, and a signed-out caller gets nothing.
     expect(await batch({ sequenceId: sequence.id })).toMatchObject({ ok: false });
     actor = null;
@@ -259,7 +263,11 @@ describe.skipIf(!enabled)("Enroll All Contacts and recipient addresses - real Po
       expect(await enrollLeads(sequence.id, [b.leads[0].id])).toMatchObject({ enrolled: 0, addressSuppressed: 1 }); // primary only: refused
       const r2 = await enrollLeads(sequence.id, [b.leads[0].id], undefined, { recipientMode: "all" });
       expect(r2).toMatchObject({ enrolled: 1 });
-      expect((await prisma.sequenceEnrollment.findFirstOrThrow({ where: { sequenceId: sequence.id, leadId: b.leads[0].id } })).recipientEmail).toBeNull(); // one usable address: the primary is blocked, so the stored list is just the good one
+      // The primary is blocked, so the ONE usable address is the other one and it MUST be stored: left empty, the send-time rule would fall back to the blocked primary and fail
+      // the enrollment on its first run (a defect found while adding contact-only enrollment; this assertion used to expect null).
+      const stored = await prisma.sequenceEnrollment.findFirstOrThrow({ where: { sequenceId: sequence.id, leadId: b.leads[0].id } });
+      expect(stored.recipientEmail).toBe(good);
+      expect(await resolveSend(stored, { primaryEmail: blockedPrimary, companyId: COMPANY })).toEqual({ ok: true, to: good });
     });
 
     it("at SEND time an address that has become blocked since enrollment is dropped; when none is left there is nothing to send to", async () => {

@@ -5,17 +5,17 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentAccount } from "@/lib/dev-session";
 import { canBulkEnrollInSequence } from "@/lib/permissions";
 import { contactVisibilityWhere, leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
-import { enrollLeads } from "@/server/actions/sequences";
+import { enrollContacts, enrollLeads } from "@/server/actions/sequences";
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { isRecipientMode, type RecipientMode } from "@/server/sequence-recipients";
 import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 
 // Sequence page -> "Enroll All Contacts": enroll every contact the person may see into this sequence, without picking them one by one.
 //
-// It is the EXISTING enrollment, not a second one. A sequence is enrolled through a LEAD (that is where the sending agent and the trip come from), so - exactly like
-// selecting contacts on the Contacts list - each contact is enrolled through its most recent lead the caller can see, and every contact goes through enrollLeads: its
-// authorization, company scoping, active-sequence check, a real Gmail check of the sending account, a valid and not-unsubscribed/suppressed address, and one ACTIVE
-// enrollment per lead and sequence under a lock. What this file adds is only the choosing of the contacts and doing it in SAFE BATCHES:
+// It is the EXISTING enrollment, not a second one. Exactly like selecting contacts on the Contacts list: a contact that has a lead the caller can see is enrolled through
+// its most recent such lead (enrollLeads, unchanged), and a contact WITHOUT one is enrolled as a contact (enrollContacts: no lead is required, created or changed). Either way
+// the same checks run: authorization, company scoping, active-sequence check, a real Gmail check of the sending account, a valid and not-unsubscribed/suppressed address, and
+// one ACTIVE enrollment per person and sequence under a lock. What this file adds is only the choosing of the contacts and doing it in SAFE BATCHES:
 //   * the browser never receives the contacts: it asks for one batch at a time (a keyset cursor over contact ids) and gets counts back, so a database of any size is never
 //     loaded into the page or into one request, and a long run can be stopped between batches;
 //   * each batch is independent: a batch that fails is counted and the run carries on, and everything enrolled in earlier batches stays enrolled;
@@ -43,8 +43,6 @@ export type EnrollContactsBatchResult =
       processed: number;
       enrolled: number;
       alreadyEnrolled: number;
-      /** The contact has no lead the caller can see, and a sequence is enrolled through a lead. */
-      noLead: number;
       missingEmail: number;
       addressSuppressed: number;
       noAssignedAgent: number;
@@ -78,7 +76,7 @@ export async function previewEnrollAllContacts(input: { sequenceId: string }): P
   const visible = contactVisibilityWhere(auth.actor);
   const [totalContacts, alreadyEnrolled] = await Promise.all([
     prisma.contact.count({ where: visible }),
-    prisma.contact.count({ where: { ...visible, leads: { some: { enrollments: { some: { sequenceId: auth.sequence.id, status: "ACTIVE" } } } } } }),
+    prisma.contact.count({ where: { ...visible, sequenceEnrollments: { some: { sequenceId: auth.sequence.id, status: "ACTIVE" } } } }),
   ]);
   return { ok: true, sequenceName: auth.sequence.name, totalContacts, alreadyEnrolled };
 }
@@ -105,22 +103,22 @@ export async function enrollContactsBatch(input: { sequenceId: string; recipient
     processed: contacts.length,
     enrolled: 0,
     alreadyEnrolled: 0,
-    noLead: 0,
     missingEmail: 0,
     addressSuppressed: 0,
     noAssignedAgent: 0,
     gmailUnavailable: 0,
     inaccessible: 0,
     failedOther: 0,
+    gmailMessage: undefined as string | undefined,
     nextCursor: contacts.length === CONTACT_BATCH_SIZE ? contacts[contacts.length - 1].id : null,
   };
   if (contacts.length === 0) return out;
   const ids = contacts.map((c) => c.id);
 
   try {
-    // Contacts that already have an ACTIVE enrollment here through ANY lead are skipped, so a contact with several leads is never enrolled twice.
+    // Contacts that already have an ACTIVE enrollment here - through ANY lead, or contact-only - are skipped, so nobody is enrolled twice.
     const enrolledContacts = new Set(
-      (await prisma.sequenceEnrollment.findMany({ where: { sequenceId: sequence.id, status: "ACTIVE", lead: { contactId: { in: ids } } }, select: { lead: { select: { contactId: true } } } })).map((e) => e.lead.contactId)
+      (await prisma.sequenceEnrollment.findMany({ where: { sequenceId: sequence.id, status: "ACTIVE", contactId: { in: ids } }, select: { contactId: true } })).map((e) => e.contactId)
     );
     // Each remaining contact is enrolled through its most recent lead the caller can see.
     const leads = await prisma.lead.findMany({
@@ -132,26 +130,39 @@ export async function enrollContactsBatch(input: { sequenceId: string; recipient
     for (const l of leads) if (!leadFor.has(l.contactId)) leadFor.set(l.contactId, l.id);
 
     out.alreadyEnrolled = ids.filter((id) => enrolledContacts.has(id)).length;
-    out.noLead = ids.filter((id) => !enrolledContacts.has(id) && !leadFor.has(id)).length;
+    // A contact WITHOUT a lead the caller can see is enrolled as a contact: it is never refused for lacking a lead.
+    const contactOnlyIds = ids.filter((id) => !enrolledContacts.has(id) && !leadFor.has(id));
+    if (contactOnlyIds.length > 0) {
+      const rc = await enrollContacts(sequence.id, contactOnlyIds, { recipientMode });
+      if (rc.error && Object.keys(rc.byContact).length === 0) return { ok: false, error: rc.error };
+      out.enrolled += rc.enrolled;
+      out.alreadyEnrolled += rc.alreadyActive;
+      out.missingEmail += rc.missingEmail;
+      out.addressSuppressed += rc.addressSuppressed;
+      out.gmailUnavailable += rc.gmailUnavailable;
+      out.inaccessible += rc.inaccessible;
+      if (rc.gmailMessage) out.gmailMessage = rc.gmailMessage;
+    }
     const leadIds = [...leadFor.values()];
     if (leadIds.length > 0) {
       const r = await enrollLeads(sequence.id, leadIds, undefined, { recipientMode });
       if (r.error && r.enrolled === 0 && r.gmailUnavailable === 0 && r.alreadyActive === 0 && Object.keys(r.byLead).length === 0) return { ok: false, error: r.error };
-      out.enrolled = r.enrolled;
+      out.enrolled += r.enrolled;
       out.alreadyEnrolled += r.alreadyActive;
-      out.missingEmail = r.missingEmail;
-      out.addressSuppressed = r.addressSuppressed;
-      out.noAssignedAgent = r.noAssignedAgent;
-      out.gmailUnavailable = r.gmailUnavailable;
-      out.inaccessible = r.inaccessible;
-      if (r.gmailMessage) return { ...out, gmailMessage: r.gmailMessage };
+      out.missingEmail += r.missingEmail;
+      out.addressSuppressed += r.addressSuppressed;
+      out.noAssignedAgent += r.noAssignedAgent;
+      out.gmailUnavailable += r.gmailUnavailable;
+      out.inaccessible += r.inaccessible;
+      if (r.gmailMessage) out.gmailMessage = r.gmailMessage;
     }
+    if (out.gmailMessage) return { ...out };
   } catch (err) {
     // Logged by category only (never a message, address or id). The batch is NOT counted as enrolled; the run carries on with the next one.
     console.error(`[enroll-all-contacts] a batch failed (${safeErrorTag(err)})`);
     out.failedOther = contacts.length;
     out.enrolled = 0;
-    out.alreadyEnrolled = out.noLead = out.missingEmail = out.addressSuppressed = out.noAssignedAgent = out.gmailUnavailable = out.inaccessible = 0;
+    out.alreadyEnrolled = out.missingEmail = out.addressSuppressed = out.noAssignedAgent = out.gmailUnavailable = out.inaccessible = 0;
   }
   revalidatePath(`/sequences/${sequence.id}`);
   return out;

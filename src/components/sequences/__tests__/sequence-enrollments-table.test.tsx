@@ -12,16 +12,16 @@ const steps = [{ id: "s1" }, { id: "s2" }, { id: "s3" }];
 const D = (day: number, h = 9) => new Date(2026, 10, day, h, 0, 0);
 const contact = (first: string, email: string | null) => ({ contact: { firstName: first, lastName: "Test", primaryEmail: email } });
 
-const base = { recipientEmail: null, leadVisible: true, stepLogs: [] as never[] };
+const base = { recipientEmail: null, leadVisible: true, contactId: "c0", stepLogs: [] as never[] };
 const rows = [
-  { ...base, id: "e1", leadId: "l1", status: "ACTIVE" as const, currentStepIdx: 1, enrolledAt: D(10), nextSendAt: D(17), lead: contact("Ada", "ada@example.com"),
+  { ...base, id: "e1", leadId: "l1", status: "ACTIVE" as const, currentStepIdx: 1, enrolledAt: D(10), nextSendAt: D(17), ...contact("Ada", "ada@example.com"),
     stepLogs: [{ stepId: "s1", status: "SENT" as const, sentAt: D(10, 9), createdAt: D(10, 9), error: null }] },
-  { ...base, id: "e2", leadId: "l2", status: "FAILED" as const, currentStepIdx: 0, enrolledAt: D(11), nextSendAt: null, lead: contact("Bob", "bob@example.com"),
+  { ...base, id: "e2", leadId: "l2", status: "FAILED" as const, currentStepIdx: 0, enrolledAt: D(11), nextSendAt: null, ...contact("Bob", "bob@example.com"),
     stepLogs: [{ stepId: "s1", status: "FAILED" as const, sentAt: null, createdAt: D(11), error: "Gmail is not connected" }] },
-  { ...base, id: "e3", leadId: "l3", status: "UNSUBSCRIBED" as const, currentStepIdx: 1, enrolledAt: D(9), nextSendAt: null, lead: contact("Cy", "cy@example.com"),
+  { ...base, id: "e3", leadId: "l3", status: "UNSUBSCRIBED" as const, currentStepIdx: 1, enrolledAt: D(9), nextSendAt: null, ...contact("Cy", "cy@example.com"),
     stepLogs: [{ stepId: "s1", status: "SENT" as const, sentAt: D(9, 10), createdAt: D(9, 10), error: null }] },
-  { ...base, id: "e4", leadId: "l4", status: "COMPLETED" as const, currentStepIdx: 3, enrolledAt: D(1), nextSendAt: null, lead: contact("Di", "di@example.com") },
-  { ...base, id: "e5", leadId: "l5", status: "ACTIVE" as const, currentStepIdx: 0, enrolledAt: D(12), nextSendAt: D(13), leadVisible: false, lead: contact("Ed", "secret@example.com") },
+  { ...base, id: "e4", leadId: "l4", status: "COMPLETED" as const, currentStepIdx: 3, enrolledAt: D(1), nextSendAt: null, ...contact("Di", "di@example.com") },
+  { ...base, id: "e5", leadId: "l5", status: "ACTIVE" as const, currentStepIdx: 0, enrolledAt: D(12), nextSendAt: D(13), leadVisible: false, ...contact("Ed", "secret@example.com") },
 ];
 
 function view(over: Partial<React.ComponentProps<typeof SequenceEnrollmentsTable>> = {}) {
@@ -114,6 +114,16 @@ describe("SequenceEnrollmentsTable", () => {
     expect(ada.getByText(/Paused: the sequence is switched off/)).toBeInTheDocument();
     expect(ada.getByText("Step 2 · paused")).toBeInTheDocument();
     expect(ada.queryByText(/Nov 17, 2026/)).toBeNull();
+  });
+
+  it("a contact-only enrollment (no lead) is listed by its contact: it links to the Contact, is marked as one, and still has its actions", () => {
+    const row = { ...rows[0], id: "c1", leadId: null, contactId: "ct-9", ...contact("Cora", "cora@example.com") };
+    view({ enrollments: [row] });
+    const link = screen.getByRole("link", { name: /Cora Test/ });
+    expect(link.getAttribute("href")).toBe("/contacts/ct-9");
+    expect(screen.getByText("Contact")).toBeInTheDocument();
+    expect(screen.getByText("cora@example.com")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Unenroll from Welcome/ })).toBeInTheDocument();
   });
 
   it("an explicitly chosen recipient is the address shown (what the emails really go to)", () => {

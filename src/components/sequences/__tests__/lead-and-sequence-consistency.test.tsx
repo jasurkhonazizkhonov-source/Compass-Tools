@@ -64,7 +64,8 @@ const tableRow = (c: Case, id = "e1") => ({
   nextSendAt: c.nextSendAt,
   recipientEmail: null,
   leadVisible: true,
-  lead: { contact: { firstName: "Ada", lastName: "Lovelace", primaryEmail: "ada@example.com" } },
+  contactId: "contact-1",
+  contact: { firstName: "Ada", lastName: "Lovelace", primaryEmail: "ada@example.com" },
   stepLogs: c.logs,
 });
 

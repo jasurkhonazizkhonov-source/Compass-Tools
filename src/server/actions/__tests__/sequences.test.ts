@@ -199,7 +199,11 @@ type FakeEnrollment = {
   currentStepIdx: number;
   nextSendAt: Date | null;
   recipientEmail: string | null;
-  leadId: string;
+  leadId: string | null;
+  // Since the contact-only feature an enrollment is ALWAYS about a contact; its sender (contact-only) would be the contact's owner, else the account that enrolled it.
+  contactId?: string;
+  contact?: { firstName: string; lastName: string; primaryPhone: string | null; primaryEmail: string | null; owner: null };
+  enrolledBy?: null;
   sequenceId?: string;
   sequence: { name?: string; isActive?: boolean; steps: Array<{ id: string; subject: string; body: string; delayMinutes: number }> };
   lead: {
@@ -299,6 +303,10 @@ function seedDueEnrollment(overrides: Partial<FakeEnrollment> = {}): FakeEnrollm
     },
     ...overrides,
   };
+  // The contact of a lead-based enrollment is the lead's own: derived AFTER the overrides, so a test that gives the lead a contact with no email changes the contact too.
+  e.contactId = overrides.contactId ?? e.lead.contactId;
+  e.contact = overrides.contact ?? { ...e.lead.contact, owner: null };
+  e.enrolledBy = null;
   enrollments.push(e);
   // Shallow-copies each matched row (`{...row}`) rather than returning the
   // shared object reference — a real Prisma findMany returns a snapshot of
@@ -459,7 +467,7 @@ describe("processDueSequenceSteps — concurrency (Pass 19)", () => {
   it("a contact with no email on file fails closed (logged, not sent, never throws to a caller)", async () => {
     const base = seedDueEnrollment();
     enrollments.length = 0;
-    seedDueEnrollment({ ...base, id: "enr-1", lead: { ...base.lead, contact: { firstName: "A", lastName: "B", primaryPhone: null, primaryEmail: null } } });
+    seedDueEnrollment({ ...base, id: "enr-1", lead: { ...base.lead, contact: { firstName: "A", lastName: "B", primaryPhone: null, primaryEmail: null } }, contact: { firstName: "A", lastName: "B", primaryPhone: null, primaryEmail: null, owner: null } });
     const { runDueSequenceSteps: processDueSequenceSteps } = await import("@/server/due-sequence-steps");
     const result = await processDueSequenceSteps();
     expect(result.failed).toBeGreaterThanOrEqual(1);
@@ -498,7 +506,7 @@ describe("processDueSequenceSteps — concurrency (Pass 19)", () => {
   it("a permanently-unsendable enrollment (no contact email) is marked FAILED and stops being due — no infinite retry", async () => {
     const base = seedDueEnrollment();
     enrollments.length = 0;
-    seedDueEnrollment({ ...base, id: "enr-1", lead: { ...base.lead, contact: { firstName: "A", lastName: "B", primaryPhone: null, primaryEmail: null } } });
+    seedDueEnrollment({ ...base, id: "enr-1", lead: { ...base.lead, contact: { firstName: "A", lastName: "B", primaryPhone: null, primaryEmail: null } }, contact: { firstName: "A", lastName: "B", primaryPhone: null, primaryEmail: null, owner: null } });
     const { runDueSequenceSteps: processDueSequenceSteps } = await import("@/server/due-sequence-steps");
 
     await processDueSequenceSteps();
@@ -1024,6 +1032,9 @@ function installFullEnrollmentFakes() {
         nextSendAt: d.nextSendAt,
         recipientEmail: d.recipientEmail ?? null,
         leadId: d.leadId,
+        contactId: `contact-${d.leadId}`,
+        contact: { firstName: "Ada", lastName: "Lovelace", primaryPhone: null, primaryEmail: leads.get(d.leadId)!.contactEmail, owner: null },
+        enrolledBy: null,
         sequenceId: d.sequenceId,
         sequence: { name: s.name, isActive: s.isActive, steps: ordered },
         lead: {
@@ -1052,8 +1063,11 @@ function installFullEnrollmentFakes() {
       id: row.id,
       sequenceId: row.sequenceId ?? "seq-1",
       leadId: row.leadId,
+      contactId: row.contactId ?? `contact-${row.leadId}`,
+      contact: { owner: null },
+      enrolledBy: null,
       sequence: { name: row.sequence.name, isActive: row.sequence.isActive, steps: row.sequence.steps.map((s) => ({ id: s.id, delayMinutes: s.delayMinutes })) },
-      lead: { assignedAgent: { id: "agent-1", fullName: "Jane Doe", companyId: leads.get(row.leadId)?.agentCompanyId ?? "company-1" } },
+      lead: { assignedAgent: { id: "agent-1", fullName: "Jane Doe", companyId: leads.get(row.leadId ?? "")?.agentCompanyId ?? "company-1" } },
       status: row.status,
       currentStepIdx: row.currentStepIdx,
       nextSendAt: row.nextSendAt,
@@ -1064,7 +1078,7 @@ function installFullEnrollmentFakes() {
     async ({ where, take }: { where: { status: string; sequenceId?: string; leadId?: { in: string[] }; nextSendAt?: { lte: Date }; sequence?: { isActive?: boolean }; id?: { in: string[] } }; take?: number }) => {
       // enrollLeads' own "who is already ACTIVE in this sequence" lookups (no nextSendAt in the filter)
       if (!where.nextSendAt) {
-        return enrollments.filter((r) => r.status === where.status && r.sequenceId === where.sequenceId && (where.leadId?.in ?? []).includes(r.leadId)).map((r) => ({ leadId: r.leadId }));
+        return enrollments.filter((r) => r.status === where.status && r.sequenceId === where.sequenceId && (where.leadId?.in ?? []).includes(r.leadId ?? "")).map((r) => ({ leadId: r.leadId }));
       }
       const lte = where.nextSendAt.lte.getTime();
       return enrollments

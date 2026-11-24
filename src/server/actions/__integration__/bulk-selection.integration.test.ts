@@ -253,19 +253,21 @@ describe.skipIf(!enabled)("bulk enroll / bulk delete - real PostgreSQL", () => {
   });
 
   describe("bulkEnrollInSequence - contacts", () => {
-    it("enrolls each contact through its most recent lead, skips a contact with no lead, and hides one it cannot see", async () => {
+    it("enrolls each contact through its most recent lead, enrolls a contact with no lead AS A CONTACT (no lead needed or created), and hides one it cannot see", async () => {
       as("AgentOwn");
       const r = await enroll({ sequenceId: seqAgent, kind: "contacts", ids: [C1, C5, C6, C3] });
       expect(r.ok).toBe(true);
       if (!r.ok) return;
-      expect(r).toMatchObject({ requested: 4, enrolled: 2, alreadyEnrolled: 0 });
-      expect(r.settledIds.sort()).toEqual([C1, C6].sort());
+      expect(r).toMatchObject({ requested: 4, enrolled: 3, alreadyEnrolled: 0 });
+      expect(r.settledIds.sort()).toEqual([C1, C5, C6].sort());
       expect(await enrollmentCount(seqAgent, [L1])).toBe(1);
       expect(await enrollmentCount(seqAgent, [LyNew])).toBe(1); // the newer of Fay's two leads
       expect(await enrollmentCount(seqAgent, [LxOld])).toBe(0);
-      const noLead = r.failed.find((f) => f.id === C5)!;
-      expect(noLead.label).toMatch(/^Eli /);
-      expect(noLead.reason).toMatch(/no lead you can access/);
+      // Eli has no lead: a contact-only enrollment was made (and still no lead exists), and nothing says "lead" as a reason.
+      const contactOnly = await prisma.sequenceEnrollment.findMany({ where: { sequenceId: seqAgent, contactId: C5 }, select: { leadId: true, status: true } });
+      expect(contactOnly).toEqual([{ leadId: null, status: "ACTIVE" }]);
+      expect(await prisma.lead.count({ where: { contactId: C5 } })).toBe(0);
+      expect(r.failed.find((f) => f.id === C5)).toBeUndefined();
       const hidden = r.failed.find((f) => f.id === C3)!;
       expect(hidden.label).toBeNull();
     });
@@ -278,14 +280,15 @@ describe.skipIf(!enabled)("bulk enroll / bulk delete - real PostgreSQL", () => {
       expect(await enrollmentCount(seqAgent, [L1])).toBe(1);
     });
 
-    it("an agent cannot enroll a contact through a lead assigned to someone else", async () => {
+    it("an agent never enrolls through a lead assigned to someone else: the contact they own is enrolled as a contact instead, and the other agent's lead is untouched", async () => {
       as("AgentOwn");
       // AgentOwn owns this contact but its only lead belongs to AgentOther
       const c = await makeContact("Hal", "AgentOwn");
       const lead = await makeLead(c.id, "AgentOther");
       const r = await enroll({ sequenceId: seqAgent, kind: "contacts", ids: [c.id] });
-      expect(r).toMatchObject({ ok: true, enrolled: 0 });
-      expect(await enrollmentCount(seqAgent, [lead.id])).toBe(0);
+      expect(r).toMatchObject({ ok: true, enrolled: 1 });
+      expect(await enrollmentCount(seqAgent, [lead.id])).toBe(0); // never through someone else's lead
+      expect(await prisma.sequenceEnrollment.count({ where: { sequenceId: seqAgent, contactId: c.id, leadId: null } })).toBe(1);
     });
   });
 

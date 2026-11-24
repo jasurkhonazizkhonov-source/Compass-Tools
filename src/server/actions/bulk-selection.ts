@@ -3,9 +3,10 @@
 // Bulk actions for the checkbox selection on the Leads and Contacts lists:
 //   * bulkEnrollInSequence - NOT Admin-only. Allowed for exactly the roles that may already enroll a lead in a sequence
 //     (canManageSequences) and that have the list (canViewLeads / canViewContacts); every record and the sequence are still
-//     checked against the caller's own visibility. It reuses enrollLeads() (sequences.ts) for the actual enrollment, so duplicate
-//     rules, scheduling and activity entries are the existing ones - this module only classifies each selected record first so the
-//     result can say precisely what happened to each.
+//     checked against the caller's own visibility. It reuses enrollLeads() (sequences.ts) for the actual enrollment of a lead - and of a contact that has a
+//     lead it can use, through that lead, exactly as before - and enrollContacts() for a contact WITHOUT a usable lead (a contact-only enrollment: no lead is
+//     required, created or changed). Duplicate rules, scheduling and activity entries are the existing ones - this module only classifies each selected record
+//     first so the result can say precisely what happened to each.
 //   * bulkDeleteRecords - Admin-only (canBulkDeleteLeadsAndContacts). It calls the existing deleteLead() / deleteContact() for each
 //     record, so row-level scope, cascade, stored-file removal and the per-record audit entry are the existing ones, and adds one
 //     summary audit entry for the batch.
@@ -17,7 +18,7 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { canBulkDeleteLeadsAndContacts, canBulkEnrollInSequence } from "@/lib/permissions";
 import { BULK_SELECTION_MAX, type BulkFailure } from "@/lib/bulk-selection";
 import { contactVisibilityWhere, leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
-import { enrollLeads } from "@/server/actions/sequences";
+import { enrollContacts, enrollLeads } from "@/server/actions/sequences";
 import { isRecipientMode, type RecipientMode } from "@/server/sequence-recipients";
 import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 import { safeErrorTag } from "@/lib/safe-error-log";
@@ -37,6 +38,20 @@ function parseSelection(kind: unknown, ids: unknown): { kind: "leads" | "contact
   const unique = [...new Set(i.data)];
   if (unique.length < 1 || unique.length > BULK_SELECTION_MAX) return null;
   return { kind: k.data, ids: unique };
+}
+
+/** Why ONE selected contact was not enrolled without a lead, in the words the person sees. Never mentions a lead. */
+function contactReason(outcome: string | undefined, gmailMessage: string | undefined): string {
+  switch (outcome) {
+    case "missingEmail":
+      return "No valid email address on file - add one to the contact first";
+    case "addressSuppressed":
+      return "Its email address has unsubscribed or is suppressed - update the contact's email first";
+    case "gmailUnavailable":
+      return gmailMessage ?? "Gmail is not connected for the account that sends this contact's emails";
+    default:
+      return NOT_AVAILABLE;
+  }
 }
 
 export type BulkEnrollResult =
@@ -78,6 +93,8 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
   const leadForSelected = new Map<string, string>();
   const labelOf = new Map<string, string>();
   const noEmailLeadIds = new Set<string>();
+  // selected contacts with NO lead the caller can use: they are enrolled as contacts (contact-only), never refused for lacking a lead
+  const contactOnlyIds: string[] = [];
 
   if (selection.kind === "leads") {
     const leads = await prisma.lead.findMany({
@@ -111,7 +128,7 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
         continue;
       }
       labelOf.set(id, `${c.firstName} ${c.lastName}`);
-      if (!leadForSelected.has(id)) failed.push({ id, label: labelOf.get(id)!, reason: "Has no lead you can access - sequences are enrolled through a lead" });
+      if (!leadForSelected.has(id)) contactOnlyIds.push(id);
       else if (!c.primaryEmail) noEmailLeadIds.add(leadForSelected.get(id)!);
     }
   }
@@ -126,10 +143,26 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
 
   let enrolled = 0;
   const enrolledIds: string[] = [];
+  if (contactOnlyIds.length > 0) {
+    try {
+      const r = await enrollContacts(sequence.id, contactOnlyIds, { recipientMode });
+      // Only an error that stopped the whole call (rate limit, inactive sequence) comes without a per-contact outcome; per-contact outcomes always win.
+      if (r.error && Object.keys(r.byContact).length === 0) return { ok: false, error: r.error };
+      for (const id of contactOnlyIds) {
+        const outcome = r.byContact[id];
+        if (outcome === "enrolled") enrolledIds.push(id);
+        else if (outcome === "alreadyActive") alreadyEnrolledIds.push(id);
+        else failed.push({ id, label: outcome === "inaccessible" || outcome === undefined ? null : (labelOf.get(id) ?? null), reason: contactReason(outcome, r.gmailMessage) });
+      }
+    } catch (err) {
+      console.error(`[bulk-selection] contact enrolment failed (${safeErrorTag(err)})`);
+      return { ok: false, error: "The sequence could not be applied, so nothing was enrolled. Please try again." };
+    }
+  }
   if (toEnroll.length > 0) {
     try {
       const result = await enrollLeads(sequence.id, toEnroll.map(([, leadId]) => leadId), undefined, { recipientMode });
-      if ("error" in result && result.error) return { ok: false, error: result.error };
+      if ("error" in result && result.error && enrolledIds.length === 0 && alreadyEnrolledIds.length === 0 && failed.length === 0) return { ok: false, error: result.error };
       // enrollLeads reports what happened to EVERY lead (an enrollment created in the meantime, no email address, no assigned agent, the
       // sending agent's Gmail not connected, ...), so nothing is guessed from counts: only a lead it really enrolled is counted as enrolled,
       // only one that already had an ACTIVE enrollment as already enrolled, and every other lead is reported with its actual reason.
@@ -151,7 +184,6 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
           failed.push({ id: selectedId, label: outcome === "inaccessible" || outcome === undefined ? null : (labelOf.get(selectedId) ?? null), reason });
         }
       }
-      enrolled = enrolledIds.length;
     } catch (err) {
       // Logged by class and Prisma code only (never a message, a value or a lead id): without this a failure here was invisible in the server log.
       console.error(`[bulk-selection] enrolment failed (${safeErrorTag(err)})`);
@@ -159,6 +191,7 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
     }
   }
 
+  enrolled = enrolledIds.length;
   revalidatePath("/leads");
   revalidatePath("/contacts");
   return {

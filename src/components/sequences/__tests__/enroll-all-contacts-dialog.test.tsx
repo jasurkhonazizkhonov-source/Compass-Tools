@@ -21,7 +21,6 @@ const batchResult = (over: Record<string, unknown> = {}) => ({
   processed: 100,
   enrolled: 90,
   alreadyEnrolled: 4,
-  noLead: 3,
   missingEmail: 2,
   addressSuppressed: 1,
   noAssignedAgent: 0,
@@ -55,6 +54,7 @@ describe("Enroll All Contacts", () => {
     const dialog = screen.getByRole("dialog");
     expect(dialog.textContent).toMatch(/already actively enrolled in this sequence are skipped/);
     expect(dialog.textContent).toMatch(/enrolled through its most recent lead/);
+    expect(dialog.textContent).toMatch(/a contact without one is enrolled as a contact/);
     expect(dialog.textContent).toMatch(/unsubscribed or is suppressed/);
   });
 
@@ -87,14 +87,14 @@ describe("Enroll All Contacts", () => {
     batch
       .mockResolvedValueOnce(batchResult({ nextCursor: "c100" }))
       .mockResolvedValueOnce(batchResult({ nextCursor: "c200", enrolled: 80, gmailUnavailable: 5, noAssignedAgent: 2 }))
-      .mockResolvedValueOnce(batchResult({ processed: 50, enrolled: 40, alreadyEnrolled: 0, noLead: 0, missingEmail: 0, addressSuppressed: 0, nextCursor: null }));
+      .mockResolvedValueOnce(batchResult({ processed: 50, enrolled: 40, alreadyEnrolled: 0, missingEmail: 0, addressSuppressed: 0, nextCursor: null }));
     await openAndReview(user);
     await user.click(screen.getByRole("button", { name: "Enroll all contacts" }));
     const outcome = await screen.findByTestId("all-contacts-outcome");
     expect(batch.mock.calls.map((c) => c[0].cursor)).toEqual([null, "c100", "c200"]);
     expect(outcome.textContent).toMatch(/Finished: 210 contacts enrolled in Welcome out of 250 contacts checked/);
     expect(outcome.textContent).toMatch(/Already enrolled: 8/);
-    expect(outcome.textContent).toMatch(/No lead you can access: 6/);
+    expect(outcome.textContent).not.toMatch(/No lead you can access/); // a contact is never refused for lacking a lead
     expect(outcome.textContent).toMatch(/No valid email address: 4/);
     expect(outcome.textContent).toMatch(/Email unsubscribed or suppressed: 2/);
     expect(outcome.textContent).toMatch(/No assigned agent: 2/);
@@ -105,8 +105,8 @@ describe("Enroll All Contacts", () => {
   it("a failed batch is reported with a way to retry just those; the run carries on and nothing is claimed that did not happen", async () => {
     const user = userEvent.setup();
     batch
-      .mockResolvedValueOnce(batchResult({ nextCursor: "c100", enrolled: 100, alreadyEnrolled: 0, noLead: 0, missingEmail: 0, addressSuppressed: 0 }))
-      .mockResolvedValueOnce(batchResult({ nextCursor: null, enrolled: 0, alreadyEnrolled: 0, noLead: 0, missingEmail: 0, addressSuppressed: 0, failedOther: 100 }));
+      .mockResolvedValueOnce(batchResult({ nextCursor: "c100", enrolled: 100, alreadyEnrolled: 0, missingEmail: 0, addressSuppressed: 0 }))
+      .mockResolvedValueOnce(batchResult({ nextCursor: null, enrolled: 0, alreadyEnrolled: 0, missingEmail: 0, addressSuppressed: 0, failedOther: 100 }));
     await openAndReview(user);
     await user.click(screen.getByRole("button", { name: "Enroll all contacts" }));
     const outcome = await screen.findByTestId("all-contacts-outcome");

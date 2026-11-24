@@ -276,7 +276,9 @@ export async function checkSequenceReplyDetection(now = Date.now()): Promise<Hea
     const { backgroundJobReport } = await import("@/server/scheduler-status");
     const { inProcessPollerDisabled } = await import("@/lib/poller-config");
     const watched = await prisma.lead.findMany({ where: { enrollments: { some: { status: { in: ["ACTIVE", "FAILED"] } } }, assignedAgentId: { not: null } }, distinct: ["assignedAgentId"], select: { assignedAgentId: true } });
-    const senderIds = watched.map((l) => l.assignedAgentId).filter((id): id is string => !!id);
+    // Contact-only enrollments are sent from the contact's owner, else from the account that enrolled them (see server/sequence-sender.ts): those mailboxes are watched too.
+    const contactOnly = await prisma.sequenceEnrollment.findMany({ where: { leadId: null, status: { in: ["ACTIVE", "FAILED"] } }, distinct: ["contactId"], take: 5000, select: { enrolledById: true, contact: { select: { ownerId: true } } } });
+    const senderIds = [...new Set([...watched.map((l) => l.assignedAgentId), ...contactOnly.map((e) => e.contact.ownerId ?? e.enrolledById)].filter((id): id is string => !!id))];
     const connections = senderIds.length ? await prisma.gmailConnection.findMany({ where: { accountId: { in: senderIds }, status: "CONNECTED" }, select: { scopes: true, inboundError: true, inboundCheckedAt: true } }) : [];
     const without = connections.filter((c) => !hasReplyDetectionScope(c.scopes)).length;
     const erroring = connections.filter((c) => c.inboundError).length;

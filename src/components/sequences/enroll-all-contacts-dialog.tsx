@@ -16,7 +16,6 @@ type Totals = {
   processed: number;
   enrolled: number;
   alreadyEnrolled: number;
-  noLead: number;
   missingEmail: number;
   addressSuppressed: number;
   noAssignedAgent: number;
@@ -24,7 +23,7 @@ type Totals = {
   inaccessible: number;
   failedOther: number;
 };
-const EMPTY: Totals = { processed: 0, enrolled: 0, alreadyEnrolled: 0, noLead: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, failedOther: 0 };
+const EMPTY: Totals = { processed: 0, enrolled: 0, alreadyEnrolled: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, failedOther: 0 };
 type Phase = "setup" | "confirm" | "running" | "finished";
 
 /**
@@ -84,7 +83,6 @@ export function EnrollAllContactsDialog({ sequenceId, sequenceName }: { sequence
           processed: acc.processed + r.processed,
           enrolled: acc.enrolled + r.enrolled,
           alreadyEnrolled: acc.alreadyEnrolled + r.alreadyEnrolled,
-          noLead: acc.noLead + r.noLead,
           missingEmail: acc.missingEmail + r.missingEmail,
           addressSuppressed: acc.addressSuppressed + r.addressSuppressed,
           noAssignedAgent: acc.noAssignedAgent + r.noAssignedAgent,
@@ -117,7 +115,7 @@ export function EnrollAllContactsDialog({ sequenceId, sequenceName }: { sequence
   const skippedNote = (
     <ul className="space-y-0.5 text-xs text-muted-foreground">
       <li>Contacts already actively enrolled in this sequence are skipped (nobody is enrolled twice).</li>
-      <li>A sequence is enrolled through a lead: each contact is enrolled through its most recent lead you can access; a contact with no lead is skipped.</li>
+      <li>A contact with a lead you can access is enrolled through its most recent lead; a contact without one is enrolled as a contact - a lead is never needed.</li>
       <li>Contacts without a valid email address, or whose address unsubscribed or is suppressed, are skipped.</li>
     </ul>
   );
@@ -231,7 +229,6 @@ export function EnrollAllContactsDialog({ sequenceId, sequenceName }: { sequence
             <ul className="space-y-0.5 text-sm">
               <li>Newly enrolled: {n(totals.enrolled)}</li>
               {totals.alreadyEnrolled > 0 && <li>Already enrolled: {n(totals.alreadyEnrolled)}</li>}
-              {totals.noLead > 0 && <li>No lead you can access: {n(totals.noLead)}</li>}
               {totals.missingEmail > 0 && <li>No valid email address: {n(totals.missingEmail)}</li>}
               {totals.addressSuppressed > 0 && <li>Email unsubscribed or suppressed: {n(totals.addressSuppressed)}</li>}
               {totals.noAssignedAgent > 0 && <li>No assigned agent: {n(totals.noAssignedAgent)}</li>}

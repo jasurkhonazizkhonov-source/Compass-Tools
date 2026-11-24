@@ -47,6 +47,11 @@ describe("one component and one server function behind each action", () => {
     expect(callers(name, definedIn)).toEqual(expected);
   });
 
+  it("enrollContacts (contact-only enrollment) is reached from exactly the two bulk paths - the Contacts selection and Enroll All Contacts - and enrollLeads is still the one lead path (never a second implementation)", () => {
+    expect(callers("enrollContacts", "server/actions/sequences.ts")).toEqual(["server/actions/bulk-selection.ts", "server/actions/sequence-enroll-contacts.ts"]);
+    expect(callers("enrollLeads", "server/actions/sequences.ts")).toEqual(["components/sequences/enroll-leads-dialog.tsx", "server/actions/bulk-selection.ts", "server/actions/sequence-enroll-contacts.ts", "server/actions/sequence-status-enroll.ts"]);
+  });
+
   it("Connect / Reconnect Gmail has two entry points on purpose - the account menu (anywhere) and the notice on a lead (returns to that lead) - and both call the one server action", () => {
     expect(callers("startGmailConnect", "server/actions/gmail-connect.ts")).toEqual(["components/layout/account-menu.tsx", "components/sequences/gmail-problem-notice.tsx"]);
   });

@@ -307,12 +307,14 @@ describe("bulk Add to sequence", () => {
     await waitFor(() => expect(bulkEnroll).toHaveBeenCalledWith({ sequenceId: "seq-2", kind: "leads", ids: ["r1"], recipientMode: "primary" }));
   });
 
-  it("contacts: the confirmation explains enrollment goes through the most recent lead", async () => {
+  it("contacts: the confirmation says a contact with a lead is enrolled through its most recent lead and a contact without one is enrolled as a contact (a lead is never needed)", async () => {
     const user = userEvent.setup();
     render(<Harness pageIds={ids(2)} kind="contacts" />);
     await user.click(row("r1"));
     const dialog = await openAndChoose(user);
-    expect(dialog.textContent).toMatch(/enrolled through their most recent lead/);
+    expect(dialog.textContent).toMatch(/enrolled through its most recent lead/);
+    expect(dialog.textContent).toMatch(/without one is enrolled as a contact - a lead is never needed/);
+    expect(dialog.textContent).not.toMatch(/is skipped/);
   });
 
   it("partial result: shows enrolled / already / failed with reasons, deselects the settled ones and keeps the failed ones selected", async () => {

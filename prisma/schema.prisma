@@ -310,6 +310,7 @@ model Contact {
   phones         ContactPhone[]
   emails         ContactEmail[]
   leads          Lead[]
+  sequenceEnrollments SequenceEnrollment[]
   // Leads created with this contact recorded as "who referred them in" —
   // the inverse side of Lead.referredByContact. Distinct from `leads`
   // (leads belonging to this contact) — a contact can refer other people's
@@ -1308,8 +1309,13 @@ model SequenceEnrollment {
   id         String   @id @default(cuid())
   sequenceId String
   sequence   Sequence @relation(fields: [sequenceId], references: [id], onDelete: Cascade)
-  leadId     String
-  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  // WHO the enrollment is about: ALWAYS a Contact (the person whose address the emails go to). A lead-based enrollment ALSO names the Lead it was made through
+  // (leadId set: the sending agent, the trip variables and the Activity history come from the lead, exactly as before); a contact-only enrollment has no lead
+  // (leadId null): the sender is the contact's owner, else the account that enrolled it. A contact never needs an artificial Lead to be emailed.
+  contactId  String
+  contact    Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  leadId     String?
+  lead       Lead?    @relation(fields: [leadId], references: [id], onDelete: Cascade)
 
   status          EnrollmentStatus @default(ACTIVE)
   currentStepIdx  Int              @default(0)
@@ -1341,6 +1347,7 @@ model SequenceEnrollment {
 
   @@index([sequenceId])
   @@index([leadId])
+  @@index([contactId])
   @@index([status])
   @@index([nextSendAt])
   // The sender picks due work by (status, due time, step), first steps before later ones.
