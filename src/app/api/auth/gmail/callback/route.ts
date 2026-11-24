@@ -168,6 +168,8 @@ export async function GET(request: NextRequest) {
       encryptedRefreshToken,
       status: "CONNECTED",
       revokedAt: null,
+      // A fresh grant starts clean: the reply check's last error belonged to the old one, and System Health must not keep reporting it until the next pass runs.
+      inboundError: null,
     },
   });
 

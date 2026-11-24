@@ -28,7 +28,7 @@ vi.mock("@/lib/dev-session", () => ({
   getCurrentAccount: vi.fn(async () => currentAccount),
 }));
 
-type ConnectionWrite = { googleEmail: string; scopes: string[]; encryptedRefreshToken: string; status: string; revokedAt?: Date | null };
+type ConnectionWrite = { googleEmail: string; scopes: string[]; encryptedRefreshToken: string; status: string; revokedAt?: Date | null; inboundError?: string | null };
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -223,6 +223,17 @@ describe("Gmail OAuth callback", () => {
     const stored = connections.get("acct-1")!;
     expect(stored.status).toBe("CONNECTED");
     expect(stored.encryptedRefreshToken).toBe("ENC:new-refresh-token");
+  });
+
+  it("a reconnect clears the reply check's last error (it belonged to the old grant; System Health must not keep reporting it)", async () => {
+    connections.set("acct-1", { accountId: "acct-1", googleEmail: "david.chen@compasstools.dev", scopes: [], encryptedRefreshToken: "ENC:old-token", status: "REVOKED", inboundError: "invalid_grant" } as never);
+    getToken.mockResolvedValue({ tokens: { refresh_token: "new-refresh-token", id_token: "idt", scope: "gmail.send" } });
+    verifyGoogleIdToken.mockResolvedValue({ email: "david.chen@compasstools.dev" });
+    const { GET } = await import("../route");
+
+    await GET(makeRequest("?code=abc&state=expected-state-value"));
+
+    expect(connections.get("acct-1")!.inboundError).toBeNull();
   });
 
   // Real defect found and fixed: encryptRefreshToken() was the one step in
