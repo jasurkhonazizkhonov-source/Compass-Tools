@@ -59,7 +59,15 @@ vi.mock("@/lib/prisma", () => {
       findUnique: vi.fn(async ({ where }: { where: { id: string } }) => campaigns.find((c) => c.id === where.id) ?? null),
     },
     marketingCampaignSend: {
-      count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => sends.filter((s) => matches(s, where)).length),
+      // The quota counts filter by the sender's campaigns. Resolving "which campaigns belong to this sender" ONCE per count (instead of looking the campaign up again for every
+      // one of the thousands of send rows) keeps this stand-in linear: a 3,000-recipient run did ~18 million lookups and took 65 s under full-suite load. The real database answers
+      // the same count from an index; the application issues exactly the same two counts per recipient either way.
+      count: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+        const { campaign, ...rest } = where as { campaign?: Record<string, unknown> } & Record<string, unknown>;
+        if (!campaign) return sends.filter((s) => matches(s, rest)).length;
+        const owned = new Set(campaigns.filter((c) => matches(c, campaign)).map((c) => c.id));
+        return sends.filter((s) => owned.has(s.campaignId) && matches(s, rest)).length;
+      }),
       findMany: vi.fn(async ({ where, take }: { where: Record<string, unknown>; take: number }) =>
         sends.filter((s) => matches(s, where)).sort((a, b) => (a.id < b.id ? -1 : 1)).slice(0, take).map((s) => ({ ...s, subscriber: { ...subscribers.find((x) => x.id === s.subscriberId)! } }))
       ),
@@ -418,7 +426,10 @@ describe("lifecycle: schedule, pause, cancel, concurrency", () => {
     expect(outbox).toHaveLength(3_000);
     expect(new Set(outbox.map((o) => o.to)).size).toBe(3_000);
     expect(c.recipientCount).toBe(3_000);
-  });
+    // Why this test is slow, and why it has its own limit: the in-memory database below answers every quota count by scanning ALL send rows, and the worker (correctly) asks two counts per
+    // recipient, so 3,000 recipients cost ~18 million row checks here (about 13 s alone, over 60 s when the whole suite runs in parallel). The real database answers the same counts from an
+    // index, and the real-PostgreSQL integration test exercises the same worker against a real table. The application's work per recipient is bounded and unchanged; only this stand-in is quadratic.
+  }, 180_000);
 });
 
 describe("a single-subscriber campaign is sent right away (processCampaignNow) with every safeguard of the normal pass", () => {
