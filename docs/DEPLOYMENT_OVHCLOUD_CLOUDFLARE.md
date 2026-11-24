@@ -642,6 +642,8 @@ script and by running its shell quoting against a stand-in. Do a full rehearsal 
 | Restore inside **Docker** (`deploy/restore-db.sh`, test and `--replace`) | **Not run.** The script needs a Docker `db` container and Docker was not available. The equivalent `pg_restore` steps above were run by hand. |
 | **Replacement-VPS** recovery (§12.6 end to end) | **Not run.** Needs a spare server. |
 
+**CI gap, stated plainly:** the CI test job (`.github/workflows/ci.yml`, "Unit + real-database integration tests") does **not** set `PG_DUMP_BIN` / `PG_RESTORE_BIN`, so the backup round-trip integration test is *skipped* there (it needs PostgreSQL **17** client tools; the runner's default client is older). The only automated rehearsal of dump and restore in CI is the Docker smoke job (`deploy/ci-smoke.sh`), which uses the app image's own `pg_dump` 17 - and that job has never run. Until it has, the backup tests run only where someone sets those two variables (as was done for the table above).
+
 The release image's PostgreSQL apt key fingerprint (`B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8`) was re-derived on 2026-11-24 from the file postgresql.org serves (`ACCC4CF8.asc`) and matched. The download response has no `Content-Length` (it is streamed); compare the SHA-256 shown on the page, which the browser-computed value matched.
 
 ## 13. Routine updates from GitHub
