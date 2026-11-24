@@ -631,6 +631,19 @@ takes a dump with the app image's own `pg_dump`, runs `restore-db.sh` in test mo
 Account table, the migration history and a healthy app are back - **that step has not been run yet** (it runs the first time CI does). The `--replace` logic change was checked by reading the
 script and by running its shell quoting against a stand-in. Do a full rehearsal on a spare VPS before you depend on this, and repeat it after any change to the database image.
 
+**Browser-level check (2026-11-24, production build, PostgreSQL 17.11 on Windows, seeded demo data; reported item by item so nothing is overstated):**
+
+| Item | Result |
+|---|---|
+| Database backup created by the real **Download Database Backup** button as an Admin | **Done.** Created, verified and offered (611 KB); a sign-in older than 15 minutes was correctly refused first. |
+| Browser download | **Done.** The browser requested `/api/admin/database-backup/<id>` and received 625,904 bytes (a temporary file in the browser's download folder). A second run captured the real response: `200`, `Content-Disposition: attachment; filename="compass-<UTC time>-<id>.dump"`, `application/octet-stream`, `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, `X-Content-Type-Options: nosniff`, chunked, first bytes `PGDMP`, and a SHA-256 computed from the received bytes **equal** to the `X-Backup-SHA256` header. A second request for the same id: `404` (the staged copy is removed after a complete download); anonymous: `401`; path-traversal ids: `401`/`404`; the staging folder was empty afterwards. |
+| The **downloaded** file read back | **Done.** `pg_restore --list` on the browser-received file succeeded (497 entries, custom format, dumped from 17.11 by pg_dump 17.11); `PaymentMethodCvv` has its table, constraint, index and foreign key but **no data entry**. |
+| The downloaded file restored into a brand-new database | **Done.** `pg_restore --exit-on-error` exit 0; 57/57 tables, 228 indexes, 164 constraints, 3 sequences with identical values, 1 trigger (`AuditLog` append-only) and 1 function, 6 accounts, 82 migrations and a checksum over accounts and leads were identical; the only row differences were the 2 audit rows and 1 rate-limit counter written *after* the dump. `prisma migrate status` on the restored database: "Database schema is up to date!". A second app instance started against the restored database let the same Admin in and listed all 12 leads. (The dump has no views; the application defines none.) |
+| Restore inside **Docker** (`deploy/restore-db.sh`, test and `--replace`) | **Not run.** The script needs a Docker `db` container and Docker was not available. The equivalent `pg_restore` steps above were run by hand. |
+| **Replacement-VPS** recovery (§12.6 end to end) | **Not run.** Needs a spare server. |
+
+The release image's PostgreSQL apt key fingerprint (`B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8`) was re-derived on 2026-11-24 from the file postgresql.org serves (`ACCC4CF8.asc`) and matched. The download response has no `Content-Length` (it is streamed); compare the SHA-256 shown on the page, which the browser-computed value matched.
+
 ## 13. Routine updates from GitHub
 
 1. Make and review the change in GitHub (feature branch → pull request → CI green → review → merge to `main`).
