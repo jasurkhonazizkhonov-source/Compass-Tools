@@ -1,5 +1,9 @@
 // @vitest-environment node
 import { afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+
+// The per-account rate limiter reads and writes a PostgreSQL counter; these tests are not about it (see server/security/__tests__/rate-limit-coverage.test.ts), so it always allows here.
+vi.mock("@/server/security/rate-limit", () => ({ checkAccountRateLimit: vi.fn(async () => ({ allowed: true })), describeWait: (s: number) => `${s} seconds`, RATE_LIMITS: new Proxy({}, { get: () => ({ windowMs: 1000, maxAttempts: 1 }) }) }));
+
 import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";

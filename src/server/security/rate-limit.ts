@@ -115,6 +115,51 @@ export async function checkAccountRateLimit(accountId: string, endpoint: string,
 }
 
 /**
+ * Read-only: has this key ALREADY used up its allowance in the current window? Nothing is incremented, so it can be asked before the work starts while only the
+ * outcomes that should count (failures) are recorded with checkPublicRateLimitForKey afterwards. That is how a limit on FAILED sign-ins avoids ever blocking a shared
+ * office whose people all sign in successfully: only failures use up the allowance.
+ */
+export async function peekRateLimitForKey(clientKey: string, endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
+  const windowBucket = Math.floor(Date.now() / config.windowMs);
+  const expiresAt = new Date((windowBucket + 1) * config.windowMs);
+  const rows = await prisma.$queryRaw<{ count: number }[]>`SELECT "count" FROM "RateLimitCounter" WHERE "key" = ${`${clientKey}|${endpoint}|${windowBucket}`}`;
+  const count = rows[0]?.count ?? 0;
+  return count >= config.maxAttempts ? { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1000)) } : { allowed: true };
+}
+
+/** The current request's trusted client IP, or undefined when there is none (no trusted proxy, or no request context): such a request is never limited (see checkPublicRateLimit). */
+async function requestClientIp(): Promise<string | undefined> {
+  try {
+    return getClientIp(await headers());
+  } catch {
+    return undefined;
+  }
+}
+
+/** Has the CURRENT request's client already used its allowance of this kind (read-only; fails open without a trusted IP)? */
+export async function peekPublicRateLimitFromRequest(endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
+  const ip = await requestClientIp();
+  return ip ? peekRateLimitForKey(ip, endpoint, config) : { allowed: true };
+}
+
+/** Counts one occurrence (a failure) against the current request's client; never blocks and never throws (a counter that cannot be written must not turn a refusal into an error). */
+export async function recordPublicRateLimitUse(endpoint: string, config: RateLimitConfig): Promise<void> {
+  const ip = await requestClientIp();
+  if (!ip) return;
+  await checkPublicRateLimitForKey(ip, endpoint, config).catch(() => undefined);
+}
+
+/** "5 minutes" / "1 minute" / "30 seconds": what a person is told when a limit says wait. */
+export function describeWait(retryAfterSeconds: number): string {
+  if (retryAfterSeconds < 90) {
+    const seconds = Math.max(1, Math.round(retryAfterSeconds));
+    return seconds === 1 ? "1 second" : `${seconds} seconds`;
+  }
+  const minutes = Math.ceil(retryAfterSeconds / 60);
+  return `${minutes} minutes`;
+}
+
+/**
  * Pass 28 §30 — best-effort cleanup for the fixed-window counter table
  * above. Every window that's ever been hit leaves exactly one row behind
  * forever unless something prunes it — cheap individually, but unbounded
@@ -208,4 +253,24 @@ export const RATE_LIMITS = {
   ATTACHMENT_MUTATION: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
   /** Card add / edit / remove from a contact, per staff account. */
   CARD_MUTATION: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
+  /** FAILED Google sign-ins per client IP (only failures count - see peekRateLimitForKey - so a shared office of people who all sign in fine is never blocked). A person who
+   * mistypes or uses the wrong Google account a few times is nowhere near it; a script replaying tokens or probing accounts hits it fast, which also stops it from writing
+   * a failed-sign-in record and calling Google for every attempt. */
+  SIGN_IN_FAILURES: { windowMs: 15 * 60 * 1000, maxAttempts: 15 } satisfies RateLimitConfig,
+  /** Starting / completing "Connect Gmail", per staff account (each one is a round trip to Google's token service). */
+  GMAIL_CONNECT: { windowMs: 15 * 60 * 1000, maxAttempts: 12 } satisfies RateLimitConfig,
+  /** Creating a database backup (a pg_dump of the whole database), per Administrator account. A concurrency lock already allows one at a time; this bounds repetition. */
+  DATABASE_BACKUP_CREATE: { windowMs: 15 * 60 * 1000, maxAttempts: 6 } satisfies RateLimitConfig,
+  /** Downloading a staged backup (streams the whole file and writes an audit record), per Administrator account. */
+  DATABASE_BACKUP_DOWNLOAD: { windowMs: 15 * 60 * 1000, maxAttempts: 20 } satisfies RateLimitConfig,
+  /** Deleting a staged backup, per Administrator account. */
+  DATABASE_BACKUP_DELETE: { windowMs: 15 * 60 * 1000, maxAttempts: 30 } satisfies RateLimitConfig,
+  /** Enrolling leads in a sequence (one call can enroll up to a few hundred), per staff account. Generous for real work, a ceiling for a script or a stuck loop. */
+  SEQUENCE_ENROLL: { windowMs: 15 * 60 * 1000, maxAttempts: 300 } satisfies RateLimitConfig,
+  /** One batch of "Enroll All Contacts" (100 contacts each), per staff account: 1,500 batches = 150,000 contacts per 15 minutes, far beyond any real CRM. */
+  ENROLL_ALL_CONTACTS_BATCH: { windowMs: 15 * 60 * 1000, maxAttempts: 1500 } satisfies RateLimitConfig,
+  /** Bulk actions from the Leads / Contacts lists (add to sequence, delete), per staff account. */
+  BULK_ACTION: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
+  /** Retry / resolve a stuck sequence enrollment (each one can send a real email), per staff account. */
+  SEQUENCE_RECOVERY: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
 } as const;

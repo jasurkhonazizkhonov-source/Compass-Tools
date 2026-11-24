@@ -7,6 +7,7 @@ import { canManageDatabaseBackups } from "@/lib/permissions";
 import { requireRecentLogin } from "@/server/security/privileged-access";
 import { BackupError, deleteStagedBackup, resolveStagedBackup } from "@/server/backup/database-backup";
 import { safeErrorTag } from "@/lib/safe-error-log";
+import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 
 // Download one staged database backup (created on the Admin "Database Backup" page). The route authorises FIRST and only then produces bytes:
 //   - no session                                  -> 401
@@ -28,6 +29,9 @@ export async function GET(_request: Request, context: { params: Promise<{ id: st
   if (!canManageDatabaseBackups(actor.role)) return json({ error: "Not available" }, 403);
   const stepUp = requireRecentLogin(actor.sessionCreatedAt);
   if (!stepUp.ok) return json({ error: "For security, downloading a backup requires a recent sign-in. Sign out, sign back in, then try again." }, 403);
+  // Only an authorised Administrator ever reaches the counter (so an outsider cannot use up an Admin's allowance); past it, a 429 with Retry-After.
+  const limited = await checkAccountRateLimit(actor.id, "DATABASE_BACKUP_DOWNLOAD", RATE_LIMITS.DATABASE_BACKUP_DOWNLOAD);
+  if (!limited.allowed) return NextResponse.json({ error: "Too many download requests. Please try again later." }, { status: 429, headers: { "Cache-Control": "no-store", "Retry-After": String(limited.retryAfterSeconds) } });
 
   let staged: Awaited<ReturnType<typeof resolveStagedBackup>>;
   try {

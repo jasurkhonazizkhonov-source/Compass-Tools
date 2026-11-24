@@ -7,6 +7,7 @@ import { establishSession } from "@/server/auth/establish-session";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 import { recordFailedSignIn } from "@/server/auth/failed-sign-in";
 import { clearBinding, ensureBindingNonce, readBindingNonce } from "@/server/auth/google-login-binding";
+import { describeWait, peekPublicRateLimitFromRequest, recordPublicRateLimitUse, RATE_LIMITS } from "@/server/security/rate-limit";
 
 // Pass 37 — real bug found and fixed: this action used to call next/
 // navigation's redirect() directly on both the success and denial paths.
@@ -41,7 +42,12 @@ export type GoogleSignInResult =
         | "NOT_INITIALIZED" // zero Accounts exist and INITIAL_ADMIN_EMAIL is missing/blank
         | "BOOTSTRAP_EMAIL_MISMATCH" // zero Accounts exist, INITIAL_ADMIN_EMAIL is configured, this identity isn't it
         | "ACCESS_DENIED" // one or more Accounts already exist; this identity has none (or it's disabled)
-        | "SERVER_ERROR"; // an unexpected exception AFTER Google identity was verified — see below
+        | "SERVER_ERROR" // an unexpected exception AFTER Google identity was verified — see below
+        | "RATE_LIMITED"; // this client has had too many FAILED sign-ins recently; nothing was checked or recorded
+      /** Only with RATE_LIMITED: when it is worth trying again. */
+      retryAfterSeconds?: number;
+      /** Only with RATE_LIMITED: a message that is safe to show as it is. */
+      message?: string;
     };
 
 // Pass 41 — real observability gap found and fixed: nothing in the call
@@ -85,6 +91,19 @@ export type GoogleSignInResult =
  * authorization have succeeded.
  */
 export async function signInWithGoogle(idToken: string): Promise<GoogleSignInResult> {
+  // Failed sign-ins are limited per client IP (only FAILURES count, so a shared office signing in successfully is never held up). A client over its allowance is refused before
+  // anything else happens: no call to Google, no database write, and nothing about accounts is revealed. Without a trustworthy client IP (no trusted proxy) nothing is limited.
+  const blocked = await peekPublicRateLimitFromRequest("SIGN_IN_FAILURES", RATE_LIMITS.SIGN_IN_FAILURES).catch(() => ({ allowed: true as const }));
+  if (!blocked.allowed) {
+    return { ok: false, reason: "RATE_LIMITED", retryAfterSeconds: blocked.retryAfterSeconds, message: `Too many failed sign-in attempts. Please try again in ${describeWait(blocked.retryAfterSeconds)}.` };
+  }
+  const result = await signInWithGoogleChecked(idToken);
+  // Only a refusal that is the CLIENT's doing counts; a server problem (SERVER_ERROR) never uses up anyone's allowance.
+  if (!result.ok && result.reason !== "SERVER_ERROR" && result.reason !== "RATE_LIMITED") await recordPublicRateLimitUse("SIGN_IN_FAILURES", RATE_LIMITS.SIGN_IN_FAILURES);
+  return result;
+}
+
+async function signInWithGoogleChecked(idToken: string): Promise<GoogleSignInResult> {
   // The nonce this browser's own binding cookie implies; the token must carry exactly it (google-login-binding.ts). Without a cookie nothing is accepted.
   const verified = await verifyGoogleIdTokenForSignIn(idToken, await readBindingNonce());
   if (!verified) {

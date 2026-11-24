@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+// The per-account rate limiter reads and writes a PostgreSQL counter; these tests are not about it (see server/security/__tests__/rate-limit-coverage.test.ts), so it always allows here.
+vi.mock("@/server/security/rate-limit", () => ({ checkAccountRateLimit: vi.fn(async () => ({ allowed: true })), describeWait: (s: number) => `${s} seconds`, RATE_LIMITS: new Proxy({}, { get: () => ({ windowMs: 1000, maxAttempts: 1 }) }) }));
+
+
 // The Database Backup Server Actions: Admin-only on the SERVER (whatever the UI shows), a recent sign-in to create one, every outcome audited without any secret, and the
 // backup module itself replaced by a stub so no database or PostgreSQL tool is involved.
 const getCurrentAccount = vi.fn();

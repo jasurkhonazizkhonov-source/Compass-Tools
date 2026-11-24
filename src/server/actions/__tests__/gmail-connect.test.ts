@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// The per-account rate limiter reads and writes a PostgreSQL counter; these tests are not about it (see server/security/__tests__/rate-limit-coverage.test.ts), so it always allows here.
+vi.mock("@/server/security/rate-limit", () => ({ checkAccountRateLimit: vi.fn(async () => ({ allowed: true })), describeWait: (s: number) => `${s} seconds`, RATE_LIMITS: new Proxy({}, { get: () => ({ windowMs: 1000, maxAttempts: 1 }) }) }));
+
+
 // startGmailConnect(): sets a CSRF-state cookie and redirects to Google's
 // consent URL — proves the redirect requests offline access + forced
 // re-consent (so a refresh token is always returned, even on reconnect)

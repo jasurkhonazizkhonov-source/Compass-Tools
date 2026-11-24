@@ -9,6 +9,7 @@ import { GMAIL_OAUTH_STATE_COOKIE, GMAIL_RETURN_COOKIE, safeGmailReturnPath } fr
 import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
 import { normalizeEmail } from "@/server/auth/google-authorization";
 import { encryptRefreshToken } from "@/server/security/gmail-token-encryption";
+import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { defaultRouteForRole } from "@/lib/permissions";
 import type { AccountRole } from "@/generated/prisma/client";
 
@@ -91,6 +92,8 @@ export async function GET(request: NextRequest) {
   // From here on every toDashboard() lands on THIS user's own permitted
   // route, so the ?gmail= param survives proxy.ts's role routing.
   session.role = current.role;
+  // The token exchange is a call to Google: bounded per account. Same bucket as starting the flow, so one person cannot loop through start + callback.
+  if (!(await checkAccountRateLimit(current.id, "GMAIL_CONNECT", RATE_LIMITS.GMAIL_CONNECT)).allowed) return toDashboard("error");
 
   let tokens;
   try {

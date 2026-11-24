@@ -7,6 +7,7 @@ import { canManageDatabaseBackups } from "@/lib/permissions";
 import { requireRecentLogin, RECENT_LOGIN_WINDOW_MS } from "@/server/security/privileged-access";
 import { BackupError, BACKUP_EXCLUDED_DATA, BACKUP_FORMAT, createBackup, deleteStagedBackup, getBackupCapability, isValidBackupId, listStagedBackups, type BackupCapability, type BackupInfo } from "@/server/backup/database-backup";
 import { safeErrorTag } from "@/lib/safe-error-log";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 
 // Admin-only. Every function below re-checks the signed-in account on the SERVER (hiding the navigation entry is only a convenience); creating a backup also needs a sign-in within the
 // last RECENT_LOGIN_WINDOW_MS (a dump is every customer record the CRM holds). Each is audited: who, what, when - never a connection string, a path or any data from the dump.
@@ -79,6 +80,12 @@ export async function createDatabaseBackup(): Promise<CreateBackupResult> {
     await audit(actor.id, "DATABASE_BACKUP_DENIED", "none", { reason: stepUp.reason });
     return { ok: false, error: STEP_UP_MESSAGE };
   }
+  // A dump of the whole database is heavy: bounded per Administrator account (the lock already allows only one at a time; this bounds repetition).
+  const limit = await checkAccountRateLimit(actor.id, "DATABASE_BACKUP_CREATE", RATE_LIMITS.DATABASE_BACKUP_CREATE);
+  if (!limit.allowed) {
+    await audit(actor.id, "DATABASE_BACKUP_DENIED", "none", { reason: "RATE_LIMITED" });
+    return { ok: false, error: `Too many backups were requested. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
+  }
   try {
     const info = await createBackup();
     await audit(actor.id, "DATABASE_BACKUP_CREATED", info.id, { sizeBytes: info.sizeBytes, sha256: info.sha256, pgDumpVersion: info.pgDumpVersion, serverVersion: info.serverVersion });
@@ -97,6 +104,8 @@ export async function createDatabaseBackup(): Promise<CreateBackupResult> {
 export async function deleteDatabaseBackup(id: string): Promise<{ ok: boolean; error?: string }> {
   const actor = await requireBackupAdmin();
   if (!isValidBackupId(id)) return { ok: false, error: "That backup does not exist." };
+  const limit = await checkAccountRateLimit(actor.id, "DATABASE_BACKUP_DELETE", RATE_LIMITS.DATABASE_BACKUP_DELETE);
+  if (!limit.allowed) return { ok: false, error: `Too many requests. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
   const removed = await deleteStagedBackup(id);
   if (removed) await audit(actor.id, "DATABASE_BACKUP_DELETED", id, {});
   revalidatePath("/database-backup");

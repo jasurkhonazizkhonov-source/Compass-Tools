@@ -11,6 +11,7 @@ import { getGoogleClientId, getGoogleClientSecret } from "@/server/auth/google-c
 import { getGmailOAuth2Client, getGmailRedirectUri, GMAIL_CONNECT_SCOPES } from "@/server/auth/gmail-oauth-config";
 import { GMAIL_OAUTH_STATE_COOKIE, GMAIL_RETURN_COOKIE, safeGmailReturnPath } from "@/server/auth/gmail-oauth-state";
 import { decryptRefreshToken } from "@/server/security/gmail-token-encryption";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 
 const isProd = process.env.NODE_ENV === "production";
 const STATE_MAX_AGE_SECONDS = 10 * 60;
@@ -26,6 +27,9 @@ export async function startGmailConnect(returnTo?: string) {
   if (!current) {
     redirect("/login");
   }
+  // Each start is a trip to Google: bounded per account (never per IP, so a shared office is unaffected).
+  const limit = await checkAccountRateLimit(current.id, "GMAIL_CONNECT", RATE_LIMITS.GMAIL_CONNECT);
+  if (!limit.allowed) throw new Error(`Too many Gmail connection attempts. Please try again in ${describeWait(limit.retryAfterSeconds)}.`);
 
   const state = randomBytes(32).toString("base64url");
   const cookieStore = await cookies();

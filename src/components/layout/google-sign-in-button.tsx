@@ -164,7 +164,10 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
             // authenticated but not authorized," which is what
             // /access-denied communicates). Every other reason genuinely
             // is an authorization denial and navigates there.
-            if (result.reason === "GOOGLE_VERIFICATION_FAILED") {
+            if (result.reason === "RATE_LIMITED") {
+              // Too many failed attempts from this client: say so, with when to try again. Nothing navigates; no account detail is shown.
+              toast.error(result.message ?? "Too many failed sign-in attempts. Please try again later.");
+            } else if (result.reason === "GOOGLE_VERIFICATION_FAILED") {
               toast.error("Google sign-in could not be completed. Please try again.");
             } else if (result.reason === "SERVER_ERROR") {
               toast.error("We could not complete sign-in right now. Please try again.");
