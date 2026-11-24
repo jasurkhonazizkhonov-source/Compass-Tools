@@ -201,12 +201,11 @@ describe("QuoteBuilder — GDS source tab switching (stale-state regression)", (
   // explicit testing limitation rather than silently skipped.
   it("the Parse button is disabled for the full duration of a pending parse, which is what makes the overlapping-parse scenario unreachable through the UI in the first place", async () => {
     const { resolveAirportCodes } = await import("@/server/queries/reference-data");
-    // Deliberately slow this one resolution down so the pending window is
-    // long enough to reliably observe mid-flight, rather than racing
-    // against how fast the mocked promises happen to settle.
-    vi.mocked(resolveAirportCodes).mockImplementationOnce(
-      () => new Promise((resolve) => setTimeout(() => resolve({ FRA: { id: 1, iata: "FRA", name: "Frankfurt Airport", city: "Frankfurt", country: "Germany", timezone: "Europe/Berlin" }, JFK: { id: 2, iata: "JFK", name: "John F Kennedy Intl", city: "New York", country: "United States", timezone: "America/New_York" } }), 100))
-    );
+    // The resolution is held open by a promise THIS test settles, not by a timer. It used to be a 100 ms timer: the assertion below then only held if the click finished within
+    // 100 ms of wall-clock time, so on a loaded machine the parse had already settled (and the Sabre tab's button was gone) before it ran - the same failure appears every time when
+    // the timer is shortened to 1 ms. A deferred promise makes "still in flight" a fact of the test instead of a race.
+    let settle!: (airports: Record<string, unknown>) => void;
+    vi.mocked(resolveAirportCodes).mockImplementationOnce(() => new Promise((resolve) => { settle = resolve as typeof settle; }));
     const user = renderBuilder();
     await user.click(screen.getByRole("tab", { name: /Sabre/i }));
     fireEvent.change(screen.getByPlaceholderText(/LH400C/), {
@@ -220,6 +219,10 @@ describe("QuoteBuilder — GDS source tab switching (stale-state regression)", (
     // impossible to dispatch at all (jsdom, like a real browser, refuses
     // to fire a click event on a disabled native <button>).
     expect(screen.getByRole("button", { name: /Parse Itinerary/i })).toBeDisabled();
+    settle({
+      FRA: { id: 1, iata: "FRA", name: "Frankfurt Airport", city: "Frankfurt", country: "Germany", timezone: "Europe/Berlin" },
+      JFK: { id: 2, iata: "JFK", name: "John F Kennedy Intl", city: "New York", country: "United States", timezone: "America/New_York" },
+    });
     // The parse still completes correctly once the delayed resolution
     // settles — this isn't a stuck/broken state, just a genuinely pending
     // one. Navigating to Manual Entry (unmounting the Sabre tab's own
