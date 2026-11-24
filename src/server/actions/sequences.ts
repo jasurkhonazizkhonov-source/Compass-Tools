@@ -15,6 +15,7 @@ import { leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibilit
 import { getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
 import { isRecipientMode, type RecipientMode } from "@/server/sequence-recipients";
 import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
+import { analyzeStepContent, sanitizeStepHtml } from "@/server/email/sequence-content";
 
 const SEQUENCE_NOT_FOUND = "Sequence not found";
 
@@ -76,30 +77,98 @@ const stepSchema = z.object({
   sequenceId: z.string(),
   subject: z.string().min(1),
   body: z.string().min(1),
+  /** TEXT = the original plain text; HTML = the visual email editor. Omitted = TEXT, exactly as before. */
+  bodyFormat: z.enum(["TEXT", "HTML"]).default("TEXT"),
   delayMinutes: z.number().min(0),
 });
 
-export async function addStep(input: z.infer<typeof stepSchema>) {
+/**
+ * What is stored for a step. An HTML step is cleaned on the SERVER (the browser's copy is never trusted) and judged: an error that would make the email unsendable or unsafe
+ * (an unusable link, a picture recipients could never see, nothing to send, too large) stops the save and says why; warnings are advice shown in the editor, never a block. A
+ * plain-text step is stored as it always was.
+ */
+function prepareStepContent(subject: string, body: string, bodyFormat: "TEXT" | "HTML"): { body: string; bodyFormat: "TEXT" | "HTML" } {
+  if (bodyFormat === "TEXT") return { body, bodyFormat };
+  const cleaned = sanitizeStepHtml(body);
+  const analysis = analyzeStepContent({ subject, body, format: "HTML" }); // judged on what was written, so an unsafe link is reported rather than silently dropped
+  if (!analysis.ok) throw new Error(`This email cannot be saved: ${analysis.errors[0].message}`);
+  return { body: cleaned, bodyFormat };
+}
+
+export async function addStep(input: z.input<typeof stepSchema>) {
   const data = stepSchema.parse(input);
   const actor = await getCurrentAccount();
   await assertSequenceAccess(actor, data.sequenceId);
+  const content = prepareStepContent(data.subject, data.body, data.bodyFormat);
 
   const count = await prisma.sequenceStep.count({ where: { sequenceId: data.sequenceId } });
   const step = await prisma.sequenceStep.create({
-    data: { ...data, order: count },
+    data: { ...data, ...content, order: count },
   });
   revalidatePath(`/sequences/${data.sequenceId}`);
   return step;
 }
 
-export async function updateStep(stepId: string, patch: { subject?: string; body?: string; delayMinutes?: number }) {
+export async function updateStep(stepId: string, patch: { subject?: string; body?: string; bodyFormat?: "TEXT" | "HTML"; delayMinutes?: number }) {
   const actor = await getCurrentAccount();
-  const existingStep = await prisma.sequenceStep.findUniqueOrThrow({ where: { id: stepId }, select: { sequenceId: true } });
+  const existingStep = await prisma.sequenceStep.findUniqueOrThrow({ where: { id: stepId }, select: { sequenceId: true, subject: true, body: true, bodyFormat: true } });
   await assertSequenceAccess(actor, existingStep.sequenceId);
 
-  const step = await prisma.sequenceStep.update({ where: { id: stepId }, data: patch });
+  // Only the fields that were sent are changed (as before); a body or format change is cleaned and judged like a new step.
+  const data: { subject?: string; body?: string; bodyFormat?: "TEXT" | "HTML"; delayMinutes?: number } = { ...patch };
+  if (patch.body !== undefined || patch.bodyFormat !== undefined) {
+    const format = patch.bodyFormat ?? existingStep.bodyFormat;
+    const content = prepareStepContent(patch.subject ?? existingStep.subject, patch.body ?? existingStep.body, format);
+    data.body = content.body;
+    data.bodyFormat = content.bodyFormat;
+  }
+  const step = await prisma.sequenceStep.update({ where: { id: stepId }, data });
   revalidatePath(`/sequences/${step.sequenceId}`);
   return step;
+}
+
+/**
+ * A copy of a step, added at the END of the sequence. Appending cannot change what anyone already in the sequence receives next (their position is a step number, and the
+ * steps before the end keep theirs), so it is always safe; the copy can then be edited and, when nobody is part-way through, moved.
+ */
+export async function duplicateStep(stepId: string) {
+  const actor = await getCurrentAccount();
+  const source = await prisma.sequenceStep.findUniqueOrThrow({ where: { id: stepId } });
+  await assertSequenceAccess(actor, source.sequenceId);
+  const count = await prisma.sequenceStep.count({ where: { sequenceId: source.sequenceId } });
+  const copy = await prisma.sequenceStep.create({
+    data: { sequenceId: source.sequenceId, subject: source.subject, body: source.body, bodyFormat: source.bodyFormat, delayMinutes: source.delayMinutes, order: count },
+  });
+  revalidatePath(`/sequences/${source.sequenceId}`);
+  return copy;
+}
+
+export type MoveStepResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Moves a step one place earlier or later. An enrollment records WHERE it is as a step number, so moving a step while people are part-way through would change what they
+ * receive next (someone waiting for step 3 would suddenly be waiting for a different email, or be sent one twice). It is therefore only allowed while no enrollment is ACTIVE or
+ * FAILED (waiting to be retried); the answer says so plainly instead of silently doing it.
+ */
+export async function moveStep(stepId: string, direction: "up" | "down"): Promise<MoveStepResult> {
+  if (direction !== "up" && direction !== "down") return { ok: false, error: "Choose up or down." };
+  const actor = await getCurrentAccount();
+  const step = await prisma.sequenceStep.findUniqueOrThrow({ where: { id: stepId }, select: { id: true, sequenceId: true, order: true } });
+  await assertSequenceAccess(actor, step.sequenceId);
+  const inProgress = await prisma.sequenceEnrollment.count({ where: { sequenceId: step.sequenceId, status: { in: ["ACTIVE", "FAILED"] } } });
+  if (inProgress > 0) {
+    return { ok: false, error: `${inProgress === 1 ? "1 person is" : `${inProgress} people are`} part-way through this sequence, so steps cannot be reordered: it would change which email they receive next. Unenroll them or wait until they finish.` };
+  }
+  const steps = await prisma.sequenceStep.findMany({ where: { sequenceId: step.sequenceId }, orderBy: { order: "asc" }, select: { id: true } });
+  const index = steps.findIndex((s) => s.id === stepId);
+  const target = direction === "up" ? index - 1 : index + 1;
+  if (index < 0 || target < 0 || target >= steps.length) return { ok: false, error: direction === "up" ? "This is already the first step." : "This is already the last step." };
+  const reordered = steps.map((s) => s.id);
+  [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+  // Positions are rewritten for the whole sequence in one transaction, so there is never a moment with two steps in the same place.
+  await prisma.$transaction(reordered.map((id, order) => prisma.sequenceStep.update({ where: { id }, data: { order } })));
+  revalidatePath(`/sequences/${step.sequenceId}`);
+  return { ok: true };
 }
 
 export async function deleteStep(stepId: string) {

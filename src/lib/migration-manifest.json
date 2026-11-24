@@ -80,6 +80,7 @@
     "20261122000100_account_contact_detail_edit_default_off",
     "20261122000200_marketing_send_cancelled_status",
     "20261123000100_lead_date_flexibility_days",
-    "20261124000100_sequence_reply_stop_and_scheduling"
+    "20261124000100_sequence_reply_stop_and_scheduling",
+    "20261124000200_sequence_step_body_format"
   ]
 }

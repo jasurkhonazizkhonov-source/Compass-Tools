@@ -1271,6 +1271,13 @@ model Sequence {
   enrollments SequenceEnrollment[]
 }
 
+// How a step's body is stored. TEXT = the original plain text (paragraphs separated by blank lines; every existing step). HTML = what the visual email editor produces,
+// cleaned on the server (src/server/email/sequence-content.ts) at save time and again at send time.
+enum StepBodyFormat {
+  TEXT
+  HTML
+}
+
 model SequenceStep {
   id           String   @id @default(cuid())
   sequenceId   String
@@ -1278,6 +1285,7 @@ model SequenceStep {
   order        Int
   subject      String
   body         String
+  bodyFormat   StepBodyFormat @default(TEXT)
   delayMinutes Int      @default(0)
   createdAt    DateTime @default(now())
 

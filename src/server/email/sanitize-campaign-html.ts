@@ -83,9 +83,9 @@ const TABLE_LAYOUT = ["width", "height", "align", "valign", "bgcolor", "border",
 const DATA_IMAGE = /^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=\s]+$/i;
 const MAX_INLINE_IMAGE_CHARS = 300_000;
 
-export function sanitizeCampaignHtml(dirty: string): string {
-  if (!dirty) return "";
-  return sanitizeHtml(dirty, {
+/** The one allow-list. Exported so the sequence email builder cleans its HTML with exactly the rules campaigns use (sequence-content.ts adds only inline styling on top). */
+export function campaignSanitizeOptions(): sanitizeHtml.IOptions {
+  return {
     allowedTags: [
       "p", "br", "hr", "div", "span", "center",
       "h1", "h2", "h3", "h4", "h5", "h6",
@@ -96,7 +96,8 @@ export function sanitizeCampaignHtml(dirty: string): string {
       "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col",
     ],
     allowedAttributes: {
-      "*": ["style", "title", "dir", "lang", "align"],
+      // data-compass-block: the marker the visual email editor puts on the blocks only it creates (call-to-action button, spacer) so they come back as blocks when a step is reopened.
+      "*": ["style", "title", "dir", "lang", "align", "data-compass-block"],
       a: ["href", "target", "rel", "name", "title", "style"],
       img: ["src", "alt", "width", "height", "title", "style", "align", "border"],
       table: TABLE_LAYOUT,
@@ -136,5 +137,10 @@ export function sanitizeCampaignHtml(dirty: string): string {
     },
     // An <img> with no usable source is meaningless; drop it rather than leave an empty tag.
     exclusiveFilter: (frame) => frame.tag === "img" && !frame.attribs.src,
-  });
+  };
+}
+
+export function sanitizeCampaignHtml(dirty: string): string {
+  if (!dirty) return "";
+  return sanitizeHtml(dirty, campaignSanitizeOptions());
 }

@@ -1347,6 +1347,11 @@ function linkify(escapedText: string, brandColor: string): string {
 export function buildSequenceEmail(params: {
   subject: string;
   bodyText: string;
+  /**
+   * A step written in the visual email editor: ALREADY personalised, cleaned and given inline styles (sequence-content.ts renderStepBodyHtml). When present it is used as the
+   * body instead of turning `bodyText` into paragraphs; everything around it (branded shell, signature, the mandatory unsubscribe footer) is exactly the same.
+   */
+  bodyHtml?: string;
   agent?: EmailAgent;
   company: ResolvedCompanyBranding;
   unsubscribeUrl?: string;
@@ -1362,7 +1367,7 @@ export function buildSequenceEmail(params: {
   variant?: "personal" | "sequence";
 }) {
   const variant = params.variant ?? (params.unsubscribeUrl ? "sequence" : "personal");
-  const paragraphs = params.bodyText
+  const paragraphs = params.bodyHtml !== undefined ? params.bodyHtml : params.bodyText
     .split(/\n{2,}/)
     .filter((p) => p.trim().length > 0)
     .map((para) => `<p style="margin:0 0 18px; font-size:15px; color:${EMAIL_TOKENS.bodyText}; line-height:1.75;">${linkify(escapeHtml(para), params.company.brandColor).replace(/\n/g, "<br/>")}</p>`)

@@ -12,6 +12,7 @@ import { assertTransition } from "@/lib/sequence-delivery-state";
 import { pollerStopRequested } from "@/server/background-poller";
 import { DEFAULT_RATE_LIMIT_BACKOFF_MS, checkSenderCapacity, senderLockKey } from "@/server/sender-quota";
 import { resolveSendRecipients } from "@/server/sequence-recipients";
+import { renderStepBodyHtml } from "@/server/email/sequence-content";
 
 // The sequence-step sweep, kept OUT of the "use server" module src/server/actions/sequences.ts on purpose: everything exported from a "use server" file
 // is a public Server Action with no check of its own. The sweep's legitimate callers are the cron route /api/cron/sequences (behind CRON_SECRET) and
@@ -289,10 +290,13 @@ async function processEnrollment(enrollment: DueEnrollment, noCapacity: Map<stri
   const company = await getCompanyForAccountId(agent.id);
   const context = buildVariableContext(enrollment, company.name);
   const renderedSubject = renderSequenceTemplate(step.subject, context);
-  const renderedBody = renderSequenceTemplate(step.body, context);
+  // A step written in the visual editor (HTML) is personalised with escaped values, cleaned and styled for email clients; every older step is plain text, read exactly as before.
+  const isHtml = (step as { bodyFormat?: string }).bodyFormat === "HTML";
+  const renderedBody = isHtml ? "" : renderSequenceTemplate(step.body, context);
   const { subject, html } = buildSequenceEmail({
     subject: renderedSubject,
     bodyText: renderedBody,
+    ...(isHtml ? { bodyHtml: renderStepBodyHtml(step.body, context, company.brandColor) } : {}),
     agent: { fullName: agent.fullName, email: agent.email, phone: agent.phone },
     company,
     // Only the automated drip send carries an unsubscribe link; the token is this enrollment's own opaque id.
