@@ -15,9 +15,16 @@ const h = vi.hoisted(() => ({
   nonce: vi.fn(),
   push: vi.fn(),
   toastError: vi.fn(),
+  scriptProps: undefined as undefined | { src?: string; nonce?: string },
 }));
 
-vi.mock("next/script", () => ({ default: ({ onReady }: { onReady?: () => void }) => (onReady?.(), null) }));
+vi.mock("next/script", () => ({
+  default: (props: { onReady?: () => void; src?: string; nonce?: string }) => {
+    h.scriptProps = { src: props.src, nonce: props.nonce };
+    props.onReady?.();
+    return null;
+  },
+}));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: h.push }) }));
 vi.mock("sonner", () => ({ toast: { error: (...a: unknown[]) => h.toastError(...a) } }));
 vi.mock("@/server/actions/google-auth", () => ({ signInWithGoogle: (...a: [string]) => h.signIn(...a), getGoogleLoginNonce: () => h.nonce() }));
@@ -84,6 +91,19 @@ describe("what we ask Google for", () => {
     expect(h.prompt).not.toHaveBeenCalled();
     await act(async () => release("n"));
     await waitFor(() => expect(h.prompt).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("Google's script tag carries this page's CSP nonce", () => {
+  it("so the inline <style> Google adds can carry it too (the sign-in page then needs no 'unsafe-inline' for styles - verified in a real browser)", async () => {
+    render(<GoogleSignInButton clientId="client-123.apps.googleusercontent.com" cspNonce="page-nonce-1" />);
+    await waitFor(() => expect(h.config).toBeDefined());
+    expect(h.scriptProps).toEqual({ src: "https://accounts.google.com/gsi/client", nonce: "page-nonce-1" });
+  });
+
+  it("without a nonce (a page that has none) the tag simply has none", async () => {
+    await mount();
+    expect(h.scriptProps?.nonce).toBeUndefined();
   });
 });
 

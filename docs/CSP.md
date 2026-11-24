@@ -12,7 +12,7 @@ dependency that is already trusted, and it is not a substitute for escaping outp
 | | Routes | Scripts | Style elements | Style attributes |
 |---|---|---|---|---|
 | **Nonce policy** (per request) | every signed-in CRM page, `/quote/*` (card entry), `/`, `/access-denied` | `'self' 'nonce-…' 'strict-dynamic'` — **no `'unsafe-inline'`, no `'unsafe-eval'`** in production | `'self' 'nonce-…'` + the hash of sonner's stylesheet | `'unsafe-inline'` |
-| **Nonce policy, sign-in page** | `/login` | same as above | `'self' 'unsafe-inline' https://accounts.google.com` (**exception 2**) | `'unsafe-inline'` |
+| **Nonce policy, sign-in page** | `/login` | same as above | `'self' 'nonce-…'` + sonner hash + `https://accounts.google.com` - **no `'unsafe-inline'`** (since 2026-11-25) | `'unsafe-inline'` |
 | **Hash policy** (static pages, written after the build) | the 13 pre-rendered marketing pages (`/about`, `/contact`, `/features/*`, `/privacy`, `/security`, `/terms`) | `'self'` + the SHA-256 of each of that page's inline scripts + Google - **no `'unsafe-inline'`** (`scripts/static-page-csp.mjs`) | `'self'` + sonner hash + Google | `'unsafe-inline'` |
 | **Base policy** | everything else: API routes, error pages, and the marketing pages when the post-build step could not run (Cloudflare/Vercel builds) | `'self' 'unsafe-inline' https://accounts.google.com` (**exception 1**) | `'self'` + sonner hash + Google | `'unsafe-inline'` |
 
@@ -34,7 +34,7 @@ Everything else is the same in both: `default-src 'self'`, `frame-ancestors 'non
 * `/` (marketing home) and `/access-denied` are rendered on every request, so they moved to the nonce policy (no `'unsafe-inline'` for scripts). The proxy only adds the
   header there; it never gates them (they do their own session check).
 * A real browser run found one regression before release: with the strict style policy the Google sign-in button rendered as a giant logo with doubled text, because
-  Google's script adds an inline `<style>` to the page (see exception 2).
+  Google's script adds an inline `<style>` to the page, which then needed the nonce on Google's own script tag (fixed the same day, see exception 2).
 
 ## Remaining exceptions (each one is deliberate)
 
@@ -49,9 +49,10 @@ Everything else is the same in both: `default-src 'self'`, `frame-ancestors 'non
    policy`); CI can pass `--require`. **Verified:** production build, 13 pages in a real browser: all hydrate, no violations, and an injected inline script is refused. **Not verified:**
    the Docker/standalone image (the script patches both manifests; run `curl -I` on `/about` against the real container and check `script-src` has hashes and no `'unsafe-inline'`).
    The other options considered: making the pages dynamic (nonce) costs CDN caching, so it was not needed; Next's experimental SRI covers script *files* only, so it does not help.
-2. **Styles on `/login`: `'unsafe-inline'`.** Google's sign-in script adds its own inline `<style>` (about 8 KB, class names like `.qJTHM`) and cannot be given a nonce; its text is
-   Google's and changes without notice, so it cannot be hash-pinned. (A nonce or hash in the same directive would make browsers ignore `'unsafe-inline'`, so this page's
-   directive carries neither.) The page's **script** policy stays strict, and the page shows and accepts no customer data.
+2. ~~Styles on `/login`: `'unsafe-inline'`~~ **Removed (2026-11-25).** Google's sign-in script adds an inline `<style>` (about 8 KB, class names like `.qJTHM`) and, given a nonce on its own `<script>` tag, copies that nonce onto the element. The sign-in page
+   now passes this request's nonce to that tag (`GoogleSignInButton cspNonce`), and its `style-src` carries the nonce instead of `'unsafe-inline'`. Verified in a production build in a real browser: the button renders correctly, the added `<style>` has the nonce, and there are
+   no violations. Google's own CSP guidance (`script-src https://accounts.google.com/gsi/client`, `style-src https://accounts.google.com/gsi/style`, `frame-src` and `connect-src https://accounts.google.com/gsi/`) says nothing about this nonce behaviour, so it is **an observed behaviour of today's script, not a documented
+   contract**: if Google ever stops copying the nonce, the button will render unstyled (a giant logo) and the console will report the violation - the first thing to check after a Google change.
 3. **Style attributes: `'unsafe-inline'`** (`style-src-attr`) everywhere. Radix/floating UI positions popovers and menus, charts and the editor set sizes and colours with them, and an
    attribute cannot carry a nonce. Declarations only: no selectors, no script, cannot read other elements.
 4. **`'unsafe-eval'` in `next dev` only.** React's development build needs it; production and test builds never include it (tested).
@@ -65,7 +66,7 @@ Production build (`next build` + `next start`), Chrome-based browser pane, Admin
   `/quotes`, `/contacts`, `/bookings`, `/subscriptions`, `/system-health`, `/users`, `/database-backup`; an open New Lead dialog (page scroll is locked: `body` overflow `hidden`);
   the theme toggle through all three states; the global search (cmdk); the sequence step editor with TipTap (its style element carries the nonce and is applied). Page-load
   violations were read from the console; dialog, menu and theme interactions were observed with a `securitypolicyviolation` listener (an empty list).
-* **Found and fixed from violations:** Google's button style (exception 2), Radix scroll lock (nonce provider), sonner (hash).
+* **Found and fixed from violations:** Google's button style (exception 2: removed by giving Google's script tag the nonce), Radix scroll lock (nonce provider), sonner (hash).
 * **What a unit test cannot show, and this did:** every item in the list above was invisible to the mocked-component tests; only a real browser reported them.
 * **Not checked here:** Safari and Firefox; a signed-in session of every role; email clients (the email templates are not pages under this policy).
 

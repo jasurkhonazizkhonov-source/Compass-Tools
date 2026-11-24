@@ -71,7 +71,8 @@ const ACCESS_DENIED_MESSAGES: Record<string, string> = {
 // component well before it could fire.
 const STUCK_SIGN_IN_SAFETY_NET_MS = 15_000;
 
-export function GoogleSignInButton({ clientId }: { clientId: string }) {
+/** `cspNonce` is this request's Content-Security-Policy nonce (not the sign-in nonce below): it goes on Google's script tag. */
+export function GoogleSignInButton({ clientId, cspNonce }: { clientId: string; cspNonce?: string }) {
   const router = useRouter();
   const buttonRef = useRef<HTMLDivElement>(null);
   const [scriptLoaded, setScriptLoaded] = useState(false);
@@ -271,7 +272,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" onReady={() => setScriptLoaded(true)} />
+      <Script src="https://accounts.google.com/gsi/client" strategy="afterInteractive" nonce={cspNonce} onReady={() => setScriptLoaded(true)} />
       <div ref={buttonRef} />
       {isSigningIn && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">

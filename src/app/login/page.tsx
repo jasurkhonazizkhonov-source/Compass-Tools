@@ -7,6 +7,7 @@ import { CompassMark } from "@/components/brand/compass-mark";
 import { PRODUCT_NAME } from "@/lib/company-config";
 import { noIndexMetadata } from "@/lib/marketing/seo";
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 import { SESSION_END_MESSAGES, isSessionEndReason } from "@/lib/session-token";
 import { Users2, FileText, PlaneTakeoff, ShieldCheck } from "lucide-react";
 import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from "@/lib/google-one-tap";
@@ -59,6 +60,8 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
   } catch {
     googleClientId = null;
   }
+  // This request's CSP nonce (set by src/proxy.ts), handed to Google's script tag so it can pass it on to the styles it adds.
+  const nonce = (await headers()).get("x-nonce") ?? undefined;
   const sp = await searchParams;
   const expired = sp.reason === "expired";
   const endedReason = isSessionEndReason(sp.reason) ? sp.reason : null;
@@ -145,7 +148,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
 
             <div className="mt-6 flex justify-center">
               {googleClientId ? (
-                <GoogleSignInButton clientId={googleClientId} />
+                <GoogleSignInButton clientId={googleClientId} cspNonce={nonce} />
               ) : (
                 <p role="alert" className="text-center text-sm text-destructive" data-testid="google-not-configured">
                   Google sign-in is not configured on this server. Ask your administrator to set it up (GOOGLE_CLIENT_ID).

@@ -170,8 +170,9 @@ describe("the sign-in page gets the strict policy too", () => {
     const styleSrc = (csp: string) => csp.split("; ").find((d) => d.startsWith("style-src "))!;
     const nonceOf = (csp: string) => /'nonce-([^']+)'/.exec(csp)![1];
     const login = (await proxy(req("/login"))).headers.get("content-security-policy")!;
-    // The one documented exception: Google's sign-in script adds an inline <style> that cannot carry a nonce or be hash-pinned (a nonce/hash here would make browsers ignore 'unsafe-inline').
-    expect(styleSrc(login)).toBe("style-src 'self' 'unsafe-inline' https://accounts.google.com");
+    // No 'unsafe-inline' even here: Google's script copies the nonce of its own tag onto the inline <style> it adds (the tag gets this request's nonce, see google-sign-in-button.test).
+    expect(styleSrc(login)).toBe(`style-src 'self' 'nonce-${nonceOf(login)}' ${SONNER_STYLE_HASH} https://accounts.google.com`);
+    expect(styleSrc(login)).not.toContain("unsafe-inline");
     expect(login).toMatch(/script-src 'self' 'nonce-[^']+' 'strict-dynamic'/); // and the SCRIPT policy of that page is still strict
     expect(styleSrc(buildNonceCsp("n"))).toBe(`style-src 'self' 'nonce-n' ${SONNER_STYLE_HASH}`);
     const quote = (await proxy(req("/quote/x/book"))).headers.get("content-security-policy")!;

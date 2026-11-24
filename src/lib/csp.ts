@@ -74,10 +74,10 @@ export function buildNonceCsp(nonce: string, dev = false, options: { googleSignI
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,
     // Style elements need this request's nonce (Next.js, TipTap and the theme switch carry it). The sign-in page also needs Google's own button stylesheet: a stylesheet is not a
     // script, so 'strict-dynamic' does not cover it and it must be named; nothing else is added.
-    // EXCEPTION, the sign-in page only: Google's sign-in script adds its own inline <style> to the page (seen in a real browser: with it blocked the button renders as a giant logo with
-    // doubled text) and cannot be given a nonce. Its content is Google's and changes without notice, so it cannot be hash-pinned either. The page's SCRIPT policy stays strict.
-    // (A nonce or hash in the same directive would make browsers ignore 'unsafe-inline', so this page's directive carries neither.)
-    options.googleSignIn ? "style-src 'self' 'unsafe-inline' https://accounts.google.com" : `style-src 'self' 'nonce-${nonce}' ${SONNER_STYLE_HASH}`,
+    // Google's sign-in script adds an inline <style> to the page. It copies the nonce of its own <script> tag onto that element (verified in a real browser 2026-11-25), which is why
+    // the sign-in page hands its nonce to that tag (components/layout/google-sign-in-button.tsx) and needs NO 'unsafe-inline' for styles. Without the nonce on the tag the button
+    // renders as a giant logo with doubled text.
+    options.googleSignIn ? `style-src 'self' 'nonce-${nonce}' ${SONNER_STYLE_HASH} https://accounts.google.com` : `style-src 'self' 'nonce-${nonce}' ${SONNER_STYLE_HASH}`,
     STYLE_ATTR,
     ...common().slice(1),
   ].join("; ");
