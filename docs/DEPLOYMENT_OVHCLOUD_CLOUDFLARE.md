@@ -644,6 +644,29 @@ script and by running its shell quoting against a stand-in. Do a full rehearsal 
 
 **CI gap, stated plainly:** the CI test job (`.github/workflows/ci.yml`, "Unit + real-database integration tests") does **not** set `PG_DUMP_BIN` / `PG_RESTORE_BIN`, so the backup round-trip integration test is *skipped* there (it needs PostgreSQL **17** client tools; the runner's default client is older). The only automated rehearsal of dump and restore in CI is the Docker smoke job (`deploy/ci-smoke.sh`), which uses the app image's own `pg_dump` 17 - and that job has never run. Until it has, the backup tests run only where someone sets those two variables (as was done for the table above).
 
+**Script-logic rehearsal without Docker (2026-11-25).** `deploy/rehearsal/restore-rehearsal.sh` runs the **real** `restore-db.sh` and `backup-db.sh` (copied unchanged) against a **real PostgreSQL 17** with a small stand-in for the `docker` command
+(`deploy/rehearsal/docker`, which turns `docker compose exec -T db <cmd>` into `<cmd>` run locally and only logs `stop`/`up`). It was run with the dump the browser received from the Admin page: **24 of 24 checks passed** - `--verify` restores into a
+temporary database and removes it; a wrong confirmation changes nothing and stops nothing; `--replace` on a **brand-new empty database** takes no safety backup, restores, restarts and matches the source (6 accounts, 82 migrations); `--replace` on a database with data takes a verified
+safety backup first (readable, no CVV data) and really replaces it; a non-dump file is refused before anything is stopped. **It fails on the pre-fix script** (the `0148a4a` version: scenario 3 fails six checks), so it genuinely covers the replacement-server defect. It is **not** a Docker run:
+nothing about the image, Compose, the container's `postgres` user, networking or `cloudflared` is exercised, and `verify.sh` is a stub. Command (any machine with PostgreSQL 17 client tools and Git Bash/bash):
+
+```bash
+PG_BIN=/usr/lib/postgresql/17/bin PGHOST=127.0.0.1 PGPORT=5432 PGUSER=postgres PGPASSWORD=... PGSSLMODE=require \
+  bash deploy/rehearsal/restore-rehearsal.sh /path/to/a-real-backup.dump
+```
+
+**What still has to be run on a machine with Docker** (nothing here has been, because Docker is not installed on the development machine):
+
+```bash
+docker --version && docker compose version          # Docker Engine 24+ / Compose v2
+docker build --target runner -t compass-tools:verify .   # the image builds from the lockfile; check: no .env inside, pg_dump/pg_restore 17 present
+docker run --rm --entrypoint /usr/lib/postgresql/17/bin/pg_dump compass-tools:verify --version   # PostgreSQL 17.x
+bash deploy/ci-smoke.sh                             # real stack with throw-away secrets: build, db health, migrations, app health, cron refusal, backup + test restore + --replace on an emptied database; removes everything at the end
+curl -sI https://<your-origin>/about | grep -i content-security-policy   # script-src lists sha256- hashes and no 'unsafe-inline' (docs/CSP.md)
+```
+
+Then the replacement-server rehearsal on a **separate** spare VPS (§12.6 steps 1-9) with a real backup and a copy of `.env`. Do not run any of this against production.
+
 The release image's PostgreSQL apt key fingerprint (`B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8`) was re-derived on 2026-11-24 from the file postgresql.org serves (`ACCC4CF8.asc`) and matched. The download response has no `Content-Length` (it is streamed); compare the SHA-256 shown on the page, which the browser-computed value matched.
 
 ## 13. Routine updates from GitHub

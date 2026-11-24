@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# A STAND-IN for the `docker` command, used only by deploy/rehearsal/restore-rehearsal.sh. It understands exactly the calls deploy/common.sh, backup-db.sh and restore-db.sh make:
+#   docker compose exec -T db <cmd...>   -> runs <cmd...> LOCALLY (psql / pg_dump / pg_restore reach the PostgreSQL named by PGHOST/PGPORT/...), with the container's variables set
+#   docker compose ps [-a] -q <svc>      -> a made-up container id
+#   docker compose stop|up|down ...      -> only logged to $SHIM_LOG
+#   docker inspect / image inspect       -> "healthy" / an image name / success
+# It does nothing else, and any other call fails loudly, so the rehearsal can never silently pretend to be Docker.
+set -euo pipefail
+log() { printf '%s\n' "$*" >> "${SHIM_LOG:-/dev/null}"; }
+case "${1:-}" in
+  compose)
+    shift
+    case "${1:-}" in
+      exec)
+        shift
+        [ "${1:-}" = "-T" ] && shift
+        [ "${1:-}" = "db" ] || { echo "docker shim: exec on '${1:-}' is not supported" >&2; exit 90; }
+        shift
+        export POSTGRES_USER="${POSTGRES_USER:?}" POSTGRES_DB="${POSTGRES_DB:?}"
+        exec "$@"
+        ;;
+      ps) shift; while [ "${1:-}" = "-a" ] || [ "${1:-}" = "-q" ] || [ "${1:-}" = "-aq" ]; do shift; done; echo "shim-$1"; ;;
+      config) exit 0 ;;
+      stop|up|down|restart) log "compose $*"; ;;
+      *) echo "docker shim: 'compose ${1:-}' is not supported" >&2; exit 90 ;;
+    esac
+    ;;
+  inspect)
+    shift
+    fmt=""
+    [ "${1:-}" = "--format" ] && { fmt="$2"; shift 2; }
+    case "$fmt" in *Health*) echo healthy ;; *Config.Image*) echo "compass-tools:${APP_VERSION:-rehearsal}" ;; *) ;; esac
+    ;;
+  image) exit 0 ;;
+  *) echo "docker shim: '${1:-}' is not supported" >&2; exit 90 ;;
+esac
