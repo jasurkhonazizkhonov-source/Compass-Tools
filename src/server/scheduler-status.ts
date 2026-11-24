@@ -3,7 +3,7 @@
 // persisted: a restart starts again from "not started" until the poller's first tick, and a second app instance has its own record. It never holds a
 // recipient, a subject or an error message - only counts, times and a pass/fail flag.
 
-export type SweepJob = "sequences" | "tasks" | "campaigns";
+export type SweepJob = "sequences" | "tasks" | "campaigns" | "replies";
 type JobRecord = {
   lastStartedAt: number | null;
   lastFinishedAt: number | null;
@@ -25,7 +25,7 @@ declare global {
 
 const emptyJob = (): JobRecord => ({ lastStartedAt: null, lastFinishedAt: null, lastSuccessAt: null, lastOk: null, lastErrorTag: null, lastProcessed: 0, lastSent: 0, lastFailed: 0, consecutiveFailures: 0 });
 function state(): State {
-  return (globalThis.__schedulerStatus ??= { pollerStartedAt: null, jobs: { sequences: emptyJob(), tasks: emptyJob(), campaigns: emptyJob() } });
+  return (globalThis.__schedulerStatus ??= { pollerStartedAt: null, jobs: { sequences: emptyJob(), tasks: emptyJob(), campaigns: emptyJob(), replies: emptyJob() } });
 }
 
 export function markPollerStarted(now = Date.now()) {

@@ -12,7 +12,7 @@ import { unenrollLead } from "@/server/actions/sequences";
  * server action re-checks authorization, that the enrollment belongs to this lead and that it is still active, so hiding or showing this button
  * is a convenience, not the security boundary. A problem (already stopped, not allowed) keeps the dialog open and is shown in it.
  */
-export function UnenrollSequenceButton({ enrollmentId, leadId, sequenceName }: { enrollmentId: string; leadId: string; sequenceName: string }) {
+export function UnenrollSequenceButton({ enrollmentId, leadId, sequenceName, failed = false }: { enrollmentId: string; leadId: string; sequenceName: string; failed?: boolean }) {
   const [open, setOpen] = useState(false);
   const router = useRouter();
   return (
@@ -26,8 +26,17 @@ export function UnenrollSequenceButton({ enrollmentId, leadId, sequenceName }: {
         title="Unenroll this lead?"
         description={
           <>
-            This lead will stop receiving the automated emails from <strong>{sequenceName}</strong>. Emails that were already sent stay in the history, and the lead can be
-            enrolled again later.
+            {failed ? (
+              <>
+                <strong>{sequenceName}</strong> has stopped for this lead. Unenrolling ends it for good: the remaining steps are cancelled and nothing more can be sent through it. Emails that
+                were already sent stay in the history, and the lead can be enrolled again later.
+              </>
+            ) : (
+              <>
+                This lead will stop receiving the automated emails from <strong>{sequenceName}</strong>. Emails that were already sent stay in the history, and the lead can be enrolled again
+                later.
+              </>
+            )}
           </>
         }
         confirmLabel="Unenroll"

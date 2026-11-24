@@ -18,6 +18,8 @@ import { canBulkDeleteLeadsAndContacts, canBulkEnrollInSequence } from "@/lib/pe
 import { BULK_SELECTION_MAX, type BulkFailure } from "@/lib/bulk-selection";
 import { contactVisibilityWhere, leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
 import { enrollLeads } from "@/server/actions/sequences";
+import { isRecipientMode, type RecipientMode } from "@/server/sequence-recipients";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 import { safeErrorTag } from "@/lib/safe-error-log";
 import { deleteContact } from "@/server/actions/contacts";
 import { deleteLead } from "@/server/actions/leads";
@@ -52,7 +54,8 @@ export type BulkEnrollResult =
     }
   | { ok: false; error: string };
 
-export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "leads" | "contacts"; ids: string[] }): Promise<BulkEnrollResult> {
+export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "leads" | "contacts"; ids: string[]; recipientMode?: RecipientMode }): Promise<BulkEnrollResult> {
+  const recipientMode: RecipientMode = isRecipientMode(input?.recipientMode) ? input.recipientMode : "primary";
   const selection = parseSelection(input?.kind, input?.ids);
   if (!selection) return { ok: false, error: SELECTION_ERROR };
   const sequenceId = typeof input?.sequenceId === "string" ? input.sequenceId.trim() : "";
@@ -60,6 +63,8 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
 
   const actor = await getCurrentAccount();
   if (!actor || !canBulkEnrollInSequence(actor.role, selection.kind)) return { ok: false, error: "You are not authorized to enroll these records in a sequence." };
+  const limit = await checkAccountRateLimit(actor.id, "BULK_ACTION", RATE_LIMITS.BULK_ACTION);
+  if (!limit.allowed) return { ok: false, error: `Too many bulk actions. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
 
   // The sequence must be one THIS user may use (same scoping as the picker and enrollLeads), active, and have a first step.
   const sequence = await prisma.sequence.findFirst({
@@ -123,7 +128,7 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
   const enrolledIds: string[] = [];
   if (toEnroll.length > 0) {
     try {
-      const result = await enrollLeads(sequence.id, toEnroll.map(([, leadId]) => leadId));
+      const result = await enrollLeads(sequence.id, toEnroll.map(([, leadId]) => leadId), undefined, { recipientMode });
       if ("error" in result && result.error) return { ok: false, error: result.error };
       // enrollLeads reports what happened to EVERY lead (an enrollment created in the meantime, no email address, no assigned agent, the
       // sending agent's Gmail not connected, ...), so nothing is guessed from counts: only a lead it really enrolled is counted as enrolled,
@@ -136,7 +141,9 @@ export async function bulkEnrollInSequence(input: { sequenceId: string; kind: "l
           const reason =
             outcome === "missingEmail"
               ? "No email address on file - add one to the contact first"
-              : outcome === "noAssignedAgent"
+              : outcome === "addressSuppressed"
+                ? "Its email address has unsubscribed or is suppressed - update the contact's email first"
+                : outcome === "noAssignedAgent"
                 ? "No agent is assigned to this lead to send from"
                 : outcome === "gmailUnavailable"
                   ? (result.gmailMessage ?? "Gmail is not connected for the agent who sends this lead's emails")
@@ -181,6 +188,8 @@ export async function bulkDeleteRecords(input: { kind: "leads" | "contacts"; ids
     });
     return { ok: false, error: "Only an Administrator can delete several records at once." };
   }
+  const limit = await checkAccountRateLimit(actor.id, "BULK_ACTION", RATE_LIMITS.BULK_ACTION);
+  if (!limit.allowed) return { ok: false, error: `Too many bulk actions. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
 
   // Names for the result list, read before anything is deleted and limited to records this Admin can see.
   const labels = new Map<string, string>();

@@ -50,7 +50,7 @@ export async function GET(req: Request) {
 
   await prisma.sequenceEnrollment.updateMany({
     where: { leadId: enrollment.leadId, status: "ACTIVE" },
-    data: { status: "UNSUBSCRIBED" },
+    data: { status: "UNSUBSCRIBED", nextSendAt: null, waitReason: null, stopReason: "CUSTOMER_UNSUBSCRIBED", stoppedAt: new Date() },
   });
 
   return unsubscribeResponse({ kind: "done", variant: "sequence" });

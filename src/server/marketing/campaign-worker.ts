@@ -23,20 +23,17 @@ import { buildMarketingCampaignEmail } from "@/server/email/templates";
 import { getCompanyForAccountId } from "@/server/queries/company";
 import { resolveBaseUrl } from "@/lib/company-config";
 import { personalizeHtml, personalizeText } from "@/lib/campaign-blocks";
+import { countSequenceSends, dailyLimit, intEnv, senderLockKey } from "@/server/sender-quota";
 
 export const MAX_ATTEMPTS = 3;
 export const AUDIENCE_CHUNK = 1_000;
 const BACKOFF_MINUTES = [5, 30, 120];
 const RATE_LIMIT_BACKOFF_MS = 60 * 60 * 1000;
 
-function intEnv(name: string, fallback: number, min = 1, max = 100_000): number {
-  const v = Number(process.env[name]);
-  return Number.isFinite(v) && v >= min ? Math.min(Math.trunc(v), max) : fallback;
-}
 /** Sends per worker tick (one tick per minute). Default 20/min - comfortably below Gmail's burst limits. */
 export const sendsPerMinute = () => intEnv("CAMPAIGN_SENDS_PER_MINUTE", 20, 1, 600);
-/** Rolling-24h cap per sending account. Default 400: below the ~500/day a standard Gmail account is allowed. Raise it only for an account whose provider limit is higher. */
-export const dailyLimit = () => intEnv("CAMPAIGN_DAILY_LIMIT", 400, 1, 100_000);
+/** Rolling-24h cap per sending account (shared with the mailbox's sequence emails, see server/sender-quota.ts). Default 400: below the ~500/day a standard Gmail account is allowed. */
+export { dailyLimit };
 
 export const isRateLimitError = (message: string) => /rate.?limit|quota|too many|429|daily (user )?sending|userRateLimitExceeded/i.test(message);
 
@@ -208,15 +205,17 @@ export async function claimWithinQuota(senderId: string, row: { id: string; atte
     async (tx) => {
       // The lock function returns `void`, a column type the Prisma PostgreSQL adapter cannot deserialize ("Failed to deserialize column of type 'void'"), so the
       // result is cast to text: the lock is taken exactly as before, held until this transaction ends, and the answer is a type the adapter can read.
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${`campaign-send-quota:${senderId}`}))::text AS locked`;
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${senderLockKey(senderId)}))::text AS locked`;
       const usedLastMinute = await tx.marketingCampaignSend.count({
         where: { lastAttemptAt: { gte: new Date(now.getTime() - 55_000) }, campaign: { createdById: senderId } },
       });
       if (usedLastMinute >= sendsPerMinute()) return "quota";
       const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const usedLast24h = await tx.marketingCampaignSend.count({
-        where: { OR: [{ status: "SENT", sentAt: { gte: dayAgo } }, { status: "UNKNOWN", lastAttemptAt: { gte: dayAgo } }], campaign: { createdById: senderId } },
-      });
+      // The mailbox is ONE Google allowance: the sequence emails it sent in the same window count too.
+      const usedLast24h =
+        (await tx.marketingCampaignSend.count({
+          where: { OR: [{ status: "SENT", sentAt: { gte: dayAgo } }, { status: "UNKNOWN", lastAttemptAt: { gte: dayAgo } }], campaign: { createdById: senderId } },
+        })) + (await countSequenceSends(tx, senderId, dayAgo));
       if (usedLast24h >= dailyLimit()) return "quota";
       const claimed = await tx.marketingCampaignSend.updateMany({
         where: { id: row.id, status: "PENDING", attempts: row.attempts },

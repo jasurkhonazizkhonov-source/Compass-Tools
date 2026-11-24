@@ -80,7 +80,13 @@ describe("subscribers: one bulk import entry point, no separate Import Contacts"
 
 describe("sequences: enrollment status and Unenroll stay in the Sequences areas", () => {
   it("the Unenroll button and the active-enrollment card are rendered only from the lead's Sequences panel and the sequence's enrollments table", () => {
-    expect(files.filter((f) => /<UnenrollSequenceButton\b/.test(f.text)).map((f) => f.rel).sort()).toEqual(["src/components/leads/active-sequences.tsx", "src/components/sequences/sequence-enrollments-table.tsx"]);
+    // The three places are all Sequences areas: an ACTIVE enrollment's card on the lead, an ACTIVE row of the sequence's table, and the shared recovery actions, which
+    // give a FAILED enrollment its Retry and its ONE Unenroll (so a failed enrollment never shows two).
+    expect(files.filter((f) => /<UnenrollSequenceButton\b/.test(f.text)).map((f) => f.rel).sort()).toEqual([
+      "src/components/leads/active-sequences.tsx",
+      "src/components/sequences/enrollment-recovery-actions.tsx",
+      "src/components/sequences/sequence-enrollments-table.tsx",
+    ]);
     expect(files.filter((f) => /<ActiveSequenceCard\b/.test(f.text)).map((f) => f.rel).sort()).toEqual(["src/components/leads/lead-sequences-panel.tsx"]);
     expect(files.filter((f) => /<LeadSequencesPanel\b/.test(f.text)).map((f) => f.rel)).toEqual(["src/app/(crm)/leads/[id]/page.tsx"]);
   });

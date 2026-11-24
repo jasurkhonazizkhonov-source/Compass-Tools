@@ -252,6 +252,14 @@ model GmailConnection {
   // persisting a second, shorter-lived secret for negligible benefit.
   encryptedRefreshToken String
 
+  // Reply detection (read-only mailbox metadata): the newest Gmail history id already examined, when the last check finished and the last failure category.
+  // Null cursor = not examined yet. Never holds a token, a message or an address.
+  historyId        String?
+  inboundCheckedAt DateTime?
+  inboundError     String?
+  // Gmail told us to slow down: nothing is sent from this mailbox before this time. Cleared by time, not by a person.
+  sendBlockedUntil DateTime?
+
   status     GmailConnectionStatus @default(CONNECTED)
   connectedAt DateTime             @default(now())
   revokedAt   DateTime?
@@ -1283,6 +1291,9 @@ enum EnrollmentStatus {
   COMPLETED
   UNSUBSCRIBED
   FAILED
+  // The customer answered an email sent by this enrollment (found by the inbound reply sync, src/server/sequence-reply-sync.ts): the remaining steps were
+  // cancelled. The reply itself is recorded in SequenceReply.
+  REPLIED
 }
 
 model SequenceEnrollment {
@@ -1308,12 +1319,24 @@ model SequenceEnrollment {
   // still correct for a contact with only ever one email on file.
   recipientEmail  String?
 
+  // Why a non-ACTIVE enrollment stopped, when and who: written in the SAME statement that changes the status. REPLIED | UNENROLLED | CUSTOMER_UNSUBSCRIBED.
+  // Null on rows that stopped before this existed (they keep their status and label).
+  stopReason  String?
+  stoppedAt   DateTime?
+  stoppedById String?
+  // Why an ACTIVE enrollment whose time has come has NOT been sent yet: CAPACITY (the sender's sending allowance is used up) or PROVIDER_BACKOFF (Gmail asked
+  // us to slow down). Cleared when the step is sent. Display only: the sender re-evaluates the real quota every pass.
+  waitReason  String?
+
   stepLogs SequenceStepLog[]
+  replies  SequenceReply[]
 
   @@index([sequenceId])
   @@index([leadId])
   @@index([status])
   @@index([nextSendAt])
+  // The sender picks due work by (status, due time, step), first steps before later ones.
+  @@index([status, currentStepIdx, nextSendAt])
 }
 
 enum StepLogStatus {
@@ -1332,6 +1355,39 @@ model SequenceStepLog {
   error        String?
   createdAt    DateTime            @default(now())
 
+  // Filled when the email is sent: which account sent it (counted against that sender's sending allowance), the address(es) it went to and Gmail's own ids, so
+  // a reply can be matched to the exact email it answers. Null on older rows.
+  senderAccountId String?
+  toEmail         String?
+  gmailMessageId  String?
+  gmailThreadId   String?
+  // When the reply sync last looked at this email's conversation (null = never). The safety sweep always re-checks the least recently checked first, so a reply
+  // is found even if Gmail's change list was missed (outage, expired history position, a second instance).
+  repliesCheckedAt DateTime?
+
+  @@index([enrollmentId])
+  @@index([gmailThreadId])
+  @@index([senderAccountId, createdAt])
+  @@index([senderAccountId, repliesCheckedAt])
+}
+
+// One customer reply found in a mailbox, matched to the sequence email it answers. The unique key (connection, Gmail message id) makes finding the same reply
+// twice (a repeated notification, an overlapping sync, a second server instance) harmless: the second insert changes nothing.
+model SequenceReply {
+  id                String             @id @default(cuid())
+  enrollmentId      String
+  enrollment        SequenceEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  stepLogId         String?
+  gmailConnectionId String
+  gmailMessageId    String
+  gmailThreadId     String
+  fromEmail         String
+  receivedAt        DateTime
+  // true when this reply is what stopped the enrollment; false when it arrived after the enrollment had already ended for another reason.
+  stoppedEnrollment Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+
+  @@unique([gmailConnectionId, gmailMessageId])
   @@index([enrollmentId])
 }
 

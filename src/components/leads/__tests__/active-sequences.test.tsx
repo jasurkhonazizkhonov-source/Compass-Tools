@@ -61,11 +61,37 @@ describe("Sequences tab: active enrollment", () => {
     expect(within(card).getByRole("button", { name: "Unenroll from 5-Step Automated Email Sequence for New Leads" })).toBeInTheDocument();
   });
 
-  it("several active sequences are listed separately, each with its own Unenroll; failed and unsubscribed ones are history, not active", () => {
+  it("several active sequences are listed separately, each with its own Unenroll; failed and unenrolled ones are history, not active - and only the FAILED one offers an Unenroll there", () => {
     renderPanel([enr({ id: "a" }), enr({ id: "b", currentStepIdx: 0 }), enr({ id: "c", status: "FAILED" }), enr({ id: "d", status: "UNSUBSCRIBED" })]);
     expect(screen.getAllByTestId("active-sequence")).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: /^Unenroll from/ })).toHaveLength(2);
-    expect(within(screen.getByRole("region", { name: "Sequence history" })).getAllByTestId("sequence-history-item")).toHaveLength(2);
+    const active = screen.getByRole("region", { name: "Active sequences" });
+    expect(within(active).getAllByRole("button", { name: /^Unenroll from/ })).toHaveLength(2);
+    const history = screen.getByRole("region", { name: "Sequence history" });
+    const items = within(history).getAllByTestId("sequence-history-item");
+    expect(items).toHaveLength(2);
+    // exactly ONE Unenroll in all of History, on the failed enrollment, next to its Retry (never two Unenroll buttons for one enrollment)
+    expect(within(history).getAllByRole("button", { name: /^Unenroll from/ })).toHaveLength(1);
+    const failed = items.find((i) => i.textContent?.includes("Sequence c"))!;
+    expect(within(failed).getByRole("button", { name: "Unenroll from Sequence c" })).toBeInTheDocument();
+    expect(within(failed).getByRole("button", { name: "Retry Sequence c now" })).toBeInTheDocument();
+    expect(within(items.find((i) => i.textContent?.includes("Sequence d"))!).queryByRole("button", { name: /Unenroll/ })).toBeNull();
+  });
+
+  it("a REPLIED enrollment is history, says the customer replied and the rest was cancelled automatically, and offers nothing to do", () => {
+    renderPanel([enr({ id: "r", status: "REPLIED", nextSendAt: null, stopReason: "REPLIED", stoppedAt: new Date("2026-11-20T10:30:00") })]);
+    expect(screen.queryByTestId("active-sequence")).toBeNull();
+    const item = screen.getByTestId("sequence-history-item");
+    expect(item.textContent).toMatch(/Replied — Automatically stopped/);
+    expect(item.textContent).toMatch(/The customer replied Nov 20, 2026 at 10:30 AM - the remaining emails were cancelled automatically/);
+    expect(within(item).queryByRole("button")).toBeNull();
+  });
+
+  it("an enrollment that is due but waiting for the sender's Gmail capacity says so instead of showing a time that has passed", () => {
+    renderPanel([enr({ id: "w", currentStepIdx: 0, nextSendAt: new Date(Date.now() - 600_000), waitReason: "CAPACITY" })]);
+    const card = screen.getByTestId("active-sequence");
+    expect(card).toHaveAttribute("data-state", "waiting");
+    expect(card.textContent).toMatch(/Scheduled — Waiting for available Gmail sending capacity/);
+    expect(screen.getByTestId("waiting-note").textContent).toMatch(/goes out automatically when capacity frees up/);
   });
 
   it("the step never runs past the last step, and a missing next send is simply not shown", () => {
@@ -124,7 +150,7 @@ describe("Sequences tab", () => {
     { id: "seq-c", name: "Sequence c", description: null, stepCount: 5 },
   ];
 
-  it("separates Active from History, labels a failed one as stopped (never 'Step 2 of 5 · Next ...'), and gives history no Unenroll", () => {
+  it("separates Active from History, labels a failed one as stopped (never 'Step 2 of 5 · Next ...'); history offers Unenroll ONLY for the failed one", () => {
     render(
       <LeadSequencesPanel
         leadId="lead-1"
@@ -141,9 +167,31 @@ describe("Sequences tab", () => {
     expect(failed.textContent).toMatch(/Failed/);
     expect(failed.textContent).toMatch(/Stopped at step 1 of 5 - no further emails will be sent/);
     expect(failed.textContent).not.toMatch(/Next/);
-    expect(items.find((i) => i.textContent?.includes("Sequence c"))!.textContent).toMatch(/Unsubscribed at step 2 of 5/);
+    // an enrollment ended by staff (or an older row with no recorded reason) reads Unenrolled; only a customer's own unsubscribe reads Unsubscribed
+    expect(items.find((i) => i.textContent?.includes("Sequence c"))!.textContent).toMatch(/Unenrolled at step 2 of 5/);
     expect(items.find((i) => i.textContent?.includes("Sequence d"))!.textContent).toMatch(/Completed Oct 2, 2026/);
-    expect(within(history).queryByRole("button", { name: /Unenroll/ })).toBeNull();
+    expect(within(history).getAllByRole("button", { name: /^Unenroll from/ })).toHaveLength(1);
+    expect(within(failed).getByRole("button", { name: "Unenroll from Sequence b" })).toBeInTheDocument();
+  });
+
+  it("a customer's own unsubscribe is worded as the customer's doing", () => {
+    renderPanel([enr({ id: "u", status: "UNSUBSCRIBED", nextSendAt: null, stopReason: "CUSTOMER_UNSUBSCRIBED" })]);
+    const item = screen.getByTestId("sequence-history-item");
+    expect(item.textContent).toMatch(/The customer unsubscribed at step 2 of 5/);
+    expect(item.textContent).toMatch(/Unsubscribed/);
+  });
+
+  it("Unenroll on a FAILED enrollment asks first, says it ends for good, then calls the server action for that enrollment and refreshes", async () => {
+    const user = userEvent.setup();
+    renderPanel([enr({ id: "f", status: "FAILED", nextSendAt: null, currentStepIdx: 2 })]);
+    await user.click(screen.getByRole("button", { name: "Unenroll from Sequence f" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).toMatch(/has stopped for this lead\. Unenrolling ends it for good/);
+    expect(unenroll).not.toHaveBeenCalled();
+    await user.click(within(dialog).getByRole("button", { name: "Unenroll" }));
+    await waitFor(() => expect(unenroll).toHaveBeenCalledWith("f", "lead-1"));
+    expect(toastSuccess).toHaveBeenCalledWith("Lead unenrolled");
+    expect(refresh).toHaveBeenCalled();
   });
 
   it("with no enrollment at all it shows the empty state, and a failed enrollment does not look like an active one", () => {

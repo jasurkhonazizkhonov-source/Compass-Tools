@@ -117,11 +117,16 @@ const fakePrismaClient: any = {
   $queryRaw: vi.fn(async () => []),
   sequenceEnrollment: {
     findMany: vi.fn(async () => []),
+    // The sender serves each sequence with due work in turn: the distinct sequences among the rows the CURRENT findMany fake returns for the same filter.
+    groupBy: vi.fn(async ({ where }: { where: Record<string, unknown> }) => {
+      const rows = (await fakePrismaClient.sequenceEnrollment.findMany({ where })) as Array<{ sequenceId?: string }>;
+      return [...new Set(rows.map((r) => r.sequenceId ?? "seq-1"))].map((sequenceId) => ({ sequenceId, _min: { nextSendAt: null } }));
+    }),
     createMany: vi.fn(async () => ({ count: 0 })),
     findUniqueOrThrow: vi.fn(async () => { throw new Error("not found"); }),
     findUnique: vi.fn(async ({ where: { id } }: { where: { id: string } }) => {
       const row = enrollments.find((e) => e.id === id);
-      return row ? { id: row.id, sequenceId: row.sequenceId ?? "seq-1", leadId: row.leadId, sequence: { name: "Test Sequence" } } : null;
+      return row ? { id: row.id, sequenceId: row.sequenceId ?? "seq-1", leadId: row.leadId, status: row.status, currentStepIdx: row.currentStepIdx, sequence: { name: "Test Sequence" } } : null;
     }),
     // Pass 19 — extended for processDueSequenceSteps' concurrency-claim
     // tests below. `enrollments` (a plain array, mutated in place) backs
@@ -129,10 +134,11 @@ const fakePrismaClient: any = {
     // behave like the real Postgres row they're standing in for: a
     // successful claim actually changes what a SECOND findMany-then-claim
     // attempt would see.
-    updateMany: vi.fn(async ({ where, data }: { where: { id: string; status?: string; nextSendAt?: Date | null; currentStepIdx?: number }; data: Record<string, unknown> }) => {
+    updateMany: vi.fn(async ({ where, data }: { where: { id: string; status?: string | { in: string[] }; nextSendAt?: Date | null; currentStepIdx?: number }; data: Record<string, unknown> }) => {
       const row = enrollments.find((e) => e.id === where.id);
       if (!row) return { count: 0 };
-      if (where.status !== undefined && row.status !== where.status) return { count: 0 };
+      // `status` is one value, or `{ in: [...] }` (unenroll ends an ACTIVE or a FAILED enrollment).
+      if (where.status !== undefined && !(typeof where.status === "string" ? row.status === where.status : where.status.in.includes(row.status))) return { count: 0 };
       // The worker's post-send writes are conditional on the step it read (a stale worker must not overwrite a newer state), exactly as the real WHERE clause is.
       if (where.currentStepIdx !== undefined && row.currentStepIdx !== where.currentStepIdx) return { count: 0 };
       if (where.nextSendAt !== undefined && row.nextSendAt?.getTime() !== where.nextSendAt?.getTime()) return { count: 0 };
@@ -164,10 +170,16 @@ const fakePrismaClient: any = {
       Object.assign(row, data);
       return row;
     }),
-    count: vi.fn(async ({ where }: { where: { enrollmentId: string; stepId: string; status: string } }) =>
-      stepLogs.filter((l) => l.enrollmentId === where.enrollmentId && l.stepId === where.stepId && l.status === where.status).length
+    count: vi.fn(async ({ where }: { where: { enrollmentId?: string; stepId?: string; status?: string } }) =>
+      // The sender's capacity reads (by sending mailbox, server/sender-quota.ts) are not what these tests are about: nothing has been sent from the mailbox yet.
+      where.enrollmentId === undefined ? 0 : stepLogs.filter((l) => l.enrollmentId === where.enrollmentId && l.stepId === where.stepId && l.status === where.status).length
     ),
   },
+  marketingCampaignSend: { count: vi.fn(async () => 0) },
+  // The do-not-email list (unsubscribed / suppressed marketing subscribers): empty unless a test puts someone on it.
+  subscriber: { findMany: vi.fn(async () => []) },
+  auditLog: { create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => { audits.push(data); return data; }) },
+  gmailConnection: { findUnique: vi.fn(async () => null) },
   emailLog: {
     create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
       emailLogs.push(data);
@@ -209,6 +221,8 @@ let sendEmailCalls: Array<{ to: string; html: string; subject: string; replyTo?:
 // Pass 35 — fixtures for enrollLeads' batched-activity-log test.
 let leads: Map<string, { contactEmail: string | null; noAgent?: boolean; agentId?: string; agentCompanyId?: string }>;
 let activities: Array<Record<string, unknown>>;
+// The append-only audit trail (who ended which enrollment).
+let audits: Array<Record<string, unknown>>;
 
 let gmailReadiness: { ready: true; verified: boolean } | { ready: false; code: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "MISSING_PERMISSION" | "TEMPORARILY_UNAVAILABLE"; error: string };
 const gmailChecks: string[] = [];
@@ -249,6 +263,7 @@ beforeEach(() => {
   sendEmailCalls = [];
   leads = new Map();
   activities = [];
+  audits = [];
   enrolledRows = [];
   gmailChecks.length = 0;
   gmailReadiness = { ready: true, verified: true };
@@ -299,6 +314,7 @@ function seedDueEnrollment(overrides: Partial<FakeEnrollment> = {}): FakeEnrollm
       .filter((row) => row.status === where.status && row.nextSendAt != null && row.nextSendAt.getTime() <= where.nextSendAt.lte.getTime())
       // a sequence with no explicit flag in a fixture counts as active, as every pre-existing fixture assumes
       .filter((row) => where.sequence?.isActive === undefined || (row.sequence.isActive ?? true) === where.sequence.isActive)
+      .filter((row) => (where as { sequenceId?: string }).sequenceId === undefined || (row.sequenceId ?? "seq-1") === (where as { sequenceId?: string }).sequenceId)
       .map((row) => ({ ...row }))
   );
   return e;
@@ -512,7 +528,7 @@ describe("enrollLeads — batched activity logging (Pass 35)", () => {
     const result = await enrollLeads("seq-1", ["lead-1", "lead-2", "lead-3"]);
 
     expect(result).toEqual({
-      enrolled: 3, skipped: 0, alreadyActive: 0, missingEmail: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0,
+      enrolled: 3, skipped: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0,
       byLead: { "lead-1": "enrolled", "lead-2": "enrolled", "lead-3": "enrolled" },
     });
     // Exactly one createMany call (not one per lead)...
@@ -535,7 +551,7 @@ describe("enrollLeads — batched activity logging (Pass 35)", () => {
     const result = await enrollLeads("seq-1", ["lead-not-visible"]);
 
     expect(result).toEqual({
-      enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 1,
+      enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 1,
       byLead: { "lead-not-visible": "inaccessible" },
     });
     expect(fakePrismaClient.activity.createMany).not.toHaveBeenCalled();
@@ -694,7 +710,8 @@ describe("enrollLeads — duplicates and races", () => {
     const { enrollLeads } = await import("../sequences");
     await enrollLeads("seq-1", ["lead-c", "lead-a", "lead-b"]);
     expect(fakePrismaClient.$transaction).toHaveBeenCalledTimes(1);
-    const lockArgs = (fakePrismaClient.$queryRaw as ReturnType<typeof vi.fn>).mock.calls.map((c) => c.slice(1)[0]);
+    // Only the advisory-lock statements (the per-account rate-limit counter also goes through $queryRaw and is not what this is about).
+    const lockArgs = (fakePrismaClient.$queryRaw as ReturnType<typeof vi.fn>).mock.calls.filter((c) => (c[0] as string[]).join("?").includes("pg_advisory_xact_lock")).map((c) => c.slice(1)[0]);
     expect(lockArgs).toEqual(["seq-1:lead-a", "seq-1:lead-b", "seq-1:lead-c"]);
   });
 
@@ -702,7 +719,7 @@ describe("enrollLeads — duplicates and races", () => {
     seedEnrollContext(["lead-a", "lead-b"]);
     const { enrollLeads } = await import("../sequences");
     await enrollLeads("seq-1", ["lead-a", "lead-b"]);
-    const statements = (fakePrismaClient.$queryRaw as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as string[]).join("?"));
+    const statements = (fakePrismaClient.$queryRaw as ReturnType<typeof vi.fn>).mock.calls.map((c) => (c[0] as string[]).join("?")).filter((sql) => sql.includes("pg_advisory_xact_lock"));
     expect(statements.length).toBe(2);
     for (const sql of statements) {
       expect(sql).toMatch(/SELECT\s+pg_advisory_xact_lock\(hashtextextended\(\?,\s*0\)\)::text\s+AS\s+locked/);
@@ -820,17 +837,41 @@ describe("unenrollment and the sending worker", () => {
     expect(logActivity).toHaveBeenCalledWith(expect.objectContaining({ leadId: "lead-1", actorId: "admin-1", type: "SEQUENCE_UNENROLLED" }));
   });
 
-  it("only an ACTIVE enrollment can be unenrolled: a COMPLETED/FAILED one is left exactly as it is", async () => {
+  it("a COMPLETED, already-unenrolled or REPLIED enrollment is left exactly as it is; only ACTIVE and FAILED ones can be unenrolled", async () => {
     seedSequence("seq-1");
     currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
     accounts.set("admin-1", currentActor);
     const done = seedDueEnrollment({ sequenceId: "seq-1", status: "COMPLETED", nextSendAt: null });
-    const failed = seedDueEnrollment({ sequenceId: "seq-1", status: "FAILED", nextSendAt: null });
+    const gone = seedDueEnrollment({ sequenceId: "seq-1", status: "UNSUBSCRIBED", nextSendAt: null });
+    const replied = seedDueEnrollment({ sequenceId: "seq-1", status: "REPLIED" as never, nextSendAt: null });
     const { unenrollLead } = await import("../sequences");
     expect(await unenrollLead(done.id)).toMatchObject({ ok: false });
-    expect(await unenrollLead(failed.id)).toMatchObject({ ok: false });
+    expect(await unenrollLead(gone.id)).toMatchObject({ ok: false });
+    expect(await unenrollLead(replied.id)).toMatchObject({ ok: false });
     expect(done.status).toBe("COMPLETED");
-    expect(failed.status).toBe("FAILED");
+    expect(gone.status).toBe("UNSUBSCRIBED");
+    expect(replied.status).toBe("REPLIED");
+    expect(audits).toEqual([]); // nothing changed, so nothing is audited
+  });
+
+  it("a FAILED enrollment (Gmail expired, retries used up) can be unenrolled: it ends for good, the reason, who and when are stored, and the action is audited", async () => {
+    seedSequence("seq-1");
+    currentActor = { id: "admin-1", role: "ADMIN", companyId: "company-1" };
+    accounts.set("admin-1", currentActor);
+    const failed = seedDueEnrollment({ sequenceId: "seq-1", status: "FAILED", currentStepIdx: 2, nextSendAt: null });
+    const { unenrollLead } = await import("../sequences");
+    const before = Date.now();
+    expect(await unenrollLead(failed.id, failed.leadId)).toEqual({ ok: true });
+    expect(failed.status).toBe("UNSUBSCRIBED");
+    expect(failed.nextSendAt).toBeNull();
+    expect(failed).toMatchObject({ stopReason: "UNENROLLED", stoppedById: "admin-1" });
+    expect((failed as unknown as { stoppedAt: Date }).stoppedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(audits).toEqual([
+      expect.objectContaining({ actorId: "admin-1", action: "SEQUENCE_ENROLLMENT_UNENROLLED", entityType: "SequenceEnrollment", entityId: failed.id, metadata: expect.objectContaining({ previousStatus: "FAILED", atStep: 3 }) }),
+    ]);
+    // Ended for good: the scheduler never picks it up, and a second unenroll changes nothing.
+    expect(await unenrollLead(failed.id, failed.leadId)).toMatchObject({ ok: false });
+    expect(audits).toHaveLength(1);
   });
 
   it("an enrollment that does not belong to the lead being viewed is refused with the generic not-found answer (no IDOR)", async () => {
@@ -1030,6 +1071,7 @@ function installFullEnrollmentFakes() {
         .filter((r) => r.status === where.status && r.nextSendAt != null && r.nextSendAt.getTime() <= lte)
         .filter((r) => where.sequence?.isActive === undefined || (r.sequence.isActive ?? true) === where.sequence.isActive)
         .filter((r) => !where.id || where.id.in.includes(r.id))
+        .filter((r) => where.sequenceId === undefined || (r.sequenceId ?? "seq-1") === where.sequenceId)
         .slice(0, take ?? Infinity)
         .map((r) => ({ ...r }));
     }

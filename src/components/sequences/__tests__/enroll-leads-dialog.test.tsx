@@ -60,11 +60,11 @@ describe("By status — selecting", () => {
   it("one status: asks the server for the live count of that status and shows the breakdown", async () => {
     const { user, dialog } = await openStatusMode();
     await user.click(within(dialog).getByRole("checkbox", { name: "Booked" }));
-    await waitFor(() => expect(preview).toHaveBeenCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"] }));
+    await waitFor(() => expect(preview).toHaveBeenCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"], recipientMode: "primary" }));
     const box = await within(dialog).findByTestId("status-preview");
     await waitFor(() => expect(box.textContent).toMatch(/5 leads currently match; 3 can be enrolled in Welcome Series/));
     expect(box.textContent).toMatch(/1 lead already actively enrolled/);
-    expect(box.textContent).toMatch(/1 lead without an email address/);
+    expect(box.textContent).toMatch(/1 lead without a valid email address/);
   });
 
   it("several statuses are sent together; Clear selection empties them and the count goes away", async () => {
@@ -72,7 +72,7 @@ describe("By status — selecting", () => {
     await user.click(within(dialog).getByRole("checkbox", { name: "Attempting to Contact" }));
     await user.click(within(dialog).getByRole("checkbox", { name: "Booked" }));
     await user.click(within(dialog).getByRole("checkbox", { name: "Reached" }));
-    await waitFor(() => expect(preview).toHaveBeenLastCalledWith({ sequenceId: "seq-1", statuses: ["ATTEMPTING_TO_CONTACT", "BOOKED", "REACHED"] }));
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith({ sequenceId: "seq-1", statuses: ["ATTEMPTING_TO_CONTACT", "BOOKED", "REACHED"], recipientMode: "primary" }));
     await user.click(within(dialog).getByRole("button", { name: "Clear selection" }));
     for (const b of within(dialog).getAllByRole("checkbox")) expect(b).not.toBeChecked();
     expect(within(dialog).getByText(/Select at least one status/)).toBeInTheDocument();
@@ -104,13 +104,13 @@ describe("By status — confirming and the result", () => {
     const confirm = within(dialog).getByRole("alertdialog", { name: "Confirm enrollment" });
     expect(confirm.textContent).toMatch(/Enroll 3 leads in Welcome Series/);
     await user.click(within(confirm).getByRole("button", { name: "Confirm enrollment" }));
-    await waitFor(() => expect(enrollByStatus).toHaveBeenCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"], previewMatched: 5 }));
+    await waitFor(() => expect(enrollByStatus).toHaveBeenCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"], previewMatched: 5, recipientMode: "primary" }));
     const out = await within(dialog).findByTestId("status-outcome");
     expect(out.textContent).toMatch(/2 leads enrolled in Welcome Series out of 5 matching leads/);
     expect(out.textContent).toMatch(/Successfully enrolled: 2/);
     expect(out.textContent).toMatch(/Already actively enrolled: 1/);
     expect(out.textContent).toMatch(/Not enrolled because Gmail is unavailable: 1 - Gmail is not connected/);
-    expect(out.textContent).toMatch(/Missing email address: 1/);
+    expect(out.textContent).toMatch(/Missing or invalid email address: 1/);
     expect(out.textContent).toMatch(/Status changed since the preview \(2 fewer or more leads matched than previewed\)/);
     expect(refresh).toHaveBeenCalled();
   });
@@ -145,8 +145,8 @@ describe("Choose leads — the existing mode", () => {
     await user.click(within(dialog).getByText("Ada Lovelace"));
     await user.click(within(dialog).getByText("Bo Peep"));
     await user.click(within(dialog).getByRole("button", { name: "Enroll 2" }));
-    await waitFor(() => expect(enrollLeads).toHaveBeenCalledWith("seq-1", ["lead-1", "lead-2"]));
-    expect(toastSuccess).toHaveBeenCalledWith("Enrolled 1 lead (1 already enrolled, 1 without an email address)");
+    await waitFor(() => expect(enrollLeads).toHaveBeenCalledWith("seq-1", ["lead-1", "lead-2"], undefined, { recipientMode: "primary" }));
+    expect(toastSuccess).toHaveBeenCalledWith("Enrolled 1 lead (1 already enrolled, 1 without a valid email address)");
   });
 
   it("when Gmail blocks everything the toast shows the Gmail error and the dialog stays open", async () => {
@@ -159,5 +159,41 @@ describe("Choose leads — the existing mode", () => {
     await user.click(within(dialog).getByRole("button", { name: "Enroll 1" }));
     await waitFor(() => expect(toastError).toHaveBeenCalledWith("Gmail is not connected. Your Gmail is not connected."));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+});
+
+describe("Which email addresses the sequence goes to", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    preview.mockResolvedValue(previewOk());
+  });
+
+  it("choosing leads: defaults to the primary email, explains the consequence of \"all\", and sends the choice with the enrollment", async () => {
+    enrollLeads.mockResolvedValue({ enrolled: 2, skipped: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {} });
+    const user = userEvent.setup();
+    render(<EnrollLeadsDialog sequenceId="seq-1" leads={LEADS} />);
+    await user.click(screen.getByRole("button", { name: /Enroll Leads/ }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("radio", { name: /Primary email only/ })).toBeChecked();
+    expect(dialog.textContent).toMatch(/receives the same sequence at each of them/);
+    await user.click(within(dialog).getByRole("radio", { name: /All available email addresses/ }));
+    await user.click(within(dialog).getByText("Ada Lovelace"));
+    await user.click(within(dialog).getByRole("button", { name: "Enroll 1" }));
+    await waitFor(() => expect(enrollLeads).toHaveBeenCalledWith("seq-1", ["lead-1"], undefined, { recipientMode: "all" }));
+  });
+
+  it("by status: the choice changes the live count, and is sent with the confirmed enrollment; unsubscribed or suppressed addresses are listed as their own reason", async () => {
+    preview.mockResolvedValue(previewOk({ addressSuppressed: 2 }));
+    enrollByStatus.mockResolvedValue({ ok: true, sequenceName: "Welcome Series", matched: 5, enrolled: 3, alreadyActive: 1, missingEmail: 0, addressSuppressed: 1, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, failedOther: 0, changedSincePreview: 0 });
+    const { user, dialog } = await openStatusMode();
+    await user.click(within(dialog).getByLabelText(LEAD_STATUS_META.BOOKED.label));
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"], recipientMode: "primary" }));
+    expect(await within(dialog).findByText(/2 leads with an unsubscribed or suppressed email/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole("radio", { name: /All available email addresses/ }));
+    await waitFor(() => expect(preview).toHaveBeenLastCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"], recipientMode: "all" }));
+    await user.click(within(dialog).getByRole("button", { name: /Review/ }));
+    await user.click(within(dialog).getByRole("button", { name: "Confirm enrollment" }));
+    await waitFor(() => expect(enrollByStatus).toHaveBeenCalledWith({ sequenceId: "seq-1", statuses: ["BOOKED"], previewMatched: 5, recipientMode: "all" }));
+    expect((await within(dialog).findByTestId("status-outcome")).textContent).toMatch(/Email unsubscribed or suppressed: 1/);
   });
 });

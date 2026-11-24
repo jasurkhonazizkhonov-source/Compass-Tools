@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { leadVisibilityWhere, type Viewer } from "@/server/visibility";
 import { checkGmailSendReadiness, type GmailReadiness, type GmailReadinessFailure } from "@/server/email/gmail-send";
+import { candidateAddresses, chooseRecipients, doNotEmail, isValidAddress, recipientToStore, type RecipientMode } from "@/server/sequence-recipients";
 
 // The ONE place that decides whether a lead can be enrolled in a sequence. enrollLeads (the enrollment itself), bulkEnrollInSequence (through
 // enrollLeads) and the Sequences section's status-based preview/enrollment all call classifyLeadsForEnrollment, so the counts a person is shown
@@ -8,10 +9,11 @@ import { checkGmailSendReadiness, type GmailReadiness, type GmailReadinessFailur
 // and cannot be called from the browser.
 //
 // A lead is eligible only when emails can actually be sent for it: the caller can see it, nothing ACTIVE already exists for it in this sequence
-// (a FAILED / UNSUBSCRIBED / COMPLETED enrollment never blocks), it has an address to send to, it has an assigned agent (the account the
-// sequence emails are sent from) and that agent's Gmail is usable.
+// (a FAILED / UNSUBSCRIBED / COMPLETED / REPLIED enrollment never blocks), it has a VALID address to send to that is not on the do-not-email list (an unsubscribed or
+// suppressed marketing subscriber), it has an assigned agent (the account the sequence emails are sent from) and that agent's Gmail is usable. Which of the contact's
+// addresses are used is the recipient mode: "primary" (default) or "all" (see server/sequence-recipients.ts).
 
-export type LeadVerdict = "eligible" | "alreadyActive" | "missingEmail" | "noAssignedAgent" | "gmailUnavailable" | "inaccessible";
+export type LeadVerdict = "eligible" | "alreadyActive" | "missingEmail" | "addressSuppressed" | "noAssignedAgent" | "gmailUnavailable" | "inaccessible";
 export type GmailProblemCode = GmailReadinessFailure;
 
 /** True when the user must (re)connect Gmail to fix it; false for a temporary problem where "connect Gmail" would be the wrong advice. */
@@ -59,6 +61,8 @@ export async function classifyLeadsForEnrollment(params: {
   leadIds: string[];
   /** Comma-separated explicit recipient(s) chosen at enroll time (validated here against each lead's own contact emails). */
   recipientEmail?: string;
+  /** Which of each contact's addresses the emails go to when no explicit recipient was chosen: "primary" (default) or "all". */
+  recipientMode?: RecipientMode;
   /** true: also ask Google's token endpoint for up to GMAIL_VERIFY_LIMIT distinct agents (no mail is sent). false: local checks only. */
   verifyGmail: boolean;
 }): Promise<EnrollmentClassification> {
@@ -97,23 +101,49 @@ export async function classifyLeadsForEnrollment(params: {
           where: { id: { in: toCheck } },
           select: {
             id: true,
-            contact: { select: { primaryEmail: true, emails: { select: { email: true } } } },
+            contact: { select: { companyId: true, primaryEmail: true, emails: { select: { email: true } } } },
             assignedAgent: { select: { id: true, fullName: true, companyId: true } },
           },
         })
       : [];
 
   const requested = params.recipientEmail ? params.recipientEmail.split(",").map((a) => a.trim().toLowerCase()).filter(Boolean) : [];
+  const mode: RecipientMode = params.recipientMode ?? "primary";
+  // One read: which of the addresses in play are on a company's do-not-email list (unsubscribed / suppressed subscribers).
+  const inPlay = new Map<string, Set<string>>();
+  for (const lead of details) {
+    const set = inPlay.get(lead.contact.companyId) ?? new Set<string>();
+    for (const a of candidateAddresses(lead.contact, "all")) set.add(a);
+    for (const a of requested) set.add(a);
+    inPlay.set(lead.contact.companyId, set);
+  }
+  const blockedByCompany = new Map<string, Set<string>>();
+  for (const [companyId, addresses] of inPlay) blockedByCompany.set(companyId, await doNotEmail(companyId, [...addresses]));
+
   const candidates: Array<{ id: string; agent: SendingAgent }> = [];
   for (const lead of details) {
     const known = new Set(
       [lead.contact.primaryEmail, ...lead.contact.emails.map((em) => em.email)].filter((a): a is string => !!a).map((a) => a.toLowerCase())
     );
-    const validated = requested.filter((r) => known.has(r));
-    // The address the automated sends will actually go to: the validated explicit choice, else the contact's primary email at send time.
-    if (validated.length === 0 && !lead.contact.primaryEmail) {
-      verdicts.set(lead.id, "missingEmail");
-      continue;
+    const blocked = blockedByCompany.get(lead.contact.companyId) ?? new Set<string>();
+    const explicit = requested.filter((r) => known.has(r) && isValidAddress(r));
+    // The address(es) the automated sends will actually go to: the validated explicit choice, else what the recipient mode says (primary at send time, or every valid
+    // address on file). Invalid, duplicate and do-not-email addresses never make it into the list.
+    let toStore: string | undefined;
+    if (explicit.length > 0) {
+      const usable = explicit.filter((a) => !blocked.has(a));
+      if (usable.length === 0) {
+        verdicts.set(lead.id, "addressSuppressed");
+        continue;
+      }
+      toStore = usable.join(", ");
+    } else {
+      const choice = chooseRecipients(lead.contact, mode, blocked);
+      if (!choice.ok) {
+        verdicts.set(lead.id, choice.reason);
+        continue;
+      }
+      toStore = recipientToStore(mode, choice.addresses);
     }
     if (!lead.assignedAgent) {
       verdicts.set(lead.id, "noAssignedAgent"); // no sender to send from: the worker would only fail this enrollment on its first run
@@ -125,7 +155,7 @@ export async function classifyLeadsForEnrollment(params: {
       verdicts.set(lead.id, "inaccessible");
       continue;
     }
-    if (validated.length > 0) recipientByLead.set(lead.id, validated.join(", "));
+    if (toStore) recipientByLead.set(lead.id, toStore);
     candidates.push({ id: lead.id, agent: lead.assignedAgent });
   }
   // A lead that vanished between the visibility query and this one is simply not eligible.

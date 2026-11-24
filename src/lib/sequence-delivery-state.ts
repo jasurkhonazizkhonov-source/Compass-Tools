@@ -19,7 +19,9 @@ export const DELIVERY_STATES: readonly DeliveryState[] = ["SENDING", "SENT", "FA
 
 /** Every valid transition. SENT, FAILED and SUPERSEDED are terminal for an attempt (a retry is a NEW attempt, never an edit of a finished one). */
 export const DELIVERY_TRANSITIONS: Readonly<Record<DeliveryState, readonly DeliveryState[]>> = {
-  SENDING: ["SENT", "FAILED", "UNKNOWN"],
+  // SENDING -> SUPERSEDED: Gmail refused because the mailbox hit a sending limit. Nothing was sent and it is not this email's fault, so the attempt is kept as history
+  // but is neither a failure (it does not count toward the retry limit) nor an open question.
+  SENDING: ["SENT", "FAILED", "UNKNOWN", "SUPERSEDED"],
   UNKNOWN: ["SENT", "SUPERSEDED"],
   SENT: [],
   FAILED: [],

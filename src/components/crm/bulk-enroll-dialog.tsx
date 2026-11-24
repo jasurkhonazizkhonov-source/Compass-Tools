@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { bulkEnrollInSequence, type BulkEnrollResult } from "@/server/actions/bulk-selection";
+import { RecipientModeChoice } from "@/components/sequences/recipient-mode-choice";
+import type { RecipientMode } from "@/server/sequence-recipients";
 import type { BulkRecordKind } from "@/lib/bulk-selection";
 
 export type BulkSequenceOption = { id: string; name: string; description: string | null; stepCount: number };
@@ -39,6 +41,7 @@ export function BulkEnrollDialog({
   const [step, setStep] = useState<Step>("choose");
   const [sequenceId, setSequenceId] = useState<string | undefined>(sequences[0]?.id);
   const [pending, setPending] = useState(false);
+  const [recipientMode, setRecipientMode] = useState<RecipientMode>("primary");
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<Extract<BulkEnrollResult, { ok: true }> | null>(null);
 
@@ -50,6 +53,7 @@ export function BulkEnrollDialog({
     if (pending) return; // not dismissible while the request is running
     if (!next) {
       setStep("choose");
+      setRecipientMode("primary");
       setError(null);
       setResult(null);
     }
@@ -61,7 +65,7 @@ export function BulkEnrollDialog({
     setPending(true);
     setError(null);
     try {
-      const res = await bulkEnrollInSequence({ sequenceId, kind, ids: [...ids] });
+      const res = await bulkEnrollInSequence({ sequenceId, kind, ids: [...ids], recipientMode });
       if (!res.ok) {
         setError(res.error);
         return;
@@ -120,6 +124,7 @@ export function BulkEnrollDialog({
                 {" "}Records already actively enrolled in this sequence are skipped, not enrolled twice.
               </DialogDescription>
             </DialogHeader>
+            <RecipientModeChoice value={recipientMode} onChange={setRecipientMode} disabled={pending} />
             {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
               <Button variant="outline" onClick={() => setStep("choose")} disabled={pending}>Back</Button>

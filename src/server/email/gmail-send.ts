@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { getGoogleClientId, getGoogleClientSecret } from "@/server/auth/google-config";
 import { decryptRefreshToken } from "@/server/security/gmail-token-encryption";
 import { GMAIL_SEND_SCOPE } from "@/server/auth/gmail-oauth-config";
+import { DEFAULT_RATE_LIMIT_BACKOFF_MS } from "@/server/sender-quota";
 
 // Sends email via the Gmail API (users.messages.send), authenticated as
 // whichever CRM Account owns the GmailConnection — never a shared/global
@@ -33,11 +34,19 @@ export type GmailSendInput = {
 };
 
 export type GmailSendResult =
-  | { ok: true; messageId: string }
+  | {
+      ok: true;
+      messageId: string;
+      /** Gmail's conversation id for the sent message: a customer's reply lands in this thread. Absent when Gmail did not return one. */
+      threadId?: string;
+    }
   | {
       ok: false;
       error: string;
       code: "NOT_CONNECTED" | "REAUTH_REQUIRED" | "SEND_FAILED";
+      /** true = Gmail refused because a sending limit was reached (not a broken connection, not a bad message). `retryAfterMs` is Gmail's own advice when it gave one. */
+      rateLimited?: boolean;
+      retryAfterMs?: number;
       /**
        * true = the request may have REACHED Gmail and been accepted even though no confirmation came back (a timeout, a dropped connection, a 5xx): the
        * message might have been sent. A caller that sends to a customer must NOT blindly resend. Absent/false = Gmail definitely did not send it (no
@@ -109,9 +118,32 @@ async function markRevoked(accountId: string) {
   });
 }
 
+const MAX_RATE_LIMIT_BACKOFF_MS = 24 * 60 * 60_000;
+
+/**
+ * Gmail's own advice about when to try again: the Retry-After header (seconds, or an HTTP date), or the "Retry after <ISO time>" sentence Google puts in a
+ * userRateLimitExceeded message. Anything else (or a time in the past, or absurdly far away) falls back to a safe default; the result is always bounded.
+ */
+export function parseRetryAfterMs(header: string | null | undefined, body: unknown, now = Date.now()): number {
+  const clamp = (ms: number) => (Number.isFinite(ms) && ms > 0 ? Math.min(Math.max(ms, 60_000), MAX_RATE_LIMIT_BACKOFF_MS) : DEFAULT_RATE_LIMIT_BACKOFF_MS);
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds)) return clamp(seconds * 1000);
+    const at = Date.parse(header);
+    if (Number.isFinite(at)) return clamp(at - now);
+  }
+  const message = body && typeof body === "object" ? (body as { error?: { message?: unknown } }).error?.message : undefined;
+  const match = typeof message === "string" ? /retry after (\d{4}-\d{2}-\d{2}T[\d:.]+Z)/i.exec(message) : null;
+  if (match) {
+    const at = Date.parse(match[1]);
+    if (Number.isFinite(at)) return clamp(at - now);
+  }
+  return DEFAULT_RATE_LIMIT_BACKOFF_MS;
+}
+
 /** Classifies a non-2xx Gmail API response into the right user-facing
  * outcome without exposing raw API/error details to the caller. */
-function classifyGmailApiFailure(status: number, body: unknown): { code: "REAUTH_REQUIRED" | "SEND_FAILED"; error: string } {
+function classifyGmailApiFailure(status: number, body: unknown): { code: "REAUTH_REQUIRED" | "SEND_FAILED"; error: string; rateLimited?: boolean } {
   if (status === 401) {
     return { code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
   }
@@ -124,7 +156,7 @@ function classifyGmailApiFailure(status: number, body: unknown): { code: "REAUTH
     return { code: "REAUTH_REQUIRED", error: REAUTH_MESSAGE };
   }
   if (status === 429 || reason === "rateLimitExceeded" || reason === "quotaExceeded" || reason === "userRateLimitExceeded" || reason === "dailyLimitExceeded") {
-    return { code: "SEND_FAILED", error: "Gmail is temporarily unable to send (rate limit reached). Please try again shortly." };
+    return { code: "SEND_FAILED", error: "Gmail is temporarily unable to send (rate limit reached). Please try again shortly.", rateLimited: true };
   }
   return { code: "SEND_FAILED", error: "Gmail could not send this email. Please try again." };
 }
@@ -261,16 +293,26 @@ export async function sendViaGmail(input: GmailSendInput): Promise<GmailSendResu
 
     if (!response.ok) {
       const body = await response.json().catch(() => null);
-      const { code, error } = classifyGmailApiFailure(response.status, body);
+      const { code, error, rateLimited } = classifyGmailApiFailure(response.status, body);
       if (code === "REAUTH_REQUIRED") await markRevoked(input.accountId);
+      if (rateLimited) {
+        // Provider feedback, not a guess: remember that Gmail asked this mailbox to slow down, so the sequence sender waits instead of hammering it.
+        const retryAfterMs = parseRetryAfterMs(response.headers?.get?.("retry-after"), body);
+        await prisma.gmailConnection.update({ where: { accountId: input.accountId }, data: { sendBlockedUntil: new Date(Date.now() + retryAfterMs) } }).catch(() => undefined);
+        return { ok: false, code, error, rateLimited: true, retryAfterMs };
+      }
       // A 5xx means Gmail itself failed while handling the request; whether it had already queued the message is not knowable. 4xx answers are definite.
       return response.status >= 500 ? { ok: false, code, error, ambiguous: true } : { ok: false, code, error };
     }
 
     // Gmail ACCEPTED the message (2xx). An unreadable body must not turn that into a failure - the message is gone, and reporting a failure here would make
     // a retry send it a second time.
-    const data = (await response.json().catch(() => null)) as { id?: string } | null;
-    return { ok: true, messageId: typeof data?.id === "string" && data.id ? data.id : "accepted-without-id" };
+    const data = (await response.json().catch(() => null)) as { id?: string; threadId?: string } | null;
+    return {
+      ok: true,
+      messageId: typeof data?.id === "string" && data.id ? data.id : "accepted-without-id",
+      ...(typeof data?.threadId === "string" && data.threadId ? { threadId: data.threadId } : {}),
+    };
   } catch {
     console.error("[gmail-send] request to Gmail API failed");
     // The request was sent (or may have been) and no answer arrived: timeout, reset connection, aborted. The message may or may not have been delivered.

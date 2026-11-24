@@ -87,6 +87,7 @@ export const ENROLLMENT_STATUS_META: Record<EnrollmentStatus, { label: string; t
   COMPLETED: { label: "Completed", tone: "success" },
   UNSUBSCRIBED: { label: "Unsubscribed", tone: "neutral" },
   FAILED: { label: "Failed", tone: "destructive" },
+  REPLIED: { label: "Replied — Automatically stopped", tone: "success" },
 };
 
 export const INQUIRY_STATUS_META: Record<InquiryStatus, { label: string; tone: StatusTone }> = {

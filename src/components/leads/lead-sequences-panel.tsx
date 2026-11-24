@@ -16,7 +16,9 @@ function historyDetail(e: LeadEnrollment): string {
     const reason = (e.stepLogs ?? []).find((l) => isRealFailure(l))?.error;
     return `Stopped at ${stepLabel(e).toLowerCase()}${reason ? `: ${reason}` : ""} - no further emails will be sent unless it is retried`;
   }
-  return `Unsubscribed at ${stepLabel(e).toLowerCase()} - no further emails will be sent`; // UNSUBSCRIBED: unenrolled by staff or the customer's own unsubscribe link
+  if (e.status === "REPLIED") return `The customer replied${e.stoppedAt ? ` ${format(e.stoppedAt, "MMM d, yyyy 'at' h:mm a")}` : ""} - the remaining emails were cancelled automatically`;
+  if (e.stopReason === "CUSTOMER_UNSUBSCRIBED") return `The customer unsubscribed at ${stepLabel(e).toLowerCase()} - no further emails will be sent`;
+  return `Unenrolled at ${stepLabel(e).toLowerCase()} - no further emails will be sent`; // UNSUBSCRIBED without a customer reason: unenrolled by staff (or an older row)
 }
 
 export function LeadSequencesPanel({

@@ -266,6 +266,48 @@ export async function checkSequenceScheduler(now = Date.now()): Promise<HealthCh
   });
 }
 /**
+ * Reply detection: do the mailboxes that send sequence emails actually have the (read-only, metadata) permission that lets the CRM see a customer's reply, and is the
+ * check running? A mailbox without it still sends; its enrollments just are NOT stopped automatically when the customer replies, which is exactly what an Admin needs to
+ * know. Reads only; counts and categories, never an address, subject or message.
+ */
+export async function checkSequenceReplyDetection(now = Date.now()): Promise<HealthCheckResult> {
+  return guarded("sequences.replies", "email", "Reply detection (sequences stop when a customer replies)", async () => {
+    const { hasReplyDetectionScope } = await import("@/server/auth/gmail-oauth-config");
+    const { backgroundJobReport } = await import("@/server/scheduler-status");
+    const { inProcessPollerDisabled } = await import("@/lib/poller-config");
+    const watched = await prisma.lead.findMany({ where: { enrollments: { some: { status: { in: ["ACTIVE", "FAILED"] } } }, assignedAgentId: { not: null } }, distinct: ["assignedAgentId"], select: { assignedAgentId: true } });
+    const senderIds = watched.map((l) => l.assignedAgentId).filter((id): id is string => !!id);
+    const connections = senderIds.length ? await prisma.gmailConnection.findMany({ where: { accountId: { in: senderIds }, status: "CONNECTED" }, select: { scopes: true, inboundError: true, inboundCheckedAt: true } }) : [];
+    const without = connections.filter((c) => !hasReplyDetectionScope(c.scopes)).length;
+    const erroring = connections.filter((c) => c.inboundError).length;
+    const lastChecked = connections.map((c) => c.inboundCheckedAt?.getTime() ?? 0).reduce((a, b) => Math.max(a, b), 0);
+    const job = backgroundJobReport("replies", inProcessPollerDisabled(), now);
+    const facts = [
+      { label: "Mailboxes sending active sequences", value: String(senderIds.length) },
+      { label: "Mailboxes that can detect replies", value: String(connections.length - without) },
+      { label: "Mailboxes without the permission", value: String(without) },
+      { label: "Mailboxes whose last check failed", value: String(erroring) },
+      { label: "Last mailbox check", value: lastChecked ? new Date(lastChecked).toISOString().replace("T", " ").slice(0, 19) + " UTC" : "None yet" },
+    ];
+    if (senderIds.length === 0) return { state: "HEALTHY", summary: "No sequence is running, so there is nothing to watch for replies.", facts };
+    if (without > 0) {
+      return {
+        state: "WARNING",
+        classification: "manual_action",
+        summary: `${without} mailbox(es) that send sequence emails cannot see replies, so those sequences are NOT stopped automatically when a customer answers.`,
+        facts,
+        action: "Each affected user reconnects Gmail from their account menu and allows 'view email metadata'. Until then, replies must be handled by hand (Unenroll). See docs/DEPLOYMENT.md, Reply detection.",
+      };
+    }
+    if (job.state === "stalled") return { state: "CRITICAL", summary: "Reply detection is stalled: a background check failed or none has finished for several minutes.", facts, action: "Check that the database and Google are reachable and read the server log for [sequence-replies]. It recovers by itself; replies are found on the next successful run." };
+    if (erroring > 0) return { state: "WARNING", summary: `Reply detection failed for ${erroring} mailbox(es) on its last check.`, facts, action: "Usually a mailbox that must be reconnected (see Gmail sending above). It retries every minute." };
+    if (job.state === "disabled") return { state: "WARNING", classification: "manual_action", summary: "Reply detection is switched off on this server (DISABLE_IN_PROCESS_POLLER).", facts, action: "Remove DISABLE_IN_PROCESS_POLLER, or have a scheduler call /api/cron/sequence-replies about once a minute." };
+    if (job.state === "not_started") return { state: "UNKNOWN", summary: "Reply detection has not run in this server process (yet).", facts, action: "Wait about a minute after a restart." };
+    return { state: "HEALTHY", summary: "Replies are being detected: every sending mailbox has the permission and the check is running.", facts };
+  });
+}
+
+/**
  * Marketing-campaign delivery runs in the same in-process poller as the sequence sweep. Healthy only when it has finished a run recently; Critical when it failed on its last
  * run or has been silent; Warning when the poller is switched off (it simply waits: nothing is lost); Unknown right after a restart.
  * Reported per server process, error CATEGORY only. It reads state; it never starts, runs or schedules anything.
@@ -576,6 +618,7 @@ export async function runHealthChecks(): Promise<HealthCheckResult[]> {
     checkGmail(),
     checkSequenceScheduler(),
     checkMarketingWorkers(),
+    checkSequenceReplyDetection(),
     checkCardVault(),
     checkSignerIp(),
     checkGeoIpDatabase(),

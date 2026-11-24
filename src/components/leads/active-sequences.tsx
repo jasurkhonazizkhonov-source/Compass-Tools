@@ -8,11 +8,15 @@ import { isInFlightMarker, isRealFailure, isUncertainMarker, markerReason } from
 
 export type LeadEnrollment = {
   id: string;
-  status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED";
+  status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED" | "REPLIED";
   currentStepIdx: number;
   enrolledAt: Date;
   nextSendAt: Date | null;
   completedAt: Date | null;
+  /** Why it stopped (REPLIED | UNENROLLED | CUSTOMER_UNSUBSCRIBED) and why a due step is waiting (CAPACITY | PROVIDER_BACKOFF); both optional for older callers. */
+  stopReason?: string | null;
+  stoppedAt?: Date | null;
+  waitReason?: string | null;
   sequence: { id: string; name: string; isActive?: boolean; steps: { id: string }[] };
   enrolledBy: { fullName: string } | null;
   /** The per-step send log (newest first). Optional so older callers keep working; without it the state is derived from the enrollment alone. */
@@ -69,6 +73,13 @@ export function ActiveSequenceCard({ enrollment: e, leadId }: { enrollment: Lead
       {state.key === "retry_scheduled" && (
         <p className="text-xs text-muted-foreground" data-testid="retry-note">
           The last attempt failed{lastError ? `: ${lastError}` : ""}. {e.nextSendAt ? `It will be retried automatically at ${stamp(e.nextSendAt)}.` : "A retry is scheduled."}
+        </p>
+      )}
+      {state.key === "waiting" && (
+        <p className="text-xs text-muted-foreground" data-testid="waiting-note">
+          {e.waitReason === "PROVIDER_BACKOFF"
+            ? "Gmail asked this mailbox to slow down. The email goes out automatically as soon as Gmail allows it."
+            : "The sender's Gmail sending allowance is used up for now. The email goes out automatically when capacity frees up; newly enrolled leads get their first email before follow-ups."}
         </p>
       )}
       {state.key === "unconfirmed" && (

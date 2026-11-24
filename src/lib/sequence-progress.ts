@@ -5,7 +5,7 @@
 //   scheduled  - it is the step the enrollment is waiting to send (ACTIVE, sequence on), with its planned time.
 //   paused     - same step, but the sequence is switched off, so nothing is being sent until it is switched back on.
 //   failed     - the enrollment FAILED at this step, or the step's last attempt failed and a retry is pending (retrying).
-//   cancelled  - the lead was unenrolled (or unsubscribed) before this step went out.
+//   cancelled  - the lead was unenrolled, unsubscribed or REPLIED before this step went out.
 //   pending    - a later step of an ACTIVE enrollment: waits for the steps before it.
 //
 //   sending    - a send for this step is in progress right now (its in-flight marker is recent).
@@ -31,7 +31,15 @@ export type StepProgress = {
 
 type StepLike = { id: string };
 type LogLike = { stepId: string; status: "SENT" | "FAILED"; sentAt?: Date | null; createdAt?: Date | null; error?: string | null };
-type EnrollmentLike = { status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED"; currentStepIdx: number; nextSendAt: Date | null };
+type EnrollmentLike = {
+  status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED" | "REPLIED";
+  currentStepIdx: number;
+  nextSendAt: Date | null;
+  /** Why it stopped (REPLIED | UNENROLLED | CUSTOMER_UNSUBSCRIBED); only used to word an UNSUBSCRIBED enrollment. */
+  stopReason?: string | null;
+  /** Why a due step has not gone out yet (CAPACITY | PROVIDER_BACKOFF); only meaningful while ACTIVE. */
+  waitReason?: string | null;
+};
 
 export function computeStepProgress(params: { steps: StepLike[]; enrollment: EnrollmentLike; logs: LogLike[]; sequenceActive?: boolean; now?: number }): StepProgress[] {
   const { steps, enrollment, logs } = params;
@@ -57,6 +65,7 @@ export function computeStepProgress(params: { steps: StepLike[]; enrollment: Enr
       case "COMPLETED":
         return { ...base, status: "pending" as const, at: null };
       case "UNSUBSCRIBED":
+      case "REPLIED":
         return { ...base, status: "cancelled" as const, at: null };
       case "FAILED":
         return i === enrollment.currentStepIdx
@@ -100,6 +109,9 @@ export type EnrollmentStateKey =
   | "unconfirmed" // a send was started and Gmail never confirmed it; waiting for a person (never resent automatically)
   | "paused" // active enrollment of a sequence that is switched off: nothing is being sent
   | "failed" // gave up (Gmail not usable, no email/agent, retries exhausted)
+  | "waiting" // active and due, but the sender's Gmail sending allowance is used up (or Gmail asked us to slow down): it goes out automatically when capacity frees up
+  | "replied" // the customer replied to one of its emails: the remaining steps were cancelled automatically
+  | "unsubscribed" // the customer used the unsubscribe link
   | "unenrolled"
   | "completed";
 
@@ -113,6 +125,9 @@ const STATE_META: Record<EnrollmentStateKey, { label: string; tone: StatusTone; 
   unconfirmed: { label: "Delivery unconfirmed", tone: "warning", progressing: false },
   paused: { label: "Paused", tone: "warning", progressing: false },
   failed: { label: "Failed", tone: "destructive", progressing: false },
+  waiting: { label: "Scheduled — Waiting for available Gmail sending capacity", tone: "warning", progressing: true },
+  replied: { label: "Replied — Automatically stopped", tone: "success", progressing: false },
+  unsubscribed: { label: "Unsubscribed", tone: "neutral", progressing: false },
   unenrolled: { label: "Unenrolled", tone: "neutral", progressing: false },
   completed: { label: "Completed", tone: "success", progressing: false },
 };
@@ -126,7 +141,8 @@ export function deriveEnrollmentState(params: {
 }): EnrollmentState {
   const { enrollment, steps, logs } = params;
   const pick = (key: EnrollmentStateKey): EnrollmentState => ({ key, ...STATE_META[key] });
-  if (enrollment.status === "UNSUBSCRIBED") return pick("unenrolled");
+  if (enrollment.status === "REPLIED") return pick("replied");
+  if (enrollment.status === "UNSUBSCRIBED") return pick(enrollment.stopReason === "CUSTOMER_UNSUBSCRIBED" ? "unsubscribed" : "unenrolled");
   if (enrollment.status === "COMPLETED") return pick("completed");
   if (enrollment.status === "FAILED") return pick("failed");
 
@@ -136,6 +152,8 @@ export function deriveEnrollmentState(params: {
   if (open) return isRecentInFlight(open.log, params.now) ? pick("sending") : pick("unconfirmed");
   if (params.sequenceActive === false) return pick("paused");
   if (currentLogs.some(isRealFailure)) return pick("retry_scheduled");
+  // Due, not failed, and the sender could not take it yet: say why it is waiting instead of showing a time that has already passed.
+  if (enrollment.waitReason && enrollment.nextSendAt && enrollment.nextSendAt.getTime() <= (params.now ?? Date.now())) return pick("waiting");
   const anySent = enrollment.currentStepIdx > 0 || logs.some((l) => l.status === "SENT");
   return anySent ? pick("active") : pick("first_email_pending");
 }

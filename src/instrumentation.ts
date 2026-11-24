@@ -30,6 +30,7 @@ export async function register() {
   const { drainDueSequenceSteps } = await import("@/server/due-sequence-steps");
   const { startBackgroundPoller } = await import("@/server/background-poller");
   const { drainMarketingCampaigns } = await import("@/server/marketing/campaign-worker");
+  const { syncSequenceReplies } = await import("@/server/sequence-reply-sync");
 
   // One once-a-minute tick drives the background jobs: task-due notifications, the automatic sending of sequence steps and campaign delivery. The overlap, stuck-run, error
   // isolation and shutdown rules (and what they do and do not guarantee across several app instances) are documented in src/server/background-poller.ts.
@@ -39,6 +40,9 @@ export async function register() {
     // Durable marketing-campaign delivery (rate-limited batches). It claims its work in the database, so an overlapping second instance cannot double-send a
     // recipient; see server/marketing/campaign-worker.ts.
     { name: "campaigns", logTag: "campaign-sender", run: async () => { const t = await drainMarketingCampaigns(); return { processed: t.sent + t.failed + t.unknown + t.skipped, sent: t.sent, failed: t.failed }; } },
+    // Automatic stop when a customer replies to a sequence email: reads the metadata of the conversations our own sequence emails started, nothing else. Safe to run
+    // from several instances at once - recording a reply is idempotent and atomic (server/sequence-reply-sync.ts).
+    { name: "replies", logTag: "sequence-replies", run: async () => { const r = await syncSequenceReplies(); return { processed: r.conversationsChecked, sent: r.enrollmentsStopped, failed: r.errors }; } },
   ]);
 }
 

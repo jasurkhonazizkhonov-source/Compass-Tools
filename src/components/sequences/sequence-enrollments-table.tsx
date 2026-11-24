@@ -10,11 +10,14 @@ import { isInFlightMarker, isRealFailure, isUncertainMarker, markerReason } from
 export type SequenceEnrollmentRow = {
   id: string;
   leadId: string;
-  status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED";
+  status: "ACTIVE" | "COMPLETED" | "UNSUBSCRIBED" | "FAILED" | "REPLIED";
   currentStepIdx: number;
   enrolledAt: Date;
   nextSendAt: Date | null;
   recipientEmail: string | null;
+  stopReason?: string | null;
+  stoppedAt?: Date | null;
+  waitReason?: string | null;
   /** False when the viewer may not see this lead: its contact's email is then withheld. */
   leadVisible: boolean;
   lead: { contact: { firstName: string; lastName: string; primaryEmail: string | null } };
@@ -111,6 +114,10 @@ export function SequenceEnrollmentsTable({
                     <p className="mt-1 text-xs text-destructive">Stopped at step {failedStep.position}{lastError ? `: ${lastError}` : ""}</p>
                   )}
                   {e.status === "ACTIVE" && !sequenceActive && <p className="mt-1 text-xs text-muted-foreground">Paused: the sequence is switched off.</p>}
+                  {state.key === "waiting" && (
+                    <p className="mt-1 text-xs text-muted-foreground">{e.waitReason === "PROVIDER_BACKOFF" ? "Gmail asked this mailbox to slow down; it resumes automatically." : "Sending allowance used up; it resumes automatically."}</p>
+                  )}
+                  {e.status === "REPLIED" && <p className="mt-1 text-xs text-muted-foreground">The customer replied{e.stoppedAt ? ` ${stamp(e.stoppedAt)}` : ""}; the remaining steps were cancelled.</p>}
                   {state.key === "retry_scheduled" && lastError && <p className="mt-1 text-xs text-muted-foreground">Last attempt failed: {lastError}</p>}
                   {state.key === "unconfirmed" && (
                     <p className="mt-1 text-xs text-muted-foreground">

@@ -291,7 +291,7 @@ describe("bulk Add to sequence", () => {
     expect(dialog.textContent).toMatch(/already actively enrolled in this sequence are skipped/);
     expect(bulkEnroll).not.toHaveBeenCalled(); // nothing is sent before the confirming click
     await user.click(within(dialog).getByRole("button", { name: "Enroll 2 leads" }));
-    await waitFor(() => expect(bulkEnroll).toHaveBeenCalledWith({ sequenceId: "seq-1", kind: "leads", ids: ["r1", "r2"] }));
+    await waitFor(() => expect(bulkEnroll).toHaveBeenCalledWith({ sequenceId: "seq-1", kind: "leads", ids: ["r1", "r2"], recipientMode: "primary" }));
     expect(await screen.findByTestId("bulk-enroll-result")).toHaveTextContent("2 enrolled");
     await waitFor(() => expect(count()).toBeNull()); // everything enrolled: nothing left selected
     expect(refresh).toHaveBeenCalled();
@@ -304,7 +304,7 @@ describe("bulk Add to sequence", () => {
     await user.click(row("r1"));
     const dialog = await openAndChoose(user, true);
     await user.click(within(dialog).getByRole("button", { name: "Enroll 1 lead" }));
-    await waitFor(() => expect(bulkEnroll).toHaveBeenCalledWith({ sequenceId: "seq-2", kind: "leads", ids: ["r1"] }));
+    await waitFor(() => expect(bulkEnroll).toHaveBeenCalledWith({ sequenceId: "seq-2", kind: "leads", ids: ["r1"], recipientMode: "primary" }));
   });
 
   it("contacts: the confirmation explains enrollment goes through the most recent lead", async () => {

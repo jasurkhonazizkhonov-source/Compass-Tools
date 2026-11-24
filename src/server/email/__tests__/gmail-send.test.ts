@@ -188,8 +188,11 @@ describe("sendViaGmail — Gmail API response handling", () => {
 
     const result = await sendViaGmail(BASE_INPUT);
 
-    expect(result).toEqual({ ok: false, code: "SEND_FAILED", error: expect.stringContaining("rate limit") });
+    // A definite, retry-later answer: flagged as a rate limit (so the sequence sender waits instead of counting a failed attempt), with how long to wait.
+    expect(result).toEqual({ ok: false, code: "SEND_FAILED", error: expect.stringContaining("rate limit"), rateLimited: true, retryAfterMs: expect.any(Number) });
     expect(connections.get("acct-1")!.status).toBe("CONNECTED");
+    // The mailbox is held until the time Gmail's answer implies (never revoked): that is what stops anything else from hammering it meanwhile.
+    expect((connections.get("acct-1") as unknown as { sendBlockedUntil: Date }).sendBlockedUntil.getTime()).toBeGreaterThan(Date.now());
   });
 
   it("a generic 500 response returns a generic SEND_FAILED without exposing raw API error details", async () => {

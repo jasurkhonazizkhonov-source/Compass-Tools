@@ -43,14 +43,15 @@ describe("SequenceEnrollmentsTable", () => {
     expect(ada.getByText(/Step 1 · Nov 10, 2026 9:00 AM/)).toBeInTheDocument(); // last step that actually went out
   });
 
-  it("a failed enrollment is identifiable, says where and why it stopped, and offers no Unenroll", () => {
+  it("a failed enrollment is identifiable, says where and why it stopped, and offers Retry and ONE Unenroll", () => {
     view();
     const bob = within(rowOf("Bob"));
     expect(bob.getByText("Failed", { selector: "span,div" })).toBeInTheDocument();
     expect(bob.getByText("1: Failed")).toBeInTheDocument();
     expect(bob.getByText(/Stopped at step 1: Gmail is not connected/)).toBeInTheDocument();
     expect(bob.getByText("None yet")).toBeInTheDocument();
-    expect(bob.queryByRole("button", { name: /unenroll/i })).toBeNull();
+    expect(bob.getAllByRole("button", { name: /unenroll/i })).toHaveLength(1); // never two for one enrollment
+    expect(bob.getByRole("button", { name: /retry welcome now/i })).toBeInTheDocument();
   });
 
   it("an unenrolled lead keeps what was sent as history, shows the rest as cancelled, and has nothing scheduled", () => {
@@ -63,15 +64,35 @@ describe("SequenceEnrollmentsTable", () => {
     expect(cy.queryByRole("button", { name: /unenroll/i })).toBeNull();
   });
 
+  it("a REPLIED enrollment says so, keeps what was sent, cancels the rest, and has no actions", () => {
+    const base = rows[0];
+    render(
+      <SequenceEnrollmentsTable
+        enrollments={[{ ...base, id: "r1", status: "REPLIED", currentStepIdx: 1, nextSendAt: null, stopReason: "REPLIED", stoppedAt: new Date("2026-11-20T10:30:00"), stepLogs: [base.stepLogs[0]] }]}
+        steps={steps}
+        sequenceName="Welcome"
+        sequenceActive
+        canUnenroll
+      />
+    );
+    const row = within(screen.getByTestId("enrollment-row"));
+    expect(row.getAllByText("Replied — Automatically stopped").length).toBeGreaterThan(0);
+    expect(row.getByText("2: Cancelled")).toBeInTheDocument();
+    expect(row.getByText(/The customer replied Nov 20, 2026 10:30 AM; the remaining steps were cancelled/)).toBeInTheDocument();
+    expect(row.queryByRole("button")).toBeNull();
+  });
+
   it("a completed enrollment shows every step sent", () => {
     view();
     expect(within(rowOf("Di")).getByText("3 of 3 sent")).toBeInTheDocument();
   });
 
-  it("only ACTIVE enrollments have an Unenroll button, and it names the sequence", () => {
+  it("only ACTIVE and FAILED enrollments have an Unenroll button (one each), and it names the sequence; stopped and finished ones have none", () => {
     view();
     const buttons = screen.getAllByRole("button", { name: /unenroll from welcome/i });
-    expect(buttons).toHaveLength(2); // Ada and Ed (both ACTIVE)
+    expect(buttons).toHaveLength(3); // Ada and Ed (ACTIVE) and Bob (FAILED)
+    expect(within(rowOf("Cy")).queryByRole("button", { name: /unenroll/i })).toBeNull(); // already unenrolled
+    expect(within(rowOf("Di")).queryByRole("button", { name: /unenroll/i })).toBeNull(); // completed
   });
 
   it("a viewer who may not unenroll gets no buttons at all", () => {

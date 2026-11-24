@@ -20,6 +20,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { enrollLeads, type EnrollLeadsResult } from "@/server/actions/sequences";
 import { enrollLeadsByStatus, previewEnrollByStatus, type EnrollByStatusPreview, type EnrollByStatusResult } from "@/server/actions/sequence-status-enroll";
 import { LEAD_STATUS_META, LEAD_STATUS_ORDER } from "@/lib/status-meta";
+import { RecipientModeChoice } from "@/components/sequences/recipient-mode-choice";
+import type { RecipientMode } from "@/server/sequence-recipients";
 
 type LeadOption = { id: string; name: string; route: string; status: string };
 type Mode = "pick" | "status";
@@ -30,7 +32,8 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString
 function pickSummary(r: EnrollLeadsResult): string {
   const notes = [
     r.alreadyActive && `${r.alreadyActive} already enrolled`,
-    r.missingEmail && `${r.missingEmail} without an email address`,
+    r.missingEmail && `${r.missingEmail} without a valid email address`,
+    r.addressSuppressed && `${r.addressSuppressed} with an unsubscribed or suppressed email`,
     r.noAssignedAgent && `${r.noAssignedAgent} without an assigned agent`,
     r.gmailUnavailable && `${r.gmailUnavailable} blocked because Gmail is unavailable`,
     r.inaccessible && `${r.inaccessible} not available`,
@@ -47,6 +50,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
   const [statuses, setStatuses] = useState<Set<string>>(new Set());
   const [previewState, setPreviewState] = useState<{ key: string; data: EnrollByStatusPreview } | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [recipientMode, setRecipientMode] = useState<RecipientMode>("primary");
   const [outcome, setOutcome] = useState<EnrollByStatusResult | null>(null);
   const [isPending, startTransition] = useTransition();
   const router = useRouter();
@@ -62,19 +66,21 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
   // The server counts the leads that currently match the chosen statuses (inside the caller's own visibility) with the same rules the enrollment
   // uses. The result is stored with the selection it was computed for, so a stale answer is never shown for a newer selection.
   const statusKey = [...statuses].sort().join(",");
+  // The preview depends on the recipient choice too (an address that is unusable changes who can be enrolled), so the key carries both.
+  const previewKey = statusKey ? `${statusKey}|${recipientMode}` : "";
   useEffect(() => {
     if (!open || mode !== "status" || !statusKey) return;
     let stale = false;
     const timer = setTimeout(async () => {
-      const data = await previewEnrollByStatus({ sequenceId, statuses: statusKey.split(",") });
-      if (!stale) setPreviewState({ key: statusKey, data });
+      const data = await previewEnrollByStatus({ sequenceId, statuses: statusKey.split(","), recipientMode });
+      if (!stale) setPreviewState({ key: previewKey, data });
     }, 250);
     return () => {
       stale = true;
       clearTimeout(timer);
     };
-  }, [open, mode, statusKey, sequenceId]);
-  const preview = statusKey && previewState?.key === statusKey ? previewState.data : null;
+  }, [open, mode, statusKey, recipientMode, previewKey, sequenceId]);
+  const preview = previewKey && previewState?.key === previewKey ? previewState.data : null;
   const loadingPreview = !!statusKey && !preview;
 
   function toggle(id: string) {
@@ -118,6 +124,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
     setPreviewState(null);
     setConfirming(false);
     setOutcome(null);
+    setRecipientMode("primary");
     setQuery("");
   }
 
@@ -127,7 +134,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
       return;
     }
     startTransition(async () => {
-      const result = await enrollLeads(sequenceId, [...selected]);
+      const result = await enrollLeads(sequenceId, [...selected], undefined, { recipientMode });
       if (result.error) {
         toast.error(result.error);
         return;
@@ -141,7 +148,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
 
   function submitStatus() {
     startTransition(async () => {
-      const result = await enrollLeadsByStatus({ sequenceId, statuses: [...statuses], previewMatched: preview && preview.ok ? preview.matched : undefined });
+      const result = await enrollLeadsByStatus({ sequenceId, statuses: [...statuses], previewMatched: preview && preview.ok ? preview.matched : undefined, recipientMode });
       setConfirming(false);
       setOutcome(result);
       if (result.ok) router.refresh();
@@ -222,6 +229,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
                 ))}
               </div>
             </ScrollArea>
+            <RecipientModeChoice value={recipientMode} onChange={setRecipientMode} disabled={isPending} />
             <DialogFooter>
               <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
               <Button onClick={submitPick} disabled={isPending} className="gap-2">
@@ -254,6 +262,7 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
               </Button>
             </fieldset>
 
+            <RecipientModeChoice value={recipientMode} onChange={(m) => { setRecipientMode(m); setConfirming(false); }} />
             <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1" aria-live="polite" data-testid="status-preview">
               {statuses.size === 0 && <p className="text-muted-foreground">Select at least one status to see how many leads match.</p>}
               {loadingPreview && (
@@ -271,7 +280,8 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
                   </p>
                   <ul className="text-xs text-muted-foreground space-y-0.5">
                     {preview.alreadyActive > 0 && <li>{plural(preview.alreadyActive, "lead")} already actively enrolled</li>}
-                    {preview.missingEmail > 0 && <li>{plural(preview.missingEmail, "lead")} without an email address</li>}
+                    {preview.missingEmail > 0 && <li>{plural(preview.missingEmail, "lead")} without a valid email address</li>}
+                    {preview.addressSuppressed > 0 && <li>{plural(preview.addressSuppressed, "lead")} with an unsubscribed or suppressed email</li>}
                     {preview.noAssignedAgent > 0 && <li>{plural(preview.noAssignedAgent, "lead")} without an assigned agent</li>}
                     {preview.gmailUnavailable > 0 && <li>{plural(preview.gmailUnavailable, "lead")} blocked because Gmail is unavailable{preview.gmailMessage ? ` - ${preview.gmailMessage}` : ""}</li>}
                   </ul>
@@ -318,7 +328,8 @@ export function EnrollLeadsDialog({ sequenceId, sequenceName, leads }: { sequenc
                   <li>Successfully enrolled: {outcome.enrolled.toLocaleString("en-US")}</li>
                   {outcome.alreadyActive > 0 && <li>Already actively enrolled: {outcome.alreadyActive.toLocaleString("en-US")}</li>}
                   {outcome.gmailUnavailable > 0 && <li>Not enrolled because Gmail is unavailable: {outcome.gmailUnavailable.toLocaleString("en-US")}{outcome.gmailMessage ? ` - ${outcome.gmailMessage}` : ""}</li>}
-                  {outcome.missingEmail > 0 && <li>Missing email address: {outcome.missingEmail.toLocaleString("en-US")}</li>}
+                  {outcome.missingEmail > 0 && <li>Missing or invalid email address: {outcome.missingEmail.toLocaleString("en-US")}</li>}
+                  {outcome.addressSuppressed > 0 && <li>Email unsubscribed or suppressed: {outcome.addressSuppressed.toLocaleString("en-US")}</li>}
                   {outcome.noAssignedAgent > 0 && <li>No assigned agent: {outcome.noAssignedAgent.toLocaleString("en-US")}</li>}
                   {outcome.changedSincePreview > 0 && <li>Status changed since the preview ({outcome.changedSincePreview.toLocaleString("en-US")} fewer or more leads matched than previewed)</li>}
                   {outcome.inaccessible > 0 && <li>No longer accessible: {outcome.inaccessible.toLocaleString("en-US")}</li>}

@@ -8,6 +8,7 @@ import { Loader2, RotateCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/crm/confirm-dialog";
 import { GmailProblemNotice } from "@/components/sequences/gmail-problem-notice";
+import { UnenrollSequenceButton } from "@/components/leads/unenroll-sequence-button";
 import { resolveUncertainDelivery, retryEnrollmentNow, type RecoveryResult } from "@/server/actions/sequences";
 import type { EnrollmentStateKey } from "@/lib/sequence-progress";
 
@@ -15,7 +16,8 @@ const when = (iso: string | null) => (iso ? format(new Date(iso), "MMM d, yyyy '
 
 /**
  * What a person can do about an enrollment that needs attention, on the lead page and in the sequence's table alike:
- *   - Retry scheduled / Failed  -> "Retry now": the SAME enrollment is restarted after Gmail is verified (never a second enrollment);
+ *   - Retry scheduled / Failed  -> "Retry now": the SAME enrollment is restarted after Gmail is verified (never a second enrollment). A FAILED enrollment also
+ *     offers "Unenroll" (the one and only Unenroll button for it: an ACTIVE enrollment gets its Unenroll button from the card/table that owns it);
  *   - Delivery unconfirmed      -> "It was sent" / "Send again": the CRM cannot ask Gmail whether the message went out, so a person decides, and "Send again"
  *     warns that the customer may then receive it twice.
  * A Gmail problem found during the retry is shown right here with the connect / check-again actions; the lead page and the sequence page both refresh.
@@ -66,6 +68,7 @@ export function EnrollmentRecoveryActions({ enrollmentId, leadId, state, sequenc
             {state === "failed" ? "Retry" : "Retry now"}
           </Button>
         )}
+        {state === "failed" && <UnenrollSequenceButton enrollmentId={enrollmentId} leadId={leadId} sequenceName={sequenceName} failed />}
         {state === "unconfirmed" && (
           <>
             <Button type="button" size="sm" variant="outline" disabled={pending} onClick={() => setConfirm("sent")}>

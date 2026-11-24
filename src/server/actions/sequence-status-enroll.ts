@@ -8,6 +8,7 @@ import { LEAD_STATUS_META } from "@/lib/status-meta";
 import { leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
 import { classifyLeadsForEnrollment } from "@/server/sequence-enrollment-eligibility";
 import { enrollLeads } from "@/server/actions/sequences";
+import { isRecipientMode, type RecipientMode } from "@/server/sequence-recipients";
 import type { LeadStatus } from "@/generated/prisma/client";
 
 // Sequences section -> a sequence -> Enroll Leads -> "By status": enroll every eligible lead whose CURRENT status is one of the chosen ones.
@@ -33,6 +34,7 @@ type Counts = {
   eligible: number;
   alreadyActive: number;
   missingEmail: number;
+  addressSuppressed: number;
   noAssignedAgent: number;
   gmailUnavailable: number;
   inaccessible: number;
@@ -85,7 +87,8 @@ async function findMatchingLeadIds(actor: NonNullable<Awaited<ReturnType<typeof 
 const NOT_AVAILABLE = "That sequence is not available.";
 const NARROW = `More than ${MAX_MATCHES.toLocaleString("en-US")} leads match these statuses. Choose fewer statuses so the selection can be checked and enrolled safely.`;
 
-export async function previewEnrollByStatus(input: { sequenceId: string; statuses: string[] }): Promise<EnrollByStatusPreview> {
+export async function previewEnrollByStatus(input: { sequenceId: string; statuses: string[]; recipientMode?: RecipientMode }): Promise<EnrollByStatusPreview> {
+  const recipientMode: RecipientMode = isRecipientMode(input?.recipientMode) ? input.recipientMode : "primary";
   const auth = await authorize(input?.sequenceId);
   if (!auth) return { ok: false, error: NOT_AVAILABLE };
   const statuses = parseStatuses(input.statuses);
@@ -93,12 +96,12 @@ export async function previewEnrollByStatus(input: { sequenceId: string; statuse
   if (auth.sequence._count.steps === 0) return { ok: false, error: "This sequence has no steps yet." };
 
   const { ids, truncated } = await findMatchingLeadIds(auth.actor, statuses);
-  const counts: Counts = { matched: ids.length, eligible: 0, alreadyActive: 0, missingEmail: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0 };
+  const counts: Counts = { matched: ids.length, eligible: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0 };
   if (truncated) return { ok: true, sequenceName: auth.sequence.name, truncated: true, gmailMessage: undefined, ...counts };
   let gmailMessage: string | undefined;
   for (let i = 0; i < ids.length; i += CHUNK) {
     // Local checks only for a preview (no Google call per chunk, per checkbox click); the enrollment itself verifies the token.
-    const c = await classifyLeadsForEnrollment({ actor: auth.actor, sequenceId: auth.sequence.id, leadIds: ids.slice(i, i + CHUNK), verifyGmail: false });
+    const c = await classifyLeadsForEnrollment({ actor: auth.actor, sequenceId: auth.sequence.id, leadIds: ids.slice(i, i + CHUNK), recipientMode, verifyGmail: false });
     for (const v of c.verdicts.values()) {
       if (v === "eligible") counts.eligible++;
       else counts[v]++;
@@ -108,7 +111,8 @@ export async function previewEnrollByStatus(input: { sequenceId: string; statuse
   return { ok: true, sequenceName: auth.sequence.name, truncated: false, gmailMessage, ...counts };
 }
 
-export async function enrollLeadsByStatus(input: { sequenceId: string; statuses: string[]; previewMatched?: number }): Promise<EnrollByStatusResult> {
+export async function enrollLeadsByStatus(input: { sequenceId: string; statuses: string[]; previewMatched?: number; recipientMode?: RecipientMode }): Promise<EnrollByStatusResult> {
+  const recipientMode: RecipientMode = isRecipientMode(input?.recipientMode) ? input.recipientMode : "primary";
   const auth = await authorize(input?.sequenceId);
   if (!auth) return { ok: false, error: NOT_AVAILABLE };
   const statuses = parseStatuses(input.statuses);
@@ -124,6 +128,7 @@ export async function enrollLeadsByStatus(input: { sequenceId: string; statuses:
     enrolled: 0,
     alreadyActive: 0,
     missingEmail: 0,
+    addressSuppressed: 0,
     noAssignedAgent: 0,
     gmailUnavailable: 0,
     inaccessible: 0,
@@ -135,10 +140,11 @@ export async function enrollLeadsByStatus(input: { sequenceId: string; statuses:
     const chunk = ids.slice(i, i + CHUNK);
     try {
       // enrollLeads re-checks authorization, visibility, duplicates (under a lock) and Gmail for this chunk on its own.
-      const r = await enrollLeads(auth.sequence.id, chunk);
+      const r = await enrollLeads(auth.sequence.id, chunk, undefined, { recipientMode });
       out.enrolled += r.enrolled;
       out.alreadyActive += r.alreadyActive;
       out.missingEmail += r.missingEmail;
+      out.addressSuppressed += r.addressSuppressed;
       out.noAssignedAgent += r.noAssignedAgent;
       out.gmailUnavailable += r.gmailUnavailable;
       out.inaccessible += r.inaccessible;

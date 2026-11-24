@@ -21,6 +21,7 @@ describe("transitions: every pair is either valid or rejected", () => {
     ["SENDING", "SENT"],
     ["SENDING", "FAILED"],
     ["SENDING", "UNKNOWN"],
+    ["SENDING", "SUPERSEDED"], // Gmail refused because the mailbox hit a sending limit: nothing was sent, not a failure
     ["UNKNOWN", "SENT"],
     ["UNKNOWN", "SUPERSEDED"],
   ];

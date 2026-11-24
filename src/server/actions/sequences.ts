@@ -13,6 +13,8 @@ import { canManageSequences, canManageAllSequences } from "@/lib/permissions";
 import { runDueSequenceSteps } from "@/server/due-sequence-steps";
 import { leadVisibilityWhere, sequenceVisibilityWhere } from "@/server/visibility";
 import { getEmailViewer, resolveSendRecipients } from "@/server/privacy/customer-email";
+import { isRecipientMode, type RecipientMode } from "@/server/sequence-recipients";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 
 const SEQUENCE_NOT_FOUND = "Sequence not found";
 
@@ -131,11 +133,13 @@ export type EnrollLeadsResult = {
   /** Per-reason counts of leads NOT enrolled; each lead is counted in exactly one bucket. */
   alreadyActive: number;
   missingEmail: number;
+  /** Leads whose only usable address is on the do-not-email list (an unsubscribed or suppressed subscriber). */
+  addressSuppressed: number;
   noAssignedAgent: number;
   gmailUnavailable: number;
   inaccessible: number;
   /** What happened to EVERY lead id that was asked about (after de-duplication), so callers never have to infer it from counts. */
-  byLead: Record<string, "enrolled" | "alreadyActive" | "missingEmail" | "noAssignedAgent" | "gmailUnavailable" | "inaccessible">;
+  byLead: Record<string, "enrolled" | "alreadyActive" | "missingEmail" | "addressSuppressed" | "noAssignedAgent" | "gmailUnavailable" | "inaccessible">;
   error?: string;
   /** Set when at least one lead was refused because the account that sends its emails has no usable Gmail. */
   gmailProblem?: GmailProblemCode;
@@ -158,21 +162,31 @@ export type EnrollLeadsResult = {
  * when the lead's contact has more than one on file (comma-separated when "both" was picked). Re-validated server-side against each
  * lead's own Contact emails regardless of caller - never trust a client-supplied address blindly.
  */
-export async function enrollLeads(sequenceId: string, leadIds: string[], recipientEmail?: string): Promise<EnrollLeadsResult> {
+export async function enrollLeads(sequenceId: string, leadIds: string[], recipientEmail?: string, options?: { recipientMode?: RecipientMode }): Promise<EnrollLeadsResult> {
+  // The mode comes from the browser: anything but the two known values is the safe default (primary only).
+  const recipientMode: RecipientMode = isRecipientMode(options?.recipientMode) ? options!.recipientMode! : "primary";
   // Customer-email privacy: a raw recipient address from the browser is accepted only from a viewer who may see complete addresses. A restricted viewer's picker
   // (startSequenceForLead) sends opaque ids that the server resolves; accepting their raw address here would let the "is it on file?" check be used to probe.
   if (recipientEmail) {
     const actor = await getCurrentAccount();
     if (!actor || (await getEmailViewer(actor)).restricted) {
-      return { enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {}, error: "Choose the recipients from the list." };
+      return { enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {}, error: "Choose the recipients from the list." };
     }
   }
-  return enrollLeadsCore(sequenceId, leadIds, recipientEmail);
+  return enrollLeadsCore(sequenceId, leadIds, recipientEmail, recipientMode);
 }
 
-async function enrollLeadsCore(sequenceId: string, leadIds: string[], recipientEmail?: string): Promise<EnrollLeadsResult> {
+async function enrollLeadsCore(sequenceId: string, leadIds: string[], recipientEmail?: string, recipientMode: RecipientMode = "primary"): Promise<EnrollLeadsResult> {
   const actor = await getCurrentAccount();
   await assertSequenceAccess(actor, sequenceId);
+  // Per staff account (never per IP): generous for real work, a ceiling for a script or a stuck loop. Checked after authorization so an outsider cannot spend anyone's allowance.
+  const limit = await checkAccountRateLimit(actor!.id, "SEQUENCE_ENROLL", RATE_LIMITS.SEQUENCE_ENROLL);
+  if (!limit.allowed) {
+    return {
+      enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {},
+      error: `Too many enrollment requests. Please try again in ${describeWait(limit.retryAfterSeconds)}.`,
+    };
+  }
 
   const sequence = await prisma.sequence.findUniqueOrThrow({
     where: { id: sequenceId },
@@ -182,18 +196,19 @@ async function enrollLeadsCore(sequenceId: string, leadIds: string[], recipientE
   // The sequence pickers only offer active sequences, but this is a public server action: refuse here too, before any Gmail or lead lookups.
   if (!sequence.isActive) {
     return {
-      enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {},
+      enrolled: 0, skipped: 0, alreadyActive: 0, missingEmail: 0, addressSuppressed: 0, noAssignedAgent: 0, gmailUnavailable: 0, inaccessible: 0, byLead: {},
       error: "This sequence is inactive. Switch it to Active before enrolling leads.",
     };
   }
 
-  const c = await classifyLeadsForEnrollment({ actor, sequenceId, leadIds, recipientEmail, verifyGmail: true });
+  const c = await classifyLeadsForEnrollment({ actor, sequenceId, leadIds, recipientEmail, recipientMode, verifyGmail: true });
   const count = (v: string) => [...c.verdicts.values()].filter((x) => x === v).length;
   const result: EnrollLeadsResult = {
     enrolled: 0,
     skipped: 0,
     alreadyActive: count("alreadyActive"),
     missingEmail: count("missingEmail"),
+    addressSuppressed: count("addressSuppressed"),
     noAssignedAgent: count("noAssignedAgent"),
     gmailUnavailable: count("gmailUnavailable"),
     inaccessible: count("inaccessible"),
@@ -313,6 +328,7 @@ export async function getSequenceStartReadiness(sequenceId: string, leadId: stri
   const verdict = c.verdicts.get(leadId);
   if (verdict === "alreadyActive") return { ok: false, code: "ALREADY_ENROLLED", error: "This lead is already actively enrolled in that sequence." };
   if (verdict === "missingEmail") return { ok: false, code: "NOT_ELIGIBLE", error: "This lead has no email address, so a sequence cannot be applied. Add one to the contact first." };
+  if (verdict === "addressSuppressed") return { ok: false, code: "NOT_ELIGIBLE", error: "This lead's email address has unsubscribed or is suppressed (a bounce or complaint), so it cannot receive a sequence. Update the contact's email first." };
   if (verdict === "noAssignedAgent") return { ok: false, code: "NOT_ELIGIBLE", error: "This lead has no assigned agent to send the emails from. Assign an agent first." };
   if (verdict === "inaccessible" || verdict === undefined) return { ok: false, code: "NOT_ELIGIBLE", error: "That lead is not available." };
   if (verdict === "gmailUnavailable" && c.blocked[0]) {
@@ -433,6 +449,8 @@ export async function startSequenceForLead(sequenceId: string, leadId: string, r
     const error =
       r.missingEmail > 0
         ? "This lead has no email address, so a sequence cannot be applied. Add one to the contact first."
+        : r.addressSuppressed > 0
+          ? "This lead's email address has unsubscribed or is suppressed (a bounce or complaint), so it cannot receive a sequence. Update the contact's email first."
         : r.noAssignedAgent > 0
           ? "This lead has no assigned agent to send the emails from. Assign an agent first."
           : r.inaccessible > 0
@@ -529,6 +547,8 @@ async function recoveryOutcome(enrollmentId: string, sequenceId: string, leadId:
  */
 export async function retryEnrollmentNow(enrollmentId: string, leadId?: string): Promise<RecoveryResult> {
   const { actor, existing, step, logs } = await loadForRecovery(enrollmentId, leadId);
+  const limit = await checkAccountRateLimit(actor!.id, "SEQUENCE_RECOVERY", RATE_LIMITS.SEQUENCE_RECOVERY);
+  if (!limit.allowed) return { ok: false, error: `Too many retries. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
   if (existing.status !== "ACTIVE" && existing.status !== "FAILED") return { ok: false, error: "This enrollment is no longer active, so there is nothing to retry." };
   if (!existing.sequence.isActive) return { ok: false, error: "This sequence is switched off. Switch it on to continue." };
   if (!step) return { ok: false, error: "This enrollment has no step left to send." };
@@ -561,6 +581,8 @@ export async function retryEnrollmentNow(enrollmentId: string, leadId?: string):
 export async function resolveUncertainDelivery(enrollmentId: string, decision: "sent" | "resend", leadId?: string): Promise<RecoveryResult> {
   if (decision !== "sent" && decision !== "resend") return { ok: false, error: "Choose 'It was sent' or 'Send again'." };
   const { actor, existing, step, logs } = await loadForRecovery(enrollmentId, leadId);
+  const limit = await checkAccountRateLimit(actor!.id, "SEQUENCE_RECOVERY", RATE_LIMITS.SEQUENCE_RECOVERY);
+  if (!limit.allowed) return { ok: false, error: `Too many requests. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
   const open = openDelivery(logs);
   if (existing.status !== "ACTIVE" || !step || !open) return { ok: false, error: "There is no unconfirmed delivery to resolve for this enrollment." };
   if (open.kind === "IN_FLIGHT" && isRecentInFlight(open.log)) return { ok: false, error: "An email is still being sent. Wait a minute and refresh the page." };
@@ -594,11 +616,12 @@ export async function resolveUncertainDelivery(enrollmentId: string, decision: "
 }
 
 /**
- * Stops an ACTIVE enrollment: it becomes UNSUBSCRIBED and nextSendAt is cleared, so the sequence worker no longer sees it as due; the
- * worker also re-confirms ACTIVE atomically right before each send (see processDueSequenceSteps), so a job already in flight cannot
- * send after this commits. Emails already sent stay in the history. Only an ACTIVE enrollment can be unenrolled - a COMPLETED / FAILED /
- * UNSUBSCRIBED one is left exactly as it is. When `leadId` is given (the lead profile), the enrollment must belong to that lead.
- * Authorization is the existing sequence rule (assertSequenceAccess); the audit entry is written to the lead's Activity history.
+ * Stops an ACTIVE or FAILED enrollment (a FAILED one is a stuck enrollment - Gmail expired, retries used up - that a person decides to end instead of retrying):
+ * it becomes UNSUBSCRIBED with stopReason UNENROLLED, who and when, and nextSendAt is cleared, so the sequence worker no longer sees it as due; the worker also
+ * re-confirms ACTIVE atomically right before each send (see processDueSequenceSteps), so a job already in flight cannot send after this commits. Every remaining
+ * step shows as cancelled and the sent-email history is kept. A COMPLETED / UNSUBSCRIBED / REPLIED one is left exactly as it is. When `leadId` is given (the lead
+ * profile), the enrollment must belong to that lead. Authorization is the existing sequence rule (assertSequenceAccess) plus access to the lead; the action is
+ * written to the lead's Activity history AND to the append-only audit log (who, which enrollment, why).
  */
 export async function unenrollLead(enrollmentId: string, leadId?: string): Promise<{ ok: boolean; error?: string }> {
   const actor = await getCurrentAccount();
@@ -612,9 +635,10 @@ export async function unenrollLead(enrollmentId: string, leadId?: string): Promi
   if (leadId !== undefined && existing.leadId !== leadId) throw new Error(SEQUENCE_NOT_FOUND);
   await assertLeadAccess(actor!, existing.leadId);
 
+  const before = await prisma.sequenceEnrollment.findUnique({ where: { id: enrollmentId }, select: { status: true, currentStepIdx: true } });
   const stopped = await prisma.sequenceEnrollment.updateMany({
-    where: { id: enrollmentId, status: "ACTIVE" },
-    data: { status: "UNSUBSCRIBED", nextSendAt: null },
+    where: { id: enrollmentId, status: { in: ["ACTIVE", "FAILED"] } },
+    data: { status: "UNSUBSCRIBED", nextSendAt: null, waitReason: null, stopReason: "UNENROLLED", stoppedAt: new Date(), stoppedById: actor?.id ?? null },
   });
   if (stopped.count === 0) return { ok: false, error: "This enrollment is no longer active." };
 
@@ -622,8 +646,12 @@ export async function unenrollLead(enrollmentId: string, leadId?: string): Promi
     leadId: existing.leadId,
     actorId: actor?.id,
     type: "SEQUENCE_UNENROLLED",
-    description: `Removed from sequence "${existing.sequence?.name ?? sequence.name}"`,
+    description: `Removed from sequence "${existing.sequence?.name ?? sequence.name}"${before?.status === "FAILED" ? " (it had failed)" : ""}`,
   });
+  // Append-only audit trail: who ended which enrollment and in what state it was. No address, subject or body.
+  await prisma.auditLog
+    .create({ data: { actorId: actor?.id ?? null, action: "SEQUENCE_ENROLLMENT_UNENROLLED", entityType: "SequenceEnrollment", entityId: enrollmentId, metadata: { sequenceId: existing.sequenceId, leadId: existing.leadId, previousStatus: before?.status ?? null, atStep: (before?.currentStepIdx ?? 0) + 1 } } })
+    .catch((err: unknown) => console.error("[unenroll] audit write failed", err instanceof Error ? err.name : "error"));
   revalidatePath(`/sequences/${existing.sequenceId}`);
   revalidatePath(`/leads/${existing.leadId}`);
   return { ok: true };

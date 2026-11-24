@@ -103,6 +103,8 @@ vi.mock("@/lib/prisma", () => {
     },
     account: { findUnique: vi.fn(async () => ({ id: "sender-1", fullName: "Sender", email: "sender@crm.test" })) },
     emailLog: { create: vi.fn(async () => ({})) },
+    // The mailbox's daily allowance also counts its SEQUENCE emails (server/sender-quota.ts). These tests have none.
+    sequenceStepLog: { count: vi.fn(async () => 0) },
   };
   return { prisma: prismaFake };
 });

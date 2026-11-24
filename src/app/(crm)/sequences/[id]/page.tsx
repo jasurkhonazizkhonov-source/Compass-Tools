@@ -7,6 +7,7 @@ import { getCurrentAccount } from "@/lib/dev-session";
 import { canViewSequencesPage, canManageAllSequences, canManageSequences } from "@/lib/permissions";
 import { StepEditor } from "@/components/sequences/step-editor";
 import { EnrollLeadsDialog } from "@/components/sequences/enroll-leads-dialog";
+import { EnrollAllContactsDialog } from "@/components/sequences/enroll-all-contacts-dialog";
 import { SequenceEnrollmentsTable } from "@/components/sequences/sequence-enrollments-table";
 import { SequenceActiveToggle } from "@/components/sequences/sequence-active-toggle";
 import { SequenceDeleteButton } from "@/components/sequences/sequence-row-actions";
@@ -62,6 +63,7 @@ export default async function SequenceDetailPage({ params, searchParams }: { par
           <div className="flex flex-wrap items-center gap-3">
             <SequenceActiveToggle sequenceId={sequence.id} isActive={sequence.isActive} />
             <EnrollLeadsDialog sequenceId={sequence.id} sequenceName={sequence.name} leads={leads} />
+            {sequence.isActive && sequence.steps.length > 0 && canUnenroll && <EnrollAllContactsDialog sequenceId={sequence.id} sequenceName={sequence.name} />}
             {canDelete && <SequenceDeleteButton sequenceId={sequence.id} name={sequence.name} redirectTo="/sequences" />}
           </div>
         </div>
