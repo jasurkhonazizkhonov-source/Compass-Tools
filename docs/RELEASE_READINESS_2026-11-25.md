@@ -57,7 +57,7 @@ This is the single place that says **what was verified, how, and what was not**.
 
 ## Browsers and screens
 
-Tested: the in-app browser (a Chromium engine) at 1280, 768 and 375 pixels for the sign-in page; ~1100 pixels for the CRM pages above; ~800 pixels for the Contacts selection and its dialog. **Not tested:** Firefox (not installed), Safari/WebKit (not available on Windows), Chrome and Edge as separate products (installed, but not drivable from here without acting inside the user's own signed-in browser), real phones, keyboard-only navigation and screen readers beyond the accessible names read from the page. Constructable stylesheets (theme switch) fall back to a nonce'd `<style>` on older Safari.
+Tested: the in-app browser (a Chromium engine) at 1280, 768 and 375 pixels for the sign-in page; ~1100 pixels for the CRM pages above; ~800 and **375 pixels** for the Contacts selection and the Add to sequence dialog (no horizontal overflow, the dialog fits the screen with full-width buttons). **Observed, not changed** (the established UI was kept): at 375 pixels the row checkboxes are 16x16, the dialog buttons 32 px high and its close button 28x28, all below the usual 44-pixel touch target. **Not tested:** Firefox (not installed), Safari/WebKit (not available on Windows), Chrome and Edge as separate products (installed, but not drivable from here without acting inside the user's own signed-in browser), real phones, keyboard-only navigation and screen readers beyond the accessible names read from the page. Constructable stylesheets (theme switch) fall back to a nonce'd `<style>` on older Safari.
 
 ## Blockers and the exact action for each
 
