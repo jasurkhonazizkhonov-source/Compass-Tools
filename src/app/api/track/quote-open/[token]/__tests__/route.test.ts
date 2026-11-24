@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const track = vi.fn(async (..._args: unknown[]) => undefined);
+const track = vi.fn<(token: string) => Promise<void>>(async () => undefined);
 const limit = vi.fn();
-vi.mock("@/server/actions/booking", () => ({ trackQuoteView: (...a: unknown[]) => track(...a) }));
+vi.mock("@/server/actions/booking", () => ({ trackQuoteView: (token: string) => track(token) }));
 vi.mock("@/server/security/rate-limit", () => ({ checkPublicRateLimit: (...a: unknown[]) => limit(...a), RATE_LIMITS: { QUOTE_OPEN_TRACKING: { windowMs: 900_000, maxAttempts: 600 } } }));
 
 const call = async () => {
