@@ -6,6 +6,7 @@ import Script from "next/script";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
 import { getGoogleLoginNonce, signInWithGoogle } from "@/server/actions/google-auth";
+import { classifyMoment, mayPromptOneTap, readDismissedAt, recordDismissal, safeStorage, type OneTapMoment } from "@/lib/google-one-tap";
 
 // Google Identity Services' own official button — loaded via its script
 // and rendered through google.accounts.id.renderButton(), never a
@@ -17,8 +18,20 @@ declare global {
     google?: {
       accounts: {
         id: {
-          initialize: (config: { client_id: string; nonce?: string; callback: (response: GoogleCredentialResponse) => void }) => void;
+          initialize: (config: {
+            client_id: string;
+            nonce?: string;
+            callback: (response: GoogleCredentialResponse) => void;
+            auto_select?: boolean;
+            cancel_on_tap_outside?: boolean;
+            use_fedcm_for_prompt?: boolean;
+            itp_support?: boolean;
+            context?: "signin" | "signup" | "use";
+          }) => void;
           renderButton: (parent: HTMLElement, options: Record<string, unknown>) => void;
+          /** Google's own account suggestion (One Tap). Drawn by Google or, with FedCM, by the browser; the callback learns what happened to it. */
+          prompt: (listener?: (moment: OneTapMoment) => void) => void;
+          cancel: () => void;
         };
       };
     };
@@ -134,10 +147,27 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
     window.google.accounts.id.initialize({
       client_id: clientId,
       nonce,
+      // Never sign anyone in without a click: the suggestion only offers "Continue as ..." and nothing happens until it is used.
+      auto_select: false,
+      // Tapping elsewhere on the page closes the suggestion instead of leaving it hanging over the sign-in form.
+      cancel_on_tap_outside: true,
+      // FedCM is the browser-mediated mechanism Google is moving One Tap to (Chrome and others no longer allow the older third-party-cookie one). Where a browser does not
+      // support it, Google falls back by itself; where nothing is possible the suggestion simply does not appear and the button is the way in.
+      use_fedcm_for_prompt: true,
+      itp_support: true,
+      context: "signin",
       callback: (response) => {
+        // The SAME callback serves the button and the suggestion: either way the credential goes to the server, which verifies it, checks the nonce bound to this browser and
+        // applies the account rules. Nothing from the browser (name, picture, e-mail) is trusted.
         if (signingInRef.current) return;
         signingInRef.current = true;
         setIsSigningIn(true);
+        // The suggestion has done its job (or was bypassed by the button): take it down so it cannot be used a second time.
+        try {
+          window.google?.accounts.id.cancel();
+        } catch {
+          // ignore
+        }
         clearSafetyNet();
         safetyNetRef.current = setTimeout(() => {
           toast.error("Sign-in is taking longer than expected. Please try again.");
@@ -211,7 +241,33 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       // 320/375/390/430px and unchanged visually at desktop sizes.
       width: 232,
     });
+
+    // Ask Google to show its account suggestion too (in addition to the button, never instead of it). Whether it appears is Google's and the browser's decision.
+    const storage = safeStorage(window);
+    if (mayPromptOneTap({ dismissedAt: readDismissedAt(storage), signingIn: signingInRef.current, hidden: document.visibilityState === "hidden" })) {
+      try {
+        window.google.accounts.id.prompt((moment) => {
+          // Only a person closing it is remembered (so it is not shown again for a day); "not shown" / "skipped" are Google's own reasons (no account, privacy settings, its
+          // cooldown) and are never turned into an error message: the button below is always there.
+          if (classifyMoment(moment) === "dismissed") recordDismissal(storage);
+        });
+      } catch {
+        // A browser or setting that does not support the suggestion must never break the sign-in page.
+      }
+    }
   }, [scriptLoaded, nonce, clientId, router]);
+
+  // Leaving the page (or signing in some other way) takes the suggestion down with it.
+  useEffect(
+    () => () => {
+      try {
+        window.google?.accounts.id.cancel();
+      } catch {
+        // ignore
+      }
+    },
+    []
+  );
 
   return (
     <div className="flex flex-col items-center gap-3">

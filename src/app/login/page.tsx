@@ -9,6 +9,7 @@ import { noIndexMetadata } from "@/lib/marketing/seo";
 import { redirect } from "next/navigation";
 import { SESSION_END_MESSAGES, isSessionEndReason } from "@/lib/session-token";
 import { Users2, FileText, PlaneTakeoff, ShieldCheck } from "lucide-react";
+import { PRIVACY_POLICY_URL, TERMS_OF_SERVICE_URL } from "@/lib/google-one-tap";
 
 export const dynamic = "force-dynamic";
 
@@ -50,6 +51,13 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
   const current = await getCurrentAccount();
   if (current) {
     redirect("/dashboard");
+  }
+  // A deployment with no Google client configured must say so, not crash the sign-in page with a 500: nobody could then even read what is wrong.
+  let googleClientId: string | null = null;
+  try {
+    googleClientId = getGoogleClientId();
+  } catch {
+    googleClientId = null;
   }
   const sp = await searchParams;
   const expired = sp.reason === "expired";
@@ -136,8 +144,28 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
             </div>
 
             <div className="mt-6 flex justify-center">
-              <GoogleSignInButton clientId={getGoogleClientId()} />
+              {googleClientId ? (
+                <GoogleSignInButton clientId={googleClientId} />
+              ) : (
+                <p role="alert" className="text-center text-sm text-destructive" data-testid="google-not-configured">
+                  Google sign-in is not configured on this server. Ask your administrator to set it up (GOOGLE_CLIENT_ID).
+                </p>
+              )}
             </div>
+
+            {/* What Google shares, stated next to the sign-in controls and linked to the real documents. Google's own suggestion and account chooser show their own, official
+                wording; this is the surrounding disclosure for this application. */}
+            <p className="mt-5 text-center text-xs leading-relaxed text-muted-foreground" data-testid="google-disclosure">
+              When you continue with Google, Google shares your name, email address and profile picture with {PRODUCT_NAME}. See the{" "}
+              <a href={PRIVACY_POLICY_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">
+                Privacy Policy
+              </a>{" "}
+              and{" "}
+              <a href={TERMS_OF_SERVICE_URL} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-foreground">
+                Terms of Service
+              </a>
+              .
+            </p>
           </div>
 
           <p className="text-center text-xs text-muted-foreground">

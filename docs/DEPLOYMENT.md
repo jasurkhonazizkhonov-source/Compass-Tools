@@ -213,6 +213,39 @@ needs **no** redirect URI. The OAuth consent screen must be published to the use
 Do not call Google sign-in production-ready for a domain until someone has signed in there with a real account (and with an account that is not
 registered, to see the refusal), exactly as §2a describes.
 
+#### Google One Tap (the account suggestion above the form)
+
+In addition to the visible **Continue with Google** button, the sign-in page asks Google to show **its own** account suggestion ("Continue as ...")
+using Google Identity Services' official `google.accounts.id.prompt()`. The application draws nothing that imitates it; whether and how it appears
+(Google's popup, or the browser's own FedCM account chooser) is decided by Google and the browser. The button stays, and is the way in whenever the
+suggestion does not appear.
+
+* **Same verified path.** The suggestion and the button share one callback and one server check (§2a.1 above): signature, issuer, audience, expiry,
+  verified email, the `compass_google_bind` nonce, then the existing account rules. A suggestion never creates, links or approves an account, never
+  grants a role, and the browser sends the server **only** Google's credential (never a name, e-mail or picture).
+* **Settings we pass:** `auto_select: false` (nothing signs in without a click), `cancel_on_tap_outside: true`, `use_fedcm_for_prompt: true`,
+  `itp_support: true`, `context: "signin"`. The suggestion is requested only after the nonce binding exists and the button is drawn, never in a
+  background tab, and never while a sign-in is running. After the person **closes** it we do not ask again for 24 hours (kept in this browser's
+  local storage; Google applies its own, longer cooldown after repeated closes). It is taken down when a credential is received and when the page is left.
+* **When it does not appear** (no Google account signed in in that browser, FedCM or third-party sign-in blocked, privacy mode, an older browser, Google's cooldown,
+  an unconfigured client): nothing is shown and no error is raised; the button works as before. If `GOOGLE_CLIENT_ID` is missing the page says so
+  instead of failing.
+* **What Google's own consent text says** (name, email address and profile picture are shared with the site, with links to the site's privacy policy and terms)
+  is controlled in Google Cloud, not in this code. Under **Google Auth Platform > Branding** set the app name, logo, **Application home page**,
+  **Privacy policy link** and **Terms of service link**. The sign-in page also states what is shared and links the same documents. The real published
+  URLs are `https://www.businessflights.travel/privacy-policy` and `https://www.businessflights.travel/terms-of-service` (checked 2026-11-24;
+  `/terms-of-use` does **not** exist and must not be used). If the legal pages move, change `src/lib/google-one-tap.ts` and the Branding page together.
+* **Google Cloud requirements (yours to do and verify):** the exact production origin (and `http://localhost` plus `http://localhost:<port>` for development) under
+  **Authorized JavaScript origins**; the consent screen published (or the person added as a test user); for FedCM, the page must be served over HTTPS
+  and, if you later embed the page in a frame, the frame needs `allow="identity-credentials-get"`. This application already sends
+  `Cross-Origin-Opener-Policy: same-origin-allow-popups` (Google's recommended value; a stricter `same-origin` would break Google's popup fallback) and its
+  Content-Security-Policy already allows `https://accounts.google.com` for `connect-src`, `frame-src` and the button stylesheet (`src/lib/csp.ts`).
+* **Status:** implemented and covered by automated tests (first-time and returning visitor, dismissal and cooldown, hidden tab, no storage, a Google SDK
+  without `prompt()`, `prompt()` throwing, a FedCM moment API that is missing or throws, invalid/expired/wrong-audience/replayed/wrong-nonce credentials, rate
+  limit, access denied, double tap, the button still drawn). **What no test here can show is Google actually displaying the suggestion:** that needs a real
+  Google client ID whose Authorized JavaScript origins include the domain, and a browser with a signed-in Google account. Do not call One Tap
+  production-ready for a domain until that has been seen on that domain.
+
 ## 2b. `INITIAL_ADMIN_EMAIL` — how the first Admin gets created
 
 `INITIAL_ADMIN_EMAIL` names the exact Google account that becomes this
