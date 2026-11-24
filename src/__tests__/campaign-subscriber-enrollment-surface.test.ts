@@ -108,3 +108,32 @@ describe("sequences: enrollment status and Unenroll stay in the Sequences areas"
     expect(outsideDialog).not.toMatch(/role="alert"|role="status"|<Alert\b/);
   });
 });
+
+describe("lead page: enrollment cannot move the navigation menu (regression for the removed 'Active sequence' block)", () => {
+  // Until commit 75df7b7 the lead page rendered <LeadActiveSequencesNotice> between the header and the two-column grid whenever the lead had an ACTIVE enrollment: a bordered
+  // card in the normal flow that pushed the grid, and with it the Notes / Tasks / Quotes / Booking / Sequences / Activity / Files menu, down the page. A lead that was not enrolled
+  // (or had been unenrolled) had the menu higher up. The release deployed before 75df7b7 still shows it. These checks keep it from coming back in any form.
+  const page = read("src/app/(crm)/leads/[id]/page.tsx");
+  const root = page.indexOf('<div className="space-y-5">');
+  const grid = page.indexOf('<div className="grid grid-cols-1 gap-5 lg:grid-cols-[360px_1fr]">');
+
+  it("the tabbed card (the Notes / Tasks / Quotes / Booking / Sequences / Activity / Files menu) is the FIRST thing in the right-hand column: nothing sits between the left column and it", () => {
+    expect(root).toBeGreaterThan(0);
+    expect(grid).toBeGreaterThan(root);
+    // closing tag of the left column, then straight into the card that holds <Tabs>; the removed notice used to sit exactly here
+    expect(page).toMatch(/<\/div>\s*<Card className="shadow-none">\s*<CardContent className="pt-2">\s*<Tabs defaultValue="notes">/);
+    // and nothing about sequences or enrollment sits between the top of the page and the grid
+    expect(page.slice(root, grid)).not.toMatch(/sequence|enroll/i);
+  });
+
+  it("enrollment state does not appear in any condition that renders something in the page flow outside the Sequences tab: the only uses are the tab's count and its panel", () => {
+    const uses = [...page.matchAll(/^.*\b(enrollments|enrollment)\b.*$/gm)].map((m) => m[0].trim());
+    for (const line of uses) {
+      expect(/TabsTrigger value="sequences"|<LeadSequencesPanel|enrollments=\{enrollments\}|const enrollments =|getApplicableSequences|lead\.enrollments\.map|sequence table/.test(line) || /^\/\//.test(line) || /^\/?\*/.test(line), `unexpected use of enrollment state: ${line}`).toBe(true);
+    }
+  });
+
+  it("no component renders an enrollment block as a bordered region meant for a page's main flow (the removed test id and heading are gone everywhere)", () => {
+    expect(filesWith(/active-sequences-notice|active-sequences-heading|LeadActiveSequencesNotice/)).toEqual([]);
+  });
+});
