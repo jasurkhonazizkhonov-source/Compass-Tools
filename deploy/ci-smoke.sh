@@ -21,6 +21,8 @@ install -d -m 0700 "$UPLOADS"
 if [ "$(id -u)" != "1000" ]; then sudo chown 1000:1000 "$UPLOADS"; fi
 cleanup() {
   docker compose down -v --remove-orphans >/dev/null 2>&1 || true
+  # The .env copy made for the recovery rehearsal (below), only if THIS run made it.
+  [ "${SMOKE_ENV_COPY:-}" = "1" ] && rm -f .env
   # Files in the mount are owned by uid 1000, which may not be us.
   rm -rf "$UPLOADS" 2>/dev/null || sudo rm -rf "$UPLOADS" 2>/dev/null || true
   rm -rf "$TMP"
@@ -197,6 +199,11 @@ grep -q '"status":"ok"' "$TMP/job.log" && ok "job reported ok" || fail "the clea
 grep -q "$CRON_SECRET" "$TMP/job.log" && fail "the job log contains the secret" || ok "the secret is not in the job log"
 
 step "Recovery rehearsal: a dump made by the app restores with deploy/restore-db.sh - test restore, then onto a brand-new EMPTY database (the replacement-server case)"
+# restore-db.sh, like every script in deploy/, insists on the project's own .env (common.sh check_env_file: it must exist and be mode 600), while this run keeps its generated
+# settings in $TMP/env (COMPOSE_ENV_FILES). Give the rehearsal the same settings under the name the script checks for, and remove them in cleanup(). A real .env is never overwritten.
+[ ! -e .env ] || fail "a .env already exists in the checkout: the smoke test will neither use nor overwrite it"
+install -m 600 "$TMP/env" .env
+SMOKE_ENV_COPY=1
 # 1. The harmless test restore (into a throw-away database; the live one is untouched).
 verify_out="$(bash deploy/restore-db.sh "$TMP/smoke.dump" 2>&1)" || { printf '%s\n' "$verify_out" >&2; fail "restore-db.sh --verify failed"; }
 case "$verify_out" in *"Test restore OK"*) ok "restore-db.sh (test restore) read the app's dump and restored it into a temporary database" ;; *) printf '%s\n' "$verify_out" >&2; fail "restore-db.sh did not report a successful test restore" ;; esac

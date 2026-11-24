@@ -56,6 +56,17 @@ describe("Database Backup deployment", () => {
     expect(smoke).toContain("/api/admin/database-backup/");
   });
 
+  it("the CI smoke test gives restore-db.sh the .env it insists on (mode 600, before the call), never overwrites a real one, and removes its copy", () => {
+    // restore-db.sh -> common.sh check_env_file needs ./.env; the smoke run's own settings live in $TMP/env. The first run of the recovery rehearsal in CI failed with ".env not found".
+    const copy = smoke.indexOf('install -m 600 "$TMP/env" .env');
+    const firstCall = smoke.indexOf("bash deploy/restore-db.sh");
+    expect(copy).toBeGreaterThan(-1);
+    expect(firstCall).toBeGreaterThan(-1);
+    expect(copy).toBeLessThan(firstCall);
+    expect(smoke).toContain("[ ! -e .env ]");
+    expect(smoke).toMatch(/\[ "\$\{SMOKE_ENV_COPY:-\}" = "1" \] && rm -f \.env/);
+  });
+
   it("the documentation states what the feature leaves out and that there is no in-app restore", () => {
     const doc = read("docs", "DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md");
     expect(doc).toMatch(/Not an in-app restore/);
