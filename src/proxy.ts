@@ -88,6 +88,10 @@ export async function proxy(request: NextRequest) {
   if (request.nextUrl.pathname.startsWith("/quote/")) return nextWithNonceCsp(request);
   // The sign-in page: public (no session gate - it is where people sign in), rendered on every request, so it gets the same strict policy as the CRM, plus Google's stylesheet.
   if (request.nextUrl.pathname === "/login") return nextWithNonceCsp(request, { googleSignIn: true });
+  // The marketing home page and the access-denied page are public and rendered on every request (each looks at the session cookie itself and redirects a signed-in visitor), so they
+  // can carry a nonce and need no 'unsafe-inline' for scripts. The other marketing pages are pre-rendered at build time and cannot (docs/CSP.md). No session gate here: both pages
+  // do their own check and must stay reachable when signed out.
+  if (request.nextUrl.pathname === "/" || request.nextUrl.pathname === "/access-denied") return nextWithNonceCsp(request);
 
   const token = request.cookies.get(DEV_ACCOUNT_COOKIE)?.value;
 
@@ -208,6 +212,8 @@ export const config = {
     // everyone else. /dashboard itself remains fully gated below.
     "/quote/:path*",
     "/login",
+    "/",
+    "/access-denied",
     "/dashboard",
     "/dashboard/:path*",
     "/leads/:path*",

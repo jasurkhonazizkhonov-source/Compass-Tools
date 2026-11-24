@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Script from "next/script";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
+import { CspNonceProvider } from "@/components/csp-nonce-provider";
 import { themeInitScript } from "@/lib/theme-script";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
@@ -66,6 +67,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <Script id="theme-init" strategy="beforeInteractive">
           {`(${themeInitScript.toString()})();`}
         </Script>
+        <CspNonceProvider />
         <ThemeProvider>
           <TooltipProvider delayDuration={200}>
             {children}

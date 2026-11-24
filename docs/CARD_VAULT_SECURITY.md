@@ -420,11 +420,13 @@ Open, not fixed by this work:
 - **CSP:** the card-entry page and every signed-in CRM page now use a strict
   per-request **nonce** policy (`script-src 'self' 'nonce-…' 'strict-dynamic'`) —
   injected inline script and inline event handlers are refused (verified in a real
-  browser). **Still open:** `style-src` keeps `'unsafe-inline'` (inline style
-  attributes from the UI libraries cannot carry a nonce); the public marketing and
-  login pages keep the older policy with `'unsafe-inline'` scripts because
-  statically generated pages cannot carry a per-request nonce; and a CSP does not
-  stop an already-trusted script or dependency from misbehaving.
+  browser). Style *elements* need the nonce too (updated 2026-11-24); only style
+  *attributes* keep `'unsafe-inline'` (they cannot carry a nonce). **Still open:** the
+  13 pre-rendered marketing pages keep `'unsafe-inline'` scripts because statically
+  generated pages cannot carry a per-request nonce (they show and accept no card
+  data); the sign-in page has strict scripts but `'unsafe-inline'` styles (Google's
+  script adds an inline `<style>`); and a CSP does not stop an already-trusted script
+  or dependency from misbehaving. Full list and evidence: `docs/CSP.md`.
 - **Audit log** append-only enforcement is at the application role/trigger level,
   not a write-once external store.
 - **Backups**: encryption, retention and access are unverified from code.

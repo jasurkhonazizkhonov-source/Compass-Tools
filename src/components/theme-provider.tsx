@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { getCspNonce } from "@/lib/csp-nonce-client";
 
 /**
  * Self-contained replacement for next-themes.
@@ -67,22 +68,36 @@ function readStoredTheme(): Theme {
 /** Mirrors next-themes' disableTransitionOnChange: briefly forces every
  * element's CSS transitions off while the .dark class flips, so switching
  * themes doesn't animate every color property at once. */
+const NO_TRANSITIONS = "*,*::before,*::after{transition:none!important}";
+
 function withTransitionsDisabled(fn: () => void) {
-  const css = document.createElement("style");
-  css.appendChild(
-    document.createTextNode(
-      "*,*::before,*::after{transition:none!important}"
-    )
-  );
-  document.head.appendChild(css);
+  // A constructable stylesheet is not a <style> element, so the page's Content-Security-Policy (which refuses injected style elements) does not apply to it and no nonce is
+  // needed. Browsers without it (older Safari) fall back to a <style> element, carrying the page's nonce where there is one.
+  let restore: () => void;
+  try {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(NO_TRANSITIONS);
+    const previous = document.adoptedStyleSheets;
+    document.adoptedStyleSheets = [...previous, sheet];
+    restore = () => {
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+    };
+  } catch {
+    const css = document.createElement("style");
+    const nonce = getCspNonce();
+    if (nonce) css.nonce = nonce;
+    css.appendChild(document.createTextNode(NO_TRANSITIONS));
+    document.head.appendChild(css);
+    restore = () => {
+      css.remove();
+    };
+  }
   fn();
   // Force a style recalculation before removing the override, matching
   // next-themes' own implementation, so the disabled state actually applies
   // to the change made inside fn() before transitions are re-enabled.
   void window.getComputedStyle(document.body).colorScheme;
-  window.setTimeout(() => {
-    document.head.removeChild(css);
-  }, 0);
+  window.setTimeout(restore, 0);
 }
 
 function applyResolvedTheme(resolved: "light" | "dark") {

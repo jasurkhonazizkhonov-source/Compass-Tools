@@ -152,11 +152,16 @@ describe("proxy — implausible session cookies never reach the database", () =>
 });
 
 describe("proxy — matcher config", () => {
-  it("does not list \"/\" — the public marketing homepage manages its own auth check and must not be redirected to /login", async () => {
-    const { config } = await import("../proxy");
+  it("the public marketing homepage manages its own auth check and must never be redirected to /login: since 2026-11-24 \"/\" IS in the matcher, but only so it can carry the per-request nonce policy - it is never gated", async () => {
+    const { config, proxy } = await import("../proxy");
 
-    expect(config.matcher).not.toContain("/");
     expect(config.matcher).toContain("/get-in-touch/:path*");
+    expect(config.matcher).toContain("/");
+    findUnique.mockClear();
+    const response = await proxy(new NextRequest("http://localhost:3000/"));
+    expect(response.headers.get("location")).toBeNull(); // not redirected, signed in or not
+    expect(findUnique).not.toHaveBeenCalled(); // and no session lookup: the page does its own check
+    expect(response.headers.get("content-security-policy")).toMatch(/'nonce-/);
   });
 });
 

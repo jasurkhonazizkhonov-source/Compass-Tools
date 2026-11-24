@@ -35,6 +35,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { InputDialog } from "@/components/crm/input-dialog";
 import { cn } from "@/lib/utils";
+import { getCspNonce } from "@/lib/csp-nonce-client";
 import { COLOR_SWATCHES, FONT_SIZES, HIGHLIGHT_SWATCHES, LINE_SPACINGS, emailEditorExtensions } from "@/components/email-editor/extensions";
 
 /**
@@ -64,6 +65,8 @@ export function RichTextEditor({
 }) {
   const editor = useEditor({
     immediatelyRender: false,
+    // The editor adds one <style> element with its base styles; under the strict policy it must carry this page's nonce.
+    injectNonce: getCspNonce(),
     extensions: emailEditorExtensions(),
     content: value,
     onUpdate: ({ editor }) => onChange(editor.getHTML()),
