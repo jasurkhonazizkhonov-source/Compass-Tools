@@ -66,4 +66,19 @@ Look for: `[sequence-sender]` (category-only errors), `[gmail-send]` lines (neve
 - **Duplicate email reported**: pull the lead's `SequenceStepLog` rows and `EmailLog` for the step; check for a `RESOLVED:` row (a person chose "Send again") before treating it as a defect; open an incident with the log lines and the enrollment id (no email content).
 - **Stalled scheduler**: System Health shows Stalled with an error category; check database reachability first; recovery is automatic on the next successful run.
 
+## 10. Reply detection with a REAL mailbox (the one check no automated test can make) [P]
+
+**Status: not performed.** Every reply test so far uses a scripted mailbox. Do not call reply detection production-ready until this section has been completed once on the real deployment.
+
+Safety rules: use a **dedicated sending mailbox** (a CRM account created for the test, with its own Gmail connected) and **test recipients you own** (two throw-away mailboxes: "Recipient A", "Recipient B"). Never a real customer, never a real campaign list. Nothing here needs production data, a production secret or a schema change.
+
+1. **Prerequisites.** The sending account's Gmail was (re)connected **after** the release that adds the `gmail.metadata` permission (older connections hold only `gmail.send`); System Health > "Reply detection" shows that mailbox under "can detect replies". The Google OAuth consent screen lists `gmail.metadata`; while the app is in Testing, the sender and both recipients' Google accounts are listed as test users, otherwise Google verification of the restricted scope is required first (docs/DEPLOYMENT.md 2c).
+2. **Set up.** A two-step sequence (step 2 after 1 day or more) and two contacts - one **without a lead** (contact-only) and one **with a lead** - each with a recipient address you own; enroll both. Check each enrollment shows Active and the first email arrives from the dedicated mailbox.
+3. **A genuine reply stops the right enrollment.** Reply from Recipient A to the first email, with some text. Within about two minutes (one poller pass; or call `GET /api/cron/sequence-replies` with the bearer secret) the enrollment of A shows *Replied - automatically stopped*, the Activity entry "The customer replied..." appears on the contact/lead, and step 2 is cancelled. B is still Active.
+4. **Unrelated messages stop nothing.** From a third address send the dedicated mailbox a **new** message (a different conversation); B's enrollment must stay Active. Forward nothing.
+5. **Automatic replies and bounces do not count.** Turn on an out-of-office (vacation) auto-reply in Recipient B's mailbox, so it answers the sequence email by itself: that auto-reply arrives in the conversation, and B must stay Active. Then enroll a contact with a deliberately non-existent address at a real domain you control: the bounce notice must not stop anything and must not be recorded as a reply.
+6. **Idempotent and no duplicates.** Wait for two more poller passes: the reply count on A stays 1, no second Activity entry, no second audit entry (`SEQUENCE_STOPPED_BY_REPLY`).
+7. **Evidence to keep:** the enrollment rows (status, stopReason, stoppedAt), the single `SequenceReply` row, the audit entry, System Health's reply-detection panel, and the absence of message bodies/subjects in the logs (grep the last hour of logs for the test subject: no match).
+8. Remove the test enrollments, contacts and the dedicated account afterwards.
+
 Nothing in this runbook authorizes production changes; each section needs the operator's own change approval.

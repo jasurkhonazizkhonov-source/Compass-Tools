@@ -275,6 +275,9 @@ export const RATE_LIMITS = {
    * dozen in a quarter of an hour at the very most; a hijacked session or a script would send hundreds. The recipient of each is checked separately (it must be an address on file),
    * and the Gmail daily allowance still applies: this only bounds how fast a single account can fire them. */
   STAFF_EMAIL_SEND: { windowMs: 15 * 60 * 1000, maxAttempts: 100 } satisfies RateLimitConfig,
+  /** The quote-opened tracking pixel (public, one database lookup per request), per client IP. Generous on purpose: a company mail gateway that pre-fetches every image of every
+   * quote email arrives from ONE address, and only the read-receipt (never a page, never a customer's access) depends on it. Over the ceiling the pixel is still answered, it just is not recorded. */
+  QUOTE_OPEN_TRACKING: { windowMs: 15 * 60 * 1000, maxAttempts: 600 } satisfies RateLimitConfig,
   /** Retry / resolve a stuck sequence enrollment (each one can send a real email), per staff account. */
   SEQUENCE_RECOVERY: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
 } as const;
