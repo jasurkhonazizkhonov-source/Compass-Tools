@@ -56,8 +56,17 @@ describe("website API route", () => {
   });
 
   it("is strict, never accepts a company or idempotency key from the body, and reuses the shared creation core", () => {
-    expect(route).toContain(".strict()");
-    expect(route).toContain(".omit({ submissionId: true })");
+    // The strict schema lives in lead-intake.ts (exported so the contract test validates the very same schema); the route must use it and define none of its own.
+    const intake = code(read("src", "server", "lead-intake.ts"));
+    const schema = intake.match(/export const websiteFlightInquirySchema = ([^;]+);/)?.[1] ?? "";
+    expect(schema).toContain("flightInquiryBase");
+    expect(schema).toContain(".omit({ submissionId: true })"); // the idempotency key is a header, never a body field
+    expect(schema).toContain(".strict()"); // unknown fields (a company, a status, anything) are an error
+    expect(schema.indexOf(".omit(")).toBeLessThan(schema.indexOf(".strict()"));
+    expect(schema).not.toMatch(/companyId/); // the company is fixed by the credential, never taken from the body
+    expect(route).toMatch(/import \{[^}]*\bwebsiteFlightInquirySchema\b[^}]*\} from "@\/server\/lead-intake"/);
+    expect(route).toMatch(/const apiSchema = websiteFlightInquirySchema;/);
+    expect(route).not.toMatch(/z\.object|flightInquiryBase|\.strict\(\)/); // no second, looser schema in the route
     expect(route).not.toMatch(/companyId:\s*(data|parsed|json|body)/);
     expect(route).toContain("websiteApiCompanyId()");
     expect(route).not.toMatch(/prisma\.(lead|contact)\.(create|update|upsert)/); // creation goes through src/server/lead-intake.ts only

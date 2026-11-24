@@ -4,7 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { checkAccountRateLimit, RATE_LIMITS } from "@/server/security/rate-limit";
 import { arrivedViaPublicEdge, authenticateWebsiteApi, publicRouteAllowed, websiteApiCompanyId } from "@/server/security/website-api-auth";
 import { buildLeadSubmissionInfoCreate, withLocalLocation } from "@/server/lead-submission-info";
-import { createWebsiteFlightLead, flightInquiryBase, refineFlexibility, refinePhone } from "@/server/lead-intake";
+import { createWebsiteFlightLead, websiteFlightInquirySchema } from "@/server/lead-intake";
 import { auditWebsiteApi } from "@/server/website-api-audit";
 import { guardWebsiteRequest } from "@/server/website-signature-guard";
 
@@ -85,13 +85,8 @@ function canonical(value: unknown): string {
   return JSON.stringify(value);
 }
 
-const apiSchema = flightInquiryBase
-  // The idempotency key travels in the Idempotency-Key header only; a body "submissionId" (or "companyId", or anything else unknown) is an
-  // error, not silently ignored - the caller should learn about a mistake instead of believing it took effect.
-  .omit({ submissionId: true })
-  .strict()
-  .superRefine(refinePhone)
-  .superRefine(refineFlexibility);
+// The strict body schema lives in lead-intake.ts (websiteFlightInquirySchema) so the contract test validates the very same schema.
+const apiSchema = websiteFlightInquirySchema;
 
 /**
  * Safety net only. Every expected outcome below already returns its own documented status; this catches what nothing anticipated (for

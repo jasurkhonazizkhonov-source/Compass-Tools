@@ -94,6 +94,13 @@ export function refinePhone(data: { phone: string }, ctx: z.RefinementCtx): void
 }
 
 /**
+ * The STRICT body schema of POST /api/v1/website/flight-inquiries (the route imports it from here so a test can run the very same schema).
+ * The idempotency key travels in the Idempotency-Key header only; a body "submissionId" (or "companyId", or anything else unknown) is an
+ * error, not silently ignored - the caller should learn about a mistake instead of believing it took effect.
+ */
+export const websiteFlightInquirySchema = flightInquiryBase.omit({ submissionId: true }).strict().superRefine(refinePhone).superRefine(refineFlexibility);
+
+/**
  * True only for a unique-constraint violation on the Lead table's PRIMARY KEY (its `id`), i.e. another request with the same derived id
  * won the insert. Any other failure - a different unique constraint (say the contact's), a connection error, a timeout, a failed nested
  * write - is NOT a duplicate and must surface as a failure the caller can retry.
