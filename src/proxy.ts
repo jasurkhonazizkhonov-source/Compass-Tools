@@ -71,9 +71,9 @@ const ROUTE_GUARDS: Array<{ prefix: string; allowed: (role: AccountRole | undefi
 // Next.js reads the nonce from the request's CSP header while server-rendering
 // and stamps it on its own scripts; the same policy goes back on the response.
 // Used only for dynamically rendered routes that show or accept card data.
-function nextWithNonceCsp(request: NextRequest) {
+function nextWithNonceCsp(request: NextRequest, options: { googleSignIn?: boolean } = {}) {
   const nonce = newNonce();
-  const csp = buildNonceCsp(nonce, process.env.NODE_ENV === "development");
+  const csp = buildNonceCsp(nonce, process.env.NODE_ENV === "development", options);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
   requestHeaders.set("Content-Security-Policy", csp);
@@ -86,6 +86,8 @@ export async function proxy(request: NextRequest) {
   // The customer's card-entry / confirmation pages are public (a secure token is
   // the credential): no session gate, but they get the strict nonce policy.
   if (request.nextUrl.pathname.startsWith("/quote/")) return nextWithNonceCsp(request);
+  // The sign-in page: public (no session gate - it is where people sign in), rendered on every request, so it gets the same strict policy as the CRM, plus Google's stylesheet.
+  if (request.nextUrl.pathname === "/login") return nextWithNonceCsp(request, { googleSignIn: true });
 
   const token = request.cookies.get(DEV_ACCOUNT_COOKIE)?.value;
 
@@ -205,6 +207,7 @@ export const config = {
     // signed-in visitor to /dashboard while rendering the public page for
     // everyone else. /dashboard itself remains fully gated below.
     "/quote/:path*",
+    "/login",
     "/dashboard",
     "/dashboard/:path*",
     "/leads/:path*",

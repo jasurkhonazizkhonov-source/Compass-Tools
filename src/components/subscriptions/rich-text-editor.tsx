@@ -62,7 +62,6 @@ export function RichTextEditor({
   minHeight?: number;
   label?: string;
 }) {
-  const [dialog, setDialog] = useState<null | "link" | "image" | "button">(null);
   const editor = useEditor({
     immediatelyRender: false,
     extensions: emailEditorExtensions(),
@@ -79,6 +78,14 @@ export function RichTextEditor({
     },
   });
 
+  // The toolbar is a separate component that only exists once the editor does: useEditorState binds to the editor it is first given, so asking it before the editor exists
+  // (it is created after mount) left the whole editor blank.
+  if (!editor) return null;
+  return <EditorSurface editor={editor} variables={variables} />;
+}
+
+function EditorSurface({ editor, variables }: { editor: Editor; variables?: EditorVariable[] }) {
+  const [dialog, setDialog] = useState<null | "link" | "image" | "button">(null);
   // What is active at the cursor, so the buttons show their state; re-read on every change of selection or content.
   const state = useEditorState({
     editor,
@@ -107,7 +114,7 @@ export function RichTextEditor({
         : null,
   });
 
-  if (!editor || !state) return null;
+  if (!state) return null;
   const chain = () => editor.chain().focus();
 
   return (

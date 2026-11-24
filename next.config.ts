@@ -1,15 +1,11 @@
 import type { NextConfig } from "next";
 import { buildBaseCsp } from "./src/lib/csp";
 
-// Content-Security-Policy is intentionally pragmatic, not maximal: this app
-// (a) relies on Next.js App Router's own inline hydration/theme-init
-// scripts (no nonce plumbing exists in proxy.ts today, and adding one is
-// exactly the kind of broad, risky middleware change this pass avoids), and
-// (b) loads Google's own Sign-In script/iframe from accounts.google.com.
-// 'unsafe-inline' on script-src is therefore required for Next.js itself to
-// keep working, not merely a convenience — removing it would break every
-// page, not just this feature. Every other directive is scoped as tightly
-// as verified to still work. Re-verify this policy (via the browser tools,
+// Content-Security-Policy, two tiers (src/lib/csp.ts). Every signed-in CRM page, the customer card-entry pages and the sign-in page get the STRICT per-request-nonce
+// policy from src/proxy.ts: no 'unsafe-inline' and no 'unsafe-eval' for scripts. This BASE policy is what remains for the routes proxy.ts does not run on: the public
+// marketing pages, which Next.js pre-renders at build time, so no per-request nonce can exist for their inline hydration scripts - 'unsafe-inline' on script-src is the one
+// documented, unavoidable exception there (they show no customer data, accept no card data and are covered by frame-ancestors, object-src and base-uri restrictions).
+// Every other directive is scoped as tightly as verified to still work. Re-verify this policy (via the browser tools,
 // checking read_console_messages for CSP violations) after any change to
 // which third-party origins the app loads from.
 // Built in src/lib/csp.ts. This is the BASE policy for every route; the routes that
@@ -22,7 +18,10 @@ const SECURITY_HEADERS = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "X-Frame-Options", value: "DENY" },
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+  // Everything the CRM does not use is switched off for the page and any frame in it (Google's sign-in frame needs none of these).
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), accelerometer=(), gyroscope=(), magnetometer=(), display-capture=(), interest-cohort=()" },
+  // Isolates the page from windows it did not open, while still letting Google's sign-in popup talk back to it (same-origin-allow-popups; plain same-origin would break Google sign-in).
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin-allow-popups" },
   // Vercel already sends this on custom domains; stated here so the policy does
   // not depend on the platform. Deliberately no includeSubDomains/preload: this
   // app does not control every subdomain of its parent domain.

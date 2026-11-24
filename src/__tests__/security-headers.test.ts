@@ -69,3 +69,13 @@ describe("security headers", () => {
     expect((await headersFor("/_next/static/chunks/app.js")).get("cache-control")).toBeUndefined();
   });
 });
+
+describe("browser capability and window isolation headers", () => {
+  it("everything the CRM does not use is switched off, and the window policy still lets Google's sign-in popup answer", async () => {
+    const h = await headersFor("/anything");
+    const pp = h.get("permissions-policy")!;
+    for (const feature of ["camera", "microphone", "geolocation", "payment", "usb", "serial", "bluetooth", "accelerometer", "gyroscope", "magnetometer", "display-capture", "interest-cohort"]) expect(pp).toContain(`${feature}=()`);
+    // same-origin-allow-popups, never plain same-origin: that would sever the link to Google's popup and break sign-in
+    expect(h.get("cross-origin-opener-policy")).toBe("same-origin-allow-popups");
+  });
+});

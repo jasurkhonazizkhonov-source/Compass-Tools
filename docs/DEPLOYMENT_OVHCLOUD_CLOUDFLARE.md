@@ -609,7 +609,7 @@ Steps (the database part is tested; see "What has and has not been tested" below
    bash deploy/restore-db.sh /path/compass-….dump               # test restore, prints row counts, drops the copy
    bash deploy/restore-db.sh /path/compass-….dump --replace     # type the database name; stops the app, takes a safety backup, restores
    ```
-   `--replace` works on a brand-new empty database as well. It restores with `--no-owner`, so objects belong to the `POSTGRES_USER` the app uses.
+   `--replace` works on a brand-new empty database **since 2026-11-24**. Before that it did **not**: it takes a safety backup of the current database first, and `backup-db.sh` deliberately refuses a dump without the `Account` table, so on a fresh server the restore stopped after stopping the app. It now skips the safety backup, and says so, only when the database has no CRM tables. It restores with `--no-owner`, so objects belong to the `POSTGRES_USER` the app uses.
    There are **no custom roles, extensions or grants** in this schema (`prisma/migrations` contains none), so nothing has to be recreated.
 8. Apply migrations that were added after the backup, if any: `bash deploy/deploy.sh --migrate`. A backup taken from the running release is already
    at that release's schema (`prisma migrate status` reports "up to date").
@@ -626,8 +626,10 @@ Cloudflare/Google/DNS settings (step 4 of the table), sessions (users sign in ag
 index/constraint/sequence comparison and `prisma migrate status`, is covered by an integration test that runs a real `pg_dump`/`pg_restore` 17.11
 against a disposable PostgreSQL 17.11 (`src/server/backup/__integration__/database-backup.integration.test.ts`; skipped unless
 `INTEGRATION_DATABASE_URL`, `INTEGRATION_ADMIN_DATABASE_URL`, `PG_DUMP_BIN` and `PG_RESTORE_BIN` are set). It was **not** run on a replacement VPS or
-through `deploy/restore-db.sh` inside Docker (Docker was not available where this was developed); the CI smoke test runs `pg_dump` inside the built
-image. Do a full rehearsal on a spare VPS before you depend on this, and repeat it after any change to the database image.
+through `deploy/restore-db.sh` inside Docker (Docker was not available where this was developed). The CI smoke test (`deploy/ci-smoke.sh`, last step) now rehearses it on real Docker: it
+takes a dump with the app image's own `pg_dump`, runs `restore-db.sh` in test mode, empties the database, runs `restore-db.sh --replace` with the typed confirmation, and checks that the
+Account table, the migration history and a healthy app are back - **that step has not been run yet** (it runs the first time CI does). The `--replace` logic change was checked by reading the
+script and by running its shell quoting against a stand-in. Do a full rehearsal on a spare VPS before you depend on this, and repeat it after any change to the database image.
 
 ## 13. Routine updates from GitHub
 

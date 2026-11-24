@@ -55,3 +55,47 @@ the file must be stored encrypted and off the server. A compromised Admin accoun
 6. Decide where backups are kept off the server (and encrypted) - the app only stages them for an hour.
 7. Roll out website request signing (`LEAD_INGEST_SECRET`) on both sides together.
 8. Run a real penetration test if the CRM holds data that warrants one; this review is not one.
+
+---
+
+# Follow-up pass (same day, after the sequence work): findings, fixes and what remains
+
+Still **a source and test review, not a penetration test**. "Fixed" means fixed in the code with a regression test; "verified" means a test or a local run proved it, never that production was checked.
+
+## Findings that were real, and what was done
+
+| # | Finding | Realistic abuse | Fix | Regression test |
+|---|---|---|---|---|
+| 1 | **No limit on failed Google sign-ins.** Each attempt calls Google to verify the token and writes a failed-sign-in row. | A script replaying tokens or probing accounts amplifies work (a Google call + a database write per request) and floods the Failed sign-ins log. | `SIGN_IN_FAILURES`: 15 failures per 15 minutes per client IP. **Only failures count** (a read-only peek first, a write only on a refusal), so a shared office signing in successfully is never blocked; without a trusted client IP nothing is limited; a counter that cannot be read never turns sign-in into an error. | `sign-in-rate-limit.test.ts`, `rate-limit-failures-only.integration.test.ts` (real PostgreSQL) |
+| 2 | **Gmail connect start and callback unbounded** (each is a round trip to Google's token service). | A signed-in user (or a stolen session) loops it. | `GMAIL_CONNECT`: 12 per 15 minutes **per account**. | `rate-limit-actions.test.ts` |
+| 3 | **Database backup create / download / delete unbounded.** | A stolen Admin session repeats a whole-database dump or download. | Per-Admin limits; download answers **429 with `Retry-After`**; only an authorised Admin ever reaches the counter. | same |
+| 4 | **Bulk actions, enrollment and enrollment recovery unbounded.** Retry/resolve can send a real email. | A script enrolls or retries without end. | Per-account limits (`SEQUENCE_ENROLL` 300, `ENROLL_ALL_CONTACTS_BATCH` 1,500 batches = 150,000 contacts, `BULK_ACTION` 60, `SEQUENCE_RECOVERY` 60 per 15 min). | same |
+| 5 | **Sign-in page had `'unsafe-inline'` for scripts.** It was on the base policy (pre-rendered public pages). | An injected inline script on the one public page that handles a credential flow would run. | `/login` is rendered per request, so it now gets the strict per-request-nonce policy (no `'unsafe-inline'`, no `'unsafe-eval'`), plus Google's stylesheet on `style-src` of that page only. | `csp-nonce.test.ts`; browser run below |
+| 6 | **Permissions-Policy covered only four features; no window isolation.** | A compromised frame could request USB, serial, Bluetooth, motion sensors, screen capture. | Everything the CRM does not use is switched off; `Cross-Origin-Opener-Policy: same-origin-allow-popups` (plain `same-origin` would break Google's sign-in popup). | `security-headers.test.ts` |
+| 7 | **Sequences ignored the do-not-email list.** An address of a marketing subscriber who unsubscribed or was suppressed (bounce/complaint) could still be enrolled. | Emailing someone who opted out / bounced. | Enforced at enrollment **and again at send time** (an address that becomes blocked later is dropped; none left = the enrollment fails visibly). | `enroll-all-contacts.integration.test.ts` |
+| 8 | **Customer-supplied values in rich emails.** A customer's name goes into HTML email. | Markup injection into the email that other people open. | Values are HTML-escaped before the cleaner runs; the HTML is cleaned on the server at save **and** at send with the campaign allow-list; the preview runs in a sandboxed frame with no permissions. | `sequence-content.test.ts`, `sequence-steps.integration.test.ts` |
+| 9 | **Restore script aborted on a brand-new database** (its safety backup refused an empty dump) - a recovery defect, not an attack. | Disaster recovery failing at the moment it is needed. | `restore-db.sh --replace` skips the safety backup, and says so, only when the database has no CRM tables. | CI rehearsal (not run locally) |
+
+## Reviewed with no change needed (evidence in the code)
+
+* **SQL injection:** no `$queryRawUnsafe` / `$executeRawUnsafe` outside tests; raw SQL uses tagged templates (parameters).
+* **XSS:** the only `dangerouslySetInnerHTML` is JSON-LD built by `serializeJsonLd`; no `eval` / `new Function`; the signed-in CRM and card pages already ran the nonce policy.
+* **SSRF:** no server-side fetch takes a URL from a user. Links and image addresses typed into an email are embedded, never fetched by the server. The GeoIP download is an operator command.
+* **Command injection:** `child_process` is used by the backup (argument array, no shell) and the build scripts only.
+* **CSRF:** state-changing operations are Server Actions (Next verifies the Origin) or authenticated route handlers with SameSite cookies; the Gmail and Google flows have their own state / nonce.
+* **IDOR / cross-company:** every enrollment, step, lead and contact action is scoped by the visibility predicates and re-checked on the server; the new actions are covered by the Server Action surface guard.
+* **Webhook signature / replay, cron authentication, Admin-only IP, uploads, secrets, dependencies:** unchanged from the review above (`npm audit`: 0 vulnerabilities on 2026-11-24, re-run after the editor packages were added).
+* **Database TLS / containers:** unchanged; the app image now also carries the PostgreSQL 17 client (key fingerprint verified, see docs/DEPLOYMENT_OVHCLOUD_CLOUDFLARE.md 12.5).
+
+## New data access: what the reply feature reads
+
+Gmail `gmail.metadata`, optional, read-only: labels and eight headers (From, Auto-Submitted, Precedence, X-Autoreply, X-Autorespond, X-Auto-Response-Suppress, X-Failed-Recipients, Return-Path, Content-Type), only for conversations the CRM's own sequence emails started, never a body, subject or recipient list. Gmail classifies the scope as restricted (see docs/DEPLOYMENT.md 2c for what Google requires).
+
+## Unresolved, and who has to decide
+
+1. **Public marketing pages still need `'unsafe-inline'` for scripts** (Next.js pre-renders them at build time, so no per-request nonce can exist). They show no customer data and accept no card data. Making them dynamic would remove it at a performance cost: a product decision.
+2. **`style-src 'unsafe-inline'` everywhere** (inline style attributes from UI libraries cannot carry a nonce). A style-only injection cannot run code.
+3. **No rate limit on CRM emails sent one at a time** (quotes, confirmations). They are bounded by the mailbox's Gmail allowance; a per-account cap would also throttle legitimate bulk days. Left as a decision.
+4. **`upgrade-insecure-requests` is not set**: it would break `http://localhost` production-mode runs; HTTPS is enforced by Cloudflare and HSTS.
+5. **Cloudflare / firewall / Google Cloud configuration cannot be checked from the repository** (host port 3000 closed, `cloudflared` the only way in, the OAuth client's origins and the new scope, DNS).
+6. **A penetration test has not been done.**

@@ -151,10 +151,10 @@ function RenderedEmail({ values, view }: { values: Values; view: "preview" | "so
           <span className="text-muted-foreground">Subject: </span>
           <span className="font-medium">{result.subject}</span> <span className="text-muted-foreground">(sample data)</span>
         </p>
-        <div role="group" aria-label="Preview width" className="inline-flex rounded-md border p-0.5">
+        <div role="group" aria-label="Preview width" className="inline-flex max-w-full rounded-md border p-0.5">
           {DEVICES.map((d) => (
-            <Button key={d.key} type="button" size="sm" variant={device === d.key ? "secondary" : "ghost"} aria-pressed={device === d.key} className="h-7 gap-1 px-2 text-xs" onClick={() => setDevice(d.key)}>
-              <d.icon className="h-3.5 w-3.5" /> {d.label}
+            <Button key={d.key} type="button" size="sm" variant={device === d.key ? "secondary" : "ghost"} aria-pressed={device === d.key} aria-label={d.label} title={d.label} className="h-7 gap-1 px-2 text-xs" onClick={() => setDevice(d.key)}>
+              <d.icon className="h-3.5 w-3.5" /> <span className="hidden sm:inline">{d.label}</span>
             </Button>
           ))}
         </div>
@@ -329,7 +329,7 @@ function StepComposer({
       </div>
 
       <Tabs defaultValue="edit">
-        <TabsList>
+        <TabsList className="max-w-full">
           <TabsTrigger value="edit" className="gap-1.5">
             <PenLine className="h-3.5 w-3.5" /> Edit
           </TabsTrigger>
@@ -483,7 +483,7 @@ function ExistingStep({ step, sequenceId, index, total }: { step: Step; sequence
 
   return (
     <div className={cn("rounded-lg border p-4 space-y-3")} data-testid="sequence-step" data-format={format}>
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-xs font-semibold text-muted-foreground">
           Step {step.order + 1} · {DelayLabel(step.delayMinutes)}
           {format === "HTML" && <span className="ml-2 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">Visual email</span>}

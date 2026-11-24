@@ -125,6 +125,8 @@ services:
       # --- Campaign sending budgets (empty = the code defaults of 20 per minute and 400 per rolling 24 h per sending account) ---
       CAMPAIGN_SENDS_PER_MINUTE: ${CAMPAIGN_SENDS_PER_MINUTE:-}
       CAMPAIGN_DAILY_LIMIT: ${CAMPAIGN_DAILY_LIMIT:-}
+      # Sequence emails one mailbox may start per minute (empty = 20). The rolling-24h cap above is shared by a mailbox's campaigns AND its sequence emails.
+      SEQUENCE_SENDS_PER_MINUTE: ${SEQUENCE_SENDS_PER_MINUTE:-}
       # Empty = the in-process task poller stays ON (the default). "true" only when an external scheduler calls /api/cron/tasks.
       DISABLE_IN_PROCESS_POLLER: ${DISABLE_IN_PROCESS_POLLER:-}
       # --- IP geolocation database (optional; docs/GEOIP.md section 2b). The named volume below is mounted READ-ONLY into this service;

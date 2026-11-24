@@ -100,3 +100,36 @@ describe("proxy applies the nonce policy where card data appears", () => {
     expect(config.matcher).toContain("/quote/:path*");
   });
 });
+
+describe("the sign-in page gets the strict policy too", () => {
+  it("/login is in the matcher, is public (no session lookup, never redirected to itself), and its script-src has a per-request nonce and NO 'unsafe-inline'", async () => {
+    const { proxy, config } = await import("../proxy");
+    expect(config.matcher).toContain("/login");
+    findUnique.mockClear();
+    const a = await proxy(req("/login"));
+    const b = await proxy(req("/login"));
+    expect(findUnique).not.toHaveBeenCalled();
+    expect(a.headers.get("location")).toBeNull();
+    const csp = a.headers.get("content-security-policy")!;
+    expect(scriptSrc(csp)).toMatch(/'nonce-[A-Za-z0-9+/=]+' 'strict-dynamic'/);
+    expect(scriptSrc(csp)).not.toMatch(/unsafe-inline|unsafe-eval/);
+    expect(csp).not.toBe(b.headers.get("content-security-policy")); // fresh per request
+    expect(a.headers.get("x-middleware-request-content-security-policy")).toBe(csp);
+  });
+
+  it("only the sign-in page is allowed Google's stylesheet: it is on style-src of /login and nowhere else in the nonce policy", async () => {
+    const { proxy } = await import("../proxy");
+    const styleSrc = (csp: string) => csp.split("; ").find((d) => d.startsWith("style-src "))!;
+    expect(styleSrc((await proxy(req("/login"))).headers.get("content-security-policy")!)).toBe("style-src 'self' 'unsafe-inline' https://accounts.google.com");
+    expect(styleSrc(buildNonceCsp("n"))).toBe("style-src 'self' 'unsafe-inline'");
+    expect(styleSrc((await proxy(req("/quote/x/book"))).headers.get("content-security-policy")!)).toBe("style-src 'self' 'unsafe-inline'");
+    // and the policy still loads nothing from anywhere unexpected
+    const hosts = [...new Set(buildNonceCsp("n", false, { googleSignIn: true }).match(/https:\/\/[a-z0-9.-]+/g) ?? [])].sort();
+    expect(hosts).toEqual(["https://accounts.google.com", "https://www.googleapis.com"]);
+  });
+
+  it("the policy keeps its anti-clickjacking, anti-injection directives", () => {
+    const csp = buildNonceCsp("n", false, { googleSignIn: true });
+    for (const d of ["frame-ancestors 'none'", "object-src 'none'", "base-uri 'self'", "form-action 'self'", "frame-src https://accounts.google.com"]) expect(csp).toContain(d);
+  });
+});

@@ -79,7 +79,7 @@ describe("compose.yaml forwards every documented setting the application reads",
   });
 
   it("the security-relevant settings that were silently dropped before 2026-11-22 are forwarded", () => {
-    for (const n of ["WEBSITE_SIGNATURE_REQUIRED", "LEAD_INGEST_SECRET_PREVIOUS", "CAMPAIGN_SENDS_PER_MINUTE", "CAMPAIGN_DAILY_LIMIT", "DISABLE_IN_PROCESS_POLLER", "GEOIP_DB_PATH"]) {
+    for (const n of ["WEBSITE_SIGNATURE_REQUIRED", "LEAD_INGEST_SECRET_PREVIOUS", "CAMPAIGN_SENDS_PER_MINUTE", "CAMPAIGN_DAILY_LIMIT", "SEQUENCE_SENDS_PER_MINUTE", "DISABLE_IN_PROCESS_POLLER", "GEOIP_DB_PATH"]) {
       expect(forwarded.has(n), n).toBe(true);
     }
   });
@@ -92,7 +92,7 @@ describe("compose.yaml forwards every documented setting the application reads",
   });
 
   it("campaign budgets and the poller switch default to EMPTY here, so the code's own defaults (20/min, 400/day, poller on) apply unless the owner sets them", () => {
-    for (const n of ["CAMPAIGN_SENDS_PER_MINUTE", "CAMPAIGN_DAILY_LIMIT", "DISABLE_IN_PROCESS_POLLER"]) {
+    for (const n of ["CAMPAIGN_SENDS_PER_MINUTE", "CAMPAIGN_DAILY_LIMIT", "SEQUENCE_SENDS_PER_MINUTE", "DISABLE_IN_PROCESS_POLLER"]) {
       expect(service("app")).toMatch(new RegExp(`${n}: \\$\\{${n}:-\\}`));
     }
   });

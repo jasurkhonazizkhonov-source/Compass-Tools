@@ -8,7 +8,9 @@
 //    per-request nonce can exist for a page built at deploy time.
 //
 //  • NONCE (src/proxy.ts, the routes that show or accept card data — the
-//    customer's card-entry page under /quote/* and every signed-in CRM page):
+//    customer's card-entry page under /quote/*, every signed-in CRM page, and the
+//    sign-in page /login, which is rendered per request and is the one public page
+//    that loads a third-party script (Google's):
 //    scripts run only if they carry this request's random nonce (Next.js applies
 //    it to its own scripts during server rendering), and 'strict-dynamic' lets
 //    those trusted scripts load what they need. Injected inline script — the way
@@ -47,13 +49,14 @@ export function buildBaseCsp(dev: boolean = process.env.NODE_ENV === "developmen
   ].join("; ");
 }
 
-export function buildNonceCsp(nonce: string, dev = false): string {
+export function buildNonceCsp(nonce: string, dev = false, options: { googleSignIn?: boolean } = {}): string {
   return [
     ...common().slice(0, 1),
     // 'strict-dynamic' makes browsers ignore host allow-lists and trust only nonce'd
     // scripts (and what they load); 'self' is the fallback for very old browsers.
     `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'${dev ? " 'unsafe-eval'" : ""}`,
-    "style-src 'self' 'unsafe-inline'",
+    // The sign-in page also needs Google's own button stylesheet. A stylesheet is not a script, so 'strict-dynamic' does not cover it and it must be named; nothing else is added.
+    `style-src 'self' 'unsafe-inline'${options.googleSignIn ? " https://accounts.google.com" : ""}`,
     ...common().slice(1),
   ].join("; ");
 }

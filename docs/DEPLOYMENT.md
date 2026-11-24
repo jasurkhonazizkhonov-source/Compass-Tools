@@ -249,6 +249,40 @@ Safe to leave configured indefinitely after the first Admin exists (it has
 no effect once any Account exists), but removing it once setup is done is
 a reasonable extra precaution with no downside.
 
+## 2c. Sequences: reply detection, sending capacity, which addresses, and the email builder (release of 2026-11-24)
+
+Four behaviours of the sequence system changed. None of them needs a new environment variable except the optional `SEQUENCE_SENDS_PER_MINUTE`. **All of this has been verified against a real PostgreSQL 17.11 and a scripted fake Gmail; none of it has been exercised against live Gmail or in real email clients.**
+
+### Reply detection - a customer's reply stops the sequence
+
+* **How it works.** Every sequence email records Gmail's message id and conversation (thread) id. Once a minute, for each sending mailbox that has conversations to watch, the CRM asks Gmail what arrived (the change list: ids and labels only) and reads the **metadata** (labels and eight headers - never the body, subject or recipients) of the messages that landed in a conversation one of its own emails started. A message that is a person's reply stops **that enrollment** only (status *Replied - Automatically stopped*; remaining steps *Cancelled*; the reply, the time and a lead Activity entry are recorded). The same customer's other enrollments are untouched. A safety sweep re-reads the least recently checked conversations every minute whatever the change list said, so a missed notification, an expired history position or an outage delays a stop by minutes but cannot lose it.
+* **What does not count:** the CRM's own email or anything sent from the mailbox, an out-of-office or other auto-reply, a bounce or delivery report, a message from a mailer-daemon / no-reply address, and any email in a conversation the CRM did not start.
+* **Safe to repeat and to race.** The reply row is unique per mailbox + Gmail message id, and the enrollment changes status in the same transaction, so duplicate notifications, overlapping passes and several app instances record one reply and one stop. The sender re-checks that the enrollment is still active at the last moment before handing an email to Gmail; an email already handed over at that instant cannot be recalled (it stays in the history, and nothing after it is sent).
+* **A new Google permission is required, and existing connections do not have it.** Gmail connections made before this release hold only `gmail.send`. Reply detection needs `https://www.googleapis.com/auth/gmail.metadata` (read-only metadata). It is **optional** when connecting: a user who does not grant it can still send, but their sequences are **not** stopped by replies. **Every user who sends sequences must reconnect Gmail once** (account menu > Connect Gmail) and allow "view email metadata". System Health > *Reply detection* lists how many sending mailboxes lack it.
+* **Google configuration you must do.** `gmail.metadata` is a *restricted* Gmail scope. Add it to the OAuth consent screen's scopes. While the app is in *Testing*, or used only by accounts inside your own Google Workspace organisation (Internal), it works without Google's review. If people **outside** your organisation connect Gmail, Google's OAuth verification (and a security assessment for restricted scopes) is required before they can grant it. This repository cannot check any of that; do not rely on reply detection in production until someone has connected a real mailbox, sent a sequence email, replied to it, and seen the enrollment stop.
+* **Endpoints and switches.** It runs in the in-process poller (disabled by `DISABLE_IN_PROCESS_POLLER`); an external scheduler can call `GET /api/cron/sequence-replies` with the `CRON_SECRET` bearer (counts only in the answer). System Health reports whether it is running.
+* **Data minimisation.** No message body, attachment, subject, recipient list or full mailbox is read or stored. Stored: Gmail ids, the sender address of a reply, times, and the history position.
+
+### Sending order and capacity - first emails before follow-ups
+
+* Everyone waiting for their **first** email is served before anyone's follow-up (step 2, then 3...), so a limited allowance goes to newly enrolled customers first. Sequences take turns (one 3,000-lead enrollment cannot starve another sequence); within a sequence the longest-waiting goes first. Configured delays are never shortened.
+* **The allowance** is per sending mailbox and **rolling** (never "since midnight"): `CAMPAIGN_DAILY_LIMIT` (default 400 per 24 h) is one allowance shared by that mailbox's campaigns **and** sequence emails, and `SEQUENCE_SENDS_PER_MINUTE` (default 20) paces starts. Counting and claiming happen in one transaction under a per-mailbox database lock, so any number of workers or instances cannot exceed it. Capacity frees up as the oldest counted messages age out of the 24 h window.
+* **Gmail's own feedback wins.** A rate-limit answer is not a failure: nothing is counted against the enrollment's retry limit, the enrollment stays active, and the whole mailbox is left alone for the time Gmail named (`Retry-After` or the "Retry after <time>" text; otherwise 15 minutes).
+* **Visibility.** A due step that is waiting shows *Scheduled - Waiting for available Gmail sending capacity* (or "Gmail asked this mailbox to slow down") on the lead and in the sequence's table. Nothing needs to be retried by hand.
+* These numbers are the CRM's own conservative policy, **not Google's limits**; raising them does not raise what Google allows (see docs/COMPASS_CAMPAIGN_SENDING_CAPACITY.md).
+
+### Unenroll, Enroll All Contacts, and addresses
+
+* **Unenroll** is available for a *Failed* enrollment (next to Retry) as well as an active one. It ends the enrollment for good: remaining steps are cancelled, nothing queued can be sent (the sender re-checks status), the reason, who and when are stored, and the action is in the audit log. A customer's own unsubscribe link is recorded as *Unsubscribed* (different from *Unenrolled*).
+* **Enroll All Contacts** (sequence page, active sequences, people who may manage sequences): the browser never receives the contacts. The server enrolls them in batches of 100 through the existing enrollment (each contact through its most recent lead it can see), skipping anyone already actively enrolled through any lead, with a summary by reason; a failed batch does not undo earlier ones, a run can be stopped, and running it again is harmless.
+* **Which addresses.** Every enrollment path asks: *Primary email only* (default) or *All available email addresses* (every valid address once, one email to all of them, so a reply from any stops it). Invalid addresses, duplicates and addresses of a marketing subscriber who **unsubscribed or is suppressed** (bounce/complaint) are never used - checked at enrollment **and again at send time**. A contact whose only usable address is blocked is refused with that reason.
+
+### The email builder
+
+* New steps use the visual editor (formatting, colours, headings, lists, links, images with size and description, call-to-action button, divider, spacer, desktop/email-width/mobile preview, an HTML source view, undo/redo, drafts kept in the browser, duplicate, reorder). **Every existing step stays plain text** (`SequenceStep.bodyFormat` defaults to TEXT) and can be converted deliberately.
+* HTML is cleaned **on the server** (the campaign allow-list) when saved and again when sent; customer values are escaped before cleaning; styles are written inline and the button is a table so email clients render it; the unsubscribe footer is always added around the step. Images must be public https addresses (a picture on someone's computer or inside the CRM cannot be shown to recipients). Reordering is refused while anyone is part-way through (their position is a step number).
+* **Not verified:** rendering in Gmail, Outlook, Apple Mail and mobile apps. Send yourself a test of each important template before using it widely.
+
 ## 3. Run database migrations
 
 ```bash
