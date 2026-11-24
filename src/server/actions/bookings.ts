@@ -21,6 +21,7 @@ import { SUPPORTED_CURRENCIES, buildPricingSnapshot, computeTotalSellingPriceUsd
 import { sendBookingProfitNotification } from "@/server/booking-notification";
 import { airlineConfirmationEntrySchema, resolveAirlineConfirmations, toLegacyBookingFields } from "@/lib/airline-confirmations";
 import { resolveAirlineCodes } from "@/server/queries/reference-data";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 
 const DELETE_BOOKING_DENIAL = "You are not authorized to delete this booking";
 
@@ -477,6 +478,8 @@ export async function sendAirlineConfirmationEmail(
   options?: { resend?: boolean; recipients?: string[]; recipientIds?: string[] }
 ): Promise<SendAirlineConfirmationResult> {
   const actor = await authorizeAirlineConfirmation(bookingId);
+  const limit = await checkAccountRateLimit(actor.id, "STAFF_EMAIL_SEND", RATE_LIMITS.STAFF_EMAIL_SEND);
+  if (!limit.allowed) return { ok: false, error: `Too many emails sent in a short time. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
 
   const existing = await prisma.booking.findUniqueOrThrow({
     where: { id: bookingId },
@@ -771,6 +774,8 @@ export async function sendCancellationConfirmationEmail(bookingId: string) {
   if (!actor || actor.status !== "ACTIVE" || !canEnterTicketingInfo(actor.role)) {
     throw new Error(SEND_CANCELLATION_CONFIRMATION_DENIAL);
   }
+  const limit = await checkAccountRateLimit(actor.id, "STAFF_EMAIL_SEND", RATE_LIMITS.STAFF_EMAIL_SEND);
+  if (!limit.allowed) throw new Error(`Too many emails sent in a short time. Please try again in ${describeWait(limit.retryAfterSeconds)}.`);
 
   const accessible = await prisma.booking.findFirst({
     where: { id: bookingId, ...bookingVisibilityWhere(actor) },

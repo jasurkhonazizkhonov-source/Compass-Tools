@@ -8,6 +8,8 @@ let unlimited: boolean;
 let revealed: boolean;
 const sendEmailCalls: Array<Record<string, unknown>> = [];
 
+// The per-account email limiter reads and writes a PostgreSQL counter; these tests are not about it (see src/server/actions/__tests__/staff-email-rate-limit.test.ts), so it always allows here.
+vi.mock("@/server/security/rate-limit", () => ({ checkAccountRateLimit: vi.fn(async () => ({ allowed: true })), describeWait: (s: number) => `${s} seconds`, RATE_LIMITS: new Proxy({}, { get: () => ({ windowMs: 1000, maxAttempts: 1 }) }) }));
 vi.mock("@/lib/dev-session", () => ({ getCurrentAccount: vi.fn(async () => actor) }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/server/activity-log", () => ({ logActivity: vi.fn(async () => {}) }));

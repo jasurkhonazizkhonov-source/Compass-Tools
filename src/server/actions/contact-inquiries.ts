@@ -11,6 +11,7 @@ import { sendEmail } from "@/server/email/service";
 import { buildSequenceEmail } from "@/server/email/templates";
 import type { InquirySource, InquiryStatus } from "@/generated/prisma/client";
 import { INQUIRY_SOURCE_META } from "@/lib/inquiry-source";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 
 /** Admin-only, same assertAdmin() pattern as accounts.ts — Get in Touch is
  * explicitly admin-only per Part 9's spec (unlike most CRM resources, no
@@ -110,6 +111,8 @@ export async function sendInquiryEmail(inquiryId: string, input: z.infer<typeof 
   const admin = await assertAdmin();
   const data = inquiryEmailSchema.parse(input);
   z.enum(SOURCE_VALUES).parse(source);
+  const limit = await checkAccountRateLimit(admin.id, "STAFF_EMAIL_SEND", RATE_LIMITS.STAFF_EMAIL_SEND);
+  if (!limit.allowed) throw new Error(`Too many emails sent in a short time. Please try again in ${describeWait(limit.retryAfterSeconds)}.`);
 
   const inquiry = await prisma.contactInquiry.findFirst({
     where: { id: inquiryId, companyId: admin.companyId, source },

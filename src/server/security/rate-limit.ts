@@ -271,6 +271,10 @@ export const RATE_LIMITS = {
   ENROLL_ALL_CONTACTS_BATCH: { windowMs: 15 * 60 * 1000, maxAttempts: 1500 } satisfies RateLimitConfig,
   /** Bulk actions from the Leads / Contacts lists (add to sequence, delete), per staff account. */
   BULK_ACTION: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
+  /** A staff member sending an email to a customer by hand (a quote, an airline or cancellation confirmation, a reply to an inquiry), per staff account. A busy agent sends a few
+   * dozen in a quarter of an hour at the very most; a hijacked session or a script would send hundreds. The recipient of each is checked separately (it must be an address on file),
+   * and the Gmail daily allowance still applies: this only bounds how fast a single account can fire them. */
+  STAFF_EMAIL_SEND: { windowMs: 15 * 60 * 1000, maxAttempts: 100 } satisfies RateLimitConfig,
   /** Retry / resolve a stuck sequence enrollment (each one can send a real email), per staff account. */
   SEQUENCE_RECOVERY: { windowMs: 15 * 60 * 1000, maxAttempts: 60 } satisfies RateLimitConfig,
 } as const;

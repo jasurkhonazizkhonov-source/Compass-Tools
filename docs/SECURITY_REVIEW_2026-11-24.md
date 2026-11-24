@@ -93,9 +93,9 @@ Gmail `gmail.metadata`, optional, read-only: labels and eight headers (From, Aut
 
 ## Unresolved, and who has to decide
 
-1. **Public marketing pages still need `'unsafe-inline'` for scripts** (Next.js pre-renders them at build time, so no per-request nonce can exist). They show no customer data and accept no card data. Making them dynamic would remove it at a performance cost: a product decision.
-2. **`style-src 'unsafe-inline'` everywhere** (inline style attributes from UI libraries cannot carry a nonce). A style-only injection cannot run code.
-3. **No rate limit on CRM emails sent one at a time** (quotes, confirmations). They are bounded by the mailbox's Gmail allowance; a per-account cap would also throttle legitimate bulk days. Left as a decision.
+1. **The 13 pre-rendered marketing pages still need `'unsafe-inline'` for scripts** (Next.js pre-renders them at build time, so no per-request nonce can exist; `/` and `/access-denied` no longer do, see `docs/CSP.md`). They show no customer data and accept no card data. Making them dynamic would remove it at a performance cost (no CDN-cacheable HTML): a product decision.
+2. **Styles: reduced, not gone.** Style *elements* no longer allow `'unsafe-inline'` except on `/login` (Google's script adds an inline `<style>`); style *attributes* keep it (they cannot carry a nonce). Details, evidence and the full exception list: `docs/CSP.md`.
+3. ~~No rate limit on CRM emails sent one at a time~~ **Done in the continuation pass:** `STAFF_EMAIL_SEND` (100 per 15 minutes per account) on quote, airline-confirmation, cancellation-confirmation and inquiry-reply emails. Bulk sending (sequences, campaigns) is unaffected: it has its own quota.
 4. **`upgrade-insecure-requests` is not set**: it would break `http://localhost` production-mode runs; HTTPS is enforced by Cloudflare and HSTS.
 5. **Cloudflare / firewall / Google Cloud configuration cannot be checked from the repository** (host port 3000 closed, `cloudflared` the only way in, the OAuth client's origins and the new scope, DNS).
 6. **A penetration test has not been done.**

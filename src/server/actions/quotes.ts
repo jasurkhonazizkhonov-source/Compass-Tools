@@ -26,6 +26,7 @@ import { isQuoteCancelable } from "@/lib/quote-cancelability";
 import { segmentSchema } from "@/server/actions/quote-segment-schema";
 import { Prisma } from "@/generated/prisma/client";
 import { touchLead, touchContact } from "@/server/record-touch";
+import { checkAccountRateLimit, describeWait, RATE_LIMITS } from "@/server/security/rate-limit";
 import { PRICING_EDITABLE_STATUSES, SENDABLE_QUOTE_STATUSES, QUOTE_SEND_DEDUPE_WINDOW_MS, isQuotePricingEditable, isQuoteSendable } from "@/lib/quote-send-rules";
 
 const quoteNumberAlphabet = customAlphabet("ABCDEFGHJKLMNPQRSTUVWXYZ23456789", 8);
@@ -250,6 +251,10 @@ export async function updateQuoteInternalNotes(quoteId: string, patch: { interna
  */
 export async function sendQuote(quoteId: string, recipientEmail?: string, recipientId?: string) {
   const actor = await getCurrentAccount();
+  if (actor) {
+    const limit = await checkAccountRateLimit(actor.id, "STAFF_EMAIL_SEND", RATE_LIMITS.STAFF_EMAIL_SEND);
+    if (!limit.allowed) return { ok: false as const, error: `Too many emails sent in a short time. Please try again in ${describeWait(limit.retryAfterSeconds)}.` };
+  }
   const quote = await prisma.quote.findFirst({
     where: { id: quoteId, ...quoteVisibilityWhere(actor) },
     include: {
