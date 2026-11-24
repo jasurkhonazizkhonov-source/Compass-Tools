@@ -102,6 +102,21 @@ out="$(printf 'rehearsal_empty\n' | run bash deploy/restore-db.sh "$TMP/garbage.
 expect "refuses a non-dump" "not a readable PostgreSQL custom-format dump" "$out"
 grep -q "compose stop" "$SHIM_LOG" && bad "the application was stopped for a bad file" || ok "nothing was stopped"
 
+echo "== 6. rollback.sh refuses while a contact-only sequence enrollment is open (the previous release would stop ALL sequence sending), and proceeds once it is ended"
+export POSTGRES_DB=rehearsal_empty
+# the dump under test may itself hold contact-only enrollments: end them so this scenario starts from none
+psql -X -q -d rehearsal_empty -c "UPDATE \"SequenceEnrollment\" SET status='UNSUBSCRIBED' WHERE \"leadId\" IS NULL" >/dev/null
+psql -X -q -d rehearsal_empty -c "INSERT INTO \"Company\"(id,name,\"signatureTemplate\",\"updatedAt\") VALUES ('rb-co','C','x',now()) ON CONFLICT DO NOTHING" -c "INSERT INTO \"Account\"(id,\"fullName\",email,role,status,\"companyId\",\"updatedAt\") VALUES ('rb-a','A','rb@example.test','TRAVEL_AGENT','ACTIVE','rb-co',now())" -c "INSERT INTO \"Contact\"(id,\"firstName\",\"lastName\",\"companyId\",\"updatedAt\") VALUES ('rb-c','C','O','rb-co',now())" -c "INSERT INTO \"Sequence\"(id,name,\"createdById\",\"updatedAt\") VALUES ('rb-s','S','rb-a',now())" -c "INSERT INTO \"SequenceEnrollment\"(id,\"sequenceId\",\"contactId\",\"leadId\",status) VALUES ('rb-e','rb-s','rb-c',NULL,'ACTIVE')" >/dev/null
+: > "$SHIM_LOG"
+out="$(ASSUME_YES=1 run bash deploy/rollback.sh rehearsal)"
+expect "refuses with the count and the instructions" "1 contact-only sequence enrollment.* Nothing was changed" "$out"
+grep -q "compose up" "$SHIM_LOG" && bad "the application was restarted despite the refusal" || ok "nothing was restarted"
+[ "$(psql -X -q -At -d rehearsal_empty -c "SELECT count(*) FROM \"SequenceEnrollment\" WHERE id='rb-e'")" = "1" ] && ok "the enrollment was left exactly as it was (never deleted by the script)" || bad "the enrollment was touched"
+psql -X -q -d rehearsal_empty -c "UPDATE \"SequenceEnrollment\" SET status='UNSUBSCRIBED' WHERE id='rb-e'" >/dev/null
+out="$(ASSUME_YES=1 run bash deploy/rollback.sh rehearsal)"
+expect "proceeds once it has been ended" "Application is running compass-tools:rehearsal" "$out"
+grep -q "compose up" "$SHIM_LOG" && ok "the application was restarted on the chosen image" || bad "no restart"
+
 echo
 echo "restore rehearsal: $pass passed, $fail failed"
 [ "$fail" = "0" ]

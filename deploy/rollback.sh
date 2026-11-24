@@ -25,6 +25,15 @@ echo "Running now : ${RUNNING:-none}"
 echo "Rolling back: compass-tools:$VERSION"
 confirm "Restart the application on that image?" || die "Cancelled. Nothing was changed."
 
+# A contact-only sequence enrollment (no lead) is a row the PREVIOUS release cannot read: while one is due, its sequence sender throws and ALL sequence sending stops (measured
+# 2026-11-25, docs/DEPLOYMENT.md 2c). Rolling the image back past that feature is therefore refused until they are ended - never silently deleted or ended here.
+if [ "$(psql_in "$(app_db_name)" "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='SequenceEnrollment' AND column_name='contactId'")" = "1" ]; then
+  open_contact_only="$(psql_in "$(app_db_name)" "SELECT count(*) FROM \"SequenceEnrollment\" WHERE \"leadId\" IS NULL AND status IN ('ACTIVE','FAILED')")" || die "Could not check for contact-only sequence enrollments; not rolling back."
+  if [ "${open_contact_only:-0}" != "0" ]; then
+    die "$open_contact_only contact-only sequence enrollment(s) (no lead) are active or failed. The previous release cannot read them and its sequence sender would stop sending for EVERYONE. End them first (docs/DEPLOYMENT.md 2c, 'Rolling deploy and rollback'), then run this again. Nothing was changed."
+  fi
+fi
+
 export APP_VERSION="$VERSION"
 check_compose
 dc up -d --no-build app cvv-cleanup
