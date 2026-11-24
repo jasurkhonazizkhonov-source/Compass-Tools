@@ -70,6 +70,19 @@ Look for: `[sequence-sender]` (category-only errors), `[gmail-send]` lines (neve
 
 **Status: not performed.** Every reply test so far uses a scripted mailbox. Do not call reply detection production-ready until this section has been completed once on the real deployment.
 
+**What must exist before any step can be run (none of it can be created by the CRM or by Claude; secrets go into `.env.local` / the VPS `.env` by you, never into chat or Git):**
+
+| Needed | Detail |
+|---|---|
+| A real Google OAuth *Web application* client | `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` in the environment. The development value in `.env.local` is a placeholder. |
+| Authorized JavaScript origin | `http://localhost:3001` for a local run (or the production origin). Sign-in needs no redirect URI. |
+| Authorized redirect URI | `http://localhost:3001/api/auth/gmail/callback` locally, or `https://<domain>/api/auth/gmail/callback` in production - exactly the path `getGmailRedirectUri()` builds. `APP_BASE_URL` must equal the origin. |
+| Scopes on the consent screen | `gmail.send` and the restricted `gmail.metadata`; while in *Testing*, the sending account and the recipients' Google accounts are listed as test users. |
+| `GMAIL_TOKEN_ENCRYPTION_KEY` | a 32-byte key (already generated locally; one per deployment). |
+| A dedicated sending Google account | signed in **by you** in the browser pane when the CRM sends you to Google's consent screen (the CRM never sees the password). |
+| Two recipient mailboxes you control | "Recipient A" and "Recipient B" below. |
+| Run mode | `npm run dev` (not `next start`, which treats a non-https `APP_BASE_URL` as a misconfiguration). |
+
 Safety rules: use a **dedicated sending mailbox** (a CRM account created for the test, with its own Gmail connected) and **test recipients you own** (two throw-away mailboxes: "Recipient A", "Recipient B"). Never a real customer, never a real campaign list. Nothing here needs production data, a production secret or a schema change.
 
 1. **Prerequisites.** The sending account's Gmail was (re)connected **after** the release that adds the `gmail.metadata` permission (older connections hold only `gmail.send`); System Health > "Reply detection" shows that mailbox under "can detect replies". The Google OAuth consent screen lists `gmail.metadata`; while the app is in Testing, the sender and both recipients' Google accounts are listed as test users, otherwise Google verification of the restricted scope is required first (docs/DEPLOYMENT.md 2c).
