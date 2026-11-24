@@ -263,3 +263,41 @@ stored `lastSignInLocationAt` records when that happened.
 * Serverless/Vercel: not applicable there (the platform headers are used and no file is needed); on a host with no writable
   persistent storage use the platform headers or a paid API instead.
 * Logs: at most one warning per cause (bad file, stale database); the message never contains an address.
+
+## 8. Production installation: pre-checks, record and what blocks it (2026-11-24)
+
+**Status: NOT installed on the production VPS.** The installation was approved, but the machine that did this work has no way to reach the VPS (no SSH key or agent, no stored deployment access; only the server's host key is known). Nothing on the VPS was inspected, changed or installed, so the pre-installation state below is **unknown**, and nothing here may be read as a production result. The steps are exact so that whoever has the access can run them.
+
+### 8.1 Pre-checks (read-only; run in the deployment directory on the VPS)
+
+```bash
+docker compose ps                                              # app, db, cloudflared, cvv-cleanup healthy; note the app image tag
+docker compose config | grep -nE "geoip_data|GEOIP_DB_PATH"   # the compose file in use must contain BOTH (added in e132c2e)
+docker compose exec -T app printenv GEOIP_DB_PATH              # empty or wrong = the running container does not know the path
+docker compose exec -T app ls -l /var/lib/compass-tools/geoip  # does the directory exist, who owns it, is a city.mmdb there
+docker volume ls | grep geoip_data                             # the named volume
+```
+
+* **If `geoip_data` / `GEOIP_DB_PATH` are missing from the compose file or the running container**, the deployed application (an image built before e132c2e) cannot read the new file: installing needs a **new application deployment** (`deploy/deploy.sh`), which is a separate approval. Do not work around it by mounting a different path by hand. The memory of earlier work notes that the live stack once differed from every pushed compose file: compare `docker compose config` with the repository's `compose.yaml` first.
+* If a `city.mmdb` already exists, record its size, `status` output (below) and modification time before anything else, and do not delete it: the update command keeps it as `city.mmdb.previous`.
+
+### 8.2 Install (only when the pre-checks pass; running the command is the DB-IP CC BY 4.0 acceptance)
+
+```bash
+docker compose --profile tools run --rm geoip-update                                                    # download, validate, install
+docker compose --profile tools run --rm --entrypoint npx geoip-update tsx scripts/geoip-database.ts status   # installed database + last update attempt
+```
+
+Source: `https://download.db-ip.com/free/dbip-city-lite-YYYY-MM.mmdb.gz` (DB-IP's own host, the current month, falling back to the previous one). The command validates the file as a City database, refuses an older or much smaller one, holds the update lock, keeps `city.mmdb.previous`, and records the attempt. It does not restart anything; the application loads the file within a minute.
+
+### 8.3 Verification after installing (no customer address is used or sent anywhere)
+
+1. `status` prints type `DBIP-City-Lite`, a build date of the current or previous month, and "Last update attempt: success".
+2. A public, non-customer test address resolves locally: `... tsx scripts/geoip-database.ts verify /var/lib/compass-tools/geoip/city.mmdb --ip 8.8.8.8` should name a country (United States) and normally a region and city. DB-IP Lite is an estimate: a missing city for an anycast address is a normal answer, not a fault. A time zone will **not** be shown (this edition has none) and none is invented.
+3. **System Health -> IP geolocation database** reads Ready, with Installed here and Last successful update dates; `/api/health` (bearer `CRON_SECRET`) shows `readiness.geoIpDatabase: "ready"`.
+4. The Users page, Failed sign-ins page and the lead / CRM-inquiry panels show locations as `City, Region, Country (CC)` and carry the DB-IP credit; ordinary users still cannot reach a full IP.
+5. Failure behaviour (already proven by the test suite with generated databases): a failed or refused update leaves `city.mmdb` untouched and records the failure, which System Health shows as a warning while the old database keeps serving.
+
+### 8.4 Rollback
+
+`docker compose --profile tools run --rm --entrypoint sh geoip-update -c 'cp /var/lib/compass-tools/geoip/city.mmdb.previous /var/lib/compass-tools/geoip/city.mmdb'` (or delete `city.mmdb`: locations fall back to the country only). No customer data is in the volume.
