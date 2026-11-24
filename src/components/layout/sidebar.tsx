@@ -24,6 +24,7 @@ import {
   PanelLeftOpen,
   MessagesSquare,
   HeartPulse,
+  DatabaseBackup,
 } from "lucide-react";
 import { CompassMark } from "@/components/brand/compass-mark";
 import { cn } from "@/lib/utils";
@@ -39,6 +40,7 @@ import {
   canViewSequencesPage,
   canViewGetInTouch,
   canViewSystemHealth,
+  canManageDatabaseBackups,
   canViewFailedSignIns,
   canViewSubscriptions,
   canViewCommissions,
@@ -100,6 +102,8 @@ const NAV_ITEMS: Array<{
   // Admin-only operational health (checks, incidents, readiness) — same
   // three-layer enforcement: proxy.ts + the page + no client-side secrets.
   { href: "/system-health", label: "System Health", icon: HeartPulse, visible: canViewSystemHealth },
+  // Admin-only complete PostgreSQL backup (download for safekeeping off the server) - same enforcement: proxy.ts + the page + every action + the download route.
+  { href: "/database-backup", label: "Database Backup", icon: DatabaseBackup, visible: canManageDatabaseBackups },
 ];
 
 export function SidebarBrand({ companyName, collapsed = false }: { companyName?: string; collapsed?: boolean }) {

@@ -183,3 +183,27 @@ describe("proxy - Failed Sign-ins (/failed-signins) is Admin-only", () => {
     expect(config.matcher).toContain("/failed-signins/:path*");
   });
 });
+
+describe("proxy - Database Backup (/database-backup) is Admin-only", () => {
+  it.each(["MANAGER", "TICKETING_AGENT", "TRAVEL_AGENT", "FLIGHT_EXPERT", "MARKETING_AGENT"])("a signed-in %s typing the URL directly is redirected away", async (role) => {
+    findUnique.mockResolvedValue({ status: "ACTIVE", role, sessionCreatedAt: new Date() });
+    const { proxy } = await import("../proxy");
+    for (const path of ["/database-backup", "/database-backup?x=1", "/database-backup/anything"]) {
+      const response = await proxy(makeRequest(path, "some-valid-looking-token"));
+      expect(response.headers.get("location"), path).not.toBeNull();
+      expect(response.headers.get("location"), path).not.toContain("/database-backup");
+    }
+  });
+
+  it("a signed-in Admin is let through, and a signed-out visitor is sent to /login", async () => {
+    findUnique.mockResolvedValue({ status: "ACTIVE", role: "ADMIN", sessionCreatedAt: new Date() });
+    const { proxy } = await import("../proxy");
+    expect((await proxy(makeRequest("/database-backup", "some-valid-looking-token"))).headers.get("location")).toBeNull();
+    expect((await proxy(makeRequest("/database-backup"))).headers.get("location")).toContain("/login");
+  });
+
+  it("is in the matcher so the guard actually runs", async () => {
+    const { config } = await import("../proxy");
+    expect(config.matcher).toContain("/database-backup/:path*");
+  });
+});

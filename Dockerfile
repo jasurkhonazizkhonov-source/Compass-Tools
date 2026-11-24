@@ -86,6 +86,27 @@ COPY --from=builder --chown=node:node /app/scripts/healthcheck.mjs /app/scripts/
 RUN mkdir -p /var/lib/compass-tools/uploads \
  && chown node:node /var/lib/compass-tools/uploads \
  && chmod 0700 /var/lib/compass-tools/uploads
+# PostgreSQL 17 client tools (pg_dump, pg_restore) for the Admin "Database Backup" page. The database server is postgres:17.x (compose.yaml) and pg_dump refuses to dump a NEWER
+# server, so the client must be 17 as well; Debian bookworm itself ships 15, so it comes from the PostgreSQL project's own apt repository. The repository's signing key is checked
+# against its published fingerprint before it is trusted (the build fails if it does not match), and the download tools are removed again afterwards. Only the client is installed:
+# no server, no extra service. Without it the page says a backup cannot be made here; nothing else depends on it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl gnupg \
+ && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /tmp/pgdg.asc \
+ && test "$(gpg --show-keys --with-colons /tmp/pgdg.asc | awk -F: '$1=="fpr"{print $10; exit}')" = "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8" \
+ && install -d -m 0755 /usr/share/keyrings \
+ && gpg --dearmor < /tmp/pgdg.asc > /usr/share/keyrings/pgdg.gpg \
+ && echo "deb [signed-by=/usr/share/keyrings/pgdg.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends postgresql-client-17 \
+ && apt-get purge -y --auto-remove curl gnupg \
+ && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc \
+ && pg_dump --version
+# Staged database backups (compose mounts the named volume backup_staging here): private to the application user, never part of the image, removed by the application after a
+# download or an hour.
+RUN mkdir -p /var/lib/compass-tools/backups \
+ && chown node:node /var/lib/compass-tools/backups \
+ && chmod 0700 /var/lib/compass-tools/backups
 # Same for the IP-geolocation database: compose mounts the named volume geoip_data here READ-ONLY. The directory exists with the same owner as in the
 # tools image so a first-created volume gets one consistent ownership whichever service creates it.
 RUN mkdir -p /var/lib/compass-tools/geoip && chown node:node /var/lib/compass-tools/geoip

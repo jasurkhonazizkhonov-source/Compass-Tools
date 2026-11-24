@@ -113,6 +113,26 @@ case "$status_out" in *"not usable"*"no record"*) ok "geoip-update status runs i
 geo_net="$(docker compose --profile tools config --format json | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const c=JSON.parse(s).services;const on=n=>Object.keys(c[n].networks||{});console.log(on("geoip-update").join(",")+"|"+["app","db","tools","cloudflared","cvv-cleanup"].filter(n=>on(n).includes("egress")).join(","))})')"
 [ "$geo_net" = "egress|" ] && ok "geoip-update is on the egress network only; no long-running service is" || fail "unexpected networks: $geo_net"
 
+step "Admin Database Backup: the image has a matching pg_dump, a private staging volume, and the download endpoint is closed"
+# The PostgreSQL client must be the same major version as the server (pg_dump refuses an older client than the server).
+client_major="$(docker compose exec -T app sh -c 'pg_dump --version' | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+server_major="$(docker compose exec -T db sh -c 'postgres --version' | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+[ -n "$client_major" ] && [ "$client_major" -ge "$server_major" ] && ok "pg_dump $client_major in the app image, server $server_major" || fail "pg_dump major '$client_major' is older than the server '$server_major'"
+docker compose exec -T app sh -c 'pg_restore --version >/dev/null' && ok "pg_restore is installed" || fail "pg_restore is missing from the app image"
+sids="$(docker compose exec -T app sh -c 'stat -c %u:%g:%a /var/lib/compass-tools/backups')"
+[ "$sids" = "1000:1000:700" ] && ok "backup staging volume owned 1000:1000, mode 700" || fail "backup staging owner:mode was '$sids'"
+[ "$(docker compose exec -T app printenv BACKUP_STAGING_DIR)" = "/var/lib/compass-tools/backups" ] && ok "BACKUP_STAGING_DIR reaches the app" || fail "BACKUP_STAGING_DIR did not reach the app container"
+# The same command line the app builds, against the real database, then the same read-back check; the file is removed at once.
+docker compose exec -T app sh -c 'PGPASSWORD="$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).password))")" pg_dump --format=custom --compress=6 --no-owner --no-privileges --exclude-table-data=PaymentMethodCvv -h db -U "$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).username))")" -d "$(node -e "console.log(new URL(process.env.DATABASE_URL).pathname.slice(1))")" --file=/var/lib/compass-tools/backups/smoke.dump' && ok "pg_dump of the migrated database ran as the app user" || fail "pg_dump failed inside the app image"
+toc="$(docker compose exec -T app pg_restore --list /var/lib/compass-tools/backups/smoke.dump)"
+case "$toc" in *"TABLE public Account"*"_prisma_migrations"*|*"_prisma_migrations"*"TABLE public Account"*) ok "the dump lists the Account table and the migration history" ;; *) fail "the dump does not list the expected tables" ;; esac
+case "$toc" in *"TABLE DATA public PaymentMethodCvv"*) fail "the dump contains PaymentMethodCvv data" ;; *) ok "no retained security-code data in the dump" ;; esac
+docker compose exec -T app rm -f /var/lib/compass-tools/backups/smoke.dump
+dbk="$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$(docker compose ps -q db)")"
+case "$dbk" in *compass-tools/backups*) fail "the backup staging volume is mounted into the database container" ;; *) ok "the database container does not see the backup staging volume" ;; esac
+bk() { docker compose exec -T app node -e "fetch('http://127.0.0.1:3000/api/admin/database-backup/compass-20260101T000000Z-00000000',{headers:$1}).then(r=>console.log(r.status))"; }
+[ "$(bk '{}')" = "401" ] && ok "the backup download endpoint refuses a request with no session (401)" || fail "the backup download endpoint did not refuse an anonymous request"
+
 step "Operator scripts pick the INSTALLED image version (APP_VERSION unset), never ':local'"
 ver="$(env -u APP_VERSION bash -c 'source deploy/common.sh; require_app_version; echo "$APP_VERSION"')"
 [ "$ver" = "smoke" ] && ok "require_app_version -> $ver (read from the running app container)" || fail "resolved '$ver', expected 'smoke'"

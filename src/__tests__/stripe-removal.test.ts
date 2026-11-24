@@ -223,6 +223,7 @@ describe("Stripe removal — repo-wide verification", () => {
     path.join("src", "app", "api", "cron", "cvv-cleanup", "route.ts"), // dedicated 24h cleanup endpoint (self-hosted scheduler): deletes expired rows, handles no value
     path.join("src", "server", "actions", "payment-methods.ts"), // destroy when the payment is recorded as charged / cancelled
     path.join("src", "server", "actions", "contact-payment-methods.ts"), // destroy when the card is removed
+    path.join("src", "server", "backup", "database-backup.ts"), // Admin Database Backup: names the PaymentMethodCvv table only to EXCLUDE its data from a dump and to refuse a dump that contains it; handles no value
   ];
   const executableCode = (file: string) =>
     readFileSync(file, "utf-8")

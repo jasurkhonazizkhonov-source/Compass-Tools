@@ -559,6 +559,76 @@ bash deploy/restore-db.sh /var/backups/compass-tools/compass-<timestamp>.dump --
 Encrypted backups: `age -d -i ~/compass-backup-key.txt file.dump.age > file.dump` first. After a restore, run `deploy/verify.sh`. Restoring an
 **old** backup needs the key ring that was current when it was taken (CARD_VAULT_SECURITY.md §6, §10).
 
+### 12.5 Downloading a backup from the CRM (Admin → Database Backup)
+
+Admins have a **Database Backup** entry in the sidebar (`/database-backup`) with one button, **Download Database Backup**. It is a convenience for taking
+a copy to your own computer; it does **not** replace the scheduled timer in §12.2 (nobody has to remember to click it).
+
+* **Who:** Admins only, checked on the server for the page, the Server Actions and the download endpoint (not just hidden in the menu). Creating a
+  backup also needs a sign-in within the last 15 minutes. Every create, download, delete and refusal is written to the audit log (no connection
+  string, password or path is ever logged).
+* **What it runs:** `pg_dump --format=custom --compress=6 --no-owner --no-privileges --exclude-table-data=PaymentMethodCvv`, started without a
+  shell, against the `DATABASE_URL` the app already uses (the password goes to the tool in an environment variable, never on a command line).
+  It is the same format and the same CVV exclusion as `deploy/backup-db.sh`, so `deploy/restore-db.sh` reads both.
+* **Checked before it is offered:** the dump is written to a `.partial` file, read back with `pg_restore --list` (it must contain the `Account`
+  table and `_prisma_migrations` and must **not** contain `PaymentMethodCvv` data), then renamed and given a SHA-256. A failed or timed-out dump is
+  deleted and nothing is offered. The page shows time, size, format, status and the SHA-256 so you can check the copy you downloaded.
+* **Safe by construction:** one backup at a time (lock file), a 30-minute limit, a free-disk check before starting, the file is streamed (never held in
+  memory), the staged copy is removed after a complete download (or after 60 minutes), and the file name is a generated id that is matched against an
+  exact pattern, so no path can be supplied.
+* **Where it is staged:** the `backup_staging` Docker volume (`/var/lib/compass-tools/backups`, mode 0700, owned by the app user). The image carries
+  the PostgreSQL **17** client (`postgresql-client-17`, from the PostgreSQL apt repository) because `pg_dump` must be the same major version as the
+  server or newer. If you change the `db` image to a newer major, change `postgresql-client-17` in the `Dockerfile` to match and rebuild.
+* **Not an in-app restore.** A button that can overwrite the live database from the website is a larger risk than the convenience is worth. Restoring
+  is the deliberate, typed-confirmation procedure in §12.4 / §12.6, run by someone with server access.
+* **Sensitive:** the file holds all customer data and the *encrypted* card numbers. Store it encrypted (`age -r <public key> file.dump`) and outside
+  this server; delete old copies.
+
+### 12.6 Rebuilding on a replacement VPS (disaster recovery)
+
+A database backup is one of **five** things you need. Keep all of them, separately, off the server:
+
+| # | What | Where it comes from |
+|---|---|---|
+| 1 | Database dump (`.dump`) | §12.2 timer / Admin → Database Backup |
+| 2 | `.env` (all keys: `CARD_ENCRYPTION_KEY` key ring, `GMAIL_TOKEN_ENCRYPTION_KEY`, `IP_ENCRYPTION_KEY`, `IP_HASH_KEY`, `CRON_SECRET`, `LEAD_INGEST_SECRET`, `POSTGRES_PASSWORD`, `GOOGLE_*`, `APP_BASE_URL`, …) | your password manager. **Without the keys the encrypted card numbers, Gmail connections and IP vault in the dump cannot be read.** |
+| 3 | Uploaded lead documents | `deploy/backup-uploads.sh` archive (`docs/LEAD_ATTACHMENTS.md`) |
+| 4 | Cloudflare Tunnel token / DNS / Google Cloud OAuth client | Cloudflare and Google consoles (not in any backup). The Google client needs this deployment's origin and the Gmail redirect URI (§8). |
+| 5 | The code | this Git repository (the release branch / commit that was running) |
+
+Steps (the database part is tested; see "What has and has not been tested" below):
+
+1. Provision the VPS and do §3 (user, swap, Docker). Point nothing at it yet.
+2. `git clone` the repository to `/opt/compass-tools` and check out the release commit that was running.
+3. Restore `.env` from your password manager (mode 600). Do **not** generate new keys.
+4. Restore uploads into `/srv/compass-tools/uploads` (`deploy/restore-uploads.sh <archive>`).
+5. Start only the database: `docker compose up -d db` and wait for it to be healthy. This creates an empty database with the `POSTGRES_*` user.
+6. Check the file first: `sha256sum compass-….dump` must equal the SHA-256 shown when it was made; `pg_restore --list compass-….dump | head`.
+7. Restore into a throw-away database to prove it, then into the real one:
+   ```bash
+   bash deploy/restore-db.sh /path/compass-….dump               # test restore, prints row counts, drops the copy
+   bash deploy/restore-db.sh /path/compass-….dump --replace     # type the database name; stops the app, takes a safety backup, restores
+   ```
+   `--replace` works on a brand-new empty database as well. It restores with `--no-owner`, so objects belong to the `POSTGRES_USER` the app uses.
+   There are **no custom roles, extensions or grants** in this schema (`prisma/migrations` contains none), so nothing has to be recreated.
+8. Apply migrations that were added after the backup, if any: `bash deploy/deploy.sh --migrate`. A backup taken from the running release is already
+   at that release's schema (`prisma migrate status` reports "up to date").
+9. Bring the stack up (`bash deploy/deploy.sh`), then `bash deploy/verify.sh`, sign in as an Admin, open a lead, a booking and **System Health**.
+   Re-point the Cloudflare Tunnel / DNS only after this works.
+
+**Version compatibility.** Restore into the same PostgreSQL major version or newer (a custom-format dump from 17 restores into 17 or later, not
+into 16). `pg_restore` must be the same major version as the dump or newer. The compose file pins `postgres:17.11-bookworm`.
+
+**What the restore does *not* bring back, by design:** retained card security codes (never backed up), upload files (step 4), secrets (step 3),
+Cloudflare/Google/DNS settings (step 4 of the table), sessions (users sign in again), and anything created after the backup was taken.
+
+**What has and has not been tested.** The dump → verify → restore-into-a-new-database path, including a table-by-table row/content comparison,
+index/constraint/sequence comparison and `prisma migrate status`, is covered by an integration test that runs a real `pg_dump`/`pg_restore` 17.11
+against a disposable PostgreSQL 17.11 (`src/server/backup/__integration__/database-backup.integration.test.ts`; skipped unless
+`INTEGRATION_DATABASE_URL`, `INTEGRATION_ADMIN_DATABASE_URL`, `PG_DUMP_BIN` and `PG_RESTORE_BIN` are set). It was **not** run on a replacement VPS or
+through `deploy/restore-db.sh` inside Docker (Docker was not available where this was developed); the CI smoke test runs `pg_dump` inside the built
+image. Do a full rehearsal on a spare VPS before you depend on this, and repeat it after any change to the database image.
+
 ## 13. Routine updates from GitHub
 
 1. Make and review the change in GitHub (feature branch → pull request → CI green → review → merge to `main`).

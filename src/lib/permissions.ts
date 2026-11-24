@@ -13,6 +13,12 @@ export function canManageSystemSettings(role: AccountRole | undefined) {
   return role === "ADMIN";
 }
 
+// Admin-only Database Backup: creating, listing, downloading and deleting a complete PostgreSQL backup (every customer record the CRM holds). Enforced at the sidebar,
+// proxy.ts, the page, every Server Action and the download route - never by hiding a link alone.
+export function canManageDatabaseBackups(role: AccountRole | undefined) {
+  return role === "ADMIN";
+}
+
 // Bulk Contact Import — Admin and Manager only (Travel Agents and every
 // other role are excluded). Kept as its own named function (rather than
 // reusing canManageAccounts/canReassignLeads, which happen to overlap

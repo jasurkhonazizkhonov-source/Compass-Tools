@@ -139,6 +139,8 @@ services:
       # --- Lead documents: stored on the VPS disk (bind mount below), never in the database or a cloud bucket ---
       UPLOAD_STORAGE_DIR: /var/lib/compass-tools/uploads
       UPLOAD_MIN_FREE_MB: ${UPLOAD_MIN_FREE_MB:-}
+      # --- Admin "Database Backup": where pg_dump writes a backup until it is downloaded (the dedicated volume below, never the 1.5 GB memory-backed /tmp) ---
+      BACKUP_STAGING_DIR: /var/lib/compass-tools/backups
     # No `ports:` - only containers on the `web` network (cloudflared, cvv-cleanup) can reach http://app:3000.
     expose:
       - "3000"
@@ -164,6 +166,10 @@ services:
         source: geoip_data
         target: /var/lib/compass-tools/geoip
         read_only: true
+      # Staged database backups: private to this service, removed by the application after a download or an hour. A backup is as sensitive as the database itself.
+      - type: volume
+        source: backup_staging
+        target: /var/lib/compass-tools/backups
     <<: *hardening
     tmpfs:
       - /tmp
@@ -298,3 +304,6 @@ volumes:
   postgres_data: {}
   # Holds only the downloaded IP-geolocation database (public data, no customer data). Safe to delete: locations fall back to country level.
   geoip_data: {}
+  # Staging area for Admin database backups (customer data in a dump file, deleted by the application after a download or an hour). Needs free disk space of about the size of the
+  # database; the Database Backup page refuses to start a backup when there is not enough.
+  backup_staging: {}
