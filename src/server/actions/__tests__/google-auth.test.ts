@@ -73,6 +73,22 @@ describe("signInWithGoogle - the token must belong to this browser (nonce bindin
     expect(clearBinding).not.toHaveBeenCalled();
   });
 
+  it("a credential REPLAYED after a successful sign-in (Google One Tap or the button: the same path) is refused: the first use consumed the binding, so the second has no nonce to match", async () => {
+    let binding: string | null = "nonce-for-this-browser";
+    readBindingNonce.mockImplementation(async () => binding);
+    clearBinding.mockImplementation(async () => {
+      binding = null;
+    });
+    // Google's library only accepts a token whose nonce equals the one the server expects; with no expected nonce it refuses (verify-google-token-signin.test.ts proves that half).
+    verifyGoogleIdToken.mockImplementation(async (_token: string, expected: string | null) => (expected === "nonce-for-this-browser" ? { email: "agent@example.com" } : null));
+    authorizeGoogleUser.mockResolvedValue({ ok: true, account: { id: "acct-1" } });
+    const { signInWithGoogle } = await import("../google-auth");
+    expect(await signInWithGoogle("the-same-token")).toEqual({ ok: true });
+    establishSession.mockClear();
+    expect(await signInWithGoogle("the-same-token")).toEqual({ ok: false, reason: "GOOGLE_VERIFICATION_FAILED" });
+    expect(establishSession).not.toHaveBeenCalled();
+  });
+
   it("a denied or failed sign-in does not clear the binding (a retry in the same browser still works)", async () => {
     verifyGoogleIdToken.mockResolvedValue({ email: "stranger@example.com" });
     authorizeGoogleUser.mockResolvedValue({ ok: false, reason: "UNKNOWN_EMAIL" });
