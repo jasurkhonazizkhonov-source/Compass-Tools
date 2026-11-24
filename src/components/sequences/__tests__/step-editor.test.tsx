@@ -159,10 +159,13 @@ describe("checks from the server", () => {
     await user.type(screen.getByTestId("visual-editor"), "<p>x</p>");
     addStep.mockRejectedValueOnce(new Error("This email cannot be saved: The email is too large."));
     await user.click(screen.getByRole("button", { name: /^Add Step$/ }));
-    await waitFor(() => expect(toastError).toHaveBeenCalledWith("This email cannot be saved: The email is too large."));
+    // These waits follow several keystrokes and a save through React's transition; on a loaded machine that takes longer than the 1 s default (reproduced with 12 busy processes: both of
+    // this file's slow tests failed, passed on an idle machine). The second click must also wait for the button to come back: it is disabled while the first save is pending.
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith("This email cannot be saved: The email is too large."), { timeout: 10_000 });
     addStep.mockRejectedValueOnce(new Error("connect ECONNREFUSED postgresql://user:secret@db"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /^Add Step$/ })).toBeEnabled(), { timeout: 10_000 });
     await user.click(screen.getByRole("button", { name: /^Add Step$/ }));
-    await waitFor(() => expect(toastError).toHaveBeenLastCalledWith("The step could not be saved. Please try again."));
+    await waitFor(() => expect(toastError).toHaveBeenLastCalledWith("The step could not be saved. Please try again."), { timeout: 10_000 });
   });
 });
 
@@ -255,8 +258,8 @@ describe("drafts kept in this browser", () => {
     await waitFor(() => expect(JSON.parse(window.localStorage.getItem("compass:step-draft:new:seq-1") ?? "{}").subject).toBe("Kept"), { timeout: 3000 });
     await user.type(screen.getByTestId("visual-editor"), "<p>x</p>");
     await user.click(screen.getByRole("button", { name: /^Add Step$/ }));
-    await waitFor(() => expect(addStep).toHaveBeenCalled());
-    await waitFor(() => expect(window.localStorage.getItem("compass:step-draft:new:seq-1")).toBeNull());
+    await waitFor(() => expect(addStep).toHaveBeenCalled(), { timeout: 10_000 });
+    await waitFor(() => expect(window.localStorage.getItem("compass:step-draft:new:seq-1")).toBeNull(), { timeout: 10_000 }); // slow under CPU contention only: see the note in the test above
   });
 
   it("a draft is NEVER written after a successful save: the autosave that was still waiting (600 ms after the last keystroke) must not bring the saved step back as a draft", async () => {

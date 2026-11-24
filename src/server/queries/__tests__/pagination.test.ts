@@ -210,8 +210,8 @@ describe("getSequenceEnrollments — server-side pagination (Pass 8 §3)", () =>
 
   function mockDeps(model: ReturnType<typeof makeFakeModel>) {
     // getSequenceEnrollments also asks which of the listed leads the viewer may see (to withhold email addresses): one lead.findMany, none visible here.
-    vi.doMock("@/lib/prisma", () => ({ prisma: { sequenceEnrollment: model, lead: { findMany: async () => [] } } }));
-    vi.doMock("@/server/visibility", () => ({ sequenceVisibilityWhere: () => VISIBILITY_WHERE.sequence, leadVisibilityWhere: () => ({}) }));
+    vi.doMock("@/lib/prisma", () => ({ prisma: { sequenceEnrollment: model, lead: { findMany: async () => [] }, contact: { findMany: async () => [] } } }));
+    vi.doMock("@/server/visibility", () => ({ sequenceVisibilityWhere: () => VISIBILITY_WHERE.sequence, leadVisibilityWhere: () => ({}), contactVisibilityWhere: () => ({}) }));
   }
 
   it("first page: skip 0, take 25", async () => {

@@ -81,6 +81,9 @@
     "20261122000200_marketing_send_cancelled_status",
     "20261123000100_lead_date_flexibility_days",
     "20261124000100_sequence_reply_stop_and_scheduling",
-    "20261124000200_sequence_step_body_format"
+    "20261124000200_sequence_step_body_format",
+    "20261125000100_sequence_enrollment_contact_subject",
+    "20261125000200_campaign_send_quota_indexes",
+    "20261125000300_sequence_enrollment_contact_fill_trigger"
   ]
 }

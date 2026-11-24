@@ -61,7 +61,12 @@ export default async function LoginPage({ searchParams }: { searchParams: Search
     googleClientId = null;
   }
   // This request's CSP nonce (set by src/proxy.ts), handed to Google's script tag so it can pass it on to the styles it adds.
-  const nonce = (await headers()).get("x-nonce") ?? undefined;
+  let nonce: string | undefined;
+  try {
+    nonce = (await headers()).get("x-nonce") ?? undefined;
+  } catch {
+    nonce = undefined; // no request scope (only ever the case outside a real request): the script tag simply has no nonce
+  }
   const sp = await searchParams;
   const expired = sp.reason === "expired";
   const endedReason = isSessionEndReason(sp.reason) ? sp.reason : null;
