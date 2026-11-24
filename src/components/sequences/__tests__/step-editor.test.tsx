@@ -258,4 +258,16 @@ describe("drafts kept in this browser", () => {
     await waitFor(() => expect(addStep).toHaveBeenCalled());
     await waitFor(() => expect(window.localStorage.getItem("compass:step-draft:new:seq-1")).toBeNull());
   });
+
+  it("a draft is NEVER written after a successful save: the autosave that was still waiting (600 ms after the last keystroke) must not bring the saved step back as a draft", async () => {
+    const user = userEvent.setup();
+    render(<StepEditor sequenceId="seq-1" steps={[]} />);
+    await user.type(screen.getByPlaceholderText("Email subject"), "Kept");
+    await user.type(screen.getByTestId("visual-editor"), "<p>x</p>");
+    await user.click(screen.getByRole("button", { name: /^Add Step$/ })); // well inside the 600 ms autosave wait
+    await waitFor(() => expect(addStep).toHaveBeenCalled());
+    await waitFor(() => expect(window.localStorage.getItem("compass:step-draft:new:seq-1")).toBeNull());
+    await new Promise((r) => setTimeout(r, 900)); // longer than the autosave wait: the timer that was pending has now fired (or been cancelled)
+    expect(window.localStorage.getItem("compass:step-draft:new:seq-1")).toBeNull();
+  });
 });

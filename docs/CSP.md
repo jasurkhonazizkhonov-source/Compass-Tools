@@ -13,7 +13,8 @@ dependency that is already trusted, and it is not a substitute for escaping outp
 |---|---|---|---|---|
 | **Nonce policy** (per request) | every signed-in CRM page, `/quote/*` (card entry), `/`, `/access-denied` | `'self' 'nonce-…' 'strict-dynamic'` — **no `'unsafe-inline'`, no `'unsafe-eval'`** in production | `'self' 'nonce-…'` + the hash of sonner's stylesheet | `'unsafe-inline'` |
 | **Nonce policy, sign-in page** | `/login` | same as above | `'self' 'unsafe-inline' https://accounts.google.com` (**exception 2**) | `'unsafe-inline'` |
-| **Base policy** | everything else: the 13 pre-rendered marketing pages (`/about`, `/contact`, `/features/*`, `/privacy`, `/security`, `/terms`), API routes, error pages | `'self' 'unsafe-inline' https://accounts.google.com` (**exception 1**) | `'self'` + sonner hash + `https://accounts.google.com` | `'unsafe-inline'` |
+| **Hash policy** (static pages, written after the build) | the 13 pre-rendered marketing pages (`/about`, `/contact`, `/features/*`, `/privacy`, `/security`, `/terms`) | `'self'` + the SHA-256 of each of that page's inline scripts + Google - **no `'unsafe-inline'`** (`scripts/static-page-csp.mjs`) | `'self'` + sonner hash + Google | `'unsafe-inline'` |
+| **Base policy** | everything else: API routes, error pages, and the marketing pages when the post-build step could not run (Cloudflare/Vercel builds) | `'self' 'unsafe-inline' https://accounts.google.com` (**exception 1**) | `'self'` + sonner hash + Google | `'unsafe-inline'` |
 
 Everything else is the same in both: `default-src 'self'`, `frame-ancestors 'none'`, `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`,
 `img-src 'self' data: https:`, `connect-src 'self'` + Google, `frame-src https://accounts.google.com`. No wildcards, no payment provider, no analytics host.
@@ -37,15 +38,17 @@ Everything else is the same in both: `default-src 'self'`, `frame-ancestors 'non
 
 ## Remaining exceptions (each one is deliberate)
 
-1. **Scripts on the 13 pre-rendered marketing pages: `'unsafe-inline'`.** Next.js writes its hydration data into inline `<script>` elements (`self.__next_f.push(...)`, the theme
-   bootstrap). A page built at deploy time cannot contain a per-request nonce. Measured on `/`: 3 inline scripts, 16 external. The options, and why none was taken silently:
-   * *Make those pages dynamic and put them under the nonce policy.* Works (this is what was done for `/`), but the pages then render on every request and the HTML can no
-     longer be cached by a CDN (a cached page would replay one nonce to everyone). That is a performance and SEO decision for the owner, not a security fix.
-   * *Hash every inline script at build time.* The flight-data scripts differ per page and per build; the policy header is computed before the pages exist, so it needs a
-     post-build step that rewrites Next's routes manifest. Fragile, rejected.
-   * *Next's experimental SRI.* Covers external script files only; inline scripts are still blocked, so it does not remove this need.
-   These pages show no customer data and accept no card data; `frame-ancestors`, `object-src` and `base-uri` still apply. `/login` and every page that handles card data are
-   **not** in this group.
+1. **Scripts on routes the build cannot hash: `'unsafe-inline'`** - API routes, error pages, and the marketing pages on a Cloudflare or Vercel build (which do not run the post-build step).
+   The 13 pre-rendered marketing pages **no longer need it** (2026-11-25): Next.js writes its hydration data into inline `<script>` elements (`self.__next_f.push(...)`, the theme
+   bootstrap), which cannot carry a per-request nonce on a page built at deploy time - but the HTML of a static page does not change between requests, so each inline script is
+   allowed by its **SHA-256** instead. `scripts/static-page-csp.mjs` (run by `npm run build` after `next build`) hashes every executable inline script of every pre-rendered
+   page and appends one rule per page to `.next/routes-manifest.json` (and the copy under `.next/standalone`); Next.js applies a later matching header rule over an earlier one, so the
+   page rule replaces the base one. The pages stay static and CDN-cacheable. `'strict-dynamic'` is deliberately not used (it would make browsers ignore `'self'`, and the
+   parser-inserted `<script src>` of a static page cannot carry a nonce), so the policy is hashes + `'self'`: an injected inline script no longer runs, but a script file from this
+   same origin would. What it does not do: it fails open on purpose - if the step cannot run, the pages keep the base policy and the build says so (`[csp] static pages keep the base
+   policy`); CI can pass `--require`. **Verified:** production build, 13 pages in a real browser: all hydrate, no violations, and an injected inline script is refused. **Not verified:**
+   the Docker/standalone image (the script patches both manifests; run `curl -I` on `/about` against the real container and check `script-src` has hashes and no `'unsafe-inline'`).
+   The other options considered: making the pages dynamic (nonce) costs CDN caching, so it was not needed; Next's experimental SRI covers script *files* only, so it does not help.
 2. **Styles on `/login`: `'unsafe-inline'`.** Google's sign-in script adds its own inline `<style>` (about 8 KB, class names like `.qJTHM`) and cannot be given a nonce; its text is
    Google's and changes without notice, so it cannot be hash-pinned. (A nonce or hash in the same directive would make browsers ignore `'unsafe-inline'`, so this page's
    directive carries neither.) The page's **script** policy stays strict, and the page shows and accepts no customer data.

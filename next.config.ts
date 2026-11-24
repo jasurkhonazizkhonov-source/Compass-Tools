@@ -3,8 +3,9 @@ import { buildBaseCsp } from "./src/lib/csp";
 
 // Content-Security-Policy, two tiers (src/lib/csp.ts). Every signed-in CRM page, the customer card-entry pages and the sign-in page get the STRICT per-request-nonce
 // policy from src/proxy.ts: no 'unsafe-inline' and no 'unsafe-eval' for scripts. This BASE policy is what remains for the routes proxy.ts does not run on: the public
-// marketing pages, which Next.js pre-renders at build time, so no per-request nonce can exist for their inline hydration scripts - 'unsafe-inline' on script-src is the one
-// documented, unavoidable exception there (they show no customer data, accept no card data and are covered by frame-ancestors, object-src and base-uri restrictions).
+// marketing pages, which Next.js pre-renders at build time (no per-request nonce can exist for their inline hydration scripts). After `next build`, scripts/static-page-csp.mjs gives each
+// of those pre-rendered pages its own rule with the SHA-256 of its inline scripts instead of 'unsafe-inline' (docs/CSP.md); 'unsafe-inline' on script-src remains only where that step
+// cannot run (API routes, error pages, Cloudflare/Vercel builds). frame-ancestors, object-src and base-uri apply everywhere.
 // Every other directive is scoped as tightly as verified to still work. Re-verify this policy (via the browser tools,
 // checking read_console_messages for CSP violations) after any change to
 // which third-party origins the app loads from.

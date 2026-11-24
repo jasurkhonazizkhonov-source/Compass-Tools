@@ -93,7 +93,7 @@ Gmail `gmail.metadata`, optional, read-only: labels and eight headers (From, Aut
 
 ## Unresolved, and who has to decide
 
-1. **The 13 pre-rendered marketing pages still need `'unsafe-inline'` for scripts** (Next.js pre-renders them at build time, so no per-request nonce can exist; `/` and `/access-denied` no longer do, see `docs/CSP.md`). They show no customer data and accept no card data. Making them dynamic would remove it at a performance cost (no CDN-cacheable HTML): a product decision.
+1. **Scripts: `'unsafe-inline'` remains only where the build cannot hash** (API routes, error pages, Cloudflare/Vercel builds). The 13 pre-rendered marketing pages moved to a hash-based policy on 2026-11-25 (`docs/CSP.md`); the Docker image's header is not yet verified on a running container.
 2. **Styles: reduced, not gone.** Style *elements* no longer allow `'unsafe-inline'` except on `/login` (Google's script adds an inline `<style>`); style *attributes* keep it (they cannot carry a nonce). Details, evidence and the full exception list: `docs/CSP.md`.
 3. ~~No rate limit on CRM emails sent one at a time~~ **Done in the continuation pass:** `STAFF_EMAIL_SEND` (100 per 15 minutes per account) on quote, airline-confirmation, cancellation-confirmation and inquiry-reply emails. Bulk sending (sequences, campaigns) is unaffected: it has its own quota.
 4. **`upgrade-insecure-requests` is not set**: it would break `http://localhost` production-mode runs; HTTPS is enforced by Cloudflare and HSTS.

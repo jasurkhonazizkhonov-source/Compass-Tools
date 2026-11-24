@@ -422,7 +422,7 @@ Open, not fixed by this work:
   injected inline script and inline event handlers are refused (verified in a real
   browser). Style *elements* need the nonce too (updated 2026-11-24); only style
   *attributes* keep `'unsafe-inline'` (they cannot carry a nonce). **Still open:** the
-  13 pre-rendered marketing pages keep `'unsafe-inline'` scripts because statically
+  13 pre-rendered marketing pages now use a hash-based script policy (2026-11-25; `'unsafe-inline'` remains only on routes the build cannot hash) because statically
   generated pages cannot carry a per-request nonce (they show and accept no card
   data); the sign-in page has strict scripts but `'unsafe-inline'` styles (Google's
   script adds an inline `<style>`); and a CSP does not stop an already-trusted script

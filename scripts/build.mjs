@@ -22,4 +22,10 @@ const result = workersBuild
     spawnSync(process.execPath, [path.join(root, "scripts", "cloudflare-build.mjs")], { stdio: "inherit", cwd: root, env: process.env }))
   : spawnSync("npx next build", { stdio: "inherit", cwd: root, env: process.env, shell: true });
 
+// After a successful plain build: give the pre-rendered public pages a hash-based script policy instead of 'unsafe-inline' (scripts/static-page-csp.mjs, docs/CSP.md). It never fails
+// the build: when it cannot do its job those pages simply keep the base policy, and it says so. (Not run for the Cloudflare/OpenNext build, which has its own pipeline.)
+if (!workersBuild && result.status === 0) {
+  spawnSync(process.execPath, [path.join(root, "scripts", "static-page-csp.mjs")], { stdio: "inherit", cwd: root, env: process.env });
+}
+
 process.exit(result.status ?? 1);
