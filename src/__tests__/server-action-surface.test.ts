@@ -50,6 +50,7 @@ function hasAuthMarker(fn: Fn): boolean {
 
 /** PUBLIC BY DESIGN: callable without a CRM sign-in, each with the reason it is acceptable. Adding a line here is a security decision: say why. */
 const PUBLIC_BY_DESIGN: Record<string, string> = {
+  "actions/google-auth.ts: getGoogleLoginNonce": "called by the login button before anybody is signed in: sets this browser's HttpOnly binding cookie and returns a one-way hash of its random value; reads nothing about anyone",
   "actions/dev-session.ts: signOut": "acts only on the caller's OWN session cookie (clears it and revokes that one session)",
   "actions/booking.ts: trackQuoteView": "the customer's secure quote page: the unguessable per-quote token IS the credential; it only advances that quote's own status",
   "actions/booking.ts: trackViewDealClicked": "same: token-gated, only that quote's own status",

@@ -34,21 +34,32 @@ vi.mock("sonner", () => ({
 }));
 
 const signInWithGoogle = vi.fn();
+const getGoogleLoginNonce = vi.fn();
 vi.mock("@/server/actions/google-auth", () => ({
   signInWithGoogle: (...args: [string]) => signInWithGoogle(...args),
+  getGoogleLoginNonce: () => getGoogleLoginNonce(),
 }));
+
+let capturedConfig: { client_id: string; nonce?: string } | undefined;
+let capturedButtonOptions: Record<string, unknown> | undefined;
 
 beforeEach(() => {
   vi.clearAllMocks();
   capturedCallback = undefined;
+  capturedConfig = undefined;
+  capturedButtonOptions = undefined;
+  getGoogleLoginNonce.mockResolvedValue("nonce-for-this-browser");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).google = {
     accounts: {
       id: {
-        initialize: ({ callback }: { callback: (r: { credential: string }) => void }) => {
-          capturedCallback = callback;
+        initialize: (config: { client_id: string; nonce?: string; callback: (r: { credential: string }) => void }) => {
+          capturedConfig = config;
+          capturedCallback = config.callback;
         },
-        renderButton: () => {},
+        renderButton: (_el: HTMLElement, options: Record<string, unknown>) => {
+          capturedButtonOptions = options;
+        },
       },
     },
   };
@@ -222,5 +233,30 @@ describe("GoogleSignInButton — initializes exactly once (Pass 40)", () => {
 
     expect(initializeSpy).toHaveBeenCalledTimes(1);
     expect(renderButtonSpy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GoogleSignInButton - the nonce that binds the token to this browser", () => {
+  it("asks the server for the nonce BEFORE starting Google's flow and hands exactly that nonce (and the client id) to Google", async () => {
+    const { GoogleSignInButton } = await import("../google-sign-in-button");
+    render(<GoogleSignInButton clientId="test-client-id.apps.googleusercontent.com" />);
+    await waitFor(() => expect(capturedConfig).toBeDefined());
+    expect(getGoogleLoginNonce).toHaveBeenCalledTimes(1);
+    expect(capturedConfig).toMatchObject({ client_id: "test-client-id.apps.googleusercontent.com", nonce: "nonce-for-this-browser" });
+  });
+
+  it("draws Google's own button labelled 'Continue with Google' in English, whatever the browser language", async () => {
+    const { GoogleSignInButton } = await import("../google-sign-in-button");
+    render(<GoogleSignInButton clientId="test-client-id.apps.googleusercontent.com" />);
+    await waitFor(() => expect(capturedButtonOptions).toBeDefined());
+    expect(capturedButtonOptions).toMatchObject({ type: "standard", text: "continue_with", locale: "en" });
+  });
+
+  it("if the nonce cannot be obtained, Google's flow is never started (no button that could only fail) and the user is told to reload", async () => {
+    getGoogleLoginNonce.mockRejectedValue(new Error("network"));
+    const { GoogleSignInButton } = await import("../google-sign-in-button");
+    render(<GoogleSignInButton clientId="test-client-id.apps.googleusercontent.com" />);
+    await waitFor(() => expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/reload the page/i)));
+    expect(capturedConfig).toBeUndefined();
   });
 });

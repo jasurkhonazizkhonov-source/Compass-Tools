@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Script from "next/script";
 import { toast } from "sonner";
 import { Loader2 } from "lucide-react";
-import { signInWithGoogle } from "@/server/actions/google-auth";
+import { getGoogleLoginNonce, signInWithGoogle } from "@/server/actions/google-auth";
 
 // Google Identity Services' own official button — loaded via its script
 // and rendered through google.accounts.id.renderButton(), never a
@@ -17,7 +17,7 @@ declare global {
     google?: {
       accounts: {
         id: {
-          initialize: (config: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
+          initialize: (config: { client_id: string; nonce?: string; callback: (response: GoogleCredentialResponse) => void }) => void;
           renderButton: (parent: HTMLElement, options: Record<string, unknown>) => void;
         };
       };
@@ -62,6 +62,9 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
   const router = useRouter();
   const buttonRef = useRef<HTMLDivElement>(null);
   const [scriptLoaded, setScriptLoaded] = useState(false);
+  // The nonce Google copies into the ID token (see src/server/auth/google-login-binding.ts): fetched once, before the button is drawn, and bound to this browser by an
+  // HttpOnly cookie the server sets in the same call. The server refuses any token that does not carry it.
+  const [nonce, setNonce] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const safetyNetRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   // Pass 40 — investigated and ruled out, kept as defense-in-depth: the
@@ -108,7 +111,21 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
   useEffect(() => clearSafetyNet, []);
 
   useEffect(() => {
-    if (!scriptLoaded || !window.google || !buttonRef.current) return;
+    let cancelled = false;
+    getGoogleLoginNonce()
+      .then((n) => {
+        if (!cancelled) setNonce(n);
+      })
+      .catch(() => {
+        if (!cancelled) toast.error("Google sign-in could not be prepared. Please reload the page and try again.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!scriptLoaded || !nonce || !window.google || !buttonRef.current) return;
     // See initializedRef's own comment above — defensive only, not
     // currently reachable in practice.
     if (initializedRef.current) return;
@@ -116,6 +133,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
 
     window.google.accounts.id.initialize({
       client_id: clientId,
+      nonce,
       callback: (response) => {
         if (signingInRef.current) return;
         signingInRef.current = true;
@@ -175,6 +193,9 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       theme: "outline",
       size: "large",
       text: "continue_with",
+      // The CRM is an English-language application: without this Google picks the label's language from the browser ("Weiter mit Google"), and the button would not say
+      // "Continue with Google". Google's own account chooser keeps the user's language.
+      locale: "en",
       shape: "pill",
       // Real responsive defect found and fixed: Google's renderButton()
       // only accepts a fixed pixel width (no percentage/responsive
@@ -187,7 +208,7 @@ export function GoogleSignInButton({ clientId }: { clientId: string }) {
       // 320/375/390/430px and unchanged visually at desktop sizes.
       width: 232,
     });
-  }, [scriptLoaded, clientId, router]);
+  }, [scriptLoaded, nonce, clientId, router]);
 
   return (
     <div className="flex flex-col items-center gap-3">

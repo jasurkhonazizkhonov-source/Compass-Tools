@@ -6,7 +6,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const record = vi.fn(async (input: Record<string, unknown>) => void input);
 vi.mock("@/server/auth/failed-sign-in", () => ({ recordFailedSignIn: (input: Record<string, unknown>) => record(input) }));
 let verified: { email: string; name: string } | null;
-vi.mock("@/server/auth/verify-google-token", () => ({ verifyGoogleIdToken: vi.fn(async () => verified) }));
+vi.mock("@/server/auth/verify-google-token", () => ({ verifyGoogleIdToken: vi.fn(async () => verified), verifyGoogleIdTokenForSignIn: vi.fn(async () => verified) }));
+// The browser binding cookie has its own tests (google-login-binding.test.ts); here it is a stub, since this file is about which failures are recorded.
+vi.mock("@/server/auth/google-login-binding", () => ({ readBindingNonce: vi.fn(async () => "nonce"), clearBinding: vi.fn(async () => {}), ensureBindingNonce: vi.fn(async () => "nonce") }));
 let bootstrap: { outcome: string; account?: { id: string } };
 vi.mock("@/server/auth/initial-admin-bootstrap", () => ({ bootstrapInitialAdminIfEligible: vi.fn(async () => bootstrap) }));
 let authz: { ok: boolean; reason?: string; account?: { id: string } };

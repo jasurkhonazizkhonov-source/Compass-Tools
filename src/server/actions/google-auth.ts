@@ -1,11 +1,12 @@
 "use server";
 
-import { verifyGoogleIdToken } from "@/server/auth/verify-google-token";
+import { verifyGoogleIdTokenForSignIn } from "@/server/auth/verify-google-token";
 import { authorizeGoogleUser } from "@/server/auth/google-authorization";
 import { bootstrapInitialAdminIfEligible } from "@/server/auth/initial-admin-bootstrap";
 import { establishSession } from "@/server/auth/establish-session";
 import { safeErrorTag, describeDatabaseTarget } from "@/lib/safe-error-log";
 import { recordFailedSignIn } from "@/server/auth/failed-sign-in";
+import { clearBinding, ensureBindingNonce, readBindingNonce } from "@/server/auth/google-login-binding";
 
 // Pass 37 — real bug found and fixed: this action used to call next/
 // navigation's redirect() directly on both the success and denial paths.
@@ -84,7 +85,8 @@ export type GoogleSignInResult =
  * authorization have succeeded.
  */
 export async function signInWithGoogle(idToken: string): Promise<GoogleSignInResult> {
-  const verified = await verifyGoogleIdToken(idToken);
+  // The nonce this browser's own binding cookie implies; the token must carry exactly it (google-login-binding.ts). Without a cookie nothing is accepted.
+  const verified = await verifyGoogleIdTokenForSignIn(idToken, await readBindingNonce());
   if (!verified) {
     // Identity could NOT be verified, so no name or email is recorded (nothing is read out of the unverified credential); the trusted IP, time and reason are.
     await recordFailedSignIn({ method: "GOOGLE_OAUTH", reasonCode: "GOOGLE_VERIFICATION_FAILED", credential: typeof idToken === "string" ? idToken : undefined });
@@ -106,6 +108,7 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
       console.error(`[google-auth] SESSION_CREATION_FAILED after bootstrap (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
       return { ok: false, reason: "SERVER_ERROR" };
     }
+    await clearBinding();
     return { ok: true };
   }
   if (bootstrap.outcome === "not_initialized") {
@@ -149,5 +152,14 @@ export async function signInWithGoogle(idToken: string): Promise<GoogleSignInRes
     console.error(`[google-auth] SESSION_CREATION_FAILED (${safeErrorTag(err)}) db=${describeDatabaseTarget()}`);
     return { ok: false, reason: "SERVER_ERROR" };
   }
+  await clearBinding();
   return { ok: true };
+}
+
+/**
+ * Called by the login button before it starts Google's flow: sets (once per browser) the HttpOnly binding cookie and returns the nonce to give Google. Public by design -
+ * it needs no session (nobody is signed in yet), reads nothing about anyone, and returns only a one-way hash of a random value the browser itself holds.
+ */
+export async function getGoogleLoginNonce(): Promise<string> {
+  return ensureBindingNonce();
 }

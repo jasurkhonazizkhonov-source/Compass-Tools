@@ -184,6 +184,35 @@ Project → Settings → Environment Variables) belong to that same client —
 not a leftover value from a different Google Cloud project or an old
 deployment.
 
+### 2a.1 "Continue with Google" on the sign-in page: what it does and what is still yours to verify
+
+The sign-in page has one **Continue with Google** button (Google's own rendered button, so the branding is Google's; it always opens Google's
+account chooser, then returns the user and signs them in). It is the only sign-in method; there is no second authentication system.
+
+What the server enforces (`src/server/actions/google-auth.ts`, `src/server/auth/*`):
+
+* The ID token is verified with Google's library against `GOOGLE_CLIENT_ID` (signature, audience, expiry, issuer). The **email must be verified by
+  Google** (`email_verified`), otherwise sign-in is refused.
+* **Replay / injection protection (nonce):** before the button is shown the server sets an HttpOnly, SameSite=Lax cookie (`Secure` in production)
+  holding a random value and gives Google the SHA-256 of it as the `nonce`. Sign-in is accepted only if the token's `nonce` equals the value
+  derived from that cookie, so a token minted for another page, another browser or an earlier attempt is refused. The cookie is cleared on success.
+  (This Google flow returns an ID token to the page rather than a redirect with a `code`, so there is no `state`/PKCE parameter to add; the nonce is
+  the mechanism Google defines for it. The separate **Connect Gmail** flow is a code flow and keeps its own `state` cookie.)
+* **No account is created, linked or approved by Google alone.** Access is only for an existing `ACTIVE` account whose email matches; an unknown
+  email, an `INACTIVE` account or a pending approval is refused with the same message as any other refusal, and no Admin role is ever granted from
+  Google data. The only exception is the one-time `INITIAL_ADMIN_EMAIL` bootstrap in §2b.
+* A refused attempt is recorded in **Failed sign-ins** (with the IP and approximate location rules from `docs/GEOIP.md`).
+
+Required environment (names only): `GOOGLE_CLIENT_ID` (used by the button and by token verification), `GOOGLE_CLIENT_SECRET` (used **only** by Connect
+Gmail, not by sign-in), `INITIAL_ADMIN_EMAIL` (first start only), `APP_BASE_URL`.
+
+Google Cloud Console, on the Web-application OAuth client: **Authorized JavaScript origins** = this deployment's exact origin (table above). Sign-in
+needs **no** redirect URI. The OAuth consent screen must be published to the users who sign in (or they must be test users).
+
+**Status: the code and its tests are verified; the Google Cloud configuration is not.** That configuration cannot be inspected from this repository.
+Do not call Google sign-in production-ready for a domain until someone has signed in there with a real account (and with an account that is not
+registered, to see the refusal), exactly as §2a describes.
+
 ## 2b. `INITIAL_ADMIN_EMAIL` — how the first Admin gets created
 
 `INITIAL_ADMIN_EMAIL` names the exact Google account that becomes this

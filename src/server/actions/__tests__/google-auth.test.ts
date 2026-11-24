@@ -16,7 +16,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const verifyGoogleIdToken = vi.fn();
 vi.mock("@/server/auth/verify-google-token", () => ({
-  verifyGoogleIdToken: (...args: [string]) => verifyGoogleIdToken(...args),
+  verifyGoogleIdTokenForSignIn: (...args: [string, string | null]) => verifyGoogleIdToken(...args),
+}));
+
+// The browser binding (google-login-binding.ts) has its own tests; here it is a stub so the ORCHESTRATION is what is proven.
+const readBindingNonce = vi.fn();
+const clearBinding = vi.fn();
+const ensureBindingNonce = vi.fn();
+vi.mock("@/server/auth/google-login-binding", () => ({
+  readBindingNonce: () => readBindingNonce(),
+  clearBinding: () => clearBinding(),
+  ensureBindingNonce: () => ensureBindingNonce(),
 }));
 
 const authorizeGoogleUser = vi.fn();
@@ -38,6 +48,44 @@ vi.mock("@/server/auth/establish-session", () => ({
 beforeEach(() => {
   vi.clearAllMocks();
   bootstrapInitialAdminIfEligible.mockResolvedValue({ outcome: "not_applicable" });
+  readBindingNonce.mockResolvedValue("nonce-for-this-browser");
+  ensureBindingNonce.mockResolvedValue("nonce-for-this-browser");
+});
+
+describe("signInWithGoogle - the token must belong to this browser (nonce binding)", () => {
+  it("passes the nonce implied by this browser's own cookie to the verifier, and clears the binding after a successful sign-in", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "agent@example.com" });
+    authorizeGoogleUser.mockResolvedValue({ ok: true, account: { id: "acct-1" } });
+    const { signInWithGoogle } = await import("../google-auth");
+    expect(await signInWithGoogle("token")).toEqual({ ok: true });
+    expect(verifyGoogleIdToken).toHaveBeenCalledWith("token", "nonce-for-this-browser");
+    expect(clearBinding).toHaveBeenCalledTimes(1);
+  });
+
+  it("no binding cookie: the verifier is told there is no nonce (it refuses), nothing is authorized, no session, the binding is kept", async () => {
+    readBindingNonce.mockResolvedValue(null);
+    verifyGoogleIdToken.mockResolvedValue(null);
+    const { signInWithGoogle } = await import("../google-auth");
+    expect(await signInWithGoogle("token-from-elsewhere")).toEqual({ ok: false, reason: "GOOGLE_VERIFICATION_FAILED" });
+    expect(verifyGoogleIdToken).toHaveBeenCalledWith("token-from-elsewhere", null);
+    expect(authorizeGoogleUser).not.toHaveBeenCalled();
+    expect(establishSession).not.toHaveBeenCalled();
+    expect(clearBinding).not.toHaveBeenCalled();
+  });
+
+  it("a denied or failed sign-in does not clear the binding (a retry in the same browser still works)", async () => {
+    verifyGoogleIdToken.mockResolvedValue({ email: "stranger@example.com" });
+    authorizeGoogleUser.mockResolvedValue({ ok: false, reason: "UNKNOWN_EMAIL" });
+    const { signInWithGoogle } = await import("../google-auth");
+    expect((await signInWithGoogle("token")).ok).toBe(false);
+    expect(clearBinding).not.toHaveBeenCalled();
+  });
+
+  it("getGoogleLoginNonce returns the browser's nonce (creating the binding the first time)", async () => {
+    const { getGoogleLoginNonce } = await import("../google-auth");
+    expect(await getGoogleLoginNonce()).toBe("nonce-for-this-browser");
+    expect(ensureBindingNonce).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("signInWithGoogle — ordering and session-issuance guard", () => {
