@@ -372,6 +372,20 @@ describe.skipIf(!enabled)("contact-only sequence enrollment - real PostgreSQL", 
     });
   });
 
+  describe("rollback and rolling-deploy safety (20)", () => {
+    it("20. an INSERT from the PREVIOUS release of the application (a lead, no contactId) still works and gets the lead's contact; a row with neither is still refused", async () => {
+      const seq = await makeSequence("old-image", "AgentOwn", 1);
+      const c = await makeContact("Kai", "AgentOwn");
+      const lead = await prisma.lead.create({ data: { contactId: c.id, status: "QUOTED", source: "WEBSITE", assignedAgentId: actors.AgentOwn.id } });
+      // exactly the statement the old Prisma client issues: no "contactId" column at all
+      await prisma.$executeRaw`INSERT INTO "SequenceEnrollment" ("id","sequenceId","leadId","status","currentStepIdx","enrolledAt") VALUES (${"old-" + TAG}, ${seq.id}, ${lead.id}, 'ACTIVE', 0, now())`;
+      expect(await prisma.sequenceEnrollment.findUniqueOrThrow({ where: { id: "old-" + TAG } })).toMatchObject({ leadId: lead.id, contactId: c.id });
+      await expect(prisma.$executeRaw`INSERT INTO "SequenceEnrollment" ("id","sequenceId","status","currentStepIdx","enrolledAt") VALUES (${"neither-" + TAG}, ${seq.id}, 'ACTIVE', 0, now())`).rejects.toThrow();
+      // the new application's own rows are not changed by the trigger
+      expect((await actions.enrollContacts(seq.id, [c.id])).byContact[c.id]).toBe("alreadyActive");
+    });
+  });
+
   // =====================================================================================================================
   describe("pause, resume, unenroll, recovery (9, 10)", () => {
     it("9. switching the sequence off holds a contact-only enrollment exactly where it is; switching it on sends it", async () => {
