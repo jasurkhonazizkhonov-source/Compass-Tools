@@ -49,7 +49,10 @@ describe("Database Backup deployment", () => {
     expect(smoke).toMatch(/for pkg in curl gnupg gcc make postgresql-17/); // build-only tools and the server are not in the runtime image
     expect(smoke).toContain("--list /var/lib/compass-tools/backups/smoke.dump"); // the read-back with pg_restore --list
     expect(smoke).toContain("\"$PG_RESTORE_BIN\"");
-    expect(smoke).toContain("--exclude-table-data=PaymentMethodCvv");
+    // QUOTED: pg_dump folds an unquoted pattern to lower case ("paymentmethodcvv"), which matches no table, so the data would NOT be excluded and the dump's table of contents would
+    // list "TABLE DATA public PaymentMethodCvv" (the GitHub CI run of 80c2e67 failed exactly there). The application's own command line and deploy/backup-db.sh use the quoted form.
+    expect(smoke).toContain('--exclude-table-data="\\"PaymentMethodCvv\\""');
+    expect(smoke).not.toMatch(/--exclude-table-data=PaymentMethodCvv/);
     expect(smoke).toContain("/api/admin/database-backup/");
   });
 
