@@ -49,10 +49,9 @@ describe("dismissal memory", () => {
 });
 
 describe("Google's moments", () => {
-  it("dismissed / not shown / other, and a moment API that is missing or throws is 'other'", () => {
+  it("dismissed / other, and a moment API that is missing or throws is 'other'", () => {
     expect(classifyMoment({ isDismissedMoment: () => true })).toBe("dismissed");
-    expect(classifyMoment({ isNotDisplayed: () => true })).toBe("not-shown");
-    expect(classifyMoment({ isSkippedMoment: () => true })).toBe("not-shown");
+    expect(classifyMoment({ isDismissedMoment: () => false })).toBe("other");
     expect(classifyMoment({})).toBe("other");
     expect(classifyMoment(null)).toBe("other");
     expect(classifyMoment({ isDismissedMoment: () => { throw new Error("FedCM"); } })).toBe("other");

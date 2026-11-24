@@ -66,21 +66,19 @@ export function mayPromptOneTap(params: { dismissedAt: number | null; now?: numb
 }
 
 /**
- * What Google reports about a prompt ("moment"). Under FedCM most detail is intentionally not available, so only three outcomes matter: the person closed it (remember that),
- * Google did not show it, or it was skipped (both: stay silent, the button below is the way in).
+ * What Google reports about a prompt ("moment"). Only ONE outcome matters to us: the person closed it (remember that for a day). "Not displayed" and "skipped" are Google's own reasons
+ * (no account, privacy settings, its cooldown) and are deliberately NOT asked for: Google marks isNotDisplayed()/isSkippedMoment() as going away when FedCM becomes mandatory and logs
+ * a console warning for every page that calls them (seen in a real browser), and nothing here would act on the answer - the button is always the way in.
  */
 export type OneTapMoment = {
   isDismissedMoment?: () => boolean;
-  isNotDisplayed?: () => boolean;
-  isSkippedMoment?: () => boolean;
 };
 
-export type OneTapOutcome = "dismissed" | "not-shown" | "other";
+export type OneTapOutcome = "dismissed" | "other";
 
 export function classifyMoment(moment: OneTapMoment | null | undefined): OneTapOutcome {
   try {
     if (moment?.isDismissedMoment?.()) return "dismissed";
-    if (moment?.isNotDisplayed?.() || moment?.isSkippedMoment?.()) return "not-shown";
   } catch {
     // a moment method Google no longer supports (FedCM) throws or is missing: treat as "nothing to report"
   }

@@ -112,13 +112,19 @@ describe("when we do NOT ask", () => {
 describe("what happens to the suggestion", () => {
   it("closing it is remembered (so it is not shown again for a day)", async () => {
     await mount();
-    act(() => h.moment!({ isDismissedMoment: () => true, isNotDisplayed: () => false, isSkippedMoment: () => false }));
+    act(() => h.moment!({ isDismissedMoment: () => true }));
     expect(Number(window.localStorage.getItem(ONE_TAP_DISMISSED_KEY))).toBeGreaterThan(Date.now() - 5_000);
   });
 
+  it("never calls the moment methods Google is retiring under FedCM (isNotDisplayed / isSkippedMoment: a real browser logs a console warning for each page that does)", async () => {
+    await mount();
+    const retired = { isNotDisplayed: vi.fn(() => true), isSkippedMoment: vi.fn(() => true), isDisplayed: vi.fn(() => true) };
+    act(() => h.moment!({ isDismissedMoment: () => false, ...retired }));
+    for (const fn of Object.values(retired)) expect(fn).not.toHaveBeenCalled();
+  });
+
   it.each([
-    ["not displayed (no Google account, privacy settings, Google's own cooldown)", { isDismissedMoment: () => false, isNotDisplayed: () => true, isSkippedMoment: () => false }],
-    ["skipped", { isDismissedMoment: () => false, isNotDisplayed: () => false, isSkippedMoment: () => true }],
+    ["not dismissed (Google not showing it, or it was used)", { isDismissedMoment: () => false }],
     ["a moment API Google no longer supports under FedCM (methods missing)", {}],
     ["a moment API that throws", { isDismissedMoment: () => { throw new Error("not supported under FedCM"); } }],
   ])("%s: no error is shown, nothing is stored, the button stays", async (_name, moment) => {
