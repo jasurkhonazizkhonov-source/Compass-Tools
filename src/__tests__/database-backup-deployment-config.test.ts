@@ -19,10 +19,22 @@ describe("Database Backup deployment", () => {
     expect(dockerfile).toContain(`postgresql-client-${serverMajor}`);
   });
 
-  it("the PostgreSQL apt repository key is checked against a pinned fingerprint, and the build tools used to fetch it are removed again", () => {
-    expect(dockerfile).toMatch(/[A-F0-9]{40}/);
+  it("the PostgreSQL apt repository key is checked against the VERIFIED fingerprint (postgresql.org / ACCC4CF8), and the build tools used to fetch it are removed again", () => {
+    // B97B 0AFC AA1A 47F0 44F2 44A0 7FCC 7D46 ACCC 4CF8: printed by postgresql.org's Debian instructions, computed from the downloaded key and the signer of the live InRelease.
+    expect(dockerfile).toContain('= "B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8"');
+    expect(dockerfile).toContain("https://www.postgresql.org/media/keys/ACCC4CF8.asc");
+    expect(dockerfile).toMatch(/signed-by=\/usr\/share\/keyrings\/pgdg\.gpg\] https:\/\/apt\.postgresql\.org\/pub\/repos\/apt bookworm-pgdg main/);
+    expect(dockerfile).not.toMatch(/trusted=yes|--allow-unauthenticated|apt-key add/);
     expect(dockerfile).toMatch(/apt-get purge -y --auto-remove curl gnupg/);
     expect(dockerfile).toMatch(/pg_dump --version/);
+  });
+
+  it("the app runs the two real PostgreSQL binaries by path, so no Perl wrapper or extra package is involved", () => {
+    expect(dockerfile).toContain(`ENV PG_DUMP_BIN=/usr/lib/postgresql/${serverMajor}/bin/pg_dump`);
+    expect(dockerfile).toContain(`PG_RESTORE_BIN=/usr/lib/postgresql/${serverMajor}/bin/pg_restore`);
+    expect(dockerfile).toContain(`/usr/lib/postgresql/${serverMajor}/bin/pg_dump --version`); // the build itself proves the binary runs
+    expect(dockerfile).toContain("apt-get install -y --no-install-recommends postgresql-client-"); // never the server package, never recommends
+    expect(dockerfile).not.toMatch(/apt-get install[^\n]*postgresql-\d+ /);
   });
 
   it("the staging directory is owned by the unprivileged user, mode 0700, and is a volume of the app only", () => {
@@ -33,8 +45,10 @@ describe("Database Backup deployment", () => {
   });
 
   it("the CI smoke test exercises the real pg_dump, the read-back and the closed download endpoint", () => {
-    expect(smoke).toContain("pg_dump --version");
-    expect(smoke).toContain("pg_restore --list");
+    expect(smoke).toContain('"$PG_DUMP_BIN" --version');
+    expect(smoke).toMatch(/for pkg in curl gnupg gcc make postgresql-17/); // build-only tools and the server are not in the runtime image
+    expect(smoke).toContain("--list /var/lib/compass-tools/backups/smoke.dump"); // the read-back with pg_restore --list
+    expect(smoke).toContain("\"$PG_RESTORE_BIN\"");
     expect(smoke).toContain("--exclude-table-data=PaymentMethodCvv");
     expect(smoke).toContain("/api/admin/database-backup/");
   });

@@ -115,18 +115,29 @@ geo_net="$(docker compose --profile tools config --format json | node -e 'let s=
 
 step "Admin Database Backup: the image has a matching pg_dump, a private staging volume, and the download endpoint is closed"
 # The PostgreSQL client must be the same major version as the server (pg_dump refuses an older client than the server).
-client_major="$(docker compose exec -T app sh -c 'pg_dump --version' | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+client_major="$(docker compose exec -T app sh -c '"$PG_DUMP_BIN" --version' | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
 server_major="$(docker compose exec -T db sh -c 'postgres --version' | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
 [ -n "$client_major" ] && [ "$client_major" -ge "$server_major" ] && ok "pg_dump $client_major in the app image, server $server_major" || fail "pg_dump major '$client_major' is older than the server '$server_major'"
-docker compose exec -T app sh -c 'pg_restore --version >/dev/null' && ok "pg_restore is installed" || fail "pg_restore is missing from the app image"
+docker compose exec -T app sh -c '"$PG_RESTORE_BIN" --version >/dev/null' && ok "pg_restore is installed" || fail "pg_restore is missing from the app image"
+[ "$(docker compose exec -T app printenv PG_DUMP_BIN)" = "/usr/lib/postgresql/17/bin/pg_dump" ] && ok "the app runs the real pg_dump 17 binary by path (no wrapper)" || fail "PG_DUMP_BIN does not point at the PostgreSQL 17 binary"
+# Nothing used only to BUILD the image (download tools, compilers) is left in the final runtime image, and no PostgreSQL SERVER came with the client.
+for pkg in curl gnupg gcc make postgresql-17; do
+  if docker compose exec -T app sh -c "dpkg -s $pkg >/dev/null 2>&1"; then fail "the runtime image contains $pkg"; fi
+done
+ok "no curl, gnupg, compiler or PostgreSQL server in the runtime image"
+# The app user can execute both tools (it is the user that runs them from the Admin page).
+[ "$(docker compose exec -T app id -u)" != "0" ] && docker compose exec -T app sh -c '"$PG_DUMP_BIN" --version >/dev/null && "$PG_RESTORE_BIN" --version >/dev/null' && ok "the unprivileged app user can run pg_dump and pg_restore" || fail "the app user cannot run the PostgreSQL tools"
 sids="$(docker compose exec -T app sh -c 'stat -c %u:%g:%a /var/lib/compass-tools/backups')"
 [ "$sids" = "1000:1000:700" ] && ok "backup staging volume owned 1000:1000, mode 700" || fail "backup staging owner:mode was '$sids'"
 [ "$(docker compose exec -T app printenv BACKUP_STAGING_DIR)" = "/var/lib/compass-tools/backups" ] && ok "BACKUP_STAGING_DIR reaches the app" || fail "BACKUP_STAGING_DIR did not reach the app container"
 # The same command line the app builds, against the real database, then the same read-back check; the file is removed at once.
-docker compose exec -T app sh -c 'PGPASSWORD="$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).password))")" pg_dump --format=custom --compress=6 --no-owner --no-privileges --exclude-table-data=PaymentMethodCvv -h db -U "$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).username))")" -d "$(node -e "console.log(new URL(process.env.DATABASE_URL).pathname.slice(1))")" --file=/var/lib/compass-tools/backups/smoke.dump' && ok "pg_dump of the migrated database ran as the app user" || fail "pg_dump failed inside the app image"
-toc="$(docker compose exec -T app pg_restore --list /var/lib/compass-tools/backups/smoke.dump)"
+docker compose exec -T app sh -c 'PGPASSWORD="$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).password))")" "$PG_DUMP_BIN" --format=custom --compress=6 --no-owner --no-privileges --exclude-table-data=PaymentMethodCvv -h db -U "$(node -e "console.log(decodeURIComponent(new URL(process.env.DATABASE_URL).username))")" -d "$(node -e "console.log(new URL(process.env.DATABASE_URL).pathname.slice(1))")" --file=/var/lib/compass-tools/backups/smoke.dump' && ok "pg_dump of the migrated database ran as the app user" || fail "pg_dump failed inside the app image"
+toc="$(docker compose exec -T app sh -c '"$PG_RESTORE_BIN" --list /var/lib/compass-tools/backups/smoke.dump')"
 case "$toc" in *"TABLE public Account"*"_prisma_migrations"*|*"_prisma_migrations"*"TABLE public Account"*) ok "the dump lists the Account table and the migration history" ;; *) fail "the dump does not list the expected tables" ;; esac
 case "$toc" in *"TABLE DATA public PaymentMethodCvv"*) fail "the dump contains PaymentMethodCvv data" ;; *) ok "no retained security-code data in the dump" ;; esac
+# Keep the dump for the recovery rehearsal below, exactly as an operator would download it from the Admin page, then remove the staged copy.
+docker compose exec -T app cat /var/lib/compass-tools/backups/smoke.dump > "$TMP/smoke.dump"
+[ -s "$TMP/smoke.dump" ] && ok "the dump left the container as a file" || fail "could not copy the dump out of the app container"
 docker compose exec -T app rm -f /var/lib/compass-tools/backups/smoke.dump
 dbk="$(docker inspect --format '{{range .Mounts}}{{.Destination}} {{end}}' "$(docker compose ps -q db)")"
 case "$dbk" in *compass-tools/backups*) fail "the backup staging volume is mounted into the database container" ;; *) ok "the database container does not see the backup staging volume" ;; esac
@@ -182,5 +193,26 @@ step "The scheduled CVV-cleanup job runs once against the real endpoint"
 docker compose run --rm cvv-cleanup node scripts/cvv-cleanup-scheduler.mjs --once | tee "$TMP/job.log"
 grep -q '"status":"ok"' "$TMP/job.log" && ok "job reported ok" || fail "the cleanup job did not succeed"
 grep -q "$CRON_SECRET" "$TMP/job.log" && fail "the job log contains the secret" || ok "the secret is not in the job log"
+
+step "Recovery rehearsal: a dump made by the app restores with deploy/restore-db.sh - test restore, then onto a brand-new EMPTY database (the replacement-server case)"
+# 1. The harmless test restore (into a throw-away database; the live one is untouched).
+verify_out="$(bash deploy/restore-db.sh "$TMP/smoke.dump" 2>&1)" || { printf '%s\n' "$verify_out" >&2; fail "restore-db.sh --verify failed"; }
+case "$verify_out" in *"Test restore OK"*) ok "restore-db.sh (test restore) read the app's dump and restored it into a temporary database" ;; *) printf '%s\n' "$verify_out" >&2; fail "restore-db.sh did not report a successful test restore" ;; esac
+# 2. Make the database brand new, as on a replacement server: stop the app, drop and recreate the application database with no tables.
+docker compose stop app cvv-cleanup >/dev/null
+live_db="$(bash -c 'source deploy/common.sh; app_db_name')"
+bash -c 'source deploy/common.sh; db="$(app_db_name)"; psql_in postgres "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '"'"'$db'"'"' AND pid <> pg_backend_pid()" >/dev/null; psql_in postgres "DROP DATABASE \"$db\""; psql_in postgres "CREATE DATABASE \"$db\""'
+empty="$(bash -c 'source deploy/common.sh; psql_in "$(app_db_name)" "SELECT to_regclass('"'"'public.\"Account\"'"'"') IS NOT NULL"')"
+[ "$empty" = "f" ] && ok "the application database is brand new and empty" || fail "could not empty the database for the rehearsal (Account exists: $empty)"
+# 3. The destructive path, with the typed confirmation, on that empty database. It must NOT abort for lack of something to back up, and must say so.
+replace_out="$(printf '%s\n' "$live_db" | RESTORE_RESTART_SERVICES="app cvv-cleanup" bash deploy/restore-db.sh "$TMP/smoke.dump" --replace 2>&1)" || { printf '%s\n' "$replace_out" >&2; fail "restore-db.sh --replace failed on an empty database"; }
+case "$replace_out" in *"nothing to back up first"*) ok "--replace on a fresh database skipped the safety backup and said so" ;; *) printf '%s\n' "$replace_out" >&2; fail "--replace did not report skipping the safety backup on an empty database" ;; esac
+case "$replace_out" in *"Restore completed"*) ok "--replace restored the dump into the empty database" ;; *) printf '%s\n' "$replace_out" >&2; fail "--replace did not complete" ;; esac
+# 4. The restored database is the app's database again: the tables and the migration history are there, the schema is current and the app is healthy.
+accounts="$(bash -c 'source deploy/common.sh; psql_in "$(app_db_name)" "SELECT to_regclass('"'"'public.\"Account\"'"'"') IS NOT NULL"')"
+[ "$accounts" = "t" ] && ok "the Account table is back" || fail "the restored database has no Account table"
+docker compose run --rm tools npx prisma migrate status >/dev/null && ok "prisma migrate status: the restored schema is up to date" || fail "the restored schema is not current"
+for _ in $(seq 1 60); do [ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ] && break; sleep 3; done
+[ "$(docker inspect -f '{{.State.Health.Status}}' "$(docker compose ps -q app)")" = healthy ] && ok "the app is healthy again on the restored database" || fail "the app did not become healthy after the restore"
 
 printf '\nAll smoke checks passed.\n'

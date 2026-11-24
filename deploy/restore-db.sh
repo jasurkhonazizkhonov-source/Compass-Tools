@@ -8,8 +8,8 @@
 # counts for a few core tables so you can see the backup is real, then drops it. The live database and the running site are not
 # touched. Do this routinely - a backup you have never restored is a hope, not a backup.
 #
-# --replace: DESTRUCTIVE. It stops the website, takes a fresh safety backup of the CURRENT database, drops the live database and
-# restores the file in its place. It needs you to type the database name to confirm. The restored database has NO retained security
+# --replace: DESTRUCTIVE. It stops the website, takes a fresh safety backup of the CURRENT database (skipped, and said so, when the database is brand new and empty),
+# drops the live database and restores the file in its place. It needs you to type the database name to confirm. The restored database has NO retained security
 # codes (backups exclude them by design). Encrypted (.age) backups must be decrypted first:  age -d -i key.txt file.age > file.dump
 # shellcheck source=./common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
@@ -62,8 +62,15 @@ require_app_version
 step "Stopping the website (the database stays up)"
 dc stop cloudflared cvv-cleanup app
 
-step "Safety backup of the CURRENT database"
-bash "$ROOT_DIR/deploy/backup-db.sh"
+# A safety backup of what is there now - but only when there IS something: a brand-new database (a replacement server that has never run the CRM) has no tables, and
+# backup-db.sh deliberately refuses to keep a dump without the Account table, which would abort this restore on exactly the machine it exists for. Nothing is lost by
+# skipping it: an empty database holds nothing.
+if [ "$(psql_in "$LIVE_DB" "SELECT to_regclass('public.\"Account\"') IS NOT NULL")" = "t" ]; then
+  step "Safety backup of the CURRENT database"
+  bash "$ROOT_DIR/deploy/backup-db.sh"
+else
+  yellow "The current database has no CRM tables (a fresh install), so there is nothing to back up first."
+fi
 
 step "Replacing the database"
 psql_in postgres "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '$LIVE_DB' AND pid <> pg_backend_pid()" >/dev/null
@@ -73,6 +80,8 @@ restore_into "$LIVE_DB"
 green "Restore completed."
 
 step "Starting the website"
-dc up -d app cvv-cleanup cloudflared
+# RESTORE_RESTART_SERVICES lets the CI rehearsal leave the tunnel out (it has no real token there); a real recovery keeps the default.
+# shellcheck disable=SC2086
+dc up -d ${RESTORE_RESTART_SERVICES:-app cvv-cleanup cloudflared}
 wait_healthy app
 bash "$ROOT_DIR/deploy/verify.sh" || yellow "verify.sh reported problems - read them above."

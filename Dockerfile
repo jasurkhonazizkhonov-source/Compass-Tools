@@ -90,6 +90,11 @@ RUN mkdir -p /var/lib/compass-tools/uploads \
 # server, so the client must be 17 as well; Debian bookworm itself ships 15, so it comes from the PostgreSQL project's own apt repository. The repository's signing key is checked
 # against its published fingerprint before it is trusted (the build fails if it does not match), and the download tools are removed again afterwards. Only the client is installed:
 # no server, no extra service. Without it the page says a backup cannot be made here; nothing else depends on it.
+#
+# Fingerprint VERIFIED 2026-11-24 (not taken on trust): (1) postgresql.org's own Debian instructions print B97B 0AFC AA1A 47F0 44F2 44A0 7FCC 7D46 ACCC 4CF8 for
+# `gpg --show-key` of this very file; (2) the fingerprint computed from the downloaded ACCC4CF8.asc is the same; (3) the live apt.postgresql.org bookworm-pgdg InRelease
+# is signed by that exact key (gpg: Good signature from "PostgreSQL Debian Repository", RSA key B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8). If the project ever rotates
+# the key, this build fails closed instead of trusting the new one: re-verify against postgresql.org/download/linux/debian before changing the value.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl gnupg \
  && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /tmp/pgdg.asc \
@@ -101,7 +106,12 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends postgresql-client-17 \
  && apt-get purge -y --auto-remove curl gnupg \
  && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc \
- && pg_dump --version
+ && /usr/lib/postgresql/17/bin/pg_dump --version \
+ && /usr/lib/postgresql/17/bin/pg_restore --version
+# The Admin backup runs these two binaries BY PATH. Debian's /usr/bin/pg_dump is a Perl wrapper (postgresql-client-common) that chooses a version and reads cluster
+# configuration; naming the real binaries removes that indirection, makes the version unambiguous and needs nothing but the client package.
+ENV PG_DUMP_BIN=/usr/lib/postgresql/17/bin/pg_dump \
+    PG_RESTORE_BIN=/usr/lib/postgresql/17/bin/pg_restore
 # Staged database backups (compose mounts the named volume backup_staging here): private to the application user, never part of the image, removed by the application after a
 # download or an hour.
 RUN mkdir -p /var/lib/compass-tools/backups \
