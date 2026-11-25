@@ -50,7 +50,7 @@ export type HealthBody = {
     leadIngestSecret: "configured" | "not_configured";
     /** "configured" = the authenticated website API (POST /api/v1/website/flight-inquiries) has a usable key and is enabled; "not_configured" = it answers 503. A category only — never the key. */
     websiteApi: "configured" | "not_configured";
-    /** How website-to-CRM requests are authenticated: "required" (strict: every request must carry a valid single-use v2 signature), "optional" (a secret is set but WEBSITE_SIGNATURE_REQUIRED is not: unsigned requests are still accepted - the transitional state) or "not_configured" (no secret: nothing can be verified). A category only - never the secret. */
+    /** How website-to-CRM requests are authenticated: "required" (every request must carry a valid single-use v2 signature - always so in production with a secret), "optional" (outside production only: a secret is set but WEBSITE_SIGNATURE_REQUIRED is not) or "not_configured" (no usable secret: nothing can be verified, and where signatures are required every website request is refused). A category only - never the secret. */
     websiteSignature: "required" | "optional" | "not_configured";
     /** The local IP-geolocation database: "ready", "stale" (older than 90 days, still used), "missing" (locations are country-level at best) or "unusable". A category only - never a path. */
     geoIpDatabase: "ready" | "stale" | "missing" | "unusable";

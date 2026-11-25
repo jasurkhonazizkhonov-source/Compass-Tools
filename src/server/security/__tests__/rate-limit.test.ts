@@ -45,7 +45,9 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-vi.mock("@/lib/request-ip", () => ({
+// Only the header reading is replaced; the real counter-key function (an IPv6 client is counted by its /64) stays in use.
+vi.mock("@/lib/request-ip", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/request-ip")>()),
   getClientIp: vi.fn(),
 }));
 

@@ -16,10 +16,10 @@ import { guardWebsiteRequest, websiteGuardResponse } from "@/server/website-sign
 // This is the BROWSER-facing path. A trusted server-to-server integration (the website's own backend) should use the authenticated,
 // versioned POST /api/v1/website/flight-inquiries instead (docs/WEBSITE_LEAD_API.md).
 //
-// Signing v2 (website-signature-guard.ts): like every other route the Business Flights website's server can reach, this one goes through the website signature guard. In
-// the transitional default (WEBSITE_SIGNATURE_REQUIRED unset) a request WITHOUT a signature behaves exactly as it always did; a valid v2 signature is verified, single-use
-// and its signed visitor facts are used. With WEBSITE_SIGNATURE_REQUIRED=true an unsigned, v1, invalid, expired or replayed request is refused with 401 BEFORE anything is
-// stored - so strict mode can no longer be bypassed by posting a lead here directly. (The updated website does not call this route; it uses the authenticated API.)
+// Signing v2 (website-signature-guard.ts): like every other route the Business Flights website's server can reach, this one goes through the website signature guard.
+// Production always requires a signature: an unsigned, v1, invalid, expired or replayed request is refused with 401 (503 when this server has no usable secret)
+// BEFORE anything is stored, so the requirement cannot be bypassed by posting a lead here directly. Outside production it is required only with
+// WEBSITE_SIGNATURE_REQUIRED=true. (The updated website does not call this route; it uses the authenticated API.)
 //
 // This route and the authenticated API share ONE lead-creation implementation (src/server/lead-intake.ts), so the business rules cannot drift; this route
 // keeps its original contract and behaviour.

@@ -108,6 +108,24 @@ export function normalizeIp(ip: string): string {
   return ipv4FromMapped(canonical) ?? canonical;
 }
 
+/**
+ * The key under which a client is COUNTED by a rate limiter - never an address to store or show. An IPv4 address is counted as itself; an IPv6 client by its
+ * /64 ("2001:db8:1:2::/64"), the block one subscriber or device is normally given, because its owner can use any of 2^64 addresses inside it and a per-address
+ * counter would hand out a fresh allowance for each one. Anything that is not an IPv6 address (a fixed bucket name, for example) is returned unchanged.
+ */
+export function rateLimitBucketForClient(clientKey: string): string {
+  const normalized = normalizeIp(clientKey);
+  if (isIP(normalized) !== 6) return normalized;
+  const canonical = canonicalIpv6(normalized);
+  if (!canonical) return normalized;
+  const [head, tail] = canonical.split("::");
+  const front = head ? head.split(":") : [];
+  const back = tail ? tail.split(":") : [];
+  // An embedded dotted IPv4 tail cannot appear here: the URL serializer writes it as two hex groups.
+  const groups = tail === undefined ? front : [...front, ...Array<string>(Math.max(0, 8 - front.length - back.length)).fill("0"), ...back];
+  return `${groups.slice(0, 4).join(":")}::/64`;
+}
+
 export type TrustedProxyMode = "none" | "vercel" | "cloudflare" | "nginx" | "generic";
 
 const VALID_MODES: ReadonlySet<string> = new Set(["vercel", "cloudflare", "nginx", "generic"]);

@@ -21,6 +21,11 @@ declare global {
 
 export async function register() {
   if (process.env.NEXT_RUNTIME === "edge") return;
+  // Startup check of the website integration: where signatures are required but cannot be verified, say so once in the log (the routes refuse every request;
+  // the application itself still starts, so staff are not locked out of the CRM by a website setting). Never prints a value.
+  const { websiteSigningStartupProblem } = await import("@/server/website-signing-policy");
+  const signingProblem = websiteSigningStartupProblem();
+  if (signingProblem) console.error(signingProblem);
   const { inProcessPollerDisabled } = await import("@/lib/poller-config");
   if (inProcessPollerDisabled()) return;
   if (globalThis.__taskNotifierStarted) return;

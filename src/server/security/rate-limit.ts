@@ -1,6 +1,6 @@
 import { headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
-import { getClientIp } from "@/lib/request-ip";
+import { getClientIp, rateLimitBucketForClient } from "@/lib/request-ip";
 
 export type RateLimitConfig = { windowMs: number; maxAttempts: number };
 
@@ -65,7 +65,8 @@ export async function checkPublicRateLimit(headers: Headers, endpoint: string, c
  * choose it); when the website could not determine one, the caller passes a shared "unattributed" key with a larger allowance.
  */
 export async function checkPublicRateLimitForKey(clientKey: string, endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
-  const ip = clientKey;
+  // The counter key only: an IPv6 client is counted by its /64 (rateLimitBucketForClient). Stored submission and sign-in addresses stay complete.
+  const ip = rateLimitBucketForClient(clientKey);
   const windowBucket = Math.floor(Date.now() / config.windowMs);
   const key = `${ip}|${endpoint}|${windowBucket}`;
   const expiresAt = new Date((windowBucket + 1) * config.windowMs);
@@ -122,7 +123,7 @@ export async function checkAccountRateLimit(accountId: string, endpoint: string,
 export async function peekRateLimitForKey(clientKey: string, endpoint: string, config: RateLimitConfig): Promise<RateLimitResult> {
   const windowBucket = Math.floor(Date.now() / config.windowMs);
   const expiresAt = new Date((windowBucket + 1) * config.windowMs);
-  const rows = await prisma.$queryRaw<{ count: number }[]>`SELECT "count" FROM "RateLimitCounter" WHERE "key" = ${`${clientKey}|${endpoint}|${windowBucket}`}`;
+  const rows = await prisma.$queryRaw<{ count: number }[]>`SELECT "count" FROM "RateLimitCounter" WHERE "key" = ${`${rateLimitBucketForClient(clientKey)}|${endpoint}|${windowBucket}`}`;
   const count = rows[0]?.count ?? 0;
   return count >= config.maxAttempts ? { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((expiresAt.getTime() - Date.now()) / 1000)) } : { allowed: true };
 }

@@ -114,43 +114,47 @@ describe("System Health - IP geolocation database", () => {
 });
 
 describe("System Health - Website request signing", () => {
-  it("strict mode: healthy, and says what is refused", async () => {
+  const required = (r: Awaited<ReturnType<typeof checkWebsiteSigning>>) => fact(r, "Signature required");
+
+  it("production, secret and switch set: healthy, and says what is refused", async () => {
     vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
     vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true");
     const r = await checkWebsiteSigning();
     expect(r.state).toBe("HEALTHY");
     expect(r.summary).toMatch(/Unsigned, replayed and modified requests are refused/);
-    expect(fact(r, "Strict mode (WEBSITE_SIGNATURE_REQUIRED)")).toBe("On");
+    expect(required(r)).toBe("Yes");
   });
 
-  it("transitional (secret set, strict mode off) in production: a WARNING that asks for exactly one manual step - the documented switch, after the website is live", async () => {
+  it.each(["", "false"])("production with WEBSITE_SIGNATURE_REQUIRED=%j: signatures are still required, and a WARNING asks to state it before the next deployment", async (flag) => {
     vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", flag);
     const r = await checkWebsiteSigning();
     expect(r.state).toBe("WARNING");
     expect(r.classification).toBe("manual_action");
-    expect(r.summary).toMatch(/WITHOUT a signature is still accepted/);
+    expect(required(r)).toBe("Yes");
+    expect(r.summary).toMatch(/next deployment will be refused/);
     expect(r.action).toContain("WEBSITE_SIGNATURE_REQUIRED=true");
-    expect(r.action).toMatch(/after the updated website is live/i);
-    expect(fact(r, "Strict mode (WEBSITE_SIGNATURE_REQUIRED)")).toBe("Off");
   });
 
-  it("no secret in production: a WARNING that says requests cannot be authenticated and no visitor IP is recorded", async () => {
+  it.each(["", "true"])("production with no secret (switch %j): CRITICAL, because every website request is being refused", async (flag) => {
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", flag);
     const r = await checkWebsiteSigning();
-    expect(r.state).toBe("WARNING");
-    expect(r.summary).toMatch(/cannot be authenticated/);
+    expect(r.state).toBe("CRITICAL");
+    expect(r.summary).toMatch(/being refused/);
     expect(fact(r, "Shared signing secret")).toBe("Missing");
   });
 
-  it("the strict switch alone (no secret) is NOT strict: nothing could be verified, and the row says so", async () => {
-    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true");
-    const r = await checkWebsiteSigning();
-    expect(r.state).toBe("WARNING");
-    expect(fact(r, "Shared signing secret")).toBe("Missing");
-  });
-
-  it("outside production nothing is asked of the developer", async () => {
+  it("outside production, the switch without a secret is also CRITICAL", async () => {
     vi.stubEnv("APP_ENV", "development");
-    expect((await checkWebsiteSigning()).state).toBe("HEALTHY");
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true");
+    expect((await checkWebsiteSigning()).state).toBe("CRITICAL");
+  });
+
+  it("outside production without the switch nothing is asked of the developer", async () => {
+    vi.stubEnv("APP_ENV", "development");
+    const r = await checkWebsiteSigning();
+    expect(r.state).toBe("HEALTHY");
+    expect(required(r)).toBe("No");
   });
 
   it("the secret value never appears in the row", async () => {

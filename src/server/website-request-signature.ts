@@ -20,7 +20,8 @@
 // Idempotency-Key / submissionId (unchanged across attempts) is what turns the retry into a duplicate instead of a second record.
 import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { prisma } from "@/lib/prisma";
-import { VISITOR_CONTEXT_HEADER, VISITOR_SIGNATURE_HEADER, isLeadIngestSecretConfigured, visitorFromContextPayload } from "@/server/lead-ingest-context";
+import { websiteSignatureRequired } from "@/server/website-signing-policy";
+import { VISITOR_CONTEXT_HEADER, VISITOR_SIGNATURE_HEADER, visitorFromContextPayload } from "@/server/lead-ingest-context";
 import type { ApproximateLocation } from "@/lib/request-geo";
 
 export const WEBSITE_SIGNATURE_VERSION = 2;
@@ -185,19 +186,5 @@ export async function verifyWebsiteRequestSignature(input: {
   return { state: "verified", visitor: visitorFromContextPayload(payload) };
 }
 
-/**
- * Whether website-to-CRM requests must carry a valid v2 signature. Strict mode is an EXPLICIT switch (WEBSITE_SIGNATURE_REQUIRED=true) on top of a
- * configured LEAD_INGEST_SECRET, so that the CRM can be deployed BEFORE the website (the required order): until the website signs with v2, a CRM that
- * refused everything but v2 would reject the live website's requests. Rollout:
- *   1. deploy the CRM with a LEAD_INGEST_SECRET and WEBSITE_SIGNATURE_REQUIRED unset: a valid v2 envelope is verified and used (single use, bound to the request,
- *      per-visitor limit); v1 envelopes and unsigned requests are still handled exactly as before this release;
- *   2. deploy the website (it signs every request with v2);
- *   3. set WEBSITE_SIGNATURE_REQUIRED=true and restart: from then on a missing, v1, invalid, expired or replayed signature is refused with 401.
- * With no secret configured nothing can be verified and the routes behave as they always did (no IP or location is recorded).
- */
-export function websiteSignatureRequired(
-  secret: string | undefined = process.env.LEAD_INGEST_SECRET,
-  requiredFlag: string | undefined = process.env.WEBSITE_SIGNATURE_REQUIRED
-): boolean {
-  return isLeadIngestSecretConfigured(secret) && (requiredFlag ?? "").trim().toLowerCase() === "true";
-}
+// Whether a signature is mandatory lives in a module without database imports, so the startup check can use it too.
+export { websiteSignatureRequired };

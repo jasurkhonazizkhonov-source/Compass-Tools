@@ -488,34 +488,38 @@ export async function checkGeoIpDatabase(): Promise<HealthCheckResult> {
 }
 
 /**
- * How website-to-CRM requests are authenticated (docs/WEBSITE_LEAD_API.md, "Strict mode"). Strict mode is the intended final state; "optional" is the deliberate transitional
- * state (the CRM deployed before the website), so it is a WARNING that asks for one manual step, not a fault. Outside production nothing is asked.
+ * How website-to-CRM requests are authenticated (docs/WEBSITE_SIGNING_STRICT_MODE.md). Production always requires a signature, so the questions are whether this
+ * server can verify one (a usable secret) and whether its configuration says so explicitly (WEBSITE_SIGNATURE_REQUIRED=true, which deploy.sh insists on).
  */
 export async function checkWebsiteSigning(): Promise<HealthCheckResult> {
   return guarded("website.signing", "security", "Website request signing", async () => {
     const configured = isLeadIngestSecretConfigured();
     const required = websiteSignatureRequired();
+    const stated = (process.env.WEBSITE_SIGNATURE_REQUIRED ?? "").trim().toLowerCase() === "true";
     const facts = [
       { label: "Shared signing secret", value: configured ? "Configured" : "Missing" },
-      { label: "Strict mode (WEBSITE_SIGNATURE_REQUIRED)", value: required ? "On" : "Off" },
+      { label: "Signature required", value: required ? "Yes" : "No" },
+      { label: "WEBSITE_SIGNATURE_REQUIRED=true", value: stated ? "Set" : "Not set" },
     ];
-    if (required) return { state: "HEALTHY", summary: "Strict: every website request must carry a valid, single-use signature bound to its method, path, company and body. Unsigned, replayed and modified requests are refused.", facts };
-    if (!isProductionEnvironment()) return { state: "HEALTHY", summary: "Local/development: website requests are not required to be signed.", facts };
-    if (!configured) {
+    if (required && !configured) {
       return {
-        state: "WARNING",
-        summary: "No website signing secret is configured: website requests cannot be authenticated and no visitor IP or location is recorded for them.",
+        state: "CRITICAL",
+        summary: "Website requests are being refused: signatures are required but LEAD_INGEST_SECRET is missing or shorter than 32 characters, so none can be verified.",
         facts,
-        action: "Set LEAD_INGEST_SECRET (at least 32 characters, identical on the website) - docs/WEBSITE_LEAD_API.md.",
+        action: "Set LEAD_INGEST_SECRET (at least 32 characters, identical on the website) and recreate the app container (docker compose up -d app) - docs/WEBSITE_SIGNING_STRICT_MODE.md.",
       };
     }
-    return {
-      state: "WARNING",
-      classification: "manual_action",
-      summary: "Transitional: valid signatures are verified, but a website request WITHOUT a signature is still accepted. This is expected until the updated website is deployed.",
-      facts,
-      action: "After the updated website is live and signing (same LEAD_INGEST_SECRET), set WEBSITE_SIGNATURE_REQUIRED=true and recreate the app container (docker compose up -d app) - docs/WEBSITE_SIGNING_STRICT_MODE.md.",
-    };
+    if (required && !stated && isProductionEnvironment()) {
+      return {
+        state: "WARNING",
+        classification: "manual_action",
+        summary: "Signatures are required (production always requires them), but the configuration does not say so: the next deployment will be refused until it does.",
+        facts,
+        action: "Set WEBSITE_SIGNATURE_REQUIRED=true in .env and recreate the app container (docker compose up -d app) - docs/WEBSITE_SIGNING_STRICT_MODE.md.",
+      };
+    }
+    if (required) return { state: "HEALTHY", summary: "Strict: every website request must carry a valid, single-use signature bound to its method, path, company and body. Unsigned, replayed and modified requests are refused.", facts };
+    return { state: "HEALTHY", summary: "Local/development: website requests are not required to be signed.", facts };
   });
 }
 

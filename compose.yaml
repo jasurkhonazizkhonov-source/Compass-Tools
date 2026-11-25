@@ -118,8 +118,8 @@ services:
       LEAD_INGEST_SECRET: ${LEAD_INGEST_SECRET:-}
       # Rotation: the secret being retired, accepted alongside LEAD_INGEST_SECRET until the website has moved. Empty = none.
       LEAD_INGEST_SECRET_PREVIOUS: ${LEAD_INGEST_SECRET_PREVIOUS:-}
-      # Strict website signing (docs/WEBSITE_LEAD_API.md, "Enabling strict mode"). Empty = transitional: signed requests are verified, unsigned
-      # ones still accepted. "true" (with LEAD_INGEST_SECRET set) = every website request must carry a valid single-use signature.
+      # Website signing is mandatory in production (docs/WEBSITE_SIGNING_STRICT_MODE.md): the app refuses unsigned website requests whatever this says, and
+      # deploy/deploy.sh refuses to deploy unless it says "true" and LEAD_INGEST_SECRET is set (scripts/website-signing-preflight.mjs).
       # Forwarded here because a variable that is not named in this block never reaches the container, whatever .env says.
       WEBSITE_SIGNATURE_REQUIRED: ${WEBSITE_SIGNATURE_REQUIRED:-}
       # --- Campaign sending budgets (empty = the code defaults of 20 per minute and 400 per rolling 24 h per sending account) ---

@@ -97,6 +97,12 @@ check_uploads_dir
 step "Building images (app + migration tools)"
 dc build app tools
 
+# Production always requires signed website requests. A configuration that cannot verify them (or contradicts that) is refused here, from inside the new image,
+# so the check sees exactly what the application will receive - before any migration or restart. It prints variable names, never values.
+step "Website request signing (pre-flight)"
+dc run --rm --no-deps -T app node scripts/website-signing-preflight.mjs \
+  || die "The website signing configuration is not safe to deploy (see above; docs/WEBSITE_SIGNING_STRICT_MODE.md). Nothing was migrated, started or changed."
+
 step "Database migration status"
 if dc up -d db && wait_healthy db 120 && dc run --rm tools npx prisma migrate status; then
   green "Database schema is up to date."

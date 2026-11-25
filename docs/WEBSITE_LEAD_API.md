@@ -194,7 +194,7 @@ it runs on another provider) set `WEBSITE_API_ALLOW_PUBLIC_ROUTE=true` — then 
 `POST /api/public/subscribe`). The v1 signature vouched only for the visitor fields; it bound neither the method, the path, the company nor the body, and had no
 nonce, so a captured envelope could be re-attached to a different request for five minutes. v2 binds all of them and is single-use. Implementation:
 `src/server/website-request-signature.ts` (verifier), `src/server/website-signature-guard.ts` (policy), the three routes.
-(`/api/public/lead-capture`, which has other callers, keeps the v1 context unchanged.)
+(`/api/public/lead-capture` has been guarded the same way since 2026-11-22.)
 
 ```
 x-ct-visitor-context:   base64url( JSON { v: 2, ts: <unix seconds>, nonce: <22-64 chars [A-Za-z0-9_-], 128 random bits>, ip?, city?, region?, country?, timezone?, source? } )
@@ -211,22 +211,15 @@ Known-answer vector (shared with the website's tests): secret `known-answer-secr
 `5bafec282f9a6cb99071361647e971dcb3e34659f691528f9b33afd0667ed6d6`.
 
 What the CRM checks, in order: a signature is present; the secret is configured (≥ 32 characters); the context is ≤ 2048 bytes and valid base64url JSON; `v` is 2
-(**in strict mode v1 and every other version are refused on these routes: no downgrade**); `ts` is an integer; the nonce is well-formed; the HMAC matches (constant-time, against `LEAD_INGEST_SECRET` and, during a rotation, `LEAD_INGEST_SECRET_PREVIOUS`);
+(**where signatures are required, which production always does, v1 and every other version are refused on these routes: no downgrade**); `ts` is an integer; the nonce is well-formed; the HMAC matches (constant-time, against `LEAD_INGEST_SECRET` and, during a rotation, `LEAD_INGEST_SECRET_PREVIOUS`);
 `ts` is at most **120 s old** and at most **30 s ahead**; and the nonce has not been used before (**one-time**). Only then is anything stored. Failures are `401`
 (`invalid_signature` on the flight route, `{ ok: false, error: "Invalid request signature." }` on the public routes) with a fixed log tag
 (`[website-signature] refused: <reason>`: never the context, the nonce, the body or the IP). If the one-time store cannot be reached the answer is `503` (fail closed).
 
-**When it is required (rollout: CRM first, website second).** Strict mode needs BOTH a `LEAD_INGEST_SECRET` (≥ 32 characters) and the explicit switch
-`WEBSITE_SIGNATURE_REQUIRED=true`; then a valid v2 signature is **required** on those three routes and an unsigned or v1 request is refused with 401 (no unsigned
-fallback). The switch exists so that the CRM can be deployed before the website without refusing the website that is live today:
-
-1. Deploy the CRM with `LEAD_INGEST_SECRET` set and the switch **unset** (transitional): a valid v2 signature is verified, single-use and rate-limited per visitor;
-   a request without one (today's website) is handled exactly as before this release, and no visitor fact is trusted without a verified signature.
-2. Deploy the updated website (it signs every request with v2).
-3. Check that real submissions arrive with their visitor IP/location, then set `WEBSITE_SIGNATURE_REQUIRED=true` and restart the CRM (strict mode).
-
-With no secret nothing can be verified and the routes behave as they always did (no visitor IP or location is recorded). To roll back strict mode, unset the switch;
-to switch verification off entirely, unset the secret.
+**When it is required.** In production, always: a valid v2 signature is required on the website routes, whatever `WEBSITE_SIGNATURE_REQUIRED` says, and a server
+without a usable `LEAD_INGEST_SECRET` refuses every website request with `503`. `deploy/deploy.sh` refuses to deploy unless the secret is set and the switch
+says `true`. Outside production the switch decides (unset = unsigned requests accepted, for local development). There is no transitional mode in production:
+the website must sign from the moment the CRM is live. Policy, order, checks and rollback: `docs/WEBSITE_SIGNING_STRICT_MODE.md`.
 
 **Key rotation.** Put the new value in `LEAD_INGEST_SECRET` and the old one in `LEAD_INGEST_SECRET_PREVIOUS` on the CRM, deploy the new value on the website, then remove
 `LEAD_INGEST_SECRET_PREVIOUS`. Both are checked in constant time; a previous secret shorter than 32 characters is ignored. Neither value is ever logged or returned.
@@ -342,7 +335,8 @@ export async function sendInquiry(inquiry: Inquiry, idempotencyKey: string) {
 | `WEBSITE_API_KEY_NEXT` | CRM `.env` | unset | second accepted key, for rotation |
 | `WEBSITE_API_COMPANY_ID` | CRM `.env` | `default-company` | the tenant API leads belong to |
 | `WEBSITE_API_ALLOW_PUBLIC_ROUTE` | CRM `.env` | unset (refuse tunnel traffic) | `true` to accept calls that arrived via the public hostname |
-| `LEAD_INGEST_SECRET` | both | unset | optional: signs the visitor context |
+| `LEAD_INGEST_SECRET` | both | unset | **required in production**: signs every website request (≥ 32 characters, identical on both sides) |
+| `WEBSITE_SIGNATURE_REQUIRED` | CRM `.env` | unset | must be `true` in production (`deploy.sh` insists; the app requires signatures there regardless) |
 
 `/api/health` reports `readiness.websiteApi` (`configured` / `not_configured`) — a category only; `bash deploy/verify.sh` shows it and warns when unset.
 The values live in `.env` (mode 600, never in Git). `compose.yaml` passes them to the `app` container only.

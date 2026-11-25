@@ -84,7 +84,7 @@ describe("compose.yaml forwards every documented setting the application reads",
     }
   });
 
-  it("the strict-signing switch is forwarded from .env and never forced on or off by this file (an empty value means the transitional default)", () => {
+  it("the signing switch is forwarded from .env and never set by this file or the example (production requires signatures in code; deploy.sh requires the switch in .env)", () => {
     expect(service("app")).toMatch(/WEBSITE_SIGNATURE_REQUIRED: \$\{WEBSITE_SIGNATURE_REQUIRED:-\}/);
     expect(service("app")).toMatch(/LEAD_INGEST_SECRET_PREVIOUS: \$\{LEAD_INGEST_SECRET_PREVIOUS:-\}/);
     expect(uncommented(compose)).not.toMatch(/WEBSITE_SIGNATURE_REQUIRED:\s*["']?(true|false)/i);

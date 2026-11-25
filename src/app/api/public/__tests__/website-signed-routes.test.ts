@@ -75,7 +75,7 @@ beforeEach(() => {
   limiter.mockClear();
   limiter.mockImplementation(async () => ({ allowed: true }));
   vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
-  vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // strict mode (the final rollout state); the transitional default is tested below
+  vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // as production does; production itself and development without the switch are tested below
   vi.stubEnv("TRUSTED_PROXY", "none");
 });
 afterEach(() => vi.unstubAllEnvs());
@@ -173,28 +173,44 @@ describe("POST /api/public/subscribe with signing v2", () => {
     expect((await subscribe(request(PATH, SUBSCRIBE_BODY, { company: "company-2" }))).status).toBe(401); // another company
   });
 
-  it("with no secret configured the route behaves as before (no signature required)", async () => {
+  it("with no secret configured every request is refused with 503: nothing could be verified", async () => {
     vi.stubEnv("LEAD_INGEST_SECRET", "");
-    expect((await subscribe(request(PATH, SUBSCRIBE_BODY, false))).status).toBe(200);
+    expect((await subscribe(request(PATH, SUBSCRIBE_BODY, false))).status).toBe(503);
+    expect((await subscribe(request(PATH, SUBSCRIBE_BODY))).status).toBe(503);
   });
 });
 
-describe("transitional mode (WEBSITE_SIGNATURE_REQUIRED not set): the CRM is deployed before the website", () => {
+describe("production requires a signature whatever the switch says: there is no optional mode", () => {
+  beforeEach(() => vi.stubEnv("APP_ENV", "production"));
+
+  it.each(["", "false", "true"])("WEBSITE_SIGNATURE_REQUIRED=%j: unsigned and replayed requests are refused, a fresh signed one is accepted", async (flag) => {
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", flag);
+    expect((await subscribe(request("/api/public/subscribe", SUBSCRIBE_BODY, false))).status).toBe(401);
+    expect((await contact(request("/api/public/contact-inquiry", CONTACT_BODY, false))).status).toBe(401);
+    const req = request("/api/public/subscribe", SUBSCRIBE_BODY);
+    const replay = new Request(req.url, { method: "POST", body: JSON.stringify(SUBSCRIBE_BODY), headers: req.headers });
+    expect((await subscribe(req)).status).toBe(200);
+    expect((await subscribe(replay)).status).toBe(401);
+  });
+
+  it.each(["", "short-secret"])("LEAD_INGEST_SECRET=%j: both public website routes answer 503", async (secret) => {
+    vi.stubEnv("LEAD_INGEST_SECRET", secret);
+    expect((await subscribe(request("/api/public/subscribe", SUBSCRIBE_BODY, false))).status).toBe(503);
+    expect((await contact(request("/api/public/contact-inquiry", CONTACT_BODY, false))).status).toBe(503);
+  });
+});
+
+describe("development without WEBSITE_SIGNATURE_REQUIRED (never production)", () => {
   beforeEach(() => vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", ""));
 
-  it("today's website (no v2 signature) still gets through on both public routes, exactly as before this release", async () => {
+  it("unsigned requests are accepted on both public routes, so a local CRM needs no website secret", async () => {
     expect((await subscribe(request("/api/public/subscribe", SUBSCRIBE_BODY, false))).status).toBe(200);
     expect((await contact(request("/api/public/contact-inquiry", CONTACT_BODY, false))).status).toBeLessThan(300);
   });
 
-  it("the updated website (v2) is already verified and single-use: a replay is NOT given the signed visitor facts or a rate-limit identity", async () => {
+  it("a v2 signature is still verified and its signed visitor keys the per-visitor limit", async () => {
     const req = request("/api/public/subscribe", SUBSCRIBE_BODY, { payload: { ip: "203.0.113.50" } });
     expect((await subscribe(req)).status).toBe(200);
     expect(limiter).toHaveBeenCalledWith("203.0.113.50", "SUBSCRIBE:website", expect.anything());
-  });
-
-  it("strict mode (WEBSITE_SIGNATURE_REQUIRED=true) is what turns an unsigned request into a 401", async () => {
-    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true");
-    expect((await subscribe(request("/api/public/subscribe", SUBSCRIBE_BODY, false))).status).toBe(401);
   });
 });

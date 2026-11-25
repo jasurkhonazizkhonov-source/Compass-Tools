@@ -4,8 +4,8 @@ import { signWebsiteRequestV2 } from "@/server/website-request-signature";
 import { VISITOR_CONTEXT_HEADER, VISITOR_SIGNATURE_HEADER, signVisitorContext } from "@/server/lead-ingest-context";
 
 // POST /api/public/lead-capture behind the website signature guard. Before this change it was the one website-facing route WITHOUT the guard, so strict mode
-// (WEBSITE_SIGNATURE_REQUIRED=true) could be bypassed by posting a lead here directly. Now: strict -> an unsigned, v1, invalid, expired, modified, cross-route, cross-company or
-// replayed request is refused with 401 BEFORE anything is stored; transitional (switch unset) -> exactly the old behaviour, plus a valid v2 signature is verified and used.
+// (WEBSITE_SIGNATURE_REQUIRED=true) could be bypassed by posting a lead here directly. Now: where signatures are required (always in production) an unsigned, v1, invalid, expired, modified, cross-route, cross-company or
+// replayed request is refused with 401 BEFORE anything is stored; development without the switch -> unsigned accepted, plus a valid v2 signature is verified and used.
 // No database: Prisma, the limiter and lead distribution are mocks; the nonce store is a Set with the same first-insert-wins contract as the real unique key.
 
 const SECRET = "unit-test-ingest-secret-0123456789-abcdefghijkl"; // throwaway
@@ -71,7 +71,7 @@ beforeEach(() => {
   limiter.mockClear();
   limiter.mockImplementation(async () => ({ allowed: true }));
   vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
-  vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // the final rollout state; the transitional default is tested below
+  vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // as production does; development without the switch is tested below
   vi.stubEnv("TRUSTED_PROXY", "none");
 });
 
@@ -146,10 +146,10 @@ describe("strict mode (WEBSITE_SIGNATURE_REQUIRED=true)", () => {
   });
 });
 
-describe("transitional mode (WEBSITE_SIGNATURE_REQUIRED not set): the CRM is deployed before the website", () => {
+describe("development without WEBSITE_SIGNATURE_REQUIRED (production always requires a signature)", () => {
   beforeEach(() => vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", ""));
 
-  it("an unsigned request behaves exactly as before this change: the lead is created", async () => {
+  it("outside production an unsigned request is accepted: the lead is created", async () => {
     const res = await post(request(BODY, false));
     expect(res.status).toBe(200);
     expect(leads).toHaveLength(1);
@@ -170,9 +170,22 @@ describe("transitional mode (WEBSITE_SIGNATURE_REQUIRED not set): the CRM is dep
     expect(JSON.stringify(leads[0] ?? {})).not.toContain(SIGNED_IP);
   });
 
-  it("with no secret configured nothing can be verified and the route behaves as it always did", async () => {
+  it("with the switch set and no secret, every request is refused with 503 and no lead is created (a requirement that cannot be checked is never dropped)", async () => {
     vi.stubEnv("LEAD_INGEST_SECRET", "");
-    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // the switch alone is not enough without a secret
-    expect((await post(request(BODY, false))).status).toBe(200);
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true");
+    expect((await post(request(BODY, false))).status).toBe(503);
+    expect((await post(request(BODY))).status).toBe(503);
+    expect(leads).toHaveLength(0);
+  });
+
+  it("in production an unsigned or replayed request creates no lead, even with the switch unset", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    expect((await post(request(BODY, false))).status).toBe(401);
+    expect(leads).toHaveLength(0);
+    const first = request(BODY);
+    const replay = new Request(first.url, { method: "POST", body: JSON.stringify(BODY), headers: first.headers });
+    expect((await post(first)).status).toBe(200);
+    expect((await post(replay)).status).toBe(401);
+    expect(leads).toHaveLength(1);
   });
 });

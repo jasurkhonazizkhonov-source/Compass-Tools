@@ -133,7 +133,7 @@ async function handle(req: Request) {
   if (!raw.ok) return fail(413, "payload_too_large", `The body must be at most ${MAX_BODY_BYTES} bytes.`);
 
   // 5a. Request signature v2 (website-request-signature.ts): binds the method, this path, the company the credential fixes and the exact body bytes, and is
-  // single-use. Required whenever this server has a LEAD_INGEST_SECRET; there is no unsigned or v1 fallback. A legitimate retry is signed afresh by the
+  // single-use. Always required in production (website-signature-guard.ts); there is no unsigned or v1 fallback there. A legitimate retry is signed afresh by the
   // website and is recognised as a repeat by the Idempotency-Key below, never by re-using a signature.
   // After a verified signature the visitor IP inside it keys a PER-VISITOR limit (the same allowance as the other public lead routes) in a website-only
   // bucket, on top of the account-wide budget above: that budget is shared by every visitor, so without this one visitor or script could use all of it

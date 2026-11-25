@@ -105,7 +105,7 @@ beforeEach(() => {
   vi.stubEnv("WEBSITE_API_COMPANY_ID", "");
   vi.stubEnv("WEBSITE_API_ALLOW_PUBLIC_ROUTE", "");
   vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
-  vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // strict mode (the final rollout state); the transitional default is tested separately below
+  vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "true"); // as production does; production itself and development without the switch are tested separately below
   vi.stubEnv("TRUSTED_PROXY", "none");
   vi.stubEnv("VERCEL", "");
 });
@@ -334,14 +334,23 @@ describe("request signature v2 on the flight route: bound, single-use, and never
     expect(created).toHaveLength(0);
   });
 
-  it("with no LEAD_INGEST_SECRET configured the route behaves as before: no signature is required and nothing about the visitor is recorded", async () => {
+  it("with signatures required and no LEAD_INGEST_SECRET, the route answers 503 and stores nothing (signed or not)", async () => {
     vi.stubEnv("LEAD_INGEST_SECRET", "");
-    const res = await call(ONE_WAY, {}, false, false);
-    expect(res.status).toBe(201);
-    expect(created[0].submissionInfo).toBeUndefined();
+    expect((await call(ONE_WAY, {}, false, false)).status).toBe(503);
+    expect((await call(ONE_WAY)).status).toBe(503);
+    expect(created).toHaveLength(0);
   });
 
-  it("transitional mode (secret configured, WEBSITE_SIGNATURE_REQUIRED not set): today's unsigned website is still accepted, so the CRM can be deployed first", async () => {
+  it("in production an unsigned request is refused even with the switch unset or false, although the bearer key is right", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    for (const flag of ["", "false"]) {
+      vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", flag);
+      expect((await call(ONE_WAY, {}, false, false)).status, flag).toBe(401);
+    }
+    expect(created).toHaveLength(0);
+  });
+
+  it("development without the switch accepts an unsigned request and records nothing about the visitor", async () => {
     vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "");
     const res = await call(ONE_WAY, {}, false, false);
     expect(res.status).toBe(201);

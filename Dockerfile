@@ -78,7 +78,8 @@ COPY --from=builder --chown=node:node /app/public ./public
 # problem here could only ever affect logo processing, never server start-up.)
 COPY --from=deps --chown=node:node /app/node_modules/@img ./node_modules/@img
 # Small, dependency-free helpers: container health probe and the daily CVV-cleanup scheduler.
-COPY --from=builder --chown=node:node /app/scripts/healthcheck.mjs /app/scripts/cvv-cleanup-scheduler.mjs ./scripts/
+# website-signing-preflight.mjs: deploy/deploy.sh runs it in this image to refuse an unsafe signing configuration before anything is started.
+COPY --from=builder --chown=node:node /app/scripts/healthcheck.mjs /app/scripts/cvv-cleanup-scheduler.mjs /app/scripts/website-signing-preflight.mjs ./scripts/
 # Lead documents (uploads) live OUTSIDE the image and OUTSIDE the container's writable layer: compose.yaml bind-mounts a host directory
 # over this path. The directory is created here (owned by the unprivileged `node` user, uid/gid 1000, mode 0700) only so the mount point
 # exists and has the right owner if someone runs the image by hand - without the bind mount the application treats the store as

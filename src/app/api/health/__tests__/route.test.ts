@@ -338,7 +338,7 @@ describe("GET /api/health - the detailed report (internal secret required)", () 
 });
 
 describe("GET /api/health - how website requests are authenticated, and the GeoIP database (categories only)", () => {
-  it("websiteSignature: not_configured without a secret, optional with a secret (the transitional state), required once strict mode is on - and the secret itself is never in the answer", async () => {
+  it("websiteSignature: not_configured without a secret; outside production optional until the switch is set; always required in production - and the secret is never in the answer", async () => {
     queryRaw.mockResolvedValue([{}]);
     const { resetHealthCacheForTests } = await import("@/lib/health-check");
     const { GET } = await import("../route");
@@ -358,9 +358,16 @@ describe("GET /api/health - how website requests are authenticated, and the GeoI
     const required = await read();
     expect(required.json.readiness.websiteSignature).toBe("required");
     expect(JSON.stringify(required.json)).not.toContain(SECRET);
-    // the switch alone, without a secret, requires nothing (nothing could be verified)
+    // the switch alone, without a secret: still reported as not configured (the routes refuse every request)
     vi.stubEnv("LEAD_INGEST_SECRET", "");
     expect((await read()).json.readiness.websiteSignature).toBe("not_configured");
+    // production: a configured secret means required, whatever the switch says
+    vi.stubEnv("APP_ENV", "production");
+    vi.stubEnv("LEAD_INGEST_SECRET", SECRET);
+    for (const flag of ["", "false", "true"]) {
+      vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", flag);
+      expect((await read()).json.readiness.websiteSignature, flag).toBe("required");
+    }
   });
 
   it("geoIpDatabase is one of four categories and the anonymous answer still carries nothing but the status", async () => {

@@ -202,7 +202,10 @@ describe("POST /api/public/contact-inquiry with the website's signed context", (
     expect((await POST(post(connection))).status).toBe(401); // unsigned: refused, there is no unsigned fallback once the CRM has a secret
     expect((await POST(post({ ...connection, ...v2({ ip: "198.51.100.1" }, "wrong-secret-value-that-is-long-enough-xxxx") }))).status).toBe(401);
     expect(created).toHaveLength(0);
-    vi.stubEnv("LEAD_INGEST_SECRET", ""); // no secret configured here: the route behaves as before, and records nothing about the visitor
+    vi.stubEnv("LEAD_INGEST_SECRET", ""); // required but no secret: refused (fail closed), still nothing stored
+    expect((await POST(post(connection))).status).toBe(503);
+    expect(created).toHaveLength(0);
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", ""); // development without the switch: accepted, and nothing is recorded about the visitor
     expect((await POST(post(connection))).status).toBe(200);
     expect(created).toHaveLength(1);
     expect(info(0)).toBeUndefined();

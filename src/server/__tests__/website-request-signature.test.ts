@@ -11,6 +11,7 @@ import {
   type NonceConsumer,
   type WebsiteContextPayload,
 } from "../website-request-signature";
+import { websiteSigningStartupProblem } from "../website-signing-policy";
 import { guardWebsiteRequest, WEBSITE_UNATTRIBUTED_KEY } from "../website-signature-guard";
 import { VISITOR_CONTEXT_HEADER, VISITOR_SIGNATURE_HEADER } from "../lead-ingest-context";
 
@@ -240,16 +241,29 @@ describe("the guard: when a signature is required, and per-visitor rate limiting
   const guard = (headers: Headers, store = memoryNonceStore(), extra: Partial<Parameters<typeof guardWebsiteRequest>[0]> = {}) =>
     guardWebsiteRequest({ req: request(headers), body: BODY, companyId: COMPANY, verify: (i) => verifyWebsiteRequestSignature({ ...i, nowMs: NOW, consumeNonce: store.consume }), ...extra });
 
-  it("is required only with BOTH a secret of at least 32 characters AND the explicit WEBSITE_SIGNATURE_REQUIRED=true switch", () => {
-    expect(websiteSignatureRequired(SECRET, "true")).toBe(true);
-    expect(websiteSignatureRequired(SECRET, " TRUE ")).toBe(true);
+  it("is always required in production, whatever the switch says; elsewhere only with WEBSITE_SIGNATURE_REQUIRED=true", () => {
+    for (const flag of [undefined, "", "false", "0", "off", "true", "nonsense"]) expect(websiteSignatureRequired(flag, true), String(flag)).toBe(true);
+    expect(websiteSignatureRequired("true", false)).toBe(true);
+    expect(websiteSignatureRequired(" TRUE ", false)).toBe(true);
+    for (const flag of ["", "false", "0", "yes", "1"]) expect(websiteSignatureRequired(flag, false), flag).toBe(false);
+  });
+
+  it.each(["APP_ENV=production", "VERCEL_ENV=production", "VERCEL_ENV=preview", "NODE_ENV=production"])("%s counts as production with no switch set", (setting) => {
     vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "");
-    expect(websiteSignatureRequired(SECRET)).toBe(false); // transitional default (switch not set): the CRM can be deployed before the website
-    for (const flag of ["", "false", "0", "yes", "1"]) expect(websiteSignatureRequired(SECRET, flag), flag).toBe(false);
-    expect(websiteSignatureRequired("short", "true")).toBe(false);
-    expect(websiteSignatureRequired("", "true")).toBe(false);
-    vi.stubEnv("LEAD_INGEST_SECRET", "");
-    expect(websiteSignatureRequired()).toBe(false); // nothing configured at all
+    const [name, value] = setting.split("=");
+    vi.stubEnv(name, value);
+    expect(websiteSignatureRequired()).toBe(true);
+  });
+
+  it("says at startup when signatures are required but none could be verified, and says nothing otherwise (never a value)", () => {
+    expect(websiteSigningStartupProblem()).toBeUndefined();
+    vi.stubEnv("LEAD_INGEST_SECRET", "too-short-secret-sentinel");
+    expect(websiteSigningStartupProblem()).toMatch(/every website request will be refused/);
+    expect(websiteSigningStartupProblem()).not.toContain("too-short-secret-sentinel");
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "");
+    expect(websiteSigningStartupProblem()).toBeUndefined(); // development without the switch
+    vi.stubEnv("APP_ENV", "production");
+    expect(websiteSigningStartupProblem()).toMatch(/LEAD_INGEST_SECRET/);
   });
 
   it("refuses an unsigned request when a secret is configured (no unsigned fallback), with 401 and nothing else", async () => {
@@ -265,8 +279,29 @@ describe("the guard: when a signature is required, and per-visitor rate limiting
     expect(down).toMatchObject({ ok: false, status: 503, code: "unavailable" });
   });
 
-  it("with no secret configured it behaves as before: unsigned and unverifiable requests pass, nothing is trusted about the visitor", async () => {
+  it.each([
+    ["no secret", ""],
+    ["a secret shorter than 32 characters", "short"],
+  ])("fails closed with 503 when signatures are required and there is %s: nothing passes, signed or not", async (_label, secret) => {
+    vi.stubEnv("LEAD_INGEST_SECRET", secret);
+    for (const headers of [new Headers(), signed({ payload: { ip: "203.0.113.7" } })]) expect(await guard(headers)).toEqual({ ok: false, status: 503, code: "unavailable" });
+    expect(limiter).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "false"])("in production the switch cannot turn the requirement off (WEBSITE_SIGNATURE_REQUIRED=%j)", async (flag) => {
+    vi.stubEnv("APP_ENV", "production");
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", flag);
+    expect(await guard(new Headers())).toMatchObject({ ok: false, status: 401, code: "signature_required" });
+    expect(await guard(signed({ secret: "another-secret-0123456789-abcdefghijklmnopqrs" }))).toMatchObject({ ok: false, status: 401, code: "invalid_signature" });
+    const store = memoryNonceStore();
+    const headers = signed();
+    expect((await guard(headers, store)).ok).toBe(true);
+    expect(await guard(headers, store)).toMatchObject({ ok: false, status: 401, code: "invalid_signature" }); // replay
+  });
+
+  it("in development without the switch, unsigned and unverifiable requests pass and nothing is trusted about the visitor", async () => {
     vi.stubEnv("LEAD_INGEST_SECRET", "");
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", "");
     expect(await guard(new Headers())).toEqual({ ok: true, signed: false });
     expect(await guard(signed({ payload: { ip: "203.0.113.7" } }))).toEqual({ ok: true, signed: false });
   });
@@ -298,7 +333,7 @@ describe("the guard: when a signature is required, and per-visitor rate limiting
   });
 });
 
-describe("transitional mode (the CRM is deployed BEFORE the website): WEBSITE_SIGNATURE_REQUIRED is not set", () => {
+describe("development without WEBSITE_SIGNATURE_REQUIRED (never production)", () => {
   beforeEach(() => {
     limiter.mockClear();
     limiter.mockImplementation(async () => ({ allowed: true }));
@@ -311,17 +346,17 @@ describe("transitional mode (the CRM is deployed BEFORE the website): WEBSITE_SI
   const guard = (headers: Headers, store = memoryNonceStore(), extra: Partial<Parameters<typeof guardWebsiteRequest>[0]> = {}) =>
     guardWebsiteRequest({ req: request(headers), body: BODY, companyId: COMPANY, verify: (i) => verifyWebsiteRequestSignature({ ...i, nowMs: NOW, consumeNonce: store.consume }), ...extra });
 
-  it("a website that does not sign yet (today's live website) is still accepted, exactly as before this release", async () => {
+  it("an unsigned request is accepted", async () => {
     expect(await guard(new Headers())).toEqual({ ok: true, signed: false });
   });
 
-  it("a v1 context (today's live website with visitor facts) is not refused: it is left to the unchanged v1 reader, and no v2 facts are trusted", async () => {
+  it("a v1 context is not refused here: it is left to the unchanged v1 reader, and no v2 facts are trusted", async () => {
     const v1Payload = Buffer.from(JSON.stringify({ v: 1, ts: nowSeconds, ip: "203.0.113.9" }), "utf8").toString("base64url");
     const headers = new Headers({ [VISITOR_CONTEXT_HEADER]: v1Payload, [VISITOR_SIGNATURE_HEADER]: createHmac("sha256", SECRET).update(v1Payload).digest("hex") });
     expect(await guard(headers)).toEqual({ ok: true, signed: false });
   });
 
-  it("a valid v2 request is still verified, single-use and rate-limited per visitor (the new website is protected from the first day)", async () => {
+  it("a valid v2 request is still verified, single-use and rate-limited per visitor", async () => {
     const store = memoryNonceStore();
     const headers = signed({ payload: { ip: "203.0.113.7" } });
     const first = await guard(headers, store, { rateLimit: { endpoint: "WEBSITE_FLIGHT", config: { windowMs: 1000, maxAttempts: 20 } } });

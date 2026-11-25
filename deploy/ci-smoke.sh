@@ -43,7 +43,7 @@ IP_HASH_KEY=$(rand_b64)
 CRON_SECRET=$(openssl rand -hex 24)
 WEBSITE_API_KEY=$(openssl rand -hex 32)
 UPLOADS_HOST_DIR=$UPLOADS
-# Only to prove the variable REACHES the container (see the "Settings reach the container" step). With no LEAD_INGEST_SECRET it cannot make anything strict.
+LEAD_INGEST_SECRET=$(openssl rand -base64 32)
 WEBSITE_SIGNATURE_REQUIRED=true
 CAMPAIGN_DAILY_LIMIT=123
 EOF
@@ -192,6 +192,18 @@ dbip="$(docker inspect -f '{{(index .NetworkSettings.Networks "compass-smoke_dat
 [ -n "$dbip" ] || fail "could not read the database container address"
 r="$(probe 'const s=require("net").connect({host:"'"$dbip"'",port:5432,timeout:3000});s.on("connect",()=>{console.log("CONNECTED");s.destroy()});s.on("timeout",()=>{console.log("UNREACHABLE");s.destroy()});s.on("error",()=>console.log("UNREACHABLE"))')"
 [ "$r" = "UNREACHABLE" ] && ok "the website network has no route to PostgreSQL ($dbip:5432)" || fail "a container on the website network reached PostgreSQL: $r"
+
+step "Website request signing: required in the running image, and an unsafe configuration is refused before a deploy"
+docker compose run --rm --no-deps -T app node scripts/website-signing-preflight.mjs && ok "the pre-flight accepts a configured secret with WEBSITE_SIGNATURE_REQUIRED=true" || fail "the signing pre-flight refused a valid configuration"
+for bad in "WEBSITE_SIGNATURE_REQUIRED=" "WEBSITE_SIGNATURE_REQUIRED=false" "LEAD_INGEST_SECRET=" "LEAD_INGEST_SECRET=too-short"; do
+  if out="$(docker compose run --rm --no-deps -T -e "$bad" app node scripts/website-signing-preflight.mjs 2>&1)"; then fail "the signing pre-flight accepted $bad"; fi
+  case "$out" in *"website signing preflight: refused"*) ok "pre-flight refuses $bad" ;; *) fail "the pre-flight failed for another reason with $bad: $out" ;; esac
+done
+signing="$(docker compose exec -T app node -e 'fetch("http://127.0.0.1:3000/api/health",{headers:{authorization:"Bearer "+(process.env.CRON_SECRET||"")}}).then(r=>r.json()).then(h=>console.log(h.readiness.websiteSignature))')"
+[ "$signing" = "required" ] && ok "readiness.websiteSignature=required" || fail "readiness.websiteSignature is $signing"
+unsigned() { docker compose exec -T app node -e "fetch('http://127.0.0.1:3000$1',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify($2)}).then(r=>console.log(r.status))"; }
+[ "$(unsigned /api/public/subscribe "{companyId:'smoke',email:'smoke@example.com'}")" = "401" ] && ok "unsigned newsletter sign-up -> 401" || fail "an unsigned newsletter sign-up was not refused"
+[ "$(unsigned /api/public/contact-inquiry "{companyId:'smoke',firstName:'A',lastName:'B',email:'smoke@example.com',subject:'OTHER',message:'smoke test message'}")" = "401" ] && ok "unsigned contact inquiry -> 401" || fail "an unsigned contact inquiry was not refused"
 
 step "The scheduled CVV-cleanup job runs once against the real endpoint"
 docker compose run --rm cvv-cleanup node scripts/cvv-cleanup-scheduler.mjs --once | tee "$TMP/job.log"

@@ -48,7 +48,7 @@ summary="$(dc exec -T app node -e '
     console.log([(ok ? "OK" : "BAD") + " status=" + h.status + " db=" + (h.database && h.database.ok),
       "schema=" + r.schema + (r.pendingMigrations ? " pending=" + r.pendingMigrations : ""),
       "databaseTls=" + r.databaseTls, "cardVault=" + r.cardVaultState + " enabled=" + r.cardVaultEnabled,
-      "signerIpCapture=" + r.signerIpCapture, "uploadStorage=" + r.uploadStorage, "websiteApi=" + r.websiteApi].join(" | "));
+      "signerIpCapture=" + r.signerIpCapture, "uploadStorage=" + r.uploadStorage, "websiteApi=" + r.websiteApi, "websiteSignature=" + r.websiteSignature].join(" | "));
   }).catch(() => { console.log("BAD the app did not answer /api/health"); });
 ' 2>/dev/null || echo 'BAD could not run the check')"
 case "$summary" in OK*) pass "$summary" ;; *) fail "$summary" ;; esac
@@ -57,6 +57,12 @@ case "$summary" in *"databaseTls=disabled"*) pass "database TLS is explicitly di
 case "$summary" in *"enabled=false"*) warn "the card vault is CLOSED (CARD_VAULT_MODE unset), so customers cannot finish a booking that needs card storage. That is the owner's explicit opt-in (docs/CARD_VAULT_SECURITY.md); nothing here enables it." ;; esac
 case "$summary" in *"websiteApi=not_configured"*) warn "the website API (POST /api/v1/website/flight-inquiries) is not enabled: WEBSITE_API_KEY is unset or shorter than 32 characters (docs/WEBSITE_LEAD_API.md). Only needed once the website calls the CRM." ;; esac
 case "$summary" in *"signerIpCapture=disabled"*) warn "signer IP capture is disabled - TRUSTED_PROXY is not in effect" ;; esac
+case "$summary" in
+  *"websiteSignature=required"*) pass "website requests must carry a valid single-use signature" ;;
+  # An image from before 2026-11-25 (a rollback) could report "optional": unsigned website requests would be accepted.
+  *"websiteSignature=optional"*) fail "website requests are accepted WITHOUT a signature: set WEBSITE_SIGNATURE_REQUIRED=true and recreate the app container (docs/WEBSITE_SIGNING_STRICT_MODE.md)" ;;
+  *"websiteSignature=not_configured"*) fail "no usable LEAD_INGEST_SECRET: every website request is refused (or, on an older image, accepted unverified). See docs/WEBSITE_SIGNING_STRICT_MODE.md" ;;
+esac
 
 step "3b. Lead document storage (VPS disk)"
 case "$summary" in

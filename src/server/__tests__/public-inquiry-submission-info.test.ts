@@ -114,12 +114,15 @@ describe("POST /api/public/contact-inquiry (Business Flights Get In Touch) - the
     expect(JSON.stringify(created[0])).not.toContain("76.76.21.21");
   });
 
-  it("with no signature the request is refused while the CRM has a secret (no unsigned fallback); with no secret it is accepted and nothing is recorded", async () => {
+  it("with no signature the request is refused (no unsigned fallback); with no secret it is refused too; only development without the switch accepts it, recording nothing", async () => {
     const { POST } = await import("@/app/api/public/contact-inquiry/route");
     const res = await POST(post("contact-inquiry", { "x-vercel-forwarded-for": "76.76.21.21", "x-vercel-ip-country": "US" }));
     expect(res.status).toBe(401);
     expect(created).toHaveLength(0);
-    vi.stubEnv("LEAD_INGEST_SECRET", ""); // nothing can be verified: the route behaves as it always did
+    vi.stubEnv("LEAD_INGEST_SECRET", ""); // required but nothing can be verified: fail closed
+    expect((await POST(post("contact-inquiry", { "x-vercel-forwarded-for": "76.76.21.21", "x-vercel-ip-country": "US" }))).status).toBe(503);
+    expect(created).toHaveLength(0);
+    vi.stubEnv("WEBSITE_SIGNATURE_REQUIRED", ""); // development without the switch
     const legacy = await POST(post("contact-inquiry", { "x-vercel-forwarded-for": "76.76.21.21", "x-vercel-ip-country": "US" }));
     expect(legacy.status).toBe(200);
     expect(created).toHaveLength(1);
