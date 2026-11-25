@@ -56,6 +56,16 @@ describe("Database Backup deployment", () => {
     expect(smoke).toContain("/api/admin/database-backup/");
   });
 
+  it("the database helpers never read the caller's stdin, so the confirmation piped into restore-db.sh --replace reaches its `read` (the CI recovery rehearsal died silently on EOF)", () => {
+    const common = read("deploy", "common.sh");
+    const psqlIn = common.slice(common.indexOf("psql_in() {"), common.indexOf("app_db_name()"));
+    expect(psqlIn).toMatch(/<\/dev\/null\n\}/);
+    expect(common).toMatch(/app_db_name\(\) \{ db_exec sh -c 'printf %s "\$POSTGRES_DB"' <\/dev\/null; \}/);
+    // the confirmation is read AFTER helpers have run, so any helper that kept stdin attached would swallow it
+    const restore = read("deploy", "restore-db.sh");
+    expect(restore.indexOf('LIVE_DB="$(app_db_name)"')).toBeLessThan(restore.indexOf("read -r typed"));
+  });
+
   it("the CI smoke test gives restore-db.sh the .env it insists on (mode 600, before the call), never overwrites a real one, and removes its copy", () => {
     // restore-db.sh -> common.sh check_env_file needs ./.env; the smoke run's own settings live in $TMP/env. The first run of the recovery rehearsal in CI failed with ".env not found".
     const copy = smoke.indexOf('install -m 600 "$TMP/env" .env');

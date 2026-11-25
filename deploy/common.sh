@@ -37,10 +37,13 @@ check_compose() { dc config -q || die "docker compose config failed - see the me
 
 db_exec()  { dc exec -T db "$@"; }
 # Run a SQL string against a database inside the db container. The database user comes from the container's own environment.
+# Both helpers take everything through arguments and must NEVER read the caller's standard input: `docker compose exec -T` attaches it, so a helper run before an interactive
+# `read` (restore-db.sh --replace asks for the database name) swallowed the confirmation when it was piped in, and the script then died silently on end-of-file. That is how the
+# CI recovery rehearsal failed; an operator typing at a terminal never saw it, which is why it went unnoticed.
 psql_in() { # $1 = database, $2 = sql
-  db_exec sh -c 'psql -U "$POSTGRES_USER" -d "$1" -v ON_ERROR_STOP=1 -At -c "$2"' sh "$1" "$2"
+  db_exec sh -c 'psql -U "$POSTGRES_USER" -d "$1" -v ON_ERROR_STOP=1 -At -c "$2"' sh "$1" "$2" </dev/null
 }
-app_db_name() { db_exec sh -c 'printf %s "$POSTGRES_DB"'; }
+app_db_name() { db_exec sh -c 'printf %s "$POSTGRES_DB"' </dev/null; }
 
 # Waits until a Compose service reports healthy (its container HEALTHCHECK), up to $2 seconds (default 240).
 wait_healthy() {
